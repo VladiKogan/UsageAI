@@ -519,6 +519,8 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 
             File.Replace(temporaryPath, path, destinationBackupFileName: null, ignoreMetadataErrors: false);
             temporaryPath = null;
+            // ReplaceFile can normalize the owner when the process has an elevated token.
+            new FileInfo(path).SetAccessControl(originalSecurity);
         }
         catch (IOException)
         {

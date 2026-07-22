@@ -79,7 +79,7 @@ The release workflow always attaches a SHA-256 checksum and SPDX SBOM. When an A
 For an unsigned release, confirm that the ZIP hash matches its attached `.sha256` file. This detects corruption but does not establish publisher identity. For a signed release, also verify the executable's Authenticode status:
 
 ```powershell
-$version = '0.3.0' # Replace with the downloaded release version.
+$version = '0.3.1' # Replace with the downloaded release version.
 Get-FileHash ".\UsageAI-win-x64-$version-UNSIGNED.zip" -Algorithm SHA256
 Get-AuthenticodeSignature .\UsageAI.exe | Select-Object Status, SignerCertificate
 ```

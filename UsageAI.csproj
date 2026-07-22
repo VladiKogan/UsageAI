@@ -8,7 +8,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>UsageAI</AssemblyName>
     <RootNamespace>UsageAI</RootNamespace>
-    <Version>0.3.0</Version>
+    <Version>0.3.1</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <EnableUnsafeBinaryFormatterSerialization>false</EnableUnsafeBinaryFormatterSerialization>
     <CheckSdkVulnerabilities>true</CheckSdkVulnerabilities>
