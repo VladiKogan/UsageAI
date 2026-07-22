@@ -5,149 +5,124 @@ namespace UsageAI.UI;
 
 internal sealed class UsageApplicationContext : ApplicationContext
 {
-    private readonly IReadOnlyDictionary<string, IUsageClient> _clients;
-    private readonly Dictionary<string, ToolStripMenuItem> _providerItems = new(StringComparer.OrdinalIgnoreCase);
+    private readonly IReadOnlyList<IUsageClient> _clients;
+    private readonly Dictionary<string, ProviderViewState> _states = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ContextMenuStrip _menu;
     private readonly NotifyIcon _trayIcon;
     private readonly UsagePopupForm _popup;
     private readonly System.Windows.Forms.Timer _refreshTimer;
     private readonly ToolStripMenuItem _startupItem;
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
+    private readonly CancellationTokenSource _shutdown = new();
     private Icon? _currentIcon;
-    private string _selectedProviderId;
+    private DateTimeOffset? _lastRefreshed;
     private bool _isExiting;
 
     public UsageApplicationContext(IEnumerable<IUsageClient> clients)
     {
-        _clients = clients.ToDictionary(client => client.Id, StringComparer.OrdinalIgnoreCase);
+        _clients = clients.ToArray();
         if (_clients.Count == 0)
         {
             throw new ArgumentException("At least one usage provider is required.", nameof(clients));
         }
 
-        var savedProviderId = UsageProviderSettings.SelectedProviderId;
-        _selectedProviderId = _clients.ContainsKey(savedProviderId)
-            ? savedProviderId
-            : _clients.Keys.First();
-        _popup = new UsagePopupForm();
-        _popup.RefreshRequested += async (_, _) => await RefreshAsync(showPopup: true);
+        foreach (var client in _clients)
+        {
+            _states[client.Id] = new ProviderViewState(client.Id, client.DisplayName, null, null, true);
+        }
 
-        var menu = new ContextMenuStrip
+        _popup = new UsagePopupForm();
+        _popup.SetStates(OrderedStates(), isRefreshing: true, lastRefreshed: null);
+        _popup.RefreshRequested += async (_, _) => await RefreshAllAsync(showPopup: true);
+
+        _menu = new ContextMenuStrip
         {
             BackColor = Theme.Surface,
             ForeColor = Theme.Text,
             Renderer = new ToolStripProfessionalRenderer(new DarkColorTable()),
             ShowImageMargin = false,
+            Padding = new Padding(4),
         };
-        menu.Items.Add("Open", null, (_, _) => TogglePopup());
-        menu.Items.Add("Refresh", null, async (_, _) => await RefreshAsync(showPopup: false));
-
-        var providerMenu = new ToolStripMenuItem("Account");
-        foreach (var client in _clients.Values)
+        var openItem = new ToolStripMenuItem("Open")
         {
-            var providerItem = new ToolStripMenuItem(client.DisplayName)
-            {
-                Checked = client.Id.Equals(_selectedProviderId, StringComparison.OrdinalIgnoreCase),
-            };
-            providerItem.Click += async (_, _) => await SelectProviderAsync(client.Id);
-            _providerItems.Add(client.Id, providerItem);
-            providerMenu.DropDownItems.Add(providerItem);
-        }
-
-        menu.Items.Add(providerMenu);
-        menu.Items.Add(new ToolStripSeparator());
+            Font = new Font(SystemFonts.MenuFont ?? SystemFonts.DefaultFont, FontStyle.Bold),
+        };
+        openItem.Click += (_, _) => OpenDashboard();
+        _menu.Items.Add(openItem);
+        _menu.Items.Add("Refresh", null, async (_, _) => await RefreshAllAsync(showPopup: false));
+        _menu.Items.Add(new ToolStripSeparator());
         _startupItem = new ToolStripMenuItem("Start with Windows")
         {
             Checked = StartupManager.IsEnabled,
             CheckOnClick = true,
         };
         _startupItem.CheckedChanged += StartupItemOnCheckedChanged;
-        menu.Items.Add(_startupItem);
-        menu.Items.Add(new ToolStripSeparator());
-        menu.Items.Add("Exit", null, (_, _) => Exit());
+        _menu.Items.Add(_startupItem);
+        _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add("Exit", null, (_, _) => Exit());
 
-        _currentIcon = TrayIconFactory.Create(0);
+        _currentIcon = TrayIconFactory.Create(0, "U");
         _trayIcon = new NotifyIcon
         {
-            ContextMenuStrip = menu,
+            ContextMenuStrip = _menu,
             Icon = _currentIcon,
-            Text = TrimToolTip($"UsageAI - reading {CurrentClient.DisplayName} usage"),
+            Text = "UsageAI - checking connected providers",
             Visible = true,
         };
         _trayIcon.MouseUp += TrayIconOnMouseUp;
 
-        _refreshTimer = new System.Windows.Forms.Timer { Interval = (int)TimeSpan.FromMinutes(5).TotalMilliseconds };
-        _refreshTimer.Tick += async (_, _) => await RefreshAsync(showPopup: false);
+        _refreshTimer = new System.Windows.Forms.Timer
+        {
+            Interval = (int)TimeSpan.FromMinutes(5).TotalMilliseconds,
+        };
+        _refreshTimer.Tick += async (_, _) => await RefreshAllAsync(showPopup: false);
         _refreshTimer.Start();
 
-        _ = RefreshAsync(showPopup: false);
+        Application.Idle += RefreshOnFirstIdle;
     }
 
-    private IUsageClient CurrentClient => _clients[_selectedProviderId];
-
-    private async Task SelectProviderAsync(string providerId)
+    private void RefreshOnFirstIdle(object? sender, EventArgs eventArgs)
     {
-        if (!_clients.ContainsKey(providerId))
-        {
-            return;
-        }
-
-        _selectedProviderId = providerId;
-        foreach (var (id, item) in _providerItems)
-        {
-            item.Checked = id.Equals(providerId, StringComparison.OrdinalIgnoreCase);
-        }
-
-        try
-        {
-            UsageProviderSettings.SelectedProviderId = providerId;
-        }
-        catch (Exception exception)
-        {
-            MessageBox.Show(
-                $"The account selection could not be saved: {exception.Message}",
-                "UsageAI",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
-        }
-
-        await RefreshAsync(showPopup: true, waitForCurrentRefresh: true);
+        Application.Idle -= RefreshOnFirstIdle;
+        _ = RefreshAllAsync(showPopup: false);
     }
 
-    private async Task RefreshAsync(bool showPopup, bool waitForCurrentRefresh = false)
+    private async Task RefreshAllAsync(bool showPopup)
     {
-        var entered = waitForCurrentRefresh
-            ? await _refreshLock.WaitAsync(TimeSpan.FromSeconds(30))
-            : await _refreshLock.WaitAsync(0);
+        var entered = await _refreshLock.WaitAsync(0);
         if (!entered || _isExiting)
         {
             return;
         }
 
-        var client = CurrentClient;
         try
         {
-            _popup.SetLoading(client.DisplayName);
-            if (showPopup && !_popup.Visible)
+            foreach (var client in _clients)
             {
-                _popup.ShowNearTray();
+                var current = _states[client.Id];
+                _states[client.Id] = current with { IsLoading = true };
             }
 
-            var snapshot = await client.GetUsageAsync();
-            if (!client.Id.Equals(_selectedProviderId, StringComparison.OrdinalIgnoreCase))
+            UpdatePopup(isRefreshing: true);
+            if (showPopup && !_popup.Visible)
+            {
+                _popup.ShowNearTray(_popup.Mode);
+            }
+
+            var results = await Task.WhenAll(_clients.Select(FetchProviderAsync));
+            if (_isExiting)
             {
                 return;
             }
 
-            _popup.SetSnapshot(snapshot);
-            SetTraySnapshot(snapshot);
-        }
-        catch (Exception exception)
-        {
-            if (client.Id.Equals(_selectedProviderId, StringComparison.OrdinalIgnoreCase))
+            foreach (var result in results)
             {
-                _popup.SetError(client.DisplayName, exception.Message);
-                SetTrayError(client.DisplayName, exception.Message);
+                _states[result.ProviderId] = result;
             }
+
+            _lastRefreshed = DateTimeOffset.Now;
+            UpdatePopup(isRefreshing: false);
+            UpdateTray();
         }
         finally
         {
@@ -155,20 +130,47 @@ internal sealed class UsageApplicationContext : ApplicationContext
         }
     }
 
-    private void SetTraySnapshot(UsageSnapshot snapshot)
+    private async Task<ProviderViewState> FetchProviderAsync(IUsageClient client)
     {
-        ReplaceIcon(TrayIconFactory.Create(snapshot.HighestUsedPercent, ProviderGlyph(snapshot.ProviderId)));
-        var windows = new[] { snapshot.Session, snapshot.Weekly }
-            .Where(window => window is not null)
-            .Cast<UsageWindow>()
-            .Select(window => $"{window.Name} {CompactRemaining(window)}");
-        _trayIcon.Text = TrimToolTip($"UsageAI - {snapshot.ProviderName} - {string.Join(" - ", windows)}");
+        try
+        {
+            var snapshot = await client.GetUsageAsync(_shutdown.Token);
+            return new ProviderViewState(client.Id, client.DisplayName, snapshot, null, false);
+        }
+        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+        {
+            return new ProviderViewState(client.Id, client.DisplayName, null, "Refresh cancelled.", false);
+        }
+        catch (Exception exception)
+        {
+            return new ProviderViewState(client.Id, client.DisplayName, null, exception.Message, false);
+        }
     }
 
-    private void SetTrayError(string providerName, string message)
+    private void UpdatePopup(bool isRefreshing) =>
+        _popup.SetStates(OrderedStates(), isRefreshing, _lastRefreshed);
+
+    private IReadOnlyList<ProviderViewState> OrderedStates() =>
+        _clients.Select(client => _states[client.Id]).ToArray();
+
+    private void UpdateTray()
     {
-        ReplaceIcon(TrayIconFactory.Create(100, "!", hasError: true));
-        _trayIcon.Text = TrimToolTip($"UsageAI - {providerName} - {message}");
+        var connected = OrderedStates().Where(state => state.Snapshot is not null).ToArray();
+        if (connected.Length == 0)
+        {
+            ReplaceIcon(TrayIconFactory.Create(100, "!", hasError: true));
+            _trayIcon.Text = "UsageAI - no connected providers";
+            return;
+        }
+
+        var highestUsed = connected.Max(state => state.Snapshot!.HighestUsedPercent);
+        var glyph = connected.Length == 1 ? ProviderGlyph(connected[0].ProviderId) : "U";
+        ReplaceIcon(TrayIconFactory.Create(highestUsed, glyph));
+
+        var summaries = connected
+            .Select(state => $"{ShortProviderName(state.ProviderName)} {CompactMetric(state.Snapshot!)}")
+            .ToArray();
+        _trayIcon.Text = TrimToolTip($"UsageAI - {string.Join(" - ", summaries)}");
     }
 
     private void ReplaceIcon(Icon icon)
@@ -183,21 +185,22 @@ internal sealed class UsageApplicationContext : ApplicationContext
     {
         if (eventArgs.Button == MouseButtons.Left)
         {
-            TogglePopup();
+            ToggleCompactPopup();
         }
     }
 
-    private void TogglePopup()
+    private void ToggleCompactPopup()
     {
-        if (_popup.Visible)
+        if (_popup.Visible && _popup.Mode == DashboardMode.Compact)
         {
             _popup.Hide();
+            return;
         }
-        else
-        {
-            _popup.ShowNearTray();
-        }
+
+        _popup.ShowNearTray(DashboardMode.Compact);
     }
+
+    private void OpenDashboard() => _popup.ShowNearTray(DashboardMode.Full);
 
     private void StartupItemOnCheckedChanged(object? sender, EventArgs eventArgs)
     {
@@ -217,6 +220,8 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private void Exit()
     {
         _isExiting = true;
+        Application.Idle -= RefreshOnFirstIdle;
+        _shutdown.Cancel();
         _refreshTimer.Stop();
         _trayIcon.Visible = false;
         _popup.CloseForExit();
@@ -227,18 +232,35 @@ internal sealed class UsageApplicationContext : ApplicationContext
     {
         if (disposing)
         {
+            Application.Idle -= RefreshOnFirstIdle;
+            _shutdown.Cancel();
             _refreshTimer.Dispose();
             _trayIcon.Dispose();
+            _menu.Dispose();
             _popup.Dispose();
             _currentIcon?.Dispose();
-            _refreshLock.Dispose();
         }
 
         base.Dispose(disposing);
     }
 
-    private static string CompactRemaining(UsageWindow window) =>
-        window.RemainingText == "UNLIMITED" ? "unlimited" : $"{window.RemainingPercent}% left";
+    private static string CompactMetric(UsageSnapshot snapshot)
+    {
+        var window = snapshot.Session ?? snapshot.Weekly;
+        if (window is not null)
+        {
+            return window.RemainingText == "UNLIMITED" ? "unlimited" : $"{window.RemainingPercent}% left";
+        }
+
+        if (!string.IsNullOrWhiteSpace(snapshot.CreditBalance))
+        {
+            return $"{snapshot.CreditBalance} credits";
+        }
+
+        return snapshot.AvailableResetCredits > 0
+            ? $"{snapshot.AvailableResetCredits} resets"
+            : "connected";
+    }
 
     private static string ProviderGlyph(string providerId) => providerId.ToLowerInvariant() switch
     {
@@ -246,6 +268,9 @@ internal sealed class UsageApplicationContext : ApplicationContext
         "copilot" => "G",
         _ => "C",
     };
+
+    private static string ShortProviderName(string providerName) =>
+        providerName.Equals("GitHub Copilot", StringComparison.OrdinalIgnoreCase) ? "Copilot" : providerName;
 
     private static string TrimToolTip(string value) => value.Length <= 63 ? value : value[..60] + "...";
 

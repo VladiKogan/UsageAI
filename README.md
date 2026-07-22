@@ -11,7 +11,9 @@ UsageAI reuses your existing local provider login. Codex data comes from the Cod
 - Codex five-hour and weekly usage, reset countdowns, reset credits, plan, and credit balance
 - Claude Code five-hour and weekly usage, resets, plan, and optional extra usage
 - GitHub Copilot AI-credit or premium-request usage, chat/completion quotas, monthly reset, plan, and account
-- An account selector for switching between Codex, Claude Code, and GitHub Copilot
+- A compact all-provider view with one prioritized metric per connected provider
+- A full dashboard with every available metric and connection status for all providers
+- Distinct provider icons and color-coded usage signals for quick scanning
 - A dynamic tray icon based on the most-used window
 - Five-minute background refresh and manual refresh
 - Optional start with Windows
@@ -33,7 +35,7 @@ PowerShell can block the `codex.ps1` launcher; UsageAI intentionally uses `codex
 dotnet run --project .\UsageAI.csproj
 ```
 
-The app lives in the system tray. Left-click its icon for the usage panel. Right-click and use **Account** to switch providers.
+The app lives in the system tray. Left-click its icon for a compact view of every connected provider. The compact view shows the first available metric in this order: five-hour/session, weekly, then credits. Right-click the tray icon and choose **Open** for the full dashboard with all providers and usage metrics. The dashboard behaves like a regular Windows window: move it, resize it, minimize or maximize it, and close it back to the tray. UsageAI remembers its last normal position and size for the current session.
 
 To validate one provider without opening the tray UI:
 

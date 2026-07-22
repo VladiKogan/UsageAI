@@ -68,18 +68,63 @@ internal static class Program
     {
         var flagIndex = Array.FindIndex(args, argument =>
             argument.Equals("--render-preview", StringComparison.OrdinalIgnoreCase));
-        var outputPath = flagIndex >= 0 && flagIndex + 1 < args.Length
+        var outputPath = flagIndex >= 0 &&
+                         flagIndex + 1 < args.Length &&
+                         !args[flagIndex + 1].StartsWith('-')
             ? Path.GetFullPath(args[flagIndex + 1])
             : Path.Combine(Environment.CurrentDirectory, "usageai-preview.png");
 
+        var now = DateTimeOffset.Now;
+        var states = new UI.ProviderViewState[]
+        {
+            new(
+                "codex",
+                "Codex",
+                new Models.UsageSnapshot(
+                    "Plus",
+                    new Models.UsageWindow("5-hour", 43, now.AddHours(2).AddMinutes(18), 300),
+                    new Models.UsageWindow("Weekly", 63, now.AddDays(3).AddHours(8), 10_080),
+                    "$12.50",
+                    3,
+                    now),
+                null,
+                false),
+            new(
+                "claude",
+                "Claude Code",
+                new Models.UsageSnapshot(
+                    "Max",
+                    new Models.UsageWindow("5-hour", 22, now.AddHours(3).AddMinutes(41), 300),
+                    new Models.UsageWindow("Weekly", 49, now.AddDays(4).AddHours(12), 10_080),
+                    "$4.10",
+                    0,
+                    now,
+                    "claude",
+                    "Claude Code"),
+                null,
+                false),
+            new(
+                "copilot",
+                "GitHub Copilot",
+                new Models.UsageSnapshot(
+                    "Pro",
+                    new Models.UsageWindow("AI credits", 76, now.AddDays(9), null, "24% LEFT", "72 of 300 left"),
+                    new Models.UsageWindow("Chat", 0, now.AddDays(9), null, "UNLIMITED", "No monthly limit"),
+                    null,
+                    0,
+                    now,
+                    "copilot",
+                    "GitHub Copilot",
+                    "octocat"),
+                null,
+                false),
+        };
+
         using var form = new UsagePopupForm();
-        form.SetSnapshot(new Models.UsageSnapshot(
-            "Plus",
-            null,
-            new Models.UsageWindow("Weekly", 3, DateTimeOffset.Now.AddDays(6).AddHours(23), 10_080),
-            "0",
-            3,
-            DateTimeOffset.Now));
+        form.SetStates(states, isRefreshing: false, lastRefreshed: now);
+        form.SetMode(args.Contains("--full", StringComparer.OrdinalIgnoreCase)
+            ? UI.DashboardMode.Full
+            : UI.DashboardMode.Compact);
         form.Location = new Point(-10_000, -10_000);
         form.Show();
         Application.DoEvents();

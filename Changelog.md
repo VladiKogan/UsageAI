@@ -10,12 +10,18 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 - Claude Code account support using its existing OAuth login, with five-hour and weekly limits, resets, plan detection, and optional extra usage.
 - GitHub Copilot account support for AI credits or premium requests, chat/completion quotas, plan, login, and monthly resets.
-- A persistent tray-menu account selector for switching between Codex, Claude Code, and GitHub Copilot.
+- A compact connected-provider view and a full multi-provider dashboard for Codex, Claude Code, and GitHub Copilot.
 - Provider-specific diagnostics with `--diagnose codex`, `--diagnose claude`, and `--diagnose copilot`.
+- Provider-specific vector icons and visual status signals throughout the usage views.
 
 ### Changed
 
 - Generalized the popup, quota cards, tray icon, and tooltips for multiple usage providers and unlimited quotas.
+- Left-clicking the tray icon now opens a compact overview of every connected provider, showing one prioritized metric per provider.
+- The tray menu's **Open** action now opens a full dashboard with all providers, metrics, and connection details.
+- The full dashboard now behaves as a movable, resizable Windows window and remembers its bounds for the current session.
+- Dashboard cards now reflow and repaint continuously while the window is being resized, including scrollbar transitions.
+- Refined the interface with a modern graphite palette, clearer hierarchy, responsive sizing, and scrollable dashboard layout.
 
 ## [0.1.0] - 2026-07-22
 
