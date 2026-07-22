@@ -150,7 +150,11 @@ internal sealed class UsagePopupForm : Form
         _planLabel.ForeColor = Theme.Signal;
         _statusLabel.ForeColor = Theme.Muted;
         _statusLabel.Text = $"Updated {snapshot.FetchedAt:t}";
-        _creditLabel.Text = snapshot.ProviderId.Equals("copilot", StringComparison.OrdinalIgnoreCase)
+        _creditLabel.Text = snapshot.ProviderId.Equals("claude", StringComparison.OrdinalIgnoreCase)
+            ? string.IsNullOrWhiteSpace(snapshot.CreditBalance)
+                ? "Uses your existing Claude Code login"
+                : snapshot.CreditBalance
+            : snapshot.ProviderId.Equals("copilot", StringComparison.OrdinalIgnoreCase)
             ? string.IsNullOrWhiteSpace(snapshot.AccountName)
                 ? "Uses your existing Copilot login"
                 : $"{snapshot.AccountName} - existing Copilot login"

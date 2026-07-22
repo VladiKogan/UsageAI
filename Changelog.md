@@ -8,9 +8,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Claude Code account support using its existing OAuth login, with five-hour and weekly limits, resets, plan detection, and optional extra usage.
 - GitHub Copilot account support for AI credits or premium requests, chat/completion quotas, plan, login, and monthly resets.
-- A persistent tray-menu account selector for switching between Codex and GitHub Copilot.
-- Provider-specific diagnostics with `--diagnose codex` and `--diagnose copilot`.
+- A persistent tray-menu account selector for switching between Codex, Claude Code, and GitHub Copilot.
+- Provider-specific diagnostics with `--diagnose codex`, `--diagnose claude`, and `--diagnose copilot`.
 
 ### Changed
 

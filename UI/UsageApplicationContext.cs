@@ -240,8 +240,12 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private static string CompactRemaining(UsageWindow window) =>
         window.RemainingText == "UNLIMITED" ? "unlimited" : $"{window.RemainingPercent}% left";
 
-    private static string ProviderGlyph(string providerId) =>
-        providerId.Equals("copilot", StringComparison.OrdinalIgnoreCase) ? "G" : "C";
+    private static string ProviderGlyph(string providerId) => providerId.ToLowerInvariant() switch
+    {
+        "claude" => "A",
+        "copilot" => "G",
+        _ => "C",
+    };
 
     private static string TrimToolTip(string value) => value.Length <= 63 ? value : value[..60] + "...";
 

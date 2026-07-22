@@ -34,7 +34,7 @@ internal static class Program
                 candidate.Id.Equals(providerId, StringComparison.OrdinalIgnoreCase));
             if (client is null)
             {
-                throw new ArgumentException($"Unknown usage provider '{providerId}'. Use 'codex' or 'copilot'.");
+                throw new ArgumentException($"Unknown usage provider '{providerId}'. Use 'codex', 'claude', or 'copilot'.");
             }
 
             var snapshot = await client.GetUsageAsync();
@@ -51,6 +51,7 @@ internal static class Program
         new IUsageClient[]
         {
             new CodexUsageClient(),
+            new ClaudeCodeUsageClient(),
             new GitHubCopilotUsageClient(),
         };
 
