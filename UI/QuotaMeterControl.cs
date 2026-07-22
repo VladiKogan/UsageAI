@@ -5,6 +5,7 @@ namespace UsageAI.UI;
 internal sealed class QuotaMeterControl : Control
 {
     private UsageWindow? _window;
+    private string _emptySource = "Codex";
 
     public string EmptyName { get; init; } = "Limit";
 
@@ -19,6 +20,12 @@ internal sealed class QuotaMeterControl : Control
     public void SetWindow(UsageWindow? window)
     {
         _window = window;
+        Invalidate();
+    }
+
+    public void SetEmptySource(string source)
+    {
+        _emptySource = source;
         Invalidate();
     }
 
@@ -37,20 +44,20 @@ internal sealed class QuotaMeterControl : Control
         if (_window is null)
         {
             DrawText(e.Graphics, EmptyName.ToUpperInvariant(), new Font("Cascadia Mono", 8F, FontStyle.Bold), Theme.Muted, 14, 13);
-            DrawText(e.Graphics, "Not reported by Codex", Font, Theme.Muted, 14, 36);
+            DrawText(e.Graphics, $"Not reported by {_emptySource}", Font, Theme.Muted, 14, 36);
             return;
         }
 
         var usageColor = Theme.ForUsage(_window.UsedPercent);
         DrawText(e.Graphics, _window.Name.ToUpperInvariant(), new Font("Cascadia Mono", 8F, FontStyle.Bold), Theme.Muted, 14, 11);
 
-        var remainingText = $"{_window.RemainingPercent}% LEFT";
+        var remainingText = _window.DisplayRemaining;
         using var valueFont = new Font("Cascadia Mono", 15F, FontStyle.Bold, GraphicsUnit.Point);
         var valueSize = e.Graphics.MeasureString(remainingText, valueFont);
         DrawText(e.Graphics, remainingText, valueFont, Theme.Text, Width - 14 - valueSize.Width, 7);
 
         var resetText = FormatReset(_window.ResetsAt);
-        DrawText(e.Graphics, $"{_window.UsedPercent}% used", Font, Theme.Muted, 14, 37);
+        DrawText(e.Graphics, _window.DisplayUsage, Font, Theme.Muted, 14, 37);
         using var resetFont = new Font("Segoe UI", 8.5F, FontStyle.Regular, GraphicsUnit.Point);
         var resetSize = e.Graphics.MeasureString(resetText, resetFont);
         DrawText(e.Graphics, resetText, resetFont, Theme.Muted, Width - 14 - resetSize.Width, 38);

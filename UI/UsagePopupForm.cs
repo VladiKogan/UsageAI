@@ -4,6 +4,7 @@ namespace UsageAI.UI;
 
 internal sealed class UsagePopupForm : Form
 {
+    private readonly Label _titleLabel;
     private readonly Label _planLabel;
     private readonly Label _statusLabel;
     private readonly Label _creditLabel;
@@ -45,7 +46,7 @@ internal sealed class UsagePopupForm : Form
         Controls.Add(shell);
 
         var header = new Panel { Dock = DockStyle.Fill };
-        var title = new Label
+        _titleLabel = new Label
         {
             AutoSize = true,
             Font = new Font("Cascadia Mono", 11F, FontStyle.Bold, GraphicsUnit.Point),
@@ -70,7 +71,7 @@ internal sealed class UsagePopupForm : Form
             Text = "Reading Codex…",
             TextAlign = ContentAlignment.TopRight,
         };
-        header.Controls.Add(title);
+        header.Controls.Add(_titleLabel);
         header.Controls.Add(_planLabel);
         header.Controls.Add(_statusLabel);
         shell.Controls.Add(header, 0, 0);
@@ -133,21 +134,27 @@ internal sealed class UsagePopupForm : Form
         };
     }
 
-    public void SetLoading()
+    public void SetLoading(string providerName)
     {
+        SetProvider(providerName);
         _refreshButton.Enabled = false;
         _refreshButton.Text = "Reading…";
         _statusLabel.ForeColor = Theme.Muted;
-        _statusLabel.Text = "Reading Codex…";
+        _statusLabel.Text = $"Reading {ShortProviderName(providerName)}…";
     }
 
     public void SetSnapshot(UsageSnapshot snapshot)
     {
+        SetProvider(snapshot.ProviderName);
         _planLabel.Text = snapshot.Plan.ToUpperInvariant();
         _planLabel.ForeColor = Theme.Signal;
         _statusLabel.ForeColor = Theme.Muted;
         _statusLabel.Text = $"Updated {snapshot.FetchedAt:t}";
-        _creditLabel.Text = snapshot.AvailableResetCredits > 0
+        _creditLabel.Text = snapshot.ProviderId.Equals("copilot", StringComparison.OrdinalIgnoreCase)
+            ? string.IsNullOrWhiteSpace(snapshot.AccountName)
+                ? "Uses your existing Copilot login"
+                : $"{snapshot.AccountName} - existing Copilot login"
+            : snapshot.AvailableResetCredits > 0
             ? $"{snapshot.AvailableResetCredits} full reset{(snapshot.AvailableResetCredits == 1 ? string.Empty : "s")} available"
             : string.IsNullOrWhiteSpace(snapshot.CreditBalance)
                 ? "Uses your existing Codex login"
@@ -157,8 +164,9 @@ internal sealed class UsagePopupForm : Form
         ResetRefreshButton();
     }
 
-    public void SetError(string message)
+    public void SetError(string providerName, string message)
     {
+        SetProvider(providerName);
         _planLabel.Text = "NEEDS ATTENTION";
         _planLabel.ForeColor = Theme.Critical;
         _statusLabel.ForeColor = Theme.Critical;
@@ -168,6 +176,16 @@ internal sealed class UsagePopupForm : Form
         _weeklyMeter.SetWindow(null);
         ResetRefreshButton();
     }
+
+    private void SetProvider(string providerName)
+    {
+        _titleLabel.Text = $"{providerName.ToUpperInvariant()} // LIMITS";
+        _sessionMeter.SetEmptySource(providerName);
+        _weeklyMeter.SetEmptySource(providerName);
+    }
+
+    private static string ShortProviderName(string providerName) =>
+        providerName.Equals("GitHub Copilot", StringComparison.OrdinalIgnoreCase) ? "Copilot" : providerName;
 
     public void ShowNearTray()
     {

@@ -4,9 +4,13 @@ using UsageAI.Models;
 
 namespace UsageAI.Services;
 
-internal sealed class CodexUsageClient
+internal sealed class CodexUsageClient : IUsageClient
 {
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(20);
+
+    public string Id => "codex";
+
+    public string DisplayName => "Codex";
 
     public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default) =>
         ParseSnapshot(await GetRawUsageAsync(cancellationToken));

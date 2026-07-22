@@ -5,18 +5,29 @@ namespace UsageAI.UI;
 
 internal sealed class UsageApplicationContext : ApplicationContext
 {
-    private readonly CodexUsageClient _client;
+    private readonly IReadOnlyDictionary<string, IUsageClient> _clients;
+    private readonly Dictionary<string, ToolStripMenuItem> _providerItems = new(StringComparer.OrdinalIgnoreCase);
     private readonly NotifyIcon _trayIcon;
     private readonly UsagePopupForm _popup;
     private readonly System.Windows.Forms.Timer _refreshTimer;
     private readonly ToolStripMenuItem _startupItem;
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private Icon? _currentIcon;
+    private string _selectedProviderId;
     private bool _isExiting;
 
-    public UsageApplicationContext(CodexUsageClient client)
+    public UsageApplicationContext(IEnumerable<IUsageClient> clients)
     {
-        _client = client;
+        _clients = clients.ToDictionary(client => client.Id, StringComparer.OrdinalIgnoreCase);
+        if (_clients.Count == 0)
+        {
+            throw new ArgumentException("At least one usage provider is required.", nameof(clients));
+        }
+
+        var savedProviderId = UsageProviderSettings.SelectedProviderId;
+        _selectedProviderId = _clients.ContainsKey(savedProviderId)
+            ? savedProviderId
+            : _clients.Keys.First();
         _popup = new UsagePopupForm();
         _popup.RefreshRequested += async (_, _) => await RefreshAsync(showPopup: true);
 
@@ -29,6 +40,20 @@ internal sealed class UsageApplicationContext : ApplicationContext
         };
         menu.Items.Add("Open", null, (_, _) => TogglePopup());
         menu.Items.Add("Refresh", null, async (_, _) => await RefreshAsync(showPopup: false));
+
+        var providerMenu = new ToolStripMenuItem("Account");
+        foreach (var client in _clients.Values)
+        {
+            var providerItem = new ToolStripMenuItem(client.DisplayName)
+            {
+                Checked = client.Id.Equals(_selectedProviderId, StringComparison.OrdinalIgnoreCase),
+            };
+            providerItem.Click += async (_, _) => await SelectProviderAsync(client.Id);
+            _providerItems.Add(client.Id, providerItem);
+            providerMenu.DropDownItems.Add(providerItem);
+        }
+
+        menu.Items.Add(providerMenu);
         menu.Items.Add(new ToolStripSeparator());
         _startupItem = new ToolStripMenuItem("Start with Windows")
         {
@@ -45,7 +70,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         {
             ContextMenuStrip = menu,
             Icon = _currentIcon,
-            Text = "UsageAI — reading Codex usage",
+            Text = TrimToolTip($"UsageAI - reading {CurrentClient.DisplayName} usage"),
             Visible = true,
         };
         _trayIcon.MouseUp += TrayIconOnMouseUp;
@@ -57,29 +82,72 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _ = RefreshAsync(showPopup: false);
     }
 
-    private async Task RefreshAsync(bool showPopup)
+    private IUsageClient CurrentClient => _clients[_selectedProviderId];
+
+    private async Task SelectProviderAsync(string providerId)
     {
-        if (!await _refreshLock.WaitAsync(0) || _isExiting)
+        if (!_clients.ContainsKey(providerId))
         {
             return;
         }
 
+        _selectedProviderId = providerId;
+        foreach (var (id, item) in _providerItems)
+        {
+            item.Checked = id.Equals(providerId, StringComparison.OrdinalIgnoreCase);
+        }
+
         try
         {
-            _popup.SetLoading();
+            UsageProviderSettings.SelectedProviderId = providerId;
+        }
+        catch (Exception exception)
+        {
+            MessageBox.Show(
+                $"The account selection could not be saved: {exception.Message}",
+                "UsageAI",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+
+        await RefreshAsync(showPopup: true, waitForCurrentRefresh: true);
+    }
+
+    private async Task RefreshAsync(bool showPopup, bool waitForCurrentRefresh = false)
+    {
+        var entered = waitForCurrentRefresh
+            ? await _refreshLock.WaitAsync(TimeSpan.FromSeconds(30))
+            : await _refreshLock.WaitAsync(0);
+        if (!entered || _isExiting)
+        {
+            return;
+        }
+
+        var client = CurrentClient;
+        try
+        {
+            _popup.SetLoading(client.DisplayName);
             if (showPopup && !_popup.Visible)
             {
                 _popup.ShowNearTray();
             }
 
-            var snapshot = await _client.GetUsageAsync();
+            var snapshot = await client.GetUsageAsync();
+            if (!client.Id.Equals(_selectedProviderId, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
             _popup.SetSnapshot(snapshot);
             SetTraySnapshot(snapshot);
         }
         catch (Exception exception)
         {
-            _popup.SetError(exception.Message);
-            SetTrayError(exception.Message);
+            if (client.Id.Equals(_selectedProviderId, StringComparison.OrdinalIgnoreCase))
+            {
+                _popup.SetError(client.DisplayName, exception.Message);
+                SetTrayError(client.DisplayName, exception.Message);
+            }
         }
         finally
         {
@@ -89,16 +157,18 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     private void SetTraySnapshot(UsageSnapshot snapshot)
     {
-        ReplaceIcon(TrayIconFactory.Create(snapshot.HighestUsedPercent));
-        var session = snapshot.Session is null ? "—" : $"{snapshot.Session.RemainingPercent}%";
-        var weekly = snapshot.Weekly is null ? "—" : $"{snapshot.Weekly.RemainingPercent}%";
-        _trayIcon.Text = TrimToolTip($"UsageAI — 5h {session} left · week {weekly} left");
+        ReplaceIcon(TrayIconFactory.Create(snapshot.HighestUsedPercent, ProviderGlyph(snapshot.ProviderId)));
+        var windows = new[] { snapshot.Session, snapshot.Weekly }
+            .Where(window => window is not null)
+            .Cast<UsageWindow>()
+            .Select(window => $"{window.Name} {CompactRemaining(window)}");
+        _trayIcon.Text = TrimToolTip($"UsageAI - {snapshot.ProviderName} - {string.Join(" - ", windows)}");
     }
 
-    private void SetTrayError(string message)
+    private void SetTrayError(string providerName, string message)
     {
-        ReplaceIcon(TrayIconFactory.Create(100, hasError: true));
-        _trayIcon.Text = TrimToolTip($"UsageAI — {message}");
+        ReplaceIcon(TrayIconFactory.Create(100, "!", hasError: true));
+        _trayIcon.Text = TrimToolTip($"UsageAI - {providerName} - {message}");
     }
 
     private void ReplaceIcon(Icon icon)
@@ -167,7 +237,13 @@ internal sealed class UsageApplicationContext : ApplicationContext
         base.Dispose(disposing);
     }
 
-    private static string TrimToolTip(string value) => value.Length <= 63 ? value : value[..60] + "…";
+    private static string CompactRemaining(UsageWindow window) =>
+        window.RemainingText == "UNLIMITED" ? "unlimited" : $"{window.RemainingPercent}% left";
+
+    private static string ProviderGlyph(string providerId) =>
+        providerId.Equals("copilot", StringComparison.OrdinalIgnoreCase) ? "G" : "C";
+
+    private static string TrimToolTip(string value) => value.Length <= 63 ? value : value[..60] + "...";
 
     private sealed class DarkColorTable : ProfessionalColorTable
     {

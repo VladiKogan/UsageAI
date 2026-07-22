@@ -1,17 +1,16 @@
 # UsageAI
 
-A small, personal Windows tray meter for Codex usage limits.
+A small, personal Windows tray meter for Codex and GitHub Copilot usage limits.
 
-UsageAI uses the Codex CLI's local app-server and your existing Codex login. It does not store API keys, read browser cookies, or send usage data anywhere else.
+UsageAI reuses your existing local provider login. Codex data comes from the Codex CLI app-server; Copilot data comes from GitHub using a token already saved by a Copilot IDE extension, Copilot CLI's secure Windows credential, or GitHub CLI. UsageAI never stores or prints those credentials and does not read browser cookies.
 
 ![UsageAI tray popup](usageai-preview.png)
 
 ## What it shows
 
-- Five-hour usage and reset countdown, when Codex reports that window
-- Weekly usage and reset countdown
-- Available full-reset credits
-- Codex plan and credit balance when supplied by Codex
+- Codex five-hour and weekly usage, reset countdowns, reset credits, plan, and credit balance
+- GitHub Copilot AI-credit or premium-request usage, chat/completion quotas, monthly reset, plan, and account
+- An account selector for switching between Codex and GitHub Copilot
 - A dynamic tray icon based on the most-used window
 - Five-minute background refresh and manual refresh
 - Optional start with Windows
@@ -20,7 +19,9 @@ UsageAI uses the Codex CLI's local app-server and your existing Codex login. It 
 
 - Windows 10 or 11
 - [.NET 8 SDK](https://dotnet.microsoft.com/download/dotnet/8.0)
-- Codex CLI installed and signed in (`codex login`)
+- At least one supported provider login:
+  - Codex CLI installed and signed in (`codex login`)
+  - GitHub Copilot or GitHub CLI signed in to an account with Copilot access
 
 PowerShell can block the `codex.ps1` launcher; UsageAI intentionally uses `codex.cmd`, so it works with the default Windows execution policy.
 
@@ -30,7 +31,14 @@ PowerShell can block the `codex.ps1` launcher; UsageAI intentionally uses `codex
 dotnet run --project .\UsageAI.csproj
 ```
 
-The app lives in the system tray. Left-click its icon for the usage panel; right-click for refresh, startup, and exit controls.
+The app lives in the system tray. Left-click its icon for the usage panel. Right-click and use **Account** to switch between Codex and GitHub Copilot.
+
+To validate one provider without opening the tray UI:
+
+```powershell
+dotnet run --project .\UsageAI.csproj -- --diagnose codex
+dotnet run --project .\UsageAI.csproj -- --diagnose copilot
+```
 
 ## Build a personal executable
 
@@ -44,6 +52,8 @@ Run `publish\UsageAI.exe`. The framework-dependent build is deliberately small a
 
 - **Codex CLI was not found:** ensure `codex.cmd` is on `PATH`, or set `CODEX_PATH` to its full path.
 - **Codex is not signed in:** run `codex login` in a terminal, then choose **Refresh**.
+- **Copilot is not signed in:** sign in through a GitHub Copilot IDE extension or `gh auth login`, then choose **Refresh**.
+- **A custom Copilot token is needed:** set `COPILOT_GITHUB_TOKEN` for the UsageAI process. The token is used in memory and is not persisted.
 - **No tray icon:** open the Windows tray overflow menu and pin UsageAI.
 
-The Codex app-server protocol is currently marked experimental by the CLI. UsageAI keeps that dependency isolated in `Services/CodexUsageClient.cs` so future protocol changes stay easy to update.
+The Codex app-server protocol and GitHub's Copilot account endpoint can change. UsageAI keeps both integrations isolated in their respective usage clients so future protocol changes stay easy to update.

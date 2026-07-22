@@ -4,6 +4,18 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- GitHub Copilot account support for AI credits or premium requests, chat/completion quotas, plan, login, and monthly resets.
+- A persistent tray-menu account selector for switching between Codex and GitHub Copilot.
+- Provider-specific diagnostics with `--diagnose codex` and `--diagnose copilot`.
+
+### Changed
+
+- Generalized the popup, quota cards, tray icon, and tooltips for multiple usage providers and unlimited quotas.
+
 ## [0.1.0] - 2026-07-22
 
 ### Added

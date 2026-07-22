@@ -4,7 +4,7 @@ namespace UsageAI.UI;
 
 internal static class TrayIconFactory
 {
-    public static Icon Create(int usedPercent, bool hasError = false)
+    public static Icon Create(int usedPercent, string glyph = "C", bool hasError = false)
     {
         using var bitmap = new Bitmap(32, 32, System.Drawing.Imaging.PixelFormat.Format32bppArgb);
         using var graphics = Graphics.FromImage(bitmap);
@@ -23,9 +23,9 @@ internal static class TrayIconFactory
 
         using var glyphFont = new Font("Segoe UI", 9F, FontStyle.Bold, GraphicsUnit.Pixel);
         using var glyphBrush = new SolidBrush(Theme.Text);
-        var glyph = hasError ? "!" : "C";
-        var glyphSize = graphics.MeasureString(glyph, glyphFont);
-        graphics.DrawString(glyph, glyphFont, glyphBrush, 16 - glyphSize.Width / 2, 16 - glyphSize.Height / 2);
+        var displayedGlyph = hasError ? "!" : glyph;
+        var glyphSize = graphics.MeasureString(displayedGlyph, glyphFont);
+        graphics.DrawString(displayedGlyph, glyphFont, glyphBrush, 16 - glyphSize.Width / 2, 16 - glyphSize.Height / 2);
 
         var handle = bitmap.GetHicon();
         try

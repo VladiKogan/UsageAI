@@ -22,14 +22,22 @@ internal static class Program
             return;
         }
 
-        Application.Run(new UsageApplicationContext(new CodexUsageClient()));
+        Application.Run(new UsageApplicationContext(CreateUsageClients()));
     }
 
     private static async Task RunDiagnosticsAsync()
     {
         try
         {
-            var snapshot = await new CodexUsageClient().GetUsageAsync();
+            var providerId = GetDiagnosticProviderId(Environment.GetCommandLineArgs());
+            var client = CreateUsageClients().FirstOrDefault(candidate =>
+                candidate.Id.Equals(providerId, StringComparison.OrdinalIgnoreCase));
+            if (client is null)
+            {
+                throw new ArgumentException($"Unknown usage provider '{providerId}'. Use 'codex' or 'copilot'.");
+            }
+
+            var snapshot = await client.GetUsageAsync();
             Console.WriteLine(snapshot.ToDiagnosticJson());
         }
         catch (Exception exception)
@@ -37,6 +45,22 @@ internal static class Program
             Console.Error.WriteLine(exception.Message);
             Environment.ExitCode = 1;
         }
+    }
+
+    private static IReadOnlyList<IUsageClient> CreateUsageClients() =>
+        new IUsageClient[]
+        {
+            new CodexUsageClient(),
+            new GitHubCopilotUsageClient(),
+        };
+
+    private static string GetDiagnosticProviderId(string[] args)
+    {
+        var flagIndex = Array.FindIndex(args, argument =>
+            argument.Equals("--diagnose", StringComparison.OrdinalIgnoreCase));
+        return flagIndex >= 0 && flagIndex + 1 < args.Length && !args[flagIndex + 1].StartsWith('-')
+            ? args[flagIndex + 1]
+            : UsageProviderSettings.SelectedProviderId;
     }
 
     private static void RenderPreview(string[] args)
