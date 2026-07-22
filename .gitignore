@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+publish/
+UsageAI-win-*.zip
+.dotnet-cli/
+.nuget/
+*.user
+*.suo
