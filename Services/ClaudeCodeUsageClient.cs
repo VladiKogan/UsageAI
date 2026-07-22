@@ -478,8 +478,11 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
                 $".credentials.json.usageai-tmp.{Environment.ProcessId}.{Guid.NewGuid():N}");
 
             var originalFile = new FileInfo(path);
-            var originalSecurity = originalFile.GetAccessControl(
-                AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group);
+            const AccessControlSections securitySections =
+                AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group;
+            var originalSecurityDescriptor = originalFile
+                .GetAccessControl(securitySections)
+                .GetSecurityDescriptorBinaryForm();
             var wasEncrypted = (originalFile.Attributes & FileAttributes.Encrypted) != 0;
 
             using (new FileStream(
@@ -492,7 +495,9 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             {
             }
 
-            new FileInfo(temporaryPath).SetAccessControl(originalSecurity);
+            var temporarySecurity = new FileSecurity();
+            temporarySecurity.SetSecurityDescriptorBinaryForm(originalSecurityDescriptor, securitySections);
+            new FileInfo(temporaryPath).SetAccessControl(temporarySecurity);
             if (wasEncrypted)
             {
                 File.Encrypt(temporaryPath);
@@ -520,7 +525,9 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             File.Replace(temporaryPath, path, destinationBackupFileName: null, ignoreMetadataErrors: false);
             temporaryPath = null;
             // ReplaceFile can normalize the owner when the process has an elevated token.
-            new FileInfo(path).SetAccessControl(originalSecurity);
+            var replacementSecurity = new FileSecurity();
+            replacementSecurity.SetSecurityDescriptorBinaryForm(originalSecurityDescriptor, securitySections);
+            new FileInfo(path).SetAccessControl(replacementSecurity);
         }
         catch (IOException)
         {
