@@ -1,6 +1,8 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
+using System.Security.AccessControl;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.Json.Nodes;
@@ -16,6 +18,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
     private static readonly Uri UsageEndpoint = new("https://api.anthropic.com/api/oauth/usage");
     private static readonly Uri TokenEndpoint = new("https://platform.claude.com/v1/oauth/token");
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
+    private static readonly HttpClient Client = SecureHttp.CreateClient(RequestTimeout);
     private ClaudeCredentials? _refreshedCredentials;
 
     public string Id => "claude";
@@ -24,6 +27,18 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 
     public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default)
     {
+        if (ClaudeWebUsageClient.IsConfigured)
+        {
+            try
+            {
+                return await ClaudeWebUsageClient.GetUsageAsync(cancellationToken);
+            }
+            catch (ClaudeWebUsageException)
+            {
+                // An expired or unavailable opt-in web session falls back to Claude Code OAuth.
+            }
+        }
+
         var credentials = LoadCredentials();
         credentials = await EnsureFreshCredentialsAsync(credentials, cancellationToken);
 
@@ -38,12 +53,11 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentials.AccessToken);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Add("anthropic-beta", OAuthBeta);
-        request.Headers.UserAgent.ParseAdd("UsageAI/0.2.0");
+        request.Headers.UserAgent.ParseAdd(AppIdentity.UserAgent);
 
         try
         {
-            using var client = new HttpClient { Timeout = RequestTimeout };
-            using var response = await client.SendAsync(
+            using var response = await Client.SendAsync(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
@@ -74,8 +88,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
                     $"Claude Code returned HTTP {(int)response.StatusCode} while reading usage.");
             }
 
-            await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var document = await JsonDocument.ParseAsync(responseStream, cancellationToken: cancellationToken);
+            using var document = await SecureHttp.ReadJsonDocumentAsync(response, cancellationToken);
             return ParseSnapshot(document.RootElement, credentials.Plan);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -88,7 +101,9 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         }
         catch (Exception exception)
         {
-            throw new ClaudeCodeUsageException($"Could not read Claude Code usage: {exception.Message}", exception);
+            throw new ClaudeCodeUsageException(
+                "Could not read Claude Code usage because the provider returned invalid or unavailable data.",
+                exception);
         }
     }
 
@@ -115,14 +130,17 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             "Claude Code");
     }
 
-    private ClaudeCredentials LoadCredentials()
+    private static ClaudeCredentials LoadCredentials()
     {
-        var environmentToken = Environment.GetEnvironmentVariable("USAGEAI_CLAUDE_OAUTH_TOKEN");
-        if (!string.IsNullOrWhiteSpace(environmentToken))
+        var environmentToken = CredentialInput.NormalizeToken(
+            Environment.GetEnvironmentVariable("USAGEAI_CLAUDE_OAUTH_TOKEN"));
+        if (environmentToken is not null)
         {
-            environmentToken = environmentToken.Trim();
             var scopes = (Environment.GetEnvironmentVariable("USAGEAI_CLAUDE_OAUTH_SCOPES") ?? "user:profile")
-                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                .Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(scope => scope.Length <= 128)
+                .Take(32)
+                .ToArray();
             return new ClaudeCredentials(
                 environmentToken,
                 null,
@@ -139,9 +157,9 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         {
             try
             {
-                return ParseCredentials(File.ReadAllText(credentialPath), credentialPath);
+                return ParseCredentials(SecureLocalFile.ReadAllText(credentialPath), credentialPath);
             }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or ClaudeCodeUsageException)
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or ClaudeCodeUsageException)
             {
                 fileError = exception;
             }
@@ -187,38 +205,68 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             return credentials;
         }
 
-        if (credentials.SourcePath is { } sourcePath && File.Exists(sourcePath))
+        CrossProcessFileLock? refreshLock = null;
+        try
         {
-            try
+            if (credentials.SourcePath is not null)
             {
-                var diskCredentials = ParseCredentials(File.ReadAllText(sourcePath), sourcePath);
-                if (!diskCredentials.IsExpired)
+                try
                 {
-                    return diskCredentials;
+                    refreshLock = await CrossProcessFileLock.AcquireAsync(
+                        "claude-oauth-refresh",
+                        RequestTimeout,
+                        cancellationToken);
                 }
-
-                credentials = diskCredentials;
+                catch (TimeoutException exception)
+                {
+                    throw new ClaudeCodeUsageException(
+                        "Another UsageAI instance is still refreshing Claude Code's login.",
+                        exception);
+                }
             }
-            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException)
+
+            if (credentials.SourcePath is { } sourcePath && File.Exists(sourcePath))
             {
-                // The already-loaded refresh token can still be used if Claude Code briefly holds the file.
+                try
+                {
+                    var diskCredentials = ParseCredentials(
+                        SecureLocalFile.ReadAllText(sourcePath),
+                        sourcePath);
+                    if (!diskCredentials.IsExpired)
+                    {
+                        return diskCredentials;
+                    }
+
+                    credentials = diskCredentials;
+                }
+                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
+                {
+                    // The already-loaded refresh token can still be used if Claude Code briefly holds the file.
+                }
+            }
+
+            if (string.IsNullOrWhiteSpace(credentials.RefreshToken))
+            {
+                throw new ClaudeCodeUsageException(
+                    "Claude Code's login has expired. Run `claude` to sign in again, then refresh.");
+            }
+
+            var refreshed = await RefreshCredentialsAsync(credentials, cancellationToken);
+            _refreshedCredentials = refreshed;
+            if (credentials.SourcePath is not null)
+            {
+                TryPersistRefreshedCredentials(refreshed);
+            }
+
+            return refreshed;
+        }
+        finally
+        {
+            if (refreshLock is not null)
+            {
+                await refreshLock.DisposeAsync();
             }
         }
-
-        if (string.IsNullOrWhiteSpace(credentials.RefreshToken))
-        {
-            throw new ClaudeCodeUsageException(
-                "Claude Code's login has expired. Run `claude` to sign in again, then refresh.");
-        }
-
-        var refreshed = await RefreshCredentialsAsync(credentials, cancellationToken);
-        _refreshedCredentials = refreshed;
-        if (credentials.SourcePath is not null)
-        {
-            TryPersistRefreshedCredentials(refreshed);
-        }
-
-        return refreshed;
     }
 
     private static async Task<ClaudeCredentials> RefreshCredentialsAsync(
@@ -243,33 +291,37 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 
         try
         {
-            using var client = new HttpClient { Timeout = RequestTimeout };
-            using var response = await client.SendAsync(request, cancellationToken);
+            using var response = await Client.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
                 throw new ClaudeCodeUsageException(
                     "Claude Code's login could not be refreshed. Run `claude` to sign in again.");
             }
 
-            await using var stream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            using var document = await JsonDocument.ParseAsync(stream, cancellationToken: cancellationToken);
+            using var document = await SecureHttp.ReadJsonDocumentAsync(response, cancellationToken);
             var root = document.RootElement;
-            var accessToken = GetString(root, "access_token")?.Trim();
-            if (string.IsNullOrWhiteSpace(accessToken))
+            var accessToken = CredentialInput.NormalizeToken(GetString(root, "access_token"));
+            if (accessToken is null)
             {
                 throw new ClaudeCodeUsageException("Anthropic returned an empty OAuth access token.");
             }
 
-            var refreshToken = GetString(root, "refresh_token")?.Trim();
+            var refreshToken = CredentialInput.NormalizeToken(GetString(root, "refresh_token"));
             var expiresIn = GetDouble(root, "expires_in") ?? 3_600;
             var scopes = (GetString(root, "scope") ?? string.Empty)
-                .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+                .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+                .Where(scope => scope.Length <= 128)
+                .Take(32)
+                .ToArray();
 
             return credentials with
             {
                 AccessToken = accessToken,
-                RefreshToken = string.IsNullOrWhiteSpace(refreshToken) ? credentials.RefreshToken : refreshToken,
-                ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(Math.Max(60, expiresIn)),
+                RefreshToken = refreshToken ?? credentials.RefreshToken,
+                ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(Math.Clamp(expiresIn, 60, 604_800)),
                 Scopes = scopes.Length == 0 ? credentials.Scopes : scopes,
             };
         }
@@ -284,7 +336,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         catch (Exception exception)
         {
             throw new ClaudeCodeUsageException(
-                $"Claude Code's login could not be refreshed: {exception.Message}",
+                "Claude Code's login could not be refreshed because the provider returned invalid or unavailable data.",
                 exception);
         }
     }
@@ -295,11 +347,12 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         {
             AllowTrailingCommas = true,
             CommentHandling = JsonCommentHandling.Skip,
+            MaxDepth = 32,
         });
         var root = document.RootElement;
         var oauth = TryGetObject(root, "claudeAiOauth", out var nested) ? nested : root;
-        var accessToken = GetString(oauth, "accessToken")?.Trim();
-        if (string.IsNullOrWhiteSpace(accessToken))
+        var accessToken = CredentialInput.NormalizeToken(GetString(oauth, "accessToken"));
+        if (accessToken is null)
         {
             throw new ClaudeCodeUsageException(
                 "Claude Code's saved login has no OAuth access token. Run `claude` to sign in again.");
@@ -312,7 +365,9 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
                 .Where(value => value.ValueKind == JsonValueKind.String)
                 .Select(value => value.GetString())
                 .Where(value => !string.IsNullOrWhiteSpace(value))
-                .Select(value => value!)
+                .Select(value => value!.Trim())
+                .Where(value => value.Length <= 128)
+                .Take(32)
                 .ToArray();
         }
 
@@ -330,17 +385,18 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         }
 
         var planSource = GetString(oauth, "subscriptionType") ?? GetString(oauth, "rateLimitTier");
+        var refreshToken = CredentialInput.NormalizeToken(GetString(oauth, "refreshToken"));
         return new ClaudeCredentials(
             accessToken,
-            GetString(oauth, "refreshToken")?.Trim(),
+            refreshToken,
             expiresAt,
             scopes,
             FormatPlan(planSource),
             sourcePath,
-            GetString(oauth, "refreshToken")?.Trim() ?? accessToken);
+            refreshToken ?? accessToken);
     }
 
-    private static void TryPersistRefreshedCredentials(ClaudeCredentials credentials)
+    internal static void TryPersistRefreshedCredentials(ClaudeCredentials credentials)
     {
         var path = credentials.SourcePath;
         if (path is null || !File.Exists(path))
@@ -351,7 +407,49 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         string? temporaryPath = null;
         try
         {
-            var root = JsonNode.Parse(File.ReadAllText(path)) as JsonObject;
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            {
+                return;
+            }
+
+            using var sourceStream = new FileStream(
+                path,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read | FileShare.Delete,
+                bufferSize: 4096,
+                FileOptions.SequentialScan);
+            if (sourceStream.Length > SecureLocalFile.MaxCredentialFileCharacters * 4L)
+            {
+                return;
+            }
+
+            string originalJson;
+            using (var reader = new StreamReader(
+                       sourceStream,
+                       Encoding.UTF8,
+                       detectEncodingFromByteOrderMarks: true,
+                       bufferSize: 4096,
+                       leaveOpen: true))
+            {
+                originalJson = reader.ReadToEnd();
+            }
+
+            if (originalJson.Length > SecureLocalFile.MaxCredentialFileCharacters)
+            {
+                return;
+            }
+
+            var sourceCredentials = ParseCredentials(originalJson, path);
+            if (!string.Equals(
+                    sourceCredentials.SourceCredentialToken,
+                    credentials.SourceCredentialToken,
+                    StringComparison.Ordinal))
+            {
+                return;
+            }
+
+            var root = JsonNode.Parse(originalJson) as JsonObject;
             var oauth = root?["claudeAiOauth"] as JsonObject;
             if (root is null || oauth is null)
             {
@@ -378,8 +476,48 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             temporaryPath = Path.Combine(
                 Path.GetDirectoryName(path)!,
                 $".credentials.json.usageai-tmp.{Environment.ProcessId}.{Guid.NewGuid():N}");
-            File.WriteAllText(temporaryPath, root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-            File.Move(temporaryPath, path, true);
+
+            var originalFile = new FileInfo(path);
+            var originalSecurity = originalFile.GetAccessControl(
+                AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group);
+            var wasEncrypted = (originalFile.Attributes & FileAttributes.Encrypted) != 0;
+
+            using (new FileStream(
+                       temporaryPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       bufferSize: 1,
+                       FileOptions.WriteThrough))
+            {
+            }
+
+            new FileInfo(temporaryPath).SetAccessControl(originalSecurity);
+            if (wasEncrypted)
+            {
+                File.Encrypt(temporaryPath);
+            }
+
+            var serialized = Encoding.UTF8.GetBytes(
+                root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
+            try
+            {
+                using var temporaryStream = new FileStream(
+                    temporaryPath,
+                    FileMode.Truncate,
+                    FileAccess.Write,
+                    FileShare.None,
+                    bufferSize: 4096,
+                    FileOptions.WriteThrough);
+                temporaryStream.Write(serialized);
+                temporaryStream.Flush(flushToDisk: true);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(serialized);
+            }
+
+            File.Replace(temporaryPath, path, destinationBackupFileName: null, ignoreMetadataErrors: false);
             temporaryPath = null;
         }
         catch (IOException)
@@ -393,6 +531,18 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         catch (JsonException)
         {
             // Do not replace a credential file that changed to an unexpected format.
+        }
+        catch (System.Security.SecurityException)
+        {
+            // Never fall back to a replacement that could weaken the original file's protection.
+        }
+        catch (CryptographicException)
+        {
+            // Never replace an EFS-protected credential with an unencrypted file.
+        }
+        catch (PlatformNotSupportedException)
+        {
+            // The refreshed token remains cached for this UsageAI process.
         }
         finally
         {
@@ -484,8 +634,21 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             return null;
         }
 
+        return FormatExtraUsageObject(extraUsage);
+    }
+
+    internal static string? FormatExtraUsageObject(JsonElement extraUsage)
+    {
+        if (extraUsage.ValueKind != JsonValueKind.Object ||
+            !GetBoolean(extraUsage, "is_enabled", "isEnabled"))
+        {
+            return null;
+        }
+
         var usedCents = GetDouble(extraUsage, "used_credits") ?? GetDouble(extraUsage, "usedCredits");
-        var limitCents = GetDouble(extraUsage, "monthly_limit") ?? GetDouble(extraUsage, "monthlyLimit");
+        var limitCents = GetDouble(extraUsage, "monthly_credit_limit") ??
+                         GetDouble(extraUsage, "monthly_limit") ??
+                         GetDouble(extraUsage, "monthlyLimit");
         if (usedCents is null)
         {
             return "Extra usage enabled";
@@ -513,7 +676,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             ? parsed.ToLocalTime()
             : null;
 
-    private static string FormatPlan(string? plan)
+    internal static string FormatPlan(string? plan)
     {
         if (string.IsNullOrWhiteSpace(plan))
         {
@@ -552,7 +715,13 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         var configuredDirectory = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
         if (!string.IsNullOrWhiteSpace(configuredDirectory))
         {
-            return Path.Combine(configuredDirectory.Trim().Trim('"'), ".credentials.json");
+            configuredDirectory = configuredDirectory.Trim().Trim('"');
+            if (!Path.IsPathFullyQualified(configuredDirectory))
+            {
+                throw new ClaudeCodeUsageException("CLAUDE_CONFIG_DIR must be an absolute path.");
+            }
+
+            return Path.Combine(Path.GetFullPath(configuredDirectory), ".credentials.json");
         }
 
         var userProfile = Environment.GetEnvironmentVariable("USERPROFILE");
@@ -561,7 +730,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         }
 
-        return Path.Combine(userProfile, ".claude", ".credentials.json");
+        return Path.GetFullPath(Path.Combine(userProfile, ".claude", ".credentials.json"));
     }
 
     private static bool TryGetObject(JsonElement element, string propertyName, out JsonElement value)
@@ -594,7 +763,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         element.TryGetProperty(snakeCaseName, out var property) && property.ValueKind == JsonValueKind.True ||
         element.TryGetProperty(camelCaseName, out property) && property.ValueKind == JsonValueKind.True;
 
-    private sealed record ClaudeCredentials(
+    internal sealed record ClaudeCredentials(
         string AccessToken,
         string? RefreshToken,
         DateTimeOffset? ExpiresAt,

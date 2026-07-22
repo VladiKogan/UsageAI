@@ -1,4 +1,5 @@
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace UsageAI.Services;
@@ -28,15 +29,28 @@ internal static class WindowsCredentialReader
             }
         }
 
-        return FindGenericPasswords(null, targetName =>
-            targetName.Equals(serviceName, StringComparison.OrdinalIgnoreCase) ||
-            accounts.Any(account =>
-                targetName.Equals($"{serviceName}/{account}", StringComparison.OrdinalIgnoreCase) ||
-                targetName.Equals($"{serviceName}.{account}", StringComparison.OrdinalIgnoreCase) ||
-                targetName.Equals($"{account}.{serviceName}", StringComparison.OrdinalIgnoreCase)));
+        var targets = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { serviceName };
+        foreach (var account in accounts)
+        {
+            targets.Add($"{serviceName}/{account}");
+            targets.Add($"{serviceName}.{account}");
+            targets.Add($"{account}.{serviceName}");
+        }
+
+        var passwords = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var target in targets)
+        {
+            var password = ReadGenericPassword(target);
+            if (!string.IsNullOrWhiteSpace(password))
+            {
+                passwords.Add(password);
+            }
+        }
+
+        return passwords.ToArray();
     }
 
-    private static IReadOnlyList<string> FindGenericPasswords(
+    private static List<string> FindGenericPasswords(
         string? filter,
         Func<string, bool> matchesTarget)
     {
@@ -69,11 +83,18 @@ internal static class WindowsCredentialReader
                 }
 
                 var bytes = new byte[(int)credential.CredentialBlobSize];
-                Marshal.Copy(credential.CredentialBlob, bytes, 0, bytes.Length);
-                var password = DecodePassword(bytes);
-                if (!string.IsNullOrWhiteSpace(password))
+                try
                 {
-                    passwords.Add(password);
+                    Marshal.Copy(credential.CredentialBlob, bytes, 0, bytes.Length);
+                    var password = DecodePassword(bytes);
+                    if (!string.IsNullOrWhiteSpace(password))
+                    {
+                        passwords.Add(password);
+                    }
+                }
+                finally
+                {
+                    CryptographicOperations.ZeroMemory(bytes);
                 }
             }
         }
@@ -83,6 +104,46 @@ internal static class WindowsCredentialReader
         }
 
         return passwords;
+    }
+
+    private static string? ReadGenericPassword(string targetName)
+    {
+        if (!CredRead(targetName, GenericCredentialType, 0, out var credentialPointer))
+        {
+            return null;
+        }
+
+        try
+        {
+            if (credentialPointer == IntPtr.Zero)
+            {
+                return null;
+            }
+
+            var credential = Marshal.PtrToStructure<NativeCredential>(credentialPointer);
+            if (credential.Type != GenericCredentialType ||
+                credential.CredentialBlob == IntPtr.Zero ||
+                credential.CredentialBlobSize == 0 ||
+                credential.CredentialBlobSize > int.MaxValue)
+            {
+                return null;
+            }
+
+            var bytes = new byte[(int)credential.CredentialBlobSize];
+            try
+            {
+                Marshal.Copy(credential.CredentialBlob, bytes, 0, bytes.Length);
+                return DecodePassword(bytes);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(bytes);
+            }
+        }
+        finally
+        {
+            CredFree(credentialPointer);
+        }
     }
 
     private static string DecodePassword(byte[] bytes)
@@ -97,6 +158,7 @@ internal static class WindowsCredentialReader
     }
 
     [DllImport("advapi32.dll", EntryPoint = "CredEnumerateW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool CredEnumerate(
         string? filter,
@@ -104,7 +166,17 @@ internal static class WindowsCredentialReader
         out uint count,
         out IntPtr credentials);
 
+    [DllImport("advapi32.dll", EntryPoint = "CredReadW", CharSet = CharSet.Unicode, SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CredRead(
+        string targetName,
+        uint type,
+        uint flags,
+        out IntPtr credential);
+
     [DllImport("advapi32.dll")]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static extern void CredFree(IntPtr buffer);
 
     [StructLayout(LayoutKind.Sequential)]

@@ -11,10 +11,13 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
 {
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
     private static readonly Uri UserEndpoint = new("https://api.github.com/copilot_internal/user");
+    private static readonly HttpClient Client = SecureHttp.CreateClient(RequestTimeout);
+    private const int MaxTokenCandidates = 16;
     private static readonly JsonDocumentOptions JsonOptions = new()
     {
         AllowTrailingCommas = true,
         CommentHandling = JsonCommentHandling.Skip,
+        MaxDepth = 32,
     };
 
     public string Id => "copilot";
@@ -27,7 +30,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
         if (tokens.Count == 0)
         {
             throw new GitHubCopilotUsageException(
-                "GitHub Copilot is not signed in. Sign in through Copilot or GitHub CLI, then refresh.");
+                "GitHub Copilot is not signed in. Sign in through Copilot, provide COPILOT_GITHUB_TOKEN, or explicitly enable the GitHub CLI fallback.");
         }
 
         Exception? lastFailure = null;
@@ -40,10 +43,12 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
                 using var request = new HttpRequestMessage(HttpMethod.Get, UserEndpoint);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-                request.Headers.UserAgent.ParseAdd("UsageAI/0.2.0");
+                request.Headers.UserAgent.ParseAdd(AppIdentity.UserAgent);
 
-                using var client = new HttpClient { Timeout = RequestTimeout };
-                using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+                using var response = await Client.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken);
                 if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
                 {
                     rejectedTokens++;
@@ -56,8 +61,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
                         $"GitHub Copilot returned HTTP {(int)response.StatusCode} while reading usage.");
                 }
 
-                await using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-                using var document = await JsonDocument.ParseAsync(responseStream, cancellationToken: cancellationToken);
+                using var document = await SecureHttp.ReadJsonDocumentAsync(response, cancellationToken);
                 return ParseSnapshot(document.RootElement);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -70,7 +74,9 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
             }
             catch (Exception exception)
             {
-                lastFailure = exception;
+                lastFailure = new GitHubCopilotUsageException(
+                    "GitHub Copilot returned invalid or unavailable usage data.",
+                    exception);
             }
         }
 
@@ -81,7 +87,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
         }
 
         throw new GitHubCopilotUsageException(
-            $"Could not read GitHub Copilot usage: {lastFailure?.Message ?? "unknown error"}",
+            "Could not read GitHub Copilot usage because the provider returned invalid or unavailable data.",
             lastFailure);
     }
 
@@ -124,7 +130,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
     }
 
     private static void AddQuotaWindow(
-        ICollection<(int Order, UsageWindow Window)> windows,
+        List<(int Order, UsageWindow Window)> windows,
         JsonElement snapshots,
         string propertyName,
         int order,
@@ -225,7 +231,11 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
             AddToken(tokens, token);
         }
 
-        AddToken(tokens, await TryReadGitHubCliTokenAsync(cancellationToken));
+        if (IsGitHubCliFallbackEnabled())
+        {
+            AddToken(tokens, await TryReadGitHubCliTokenAsync(cancellationToken));
+        }
+
         return tokens.ToArray();
     }
 
@@ -250,8 +260,8 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
 
         try
         {
-            using var stream = File.OpenRead(path);
-            using var document = JsonDocument.Parse(stream, JsonOptions);
+            var json = SecureLocalFile.ReadAllText(path);
+            using var document = JsonDocument.Parse(json, JsonOptions);
             AddTokensFromElement(tokens, document.RootElement);
         }
         catch (IOException)
@@ -265,6 +275,10 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
         catch (JsonException)
         {
             // Some Copilot-managed files are JSONC or placeholders rather than credential documents.
+        }
+        catch (InvalidDataException)
+        {
+            // Ignore oversized or otherwise invalid optional credential files.
         }
     }
 
@@ -301,12 +315,13 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
 
     private static async Task<string?> TryReadGitHubCliTokenAsync(CancellationToken cancellationToken)
     {
-        var executable = FindOnPath("gh.exe");
+        var executable = ProcessSecurity.FindAbsoluteExecutableOnPath("gh.exe");
         if (executable is null)
         {
             return null;
         }
 
+        Process? process = null;
         try
         {
             var startInfo = new ProcessStartInfo
@@ -317,12 +332,18 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
                 RedirectStandardOutput = true,
                 RedirectStandardError = true,
             };
+            ProcessSecurity.ApplyMinimalEnvironment(
+                startInfo,
+                "GH_CONFIG_DIR",
+                "NODE_EXTRA_CA_CERTS",
+                "SSL_CERT_DIR",
+                "SSL_CERT_FILE");
             startInfo.ArgumentList.Add("auth");
             startInfo.ArgumentList.Add("token");
             startInfo.ArgumentList.Add("--hostname");
             startInfo.ArgumentList.Add("github.com");
 
-            using var process = Process.Start(startInfo);
+            process = Process.Start(startInfo);
             if (process is null)
             {
                 return null;
@@ -330,39 +351,51 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
 
             using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
             timeout.CancelAfter(TimeSpan.FromSeconds(5));
-            var outputTask = process.StandardOutput.ReadToEndAsync(timeout.Token);
-            var errorTask = process.StandardError.ReadToEndAsync(timeout.Token);
+            var outputTask = ProcessSecurity.DrainTextAsync(
+                process.StandardOutput,
+                CredentialInput.MaxTokenCharacters,
+                timeout.Token);
+            var errorTask = ProcessSecurity.DrainTextAsync(
+                process.StandardError,
+                4096,
+                timeout.Token);
             await process.WaitForExitAsync(timeout.Token);
             await errorTask;
-            return process.ExitCode == 0 ? (await outputTask).Trim() : null;
+            return process.ExitCode == 0 ? CredentialInput.NormalizeToken(await outputTask) : null;
         }
         catch
         {
+            ProcessSecurity.TryKill(process);
             return null;
         }
-    }
-
-    private static string? FindOnPath(string fileName)
-    {
-        var pathValue = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-        foreach (var directory in pathValue.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        finally
         {
-            var candidate = Path.Combine(directory.Trim().Trim('"'), fileName);
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
+            ProcessSecurity.TryKill(process);
+            process?.Dispose();
         }
-
-        return null;
     }
 
     private static void AddToken(ISet<string> tokens, string? token)
     {
-        if (!string.IsNullOrWhiteSpace(token))
+        if (tokens.Count >= MaxTokenCandidates)
         {
-            tokens.Add(token.Trim());
+            return;
         }
+
+        var normalized = CredentialInput.NormalizeToken(token);
+        if (normalized is not null)
+        {
+            tokens.Add(normalized);
+        }
+    }
+
+    private static bool IsGitHubCliFallbackEnabled()
+    {
+        var value = Environment.GetEnvironmentVariable("USAGEAI_ENABLE_GH_TOKEN_FALLBACK");
+        return value is not null &&
+               (value.Equals("1", StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("true", StringComparison.OrdinalIgnoreCase) ||
+                value.Equals("yes", StringComparison.OrdinalIgnoreCase));
     }
 
     private static string? GetString(JsonElement element, string propertyName)

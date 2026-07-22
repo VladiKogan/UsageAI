@@ -7,6 +7,9 @@ namespace UsageAI.Services;
 internal sealed class CodexUsageClient : IUsageClient
 {
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(20);
+    private const int MaxProtocolLineCharacters = 131_072;
+    private const int MaxProtocolMessagesPerResponse = 512;
+    private const int MaxRetainedStandardErrorCharacters = 16_384;
 
     public string Id => "codex";
 
@@ -15,14 +18,17 @@ internal sealed class CodexUsageClient : IUsageClient
     public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default) =>
         ParseSnapshot(await GetRawUsageAsync(cancellationToken));
 
-    private async Task<JsonElement> GetRawUsageAsync(CancellationToken cancellationToken = default)
+    private static async Task<JsonElement> GetRawUsageAsync(CancellationToken cancellationToken = default)
     {
         var codexLaunch = FindCodexLaunch();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(RequestTimeout);
 
         using var process = StartAppServer(codexLaunch);
-        var stderrTask = process.StandardError.ReadToEndAsync(timeout.Token);
+        var stderrTask = ProcessSecurity.DrainTextAsync(
+            process.StandardError,
+            MaxRetainedStandardErrorCharacters,
+            timeout.Token);
 
         try
         {
@@ -32,7 +38,7 @@ internal sealed class CodexUsageClient : IUsageClient
                 method = "initialize",
                 @params = new
                 {
-                    clientInfo = new { name = "usage-ai", title = "UsageAI", version = "0.2.0" },
+                    clientInfo = new { name = "usage-ai", title = "UsageAI", version = AppIdentity.Version },
                     capabilities = new { experimentalApi = true },
                 },
             }, timeout.Token);
@@ -51,18 +57,22 @@ internal sealed class CodexUsageClient : IUsageClient
         catch (CodexUsageException exception)
         {
             var stderr = await TryReadErrorAsync(stderrTask);
-            if (string.IsNullOrWhiteSpace(stderr))
+            if (stderr.Contains("login", StringComparison.OrdinalIgnoreCase) ||
+                stderr.Contains("auth", StringComparison.OrdinalIgnoreCase))
             {
-                throw;
+                throw new CodexUsageException(
+                    "Codex is not signed in. Run `codex login`, then refresh.",
+                    exception);
             }
 
-            throw new CodexUsageException($"{exception.Message} {stderr.Trim()}", exception);
+            throw;
         }
         catch (Exception exception)
         {
-            var stderr = await TryReadErrorAsync(stderrTask);
-            var detail = string.IsNullOrWhiteSpace(stderr) ? exception.Message : stderr.Trim();
-            throw new CodexUsageException($"Could not read Codex usage: {detail}", exception);
+            await TryReadErrorAsync(stderrTask);
+            throw new CodexUsageException(
+                "Could not read Codex usage. Verify the Codex CLI installation, then refresh.",
+                exception);
         }
         finally
         {
@@ -82,6 +92,12 @@ internal sealed class CodexUsageClient : IUsageClient
             RedirectStandardError = true,
             WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
         };
+        ProcessSecurity.ApplyMinimalEnvironment(
+            startInfo,
+            "CODEX_HOME",
+            "NODE_EXTRA_CA_CERTS",
+            "SSL_CERT_DIR",
+            "SSL_CERT_FILE");
 
         if (launch.Script is not null)
         {
@@ -108,9 +124,12 @@ internal sealed class CodexUsageClient : IUsageClient
         int expectedId,
         CancellationToken cancellationToken)
     {
-        while (true)
+        for (var messageCount = 0; messageCount < MaxProtocolMessagesPerResponse; messageCount++)
         {
-            var line = await process.StandardOutput.ReadLineAsync(cancellationToken);
+            var line = await ProcessSecurity.ReadBoundedLineAsync(
+                process.StandardOutput,
+                MaxProtocolLineCharacters,
+                cancellationToken);
             if (line is null)
             {
                 throw new CodexUsageException("The Codex app-server stopped before it returned usage data.");
@@ -119,7 +138,7 @@ internal sealed class CodexUsageClient : IUsageClient
             JsonDocument document;
             try
             {
-                document = JsonDocument.Parse(line);
+                document = JsonDocument.Parse(line, new JsonDocumentOptions { MaxDepth = 32 });
             }
             catch (JsonException)
             {
@@ -151,11 +170,14 @@ internal sealed class CodexUsageClient : IUsageClient
                 return result.Clone();
             }
         }
+
+        throw new CodexUsageException("The Codex app-server returned too many unrelated messages.");
     }
 
     private static bool MatchesId(JsonElement id, int expectedId) =>
         (id.ValueKind == JsonValueKind.Number && id.TryGetInt32(out var number) && number == expectedId) ||
-        (id.ValueKind == JsonValueKind.String && id.GetString() == expectedId.ToString());
+        (id.ValueKind == JsonValueKind.String &&
+         id.GetString() == expectedId.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
     private static UsageSnapshot ParseSnapshot(JsonElement result)
     {
@@ -329,7 +351,7 @@ internal sealed class CodexUsageClient : IUsageClient
         return message.Contains("login", StringComparison.OrdinalIgnoreCase) ||
                message.Contains("auth", StringComparison.OrdinalIgnoreCase)
             ? "Codex is not signed in. Run `codex login`, then refresh."
-            : $"Codex could not read the account rate limits: {message}";
+            : "Codex could not read the account rate limits.";
     }
 
     private static CodexLaunch FindCodexLaunch()
@@ -338,6 +360,11 @@ internal sealed class CodexUsageClient : IUsageClient
         if (IsUsableCommand(configured))
         {
             return CreateLaunch(Path.GetFullPath(configured!));
+        }
+
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            throw new CodexUsageException("CODEX_PATH must be an absolute path to codex.exe or codex.cmd.");
         }
 
         var candidates = new List<string>();
@@ -350,8 +377,13 @@ internal sealed class CodexUsageClient : IUsageClient
                 continue;
             }
 
-            candidates.Add(Path.Combine(cleanDirectory, "codex.exe"));
-            candidates.Add(Path.Combine(cleanDirectory, "codex.cmd"));
+            if (!Path.IsPathFullyQualified(cleanDirectory))
+            {
+                continue;
+            }
+
+            candidates.Add(Path.GetFullPath(Path.Combine(cleanDirectory, "codex.exe")));
+            candidates.Add(Path.GetFullPath(Path.Combine(cleanDirectory, "codex.cmd")));
         }
 
         candidates.Add(Path.Combine(
@@ -382,7 +414,9 @@ internal sealed class CodexUsageClient : IUsageClient
         }
 
         var localNode = Path.Combine(npmDirectory, "node.exe");
-        var node = File.Exists(localNode) ? localNode : FindOnPath("node.exe");
+        var node = File.Exists(localNode)
+            ? Path.GetFullPath(localNode)
+            : ProcessSecurity.FindAbsoluteExecutableOnPath("node.exe");
         if (node is null)
         {
             throw new CodexUsageException("Node.js was not found, so the Codex npm launcher cannot start.");
@@ -391,24 +425,12 @@ internal sealed class CodexUsageClient : IUsageClient
         return new CodexLaunch(node, script);
     }
 
-    private static string? FindOnPath(string fileName)
-    {
-        var pathValue = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
-        foreach (var directory in pathValue.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
-        {
-            var candidate = Path.Combine(directory.Trim().Trim('"'), fileName);
-            if (File.Exists(candidate))
-            {
-                return candidate;
-            }
-        }
-
-        return null;
-    }
-
     private static bool IsUsableCommand(string? path) =>
         !string.IsNullOrWhiteSpace(path) &&
         !path.Contains('"') &&
+        Path.IsPathFullyQualified(path) &&
+        (path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ||
+         path.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase)) &&
         File.Exists(path);
 
     private sealed record CodexLaunch(string Executable, string? Script);
@@ -430,10 +452,7 @@ internal sealed class CodexUsageClient : IUsageClient
         try
         {
             process.StandardInput.Close();
-            if (!process.HasExited)
-            {
-                process.Kill(entireProcessTree: true);
-            }
+            ProcessSecurity.TryKill(process);
 
             await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(2));
         }

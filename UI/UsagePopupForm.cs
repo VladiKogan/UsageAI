@@ -314,7 +314,7 @@ internal sealed class UsagePopupForm : Form
         }
     }
 
-    private IReadOnlyList<ProviderViewState> CompactStates()
+    private ProviderViewState[] CompactStates()
     {
         var connected = _states.Where(state => state.IsConnected).ToArray();
         if (connected.Length > 0)

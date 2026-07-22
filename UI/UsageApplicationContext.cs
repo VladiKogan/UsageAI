@@ -5,7 +5,7 @@ namespace UsageAI.UI;
 
 internal sealed class UsageApplicationContext : ApplicationContext
 {
-    private readonly IReadOnlyList<IUsageClient> _clients;
+    private readonly IUsageClient[] _clients;
     private readonly Dictionary<string, ProviderViewState> _states = new(StringComparer.OrdinalIgnoreCase);
     private readonly ContextMenuStrip _menu;
     private readonly NotifyIcon _trayIcon;
@@ -21,7 +21,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
     public UsageApplicationContext(IEnumerable<IUsageClient> clients)
     {
         _clients = clients.ToArray();
-        if (_clients.Count == 0)
+        if (_clients.Length == 0)
         {
             throw new ArgumentException("At least one usage provider is required.", nameof(clients));
         }
@@ -143,14 +143,20 @@ internal sealed class UsageApplicationContext : ApplicationContext
         }
         catch (Exception exception)
         {
-            return new ProviderViewState(client.Id, client.DisplayName, null, exception.Message, false);
+            var message = exception is CodexUsageException or
+                ClaudeCodeUsageException or
+                ClaudeWebUsageException or
+                GitHubCopilotUsageException
+                ? exception.Message
+                : $"{client.DisplayName} usage is temporarily unavailable.";
+            return new ProviderViewState(client.Id, client.DisplayName, null, message, false);
         }
     }
 
     private void UpdatePopup(bool isRefreshing) =>
         _popup.SetStates(OrderedStates(), isRefreshing, _lastRefreshed);
 
-    private IReadOnlyList<ProviderViewState> OrderedStates() =>
+    private ProviderViewState[] OrderedStates() =>
         _clients.Select(client => _states[client.Id]).ToArray();
 
     private void UpdateTray()
@@ -208,12 +214,16 @@ internal sealed class UsageApplicationContext : ApplicationContext
         {
             StartupManager.SetEnabled(_startupItem.Checked);
         }
-        catch (Exception exception)
+        catch (Exception)
         {
             _startupItem.CheckedChanged -= StartupItemOnCheckedChanged;
             _startupItem.Checked = StartupManager.IsEnabled;
             _startupItem.CheckedChanged += StartupItemOnCheckedChanged;
-            MessageBox.Show(exception.Message, "UsageAI", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            MessageBox.Show(
+                "Windows startup settings could not be updated.",
+                "UsageAI",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
         }
     }
 

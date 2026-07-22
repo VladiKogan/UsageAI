@@ -40,5 +40,6 @@ internal static class TrayIconFactory
     }
 
     [DllImport("user32.dll", SetLastError = true)]
+    [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static extern bool DestroyIcon(IntPtr handle);
 }

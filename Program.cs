@@ -22,7 +22,23 @@ internal static class Program
             return;
         }
 
-        Application.Run(new UsageApplicationContext(CreateUsageClients()));
+        using var instanceMutex = new Mutex(
+            initiallyOwned: true,
+            "Local\\UsageAI.TrayApplication",
+            out var isFirstInstance);
+        if (!isFirstInstance)
+        {
+            return;
+        }
+
+        try
+        {
+            Application.Run(new UsageApplicationContext(CreateUsageClients()));
+        }
+        finally
+        {
+            instanceMutex.ReleaseMutex();
+        }
     }
 
     private static async Task RunDiagnosticsAsync()
@@ -42,12 +58,22 @@ internal static class Program
         }
         catch (Exception exception)
         {
-            Console.Error.WriteLine(exception.Message);
+            Console.Error.WriteLine(GetSafeDiagnosticError(exception));
             Environment.ExitCode = 1;
         }
     }
 
-    private static IReadOnlyList<IUsageClient> CreateUsageClients() =>
+    private static string GetSafeDiagnosticError(Exception exception) => exception switch
+    {
+        ArgumentException or
+        CodexUsageException or
+        ClaudeCodeUsageException or
+        ClaudeWebUsageException or
+        GitHubCopilotUsageException => exception.Message,
+        _ => "UsageAI could not complete the diagnostic request.",
+    };
+
+    private static IUsageClient[] CreateUsageClients() =>
         new IUsageClient[]
         {
             new CodexUsageClient(),

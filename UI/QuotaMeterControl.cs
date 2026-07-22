@@ -1,3 +1,4 @@
+using System.ComponentModel;
 using UsageAI.Models;
 
 namespace UsageAI.UI;
@@ -7,6 +8,7 @@ internal sealed class QuotaMeterControl : Control
     private UsageWindow? _window;
     private string _emptySource = "Codex";
 
+    [DesignerSerializationVisibility(DesignerSerializationVisibility.Hidden)]
     public string EmptyName { get; init; } = "Limit";
 
     public QuotaMeterControl()

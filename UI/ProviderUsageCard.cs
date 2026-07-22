@@ -198,7 +198,7 @@ internal sealed class ProviderUsageCard : Control
         return FromCredits(snapshot);
     }
 
-    private static IReadOnlyList<MetricItem> AllMetrics(UsageSnapshot snapshot)
+    private static List<MetricItem> AllMetrics(UsageSnapshot snapshot)
     {
         var metrics = new List<MetricItem>();
         if (snapshot.Session is not null)
@@ -240,7 +240,7 @@ internal sealed class ProviderUsageCard : Control
         return snapshot.AvailableResetCredits > 0
             ? new MetricItem(
                 "Reset credits",
-                snapshot.AvailableResetCredits.ToString(),
+                snapshot.AvailableResetCredits.ToString(System.Globalization.CultureInfo.InvariantCulture),
                 $"Full reset{(snapshot.AvailableResetCredits == 1 ? string.Empty : "s")} available",
                 null)
             : null;

@@ -28,10 +28,12 @@ internal sealed record UsageSnapshot(
     string ProviderName = "Codex",
     string? AccountName = null)
 {
-    public int HighestUsedPercent => Math.Max(Session?.UsedPercent ?? 0, Weekly?.UsedPercent ?? 0);
-
-    public string ToDiagnosticJson() => JsonSerializer.Serialize(this, new JsonSerializerOptions
+    private static readonly JsonSerializerOptions DiagnosticJsonOptions = new()
     {
         WriteIndented = true,
-    });
+    };
+
+    public int HighestUsedPercent => Math.Max(Session?.UsedPercent ?? 0, Weekly?.UsedPercent ?? 0);
+
+    public string ToDiagnosticJson() => JsonSerializer.Serialize(this, DiagnosticJsonOptions);
 }

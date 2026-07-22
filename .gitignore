@@ -2,8 +2,16 @@ bin/
 obj/
 .vs/
 publish/
+artifacts/
 UsageAI-win-*.zip
 .dotnet-cli/
 .nuget/
 *.user
 *.suo
+.env
+.env.*
+*.pfx
+*.p12
+*.key
+**/.credentials.json
+**/auth.json

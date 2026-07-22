@@ -1,0 +1,207 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - v*.*.*
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: windows-latest
+    timeout-minutes: 30
+    environment: release
+
+    steps:
+      - name: Check out the tagged commit
+        uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803 # v6
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@26b0ec14cb23fa6904739307f278c14f94c95bf1 # v5
+        with:
+          dotnet-version: 10.0.302
+
+      - name: Validate version, tag, and changelog
+        id: metadata
+        shell: pwsh
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $version = $tag.Substring(1)
+          .\scripts\Test-ReleaseMetadata.ps1 -Version $version -Tag $tag -NotesPath .\artifacts\release-notes.md
+          "version=$version" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Build and test
+        shell: pwsh
+        run: |
+          dotnet restore .\UsageAI.Tests\UsageAI.Tests.csproj --locked-mode
+          dotnet restore .\UsageAI.csproj -r win-x64 --locked-mode -p:NuGetLockFilePath=packages.win-x64.lock.json
+          dotnet build .\UsageAI.csproj -c Release --no-restore
+          dotnet build .\UsageAI.Tests\UsageAI.Tests.csproj -c Release --no-restore
+          dotnet run --project .\UsageAI.Tests\UsageAI.Tests.csproj -c Release --no-build
+          $packageReferences = Get-ChildItem -Filter *.csproj -Recurse |
+            Select-String -Pattern '<PackageReference\b'
+          if ($packageReferences) {
+            dotnet list .\UsageAI.csproj package --vulnerable --include-transitive
+            if ($LASTEXITCODE -ne 0) {
+              throw 'The NuGet vulnerability audit failed.'
+            }
+          }
+          else {
+            Write-Host 'No NuGet package references are present.'
+          }
+          dotnet publish .\UsageAI.csproj -c Release --no-restore -r win-x64 --self-contained false -p:PublishSingleFile=true -p:NuGetLockFilePath=packages.win-x64.lock.json -o .\artifacts\publish
+
+      - name: Authenticode-sign executable code when configured
+        id: signing
+        shell: pwsh
+        env:
+          SIGNING_CERTIFICATE_BASE64: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_BASE64 }}
+          SIGNING_CERTIFICATE_PASSWORD: ${{ secrets.WINDOWS_SIGNING_CERTIFICATE_PASSWORD }}
+        run: |
+          $hasCertificate = ![string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_BASE64)
+          $hasPassword = ![string]::IsNullOrWhiteSpace($env:SIGNING_CERTIFICATE_PASSWORD)
+          if (!$hasCertificate -and !$hasPassword) {
+            Write-Warning 'No Windows signing certificate is configured. This release will be explicitly labeled UNSIGNED.'
+            "signed=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+            exit 0
+          }
+          if ($hasCertificate -ne $hasPassword) {
+            throw 'Both Windows signing secrets must be configured together, or both must be absent.'
+          }
+
+          $pfxPath = Join-Path $env:RUNNER_TEMP 'UsageAI-signing.pfx'
+          $certificate = $null
+          try {
+            [IO.File]::WriteAllBytes($pfxPath, [Convert]::FromBase64String($env:SIGNING_CERTIFICATE_BASE64))
+            $password = ConvertTo-SecureString $env:SIGNING_CERTIFICATE_PASSWORD -AsPlainText -Force
+            $certificate = Import-PfxCertificate -FilePath $pfxPath -CertStoreLocation Cert:\CurrentUser\My -Password $password -Exportable:$false
+            if ($null -eq $certificate -or !$certificate.HasPrivateKey) {
+              throw 'The configured signing certificate has no private key.'
+            }
+
+            $signTool = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\bin" -Filter signtool.exe -Recurse |
+              Where-Object FullName -Match '\\x64\\signtool\.exe$' |
+              Sort-Object FullName -Descending |
+              Select-Object -First 1
+            if ($null -eq $signTool) {
+              throw 'signtool.exe was not found on the release runner.'
+            }
+
+            $codeFiles = @(Get-ChildItem -LiteralPath .\artifacts\publish -File |
+              Where-Object Extension -In @('.exe', '.dll'))
+            $publishedFiles = @(Get-ChildItem -LiteralPath .\artifacts\publish -File)
+            if ($publishedFiles.Count -ne 1 -or
+                $publishedFiles[0].Name -cne 'UsageAI.exe' -or
+                $codeFiles.Count -ne 1) {
+              throw 'Release output must contain only the single-file UsageAI.exe.'
+            }
+
+            foreach ($file in $codeFiles) {
+              & $signTool.FullName sign /sha1 $certificate.Thumbprint /s My /fd SHA256 /tr https://timestamp.digicert.com /td SHA256 $file.FullName
+              if ($LASTEXITCODE -ne 0) {
+                throw "Authenticode signing failed for $($file.Name)."
+              }
+              & $signTool.FullName verify /pa /all $file.FullName
+              if ($LASTEXITCODE -ne 0) {
+                throw "Authenticode verification failed for $($file.Name)."
+              }
+            }
+          }
+          finally {
+            if ($null -ne $certificate) {
+              Remove-Item -LiteralPath "Cert:\CurrentUser\My\$($certificate.Thumbprint)" -Force -ErrorAction SilentlyContinue
+            }
+            Remove-Item -LiteralPath $pfxPath -Force -ErrorAction SilentlyContinue
+            Remove-Item Env:SIGNING_CERTIFICATE_BASE64 -ErrorAction SilentlyContinue
+            Remove-Item Env:SIGNING_CERTIFICATE_PASSWORD -ErrorAction SilentlyContinue
+          }
+          "signed=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Generate and verify SPDX SBOM
+        id: sbom
+        shell: pwsh
+        run: |
+          $toolPath = Join-Path $env:RUNNER_TEMP 'sbom-tool-win-x64.exe'
+          $toolUri = 'https://github.com/microsoft/sbom-tool/releases/download/v4.1.5/sbom-tool-win-x64.exe'
+          $expectedHash = '625767b371b7fdd58f40f618b8a86da0247a33c89e419039c86b4edba1dad4b5'
+          Invoke-WebRequest -Uri $toolUri -OutFile $toolPath
+          $actualHash = (Get-FileHash -LiteralPath $toolPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actualHash -cne $expectedHash) {
+            throw 'The downloaded Microsoft SBOM Tool hash did not match the pinned release.'
+          }
+
+          $version = '${{ steps.metadata.outputs.version }}'
+          New-Item -ItemType Directory -Path .\artifacts\sbom -Force | Out-Null
+          & $toolPath generate -b .\artifacts\publish -bc . -pn UsageAI -pv $version -ps VladiKogan -nsb https://github.com/VladiKogan/UsageAI -m .\artifacts\sbom
+          if ($LASTEXITCODE -ne 0) {
+            throw 'SBOM generation failed.'
+          }
+
+          $manifest = Get-ChildItem -LiteralPath .\artifacts\sbom -Filter manifest.spdx.json -File -Recurse |
+            Select-Object -First 1
+          if ($null -eq $manifest) {
+            throw 'The SPDX manifest was not generated.'
+          }
+          Copy-Item -LiteralPath $manifest.FullName -Destination .\artifacts\UsageAI.spdx.json
+
+      - name: Package and hash release
+        id: package
+        shell: pwsh
+        run: |
+          $version = '${{ steps.metadata.outputs.version }}'
+          $isSigned = '${{ steps.signing.outputs.signed }}' -eq 'true'
+          $signatureSuffix = if ($isSigned) { '' } else { '-UNSIGNED' }
+          $zipName = "UsageAI-win-x64-$version$signatureSuffix.zip"
+          $zipPath = Join-Path (Resolve-Path .\artifacts) $zipName
+          Compress-Archive -Path .\artifacts\publish\* -DestinationPath $zipPath -CompressionLevel Optimal
+          $hash = (Get-FileHash -LiteralPath $zipPath -Algorithm SHA256).Hash.ToLowerInvariant()
+          [IO.File]::WriteAllText("$zipPath.sha256", "$hash  $zipName`n", [Text.UTF8Encoding]::new($false))
+          if (!$isSigned) {
+            $existingNotes = Get-Content -LiteralPath .\artifacts\release-notes.md -Raw
+            $warning = @(
+              '> [!WARNING]'
+              '> **Unsigned Windows build:** this executable has no Authenticode publisher identity, so Windows may display **Unknown publisher**. Verify the attached SHA-256 checksum after downloading from the official GitHub release page to detect corruption; the checksum does not establish publisher identity.'
+            ) -join [Environment]::NewLine
+            [IO.File]::WriteAllText(
+              (Resolve-Path .\artifacts\release-notes.md),
+              $warning.Trim() + [Environment]::NewLine + [Environment]::NewLine + $existingNotes,
+              [Text.UTF8Encoding]::new($false))
+          }
+          "zip=$zipPath" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+          "checksum=$zipPath.sha256" | Out-File -FilePath $env:GITHUB_OUTPUT -Encoding utf8 -Append
+
+      - name: Publish non-draft GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $tag = '${{ github.ref_name }}'
+          $version = '${{ steps.metadata.outputs.version }}'
+          $isSigned = '${{ steps.signing.outputs.signed }}' -eq 'true'
+          $title = if ($isSigned) { "UsageAI $version" } else { "UsageAI $version (UNSIGNED)" }
+          gh release create $tag '${{ steps.package.outputs.zip }}' '${{ steps.package.outputs.checksum }}' .\artifacts\UsageAI.spdx.json --verify-tag --latest --title $title --notes-file .\artifacts\release-notes.md
+
+          $release = gh release view $tag --json tagName,name,isDraft,assets | ConvertFrom-Json
+          if ($release.tagName -cne $tag -or $release.name -cne $title -or $release.isDraft) {
+            throw 'The published release tag, title, or draft state is incorrect.'
+          }
+          $expectedAssets = @(
+            [IO.Path]::GetFileName('${{ steps.package.outputs.zip }}'),
+            [IO.Path]::GetFileName('${{ steps.package.outputs.checksum }}'),
+            'UsageAI.spdx.json'
+          )
+          $actualAssets = @($release.assets | ForEach-Object name)
+          foreach ($asset in $expectedAssets) {
+            if ($asset -notin $actualAssets) {
+              throw "Release asset '$asset' was not uploaded successfully."
+            }
+          }
