@@ -12,3 +12,7 @@ Every version of UsageAI must complete all of the following steps:
 6. Attach the Windows release ZIP to the GitHub release and verify that the asset uploaded successfully.
 
 A version is not complete until its changelog entry, tag, and published release all exist and agree.
+
+## Provider integrations
+
+When adding a new provider, use [nesszer/Win-CodexBar](https://github.com/nesszer/Win-CodexBar) as the implementation reference for the provider's authentication method and any other relevant provider-specific data, including credential sources, API endpoints, request requirements, usage and limit fields, reset semantics, and error handling. Adapt the implementation to UsageAI's architecture and never log, expose, or commit provider secrets.
