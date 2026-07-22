@@ -40,7 +40,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
                 using var request = new HttpRequestMessage(HttpMethod.Get, UserEndpoint);
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-                request.Headers.UserAgent.ParseAdd("UsageAI/0.1.0");
+                request.Headers.UserAgent.ParseAdd("UsageAI/0.2.0");
 
                 using var client = new HttpClient { Timeout = RequestTimeout };
                 using var response = await client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);

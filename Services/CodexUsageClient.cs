@@ -32,7 +32,7 @@ internal sealed class CodexUsageClient : IUsageClient
                 method = "initialize",
                 @params = new
                 {
-                    clientInfo = new { name = "usage-ai", title = "UsageAI", version = "0.1.0" },
+                    clientInfo = new { name = "usage-ai", title = "UsageAI", version = "0.2.0" },
                     capabilities = new { experimentalApi = true },
                 },
             }, timeout.Token);

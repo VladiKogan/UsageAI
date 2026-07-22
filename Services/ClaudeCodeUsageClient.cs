@@ -38,7 +38,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentials.AccessToken);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Add("anthropic-beta", OAuthBeta);
-        request.Headers.UserAgent.ParseAdd("UsageAI/0.1.0");
+        request.Headers.UserAgent.ParseAdd("UsageAI/0.2.0");
 
         try
         {
