@@ -74,15 +74,7 @@ dotnet publish .\UsageAI.csproj -c Release -r win-x64 --self-contained false -p:
 
 Run `publish\UsageAI.exe`. The single-file, framework-dependent build is deliberately small and uses the installed .NET 10 desktop runtime.
 
-The release workflow always attaches a SHA-256 checksum and SPDX SBOM. When an Authenticode certificate is configured, it signs and verifies the executable. Without one, the release still publishes but its title, notes, and ZIP filename are explicitly marked `UNSIGNED`. A local `dotnet publish` output is also unsigned.
-
-For an unsigned release, confirm that the ZIP hash matches its attached `.sha256` file. This detects corruption but does not establish publisher identity. For a signed release, also verify the executable's Authenticode status:
-
-```powershell
-$version = '0.3.1' # Replace with the downloaded release version.
-Get-FileHash ".\UsageAI-win-x64-$version-UNSIGNED.zip" -Algorithm SHA256
-Get-AuthenticodeSignature .\UsageAI.exe | Select-Object Status, SignerCertificate
-```
+UsageAI releases are built and checked locally, then uploaded manually to GitHub Releases.
 
 ## Troubleshooting
 

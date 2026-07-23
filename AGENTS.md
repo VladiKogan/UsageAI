@@ -1,17 +1,14 @@
 # Repository instructions
 
-## Release policy
+## Release process
 
-Every version of UsageAI must complete all of the following steps:
+UsageAI does not use hosted CI/CD or automated release publishing. Validate,
+package, and publish releases manually.
 
-1. Add a dated entry for the version to `Changelog.md` before release.
-2. Keep the version in `UsageAI.csproj`, the changelog heading, and the Git tag identical.
-3. Use Semantic Versioning and create an annotated tag named `vX.Y.Z`.
-4. Push both the release commit and its tag to `origin`.
-5. Publish a non-draft GitHub release from that exact tag, using the matching changelog entry as its release notes.
-6. Attach the Windows release ZIP to the GitHub release and verify that the asset uploaded successfully.
-
-A version is not complete until its changelog entry, tag, and published release all exist and agree.
+Before a release, run the local build and tests, add a dated changelog entry,
+and keep the version in `UsageAI.csproj`, changelog heading, and annotated
+`vX.Y.Z` Git tag identical. Push the release commit and tag, then create the
+GitHub release and upload its Windows ZIP manually.
 
 ## Provider integrations
 

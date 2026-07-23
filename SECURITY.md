@@ -19,5 +19,3 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
 - Claude web sessions are opt-in, memory-only, and never persisted by UsageAI.
 - Secrets are not forwarded to provider CLI child processes or included in diagnostic output.
 - Network destinations and redirects are constrained by the provider clients.
-
-The release workflow always publishes an SPDX SBOM and SHA-256 checksum. If Authenticode credentials are configured, it signs and verifies the executable. Otherwise, the release title, notes, and ZIP filename must explicitly say `UNSIGNED`. Treat an unsigned build that lacks those labels, or any build obtained outside the official repository release page, as untrusted.

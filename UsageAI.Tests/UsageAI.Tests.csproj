@@ -13,7 +13,6 @@
     <EnableUnsafeBinaryFormatterSerialization>false</EnableUnsafeBinaryFormatterSerialization>
     <CheckSdkVulnerabilities>true</CheckSdkVulnerabilities>
     <RestorePackagesWithLockFile>true</RestorePackagesWithLockFile>
-    <RestoreLockedMode Condition="'$(CI)' == 'true'">true</RestoreLockedMode>
     <NuGetAudit>true</NuGetAudit>
     <NuGetAuditMode>all</NuGetAuditMode>
     <NuGetAuditLevel>low</NuGetAuditLevel>

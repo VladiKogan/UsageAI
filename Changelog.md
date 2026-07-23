@@ -6,6 +6,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Removed hosted CI/CD and automated release publishing in favor of local validation and manual GitHub releases.
+
 ## [0.3.1] - 2026-07-22
 
 ### Fixed
@@ -18,8 +22,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 - Optional Claude web-session authentication, tried before OAuth when a session key is explicitly supplied through the UsageAI process environment.
 - A no-dependency security regression harness covering secret validation, bounded I/O, minimal child-process environments, Claude organization parsing, OAuth credential ACL preservation, lost-update protection, and cross-process locking.
-- Windows CI and a guarded release workflow that validates release metadata, optionally applies Authenticode signing, generates a verified SPDX SBOM and SHA-256 checksum, and verifies published release assets.
-- A security policy and automated dependency/workflow update configuration.
+- A security policy and automated dependency update configuration.
 
 ### Security
 
@@ -30,8 +33,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Made Claude OAuth refresh persistence atomic across processes, protected against lost updates, and preserved the credential file's ACL, ownership, and EFS state.
 - Sanitized provider and CLI errors so raw response bodies, stderr, tokens, and local paths are not surfaced to the UI.
 - Disabled unsafe BinaryFormatter compatibility, enabled recommended .NET security analyzers as errors, and made Release builds deterministic without portable debug symbols.
-- Reduced the distributable to one executable so application code is not left in a separate dependency file and future Authenticode signing covers the complete app payload.
-- Required unsigned release titles, notes, and ZIP filenames to be explicitly labeled `UNSIGNED` when no signing certificate is configured.
+- Reduced the distributable to one executable so application code is not left in a separate dependency file.
 - Prevented duplicate interactive UsageAI instances from racing provider refreshes.
 
 ### Changed

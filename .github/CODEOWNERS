@@ -1,9 +1,0 @@
-# Security-sensitive build and release policy.
-/.github/workflows/ @VladiKogan
-/.github/dependabot.yml @VladiKogan
-/scripts/Test-ReleaseMetadata.ps1 @VladiKogan
-/UsageAI.csproj @VladiKogan
-/app.manifest @VladiKogan
-
-# Provider clients handle local credentials and authenticated traffic.
-/Services/ @VladiKogan
