@@ -25,6 +25,10 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 
     public string DisplayName => "Claude Code";
 
+    public string SignInCommand => "claude";
+
+    public Uri AccountUrl { get; } = new("https://claude.ai/settings/usage");
+
     public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default)
     {
         if (ClaudeWebUsageClient.IsConfigured)
@@ -76,10 +80,14 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 
             if (response.StatusCode == HttpStatusCode.TooManyRequests)
             {
-                var retryText = response.Headers.RetryAfter?.Delta is { } retryAfter
-                    ? $" Try again in about {Math.Max(1, (int)Math.Ceiling(retryAfter.TotalSeconds))} seconds."
+                var retryAfter = response.Headers.RetryAfter?.Delta;
+                var retryText = retryAfter is { } delta
+                    ? $" Try again in about {Math.Max(1, (int)Math.Ceiling(delta.TotalSeconds))} seconds."
                     : string.Empty;
-                throw new ClaudeCodeUsageException($"Anthropic rate-limited the usage request.{retryText}");
+                throw new ClaudeCodeUsageException($"Anthropic rate-limited the usage request.{retryText}")
+                {
+                    RetryAfter = retryAfter ?? TimeSpan.Zero,
+                };
             }
 
             if (!response.IsSuccessStatusCode)
@@ -109,9 +117,9 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 
     internal static UsageSnapshot ParseSnapshot(JsonElement root, string plan = "Claude")
     {
-        var session = ParseWindow(root, "five_hour", "fiveHour", "5-hour", 300);
+        var session = ParseWindow(root, "five_hour", "fiveHour", "5-hour", UsageMetricKind.Session, 300);
         var weekly = ParseWeeklyAllLimit(root) ??
-                     ParseWindow(root, "seven_day", "sevenDay", "Weekly", 10_080);
+                     ParseWindow(root, "seven_day", "sevenDay", "Weekly", UsageMetricKind.Rolling, 10_080);
 
         if (session is null && weekly is null)
         {
@@ -119,12 +127,32 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
                 "Claude Code returned account details without five-hour or weekly usage data.");
         }
 
+        var metrics = new List<UsageMetric>();
+        if (session is not null)
+        {
+            metrics.Add(session);
+        }
+
+        if (weekly is not null)
+        {
+            metrics.Add(weekly);
+        }
+
+        var opusWeekly = ParseNamedLimit(root, "weekly_opus", "Weekly Opus");
+        if (opusWeekly is not null)
+        {
+            metrics.Add(opusWeekly);
+        }
+
+        var extraUsage = ParseExtraUsage(root);
+        if (extraUsage is not null)
+        {
+            metrics.Add(extraUsage);
+        }
+
         return new UsageSnapshot(
             plan,
-            session,
-            weekly,
-            FormatExtraUsage(root),
-            0,
+            metrics,
             DateTimeOffset.Now,
             "claude",
             "Claude Code");
@@ -569,11 +597,12 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         }
     }
 
-    private static UsageWindow? ParseWindow(
+    private static UsageMetric? ParseWindow(
         JsonElement root,
         string snakeCaseName,
         string camelCaseName,
         string displayName,
+        UsageMetricKind kind,
         long durationMinutes)
     {
         if (!TryGetObject(root, snakeCaseName, out var window) &&
@@ -589,14 +618,33 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         }
 
         var usedPercent = NormalizeUtilization(utilization.Value);
-        return new UsageWindow(
+        return new UsageMetric(
             displayName,
+            kind,
             usedPercent,
             ParseTimestamp(GetString(window, "resets_at") ?? GetString(window, "resetsAt")),
             durationMinutes);
     }
 
-    private static UsageWindow? ParseWeeklyAllLimit(JsonElement root)
+    private static UsageMetric? ParseWeeklyAllLimit(JsonElement root) =>
+        FindLimit(
+            root,
+            kind => kind is "weekly_all" or "all_models" or "weekly_models",
+            "Weekly",
+            requireWeeklyGroup: true);
+
+    private static UsageMetric? ParseNamedLimit(JsonElement root, string limitKind, string displayName) =>
+        FindLimit(
+            root,
+            kind => string.Equals(kind, limitKind, StringComparison.Ordinal),
+            displayName,
+            requireWeeklyGroup: false);
+
+    private static UsageMetric? FindLimit(
+        JsonElement root,
+        Func<string, bool> matchesKind,
+        string displayName,
+        bool requireWeeklyGroup)
     {
         if (!root.TryGetProperty("limits", out var limits) || limits.ValueKind != JsonValueKind.Array)
         {
@@ -611,9 +659,14 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             }
 
             var kind = GetString(limit, "kind");
+            if (kind is null || !matchesKind(kind))
+            {
+                continue;
+            }
+
             var group = GetString(limit, "group");
-            if (kind is not ("weekly_all" or "all_models" or "weekly_models") ||
-                group is not null && !group.Equals("weekly", StringComparison.OrdinalIgnoreCase))
+            if (requireWeeklyGroup && group is not null &&
+                !group.Equals("weekly", StringComparison.OrdinalIgnoreCase))
             {
                 continue;
             }
@@ -624,8 +677,9 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
                 continue;
             }
 
-            return new UsageWindow(
-                "Weekly",
+            return new UsageMetric(
+                displayName,
+                UsageMetricKind.Rolling,
                 (int)Math.Round(Math.Clamp(percent.Value, 0, 100), MidpointRounding.AwayFromZero),
                 ParseTimestamp(GetString(limit, "resets_at") ?? GetString(limit, "resetsAt")),
                 10_080);
@@ -634,16 +688,29 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         return null;
     }
 
-    private static string? FormatExtraUsage(JsonElement root)
+    private static UsageMetric? ParseExtraUsage(JsonElement root)
     {
-        if ((!TryGetObject(root, "extra_usage", out var extraUsage) &&
-             !TryGetObject(root, "extraUsage", out extraUsage)) ||
-            !GetBoolean(extraUsage, "is_enabled", "isEnabled"))
+        if (!TryGetObject(root, "extra_usage", out var extraUsage) &&
+            !TryGetObject(root, "extraUsage", out extraUsage))
         {
             return null;
         }
 
-        return FormatExtraUsageObject(extraUsage);
+        return CreateExtraUsageMetric(extraUsage);
+    }
+
+    /// <summary>Turns an extra-usage or overage-spend object into a balance metric.</summary>
+    internal static UsageMetric? CreateExtraUsageMetric(JsonElement extraUsage)
+    {
+        var value = FormatExtraUsageObject(extraUsage);
+        return value is null
+            ? null
+            : new UsageMetric(
+                "Extra usage",
+                UsageMetricKind.Balance,
+                null,
+                RemainingText: value,
+                UsageText: "Charged beyond the plan limit");
     }
 
     internal static string? FormatExtraUsageObject(JsonElement extraUsage)
@@ -660,14 +727,14 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
                          GetDouble(extraUsage, "monthlyLimit");
         if (usedCents is null)
         {
-            return "Extra usage enabled";
+            return "ENABLED";
         }
 
         var currency = GetString(extraUsage, "currency") ?? "USD";
         var used = FormatCurrency(usedCents.Value / 100, currency);
         return limitCents is null
-            ? $"Extra usage  {used}"
-            : $"Extra usage  {used} / {FormatCurrency(limitCents.Value / 100, currency)}";
+            ? used
+            : $"{used} / {FormatCurrency(limitCents.Value / 100, currency)}";
     }
 
     private static int NormalizeUtilization(double utilization)
@@ -785,7 +852,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
     }
 }
 
-internal sealed class ClaudeCodeUsageException : Exception
+internal sealed class ClaudeCodeUsageException : Exception, IThrottledUsageException
 {
     public ClaudeCodeUsageException(string message)
         : base(message)
@@ -796,4 +863,7 @@ internal sealed class ClaudeCodeUsageException : Exception
         : base(message, innerException)
     {
     }
+
+    /// <summary>Set from the provider's Retry-After header; zero when the provider did not say.</summary>
+    public TimeSpan RetryAfter { get; init; }
 }

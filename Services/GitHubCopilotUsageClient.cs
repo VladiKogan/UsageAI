@@ -20,9 +20,16 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
         MaxDepth = 32,
     };
 
+    private readonly HashSet<string> _rejectedTokens = new(StringComparer.Ordinal);
+    private string? _workingToken;
+
     public string Id => "copilot";
 
     public string DisplayName => "GitHub Copilot";
+
+    public string SignInCommand => "copilot";
+
+    public Uri AccountUrl { get; } = new("https://github.com/settings/copilot/features");
 
     public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default)
     {
@@ -36,7 +43,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
         Exception? lastFailure = null;
         var rejectedTokens = 0;
 
-        foreach (var token in tokens)
+        foreach (var token in PrioritizeTokens(tokens))
         {
             try
             {
@@ -52,6 +59,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
                 if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
                 {
                     rejectedTokens++;
+                    RememberRejectedToken(token);
                     continue;
                 }
 
@@ -62,6 +70,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
                 }
 
                 using var document = await SecureHttp.ReadJsonDocumentAsync(response, cancellationToken);
+                _workingToken = token;
                 return ParseSnapshot(document.RootElement);
             }
             catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
@@ -94,7 +103,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
     internal static UsageSnapshot ParseSnapshot(JsonElement root)
     {
         var resetAt = ParseReset(root);
-        var windows = new List<(int Order, UsageWindow Window)>();
+        var windows = new List<(int Order, UsageMetric Window)>();
 
         if (root.TryGetProperty("quota_snapshots", out var snapshots) && snapshots.ValueKind == JsonValueKind.Object)
         {
@@ -103,10 +112,10 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
             AddQuotaWindow(windows, snapshots, "completions", 2, resetAt);
         }
 
+        // Metered quotas lead; unlimited ones are reported but never crowd out a real limit.
         var selected = windows
-            .OrderBy(item => item.Window.RemainingText == "UNLIMITED" ? 1 : 0)
+            .OrderBy(item => item.Window.IsUnlimited ? 1 : 0)
             .ThenBy(item => item.Order)
-            .Take(2)
             .Select(item => item.Window)
             .ToArray();
 
@@ -119,10 +128,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
         var plan = GetString(root, "copilot_plan") ?? GetString(root, "access_type_sku") ?? "Copilot";
         return new UsageSnapshot(
             FormatPlan(plan),
-            selected.ElementAtOrDefault(0),
-            selected.ElementAtOrDefault(1),
-            null,
-            0,
+            selected,
             DateTimeOffset.Now,
             "copilot",
             "GitHub Copilot",
@@ -130,7 +136,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
     }
 
     private static void AddQuotaWindow(
-        List<(int Order, UsageWindow Window)> windows,
+        List<(int Order, UsageMetric Window)> windows,
         JsonElement snapshots,
         string propertyName,
         int order,
@@ -176,7 +182,46 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
                 ? $"{FormatNumber(remaining.Value)} of {FormatNumber(entitlement.Value)} left"
                 : $"{usedPercent}% used";
 
-        windows.Add((order, new UsageWindow(name, usedPercent, resetAt, null, remainingText, usageText)));
+        windows.Add((order, new UsageMetric(
+            name,
+            UsageMetricKind.Monthly,
+            usedPercent,
+            resetAt,
+            null,
+            remainingText,
+            usageText,
+            unlimited)));
+    }
+
+    /// <summary>
+    /// Tries the token that last worked first and skips ones GitHub already rejected, so a
+    /// refresh does not replay every discovered credential against GitHub every five minutes.
+    /// </summary>
+    private IEnumerable<string> PrioritizeTokens(IReadOnlyList<string> tokens)
+    {
+        var candidates = tokens.Where(token => !_rejectedTokens.Contains(token)).ToList();
+        if (candidates.Count == 0)
+        {
+            // Every known token was rejected before; a new sign-in may have revived one.
+            _rejectedTokens.Clear();
+            candidates = tokens.ToList();
+        }
+
+        if (_workingToken is { } working && candidates.Remove(working))
+        {
+            candidates.Insert(0, working);
+        }
+
+        return candidates;
+    }
+
+    private void RememberRejectedToken(string token)
+    {
+        _rejectedTokens.Add(token);
+        if (string.Equals(_workingToken, token, StringComparison.Ordinal))
+        {
+            _workingToken = null;
+        }
     }
 
     private static DateTimeOffset? ParseReset(JsonElement root)

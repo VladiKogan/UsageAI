@@ -51,12 +51,16 @@ internal static class ClaudeWebUsageClient
             var overageEndpoint = new Uri(
                 $"https://claude.ai/api/organizations/{escapedOrganizationId}/overage_spend_limit");
             using var overage = await TryGetJsonAsync(overageEndpoint, sessionKey, cancellationToken);
-            if (overage is not null)
+            if (overage is not null &&
+                ClaudeCodeUsageClient.CreateExtraUsageMetric(overage.RootElement) is { } overageMetric)
             {
+                // The dedicated overage endpoint is more current than the usage payload's copy.
                 snapshot = snapshot with
                 {
-                    CreditBalance = ClaudeCodeUsageClient.FormatExtraUsageObject(overage.RootElement)
-                                    ?? snapshot.CreditBalance,
+                    Metrics = snapshot.Metrics
+                        .Where(metric => metric.Kind != UsageMetricKind.Balance)
+                        .Append(overageMetric)
+                        .ToArray(),
                 };
             }
 

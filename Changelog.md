@@ -6,9 +6,46 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-07-27
+
+### Added
+
+- Usage history recorded locally, with a trend sparkline and a burn-rate forecast that projects when a window will be exhausted and whether that lands before its reset.
+- Tray notifications when a window crosses a usage threshold or rolls over, suppressed on first observation and rate limited per metric.
+- A settings window for the refresh interval, alert thresholds, theme, warning and critical colour points, history and forecast, provider visibility and order, the global hotkey, and the opt-in release check.
+- Light, dark, and follow-Windows themes, using the Windows accent colour and reacting to system theme changes at runtime.
+- A cached last reading, so the popup shows real values immediately at start-up instead of an empty shell.
+- The global hotkey Win+Alt+U, keyboard-navigable dashboard cards, and card actions to copy a provider's sign-in command or open its usage page.
+- An opt-in check for newer published releases, plus `--help` and `--version`.
+- `USAGEAI_DATA_DIR` for a portable install, and a solution file so the app and tests build together.
+- Fixture tests for all three provider parsers, settings validation, history, forecasting, alert behaviour, and version comparison.
+- A validation-only GitHub workflow that restores, builds, and tests. It does not publish; releases stay manual.
+
 ### Changed
 
-- Removed hosted CI/CD and automated release publishing in favor of local validation and manual GitHub releases.
+- Providers now report a list of usage metrics instead of a fixed session/weekly pair, so every window a provider exposes is shown.
+- The capacity meter now fills with what is remaining, matching the headline percentage instead of opposing it.
+- Consumption drives the colour of the headline value, the meter, the card rail, and the tray icon, rather than a four-pixel bar alone.
+- The compact and expanded cards share one layout grammar, and the detail line spans the full card width instead of truncating the reset countdown.
+- The header now names the most-consumed provider instead of counting connections.
+- The tray icon is rendered at the size the shell requests, drops its glyph when too small to read, and uses a translucent track that stays legible on light and dark taskbars.
+- Fonts resolve through fallback chains, so Windows 10 no longer silently loses the whole type hierarchy when the Segoe UI Variable and Cascadia faces are absent.
+- The window declares per-monitor DPI awareness and scales its custom-painted layout, instead of stretching a 96-DPI layout.
+- Refresh scheduling is adaptive: per-provider exponential backoff, `Retry-After` when a provider supplies it, a longer interval while no window is open, and an immediate refresh on resume and unlock.
+- The GitHub Copilot client remembers which discovered token worked and skips rejected ones, instead of replaying up to sixteen credentials against GitHub on every refresh.
+- The dashboard remembers its position and size between runs, not only for the current session.
+- A second launch now activates the running instance instead of exiting silently.
+- Removed hosted release automation in favour of local validation and manual GitHub releases.
+
+### Fixed
+
+- GitHub Copilot's third quota is no longer discarded; premium requests, chat, and completions are all shown.
+- A failed refresh no longer erases a provider's data. The last good reading is kept and marked stale, with the provider's error alongside it.
+- Card contents are exposed to screen readers, which previously saw an empty box because every value is custom-painted.
+
+### Removed
+
+- The unused quota meter control, which also leaked a font handle on every paint, and the vestigial single-provider registry setting.
 
 ## [0.3.1] - 2026-07-22
 

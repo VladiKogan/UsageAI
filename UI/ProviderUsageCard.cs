@@ -1,37 +1,150 @@
 using System.Drawing.Drawing2D;
 using System.Drawing.Text;
 using UsageAI.Models;
+using UsageAI.Services;
 
 namespace UsageAI.UI;
 
-internal sealed class ProviderUsageCard : Control
+internal enum ProviderCardAction
 {
-    private const int CompactHeight = 92;
-    private const int ExpandedHeaderHeight = 62;
-    private const int MetricHeight = 68;
-    private readonly Font _nameFont = new("Segoe UI Variable Display", 10F, FontStyle.Bold, GraphicsUnit.Point);
-    private readonly Font _bodyFont = new("Segoe UI Variable Text", 8.5F, FontStyle.Regular, GraphicsUnit.Point);
-    private readonly Font _smallFont = new("Segoe UI Variable Text", 7.8F, FontStyle.Regular, GraphicsUnit.Point);
-    private readonly Font _utilityFont = new("Cascadia Mono", 7.5F, FontStyle.Bold, GraphicsUnit.Point);
-    private readonly Font _valueFont = new("Cascadia Mono", 13.5F, FontStyle.Bold, GraphicsUnit.Point);
-    private readonly bool _expanded;
-    private ProviderViewState _state;
+    None,
+    CopyCommand,
+    OpenAccount,
+}
 
-    public ProviderUsageCard(ProviderViewState state, bool expanded)
+internal sealed class ProviderCardActionEventArgs : EventArgs
+{
+    public ProviderCardActionEventArgs(ProviderStatus status, ProviderCardAction action)
     {
-        _state = state;
-        _expanded = expanded;
-        DoubleBuffered = true;
-        Margin = new Padding(0, 0, 0, 10);
-        Height = expanded ? CalculateExpandedHeight(state) : CompactHeight;
-        AccessibleName = $"{state.ProviderName} usage";
-        AccessibleRole = AccessibleRole.Grouping;
+        Status = status;
+        Action = action;
     }
 
-    public void UpdateState(ProviderViewState state)
+    public ProviderStatus Status { get; }
+
+    public ProviderCardAction Action { get; }
+}
+
+/// <summary>
+/// One provider's card. Compact and expanded modes share the same grammar: a label on the
+/// left, the headline value on the right, supporting detail beneath, and a capacity meter
+/// across the bottom. The meter fill and the headline both encode what is left, so they
+/// never move in opposite directions.
+/// </summary>
+internal sealed class ProviderUsageCard : Control
+{
+    private const int CompactHeight = 98;
+    private const int HeaderHeight = 58;
+    private const int MetricRowHeight = 72;
+    private const int MetricRowWithTrendHeight = 92;
+    private const int ConnectionBlockHeight = 86;
+    private const int CardRadius = 12;
+    private const int Gutter = 16;
+
+    private readonly Font _nameFont = Typography.Display(10F);
+    private readonly Font _bodyFont = Typography.Text(8.5F);
+    private readonly Font _smallFont = Typography.Text(7.8F);
+    private readonly Font _utilityFont = Typography.Mono(7.5F);
+    private readonly Font _valueFont = Typography.Mono(13.5F);
+    private readonly bool _expanded;
+    private readonly ProviderStatus _status;
+    private readonly IReadOnlyList<UsageSample> _history;
+    private readonly bool _showTrend;
+    private Rectangle _actionBounds = Rectangle.Empty;
+    private Rectangle _linkBounds = Rectangle.Empty;
+
+    public ProviderUsageCard(
+        ProviderStatus status,
+        bool expanded,
+        IReadOnlyList<UsageSample> history,
+        bool showTrend)
     {
-        _state = state;
-        Height = _expanded ? CalculateExpandedHeight(state) : CompactHeight;
+        _status = status;
+        _expanded = expanded;
+        _history = history;
+        _showTrend = showTrend && expanded;
+        DoubleBuffered = true;
+        TabStop = expanded;
+        SetStyle(ControlStyles.Selectable, expanded);
+        Margin = new Padding(0, 0, 0, 10);
+        AccessibleRole = AccessibleRole.Grouping;
+        ApplyAccessibility();
+        ApplyHeight();
+    }
+
+    public event EventHandler<ProviderCardActionEventArgs>? ActionInvoked;
+
+    protected override void OnParentChanged(EventArgs e)
+    {
+        base.OnParentChanged(e);
+        ApplyHeight();
+    }
+
+    protected override void OnDpiChangedAfterParent(EventArgs e)
+    {
+        base.OnDpiChangedAfterParent(e);
+        ApplyHeight();
+        Invalidate();
+    }
+
+    protected override void OnMouseMove(MouseEventArgs e)
+    {
+        base.OnMouseMove(e);
+        Cursor = HitTest(e.Location) == ProviderCardAction.None ? Cursors.Default : Cursors.Hand;
+    }
+
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        if (_expanded && !Focused)
+        {
+            Focus();
+        }
+    }
+
+    protected override void OnMouseClick(MouseEventArgs e)
+    {
+        base.OnMouseClick(e);
+        if (e.Button != MouseButtons.Left)
+        {
+            return;
+        }
+
+        var action = HitTest(e.Location);
+        if (action != ProviderCardAction.None)
+        {
+            ActionInvoked?.Invoke(this, new ProviderCardActionEventArgs(_status, action));
+        }
+    }
+
+    protected override bool IsInputKey(Keys keyData) =>
+        keyData is Keys.Enter or Keys.Space || base.IsInputKey(keyData);
+
+    protected override void OnKeyDown(KeyEventArgs e)
+    {
+        base.OnKeyDown(e);
+        if (e.KeyCode is not (Keys.Enter or Keys.Space))
+        {
+            return;
+        }
+
+        var action = PrimaryAction();
+        if (action != ProviderCardAction.None)
+        {
+            ActionInvoked?.Invoke(this, new ProviderCardActionEventArgs(_status, action));
+            e.Handled = true;
+        }
+    }
+
+    protected override void OnGotFocus(EventArgs e)
+    {
+        base.OnGotFocus(e);
+        Invalidate();
+    }
+
+    protected override void OnLostFocus(EventArgs e)
+    {
+        base.OnLostFocus(e);
         Invalidate();
     }
 
@@ -40,273 +153,528 @@ internal sealed class ProviderUsageCard : Control
         base.OnPaint(e);
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         e.Graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
+        _actionBounds = Rectangle.Empty;
+        _linkBounds = Rectangle.Empty;
 
+        var scale = new LayoutScale(this);
         var card = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
-        using var cardPath = RoundedRectangle(card, 12F);
-        using var background = new SolidBrush(Theme.Surface);
-        using var border = new Pen(Theme.Hairline);
-        e.Graphics.FillPath(background, cardPath);
-        e.Graphics.DrawPath(border, cardPath);
+        var providerColor = Theme.ForProvider(_status.ProviderId);
+        var severity = SeverityColor(providerColor);
+        var isCritical = IsCritical();
 
-        var providerColor = Theme.ForProvider(_state.ProviderId);
-        using var rail = new SolidBrush(providerColor);
-        using var railPath = RoundedRectangle(new Rectangle(0, 16, 3, Math.Max(12, Height - 32)), 1.5F);
-        e.Graphics.FillPath(rail, railPath);
+        DrawingHelpers.FillCard(
+            e.Graphics,
+            card,
+            Theme.Surface,
+            isCritical ? Theme.Blend(Theme.Critical, Theme.Hairline, 0.55) : Theme.Hairline,
+            scale.Exact(CardRadius));
+
+        // The provider rail turns to the severity colour so urgency is visible before reading.
+        using (var rail = new SolidBrush(isCritical ? Theme.Critical : providerColor))
+        using (var railPath = DrawingHelpers.RoundedRectangle(
+                   new Rectangle(0, scale[16], scale[3], Math.Max(scale[12], Height - scale[32])),
+                   scale.Exact(1.5F)))
+        {
+            e.Graphics.FillPath(rail, railPath);
+        }
 
         if (_expanded)
         {
-            DrawExpanded(e.Graphics, providerColor);
+            DrawExpanded(e.Graphics, scale, providerColor, severity);
         }
         else
         {
-            DrawCompact(e.Graphics, providerColor);
+            DrawCompact(e.Graphics, scale, providerColor, severity);
         }
-    }
 
-    private void DrawCompact(Graphics graphics, Color providerColor)
-    {
-        ProviderIconPainter.Draw(graphics, new Rectangle(16, 17, 38, 38), _state.ProviderId);
-        DrawText(graphics, _state.ProviderName, _nameFont, Theme.Text, new Rectangle(66, 15, 134, 22),
-            TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
-
-        var plan = _state.Snapshot?.Plan ?? (_state.IsLoading ? "Connecting" : "Not connected");
-        DrawText(graphics, plan, _smallFont, _state.IsConnected ? providerColor : Theme.Muted,
-            new Rectangle(66, 38, 134, 18), TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
-
-        var metric = PreferredMetric(_state.Snapshot);
-        if (metric is null)
+        if (Focused && _expanded)
         {
-            DrawText(graphics, _state.IsLoading ? "READING" : "NO METRIC", _utilityFont, Theme.Muted,
-                new Rectangle(204, 15, Width - 220, 17), TextFormatFlags.Right);
-            DrawText(graphics, _state.IsLoading ? "Checking usage..." : "No usage reported", _bodyFont, Theme.Text,
-                new Rectangle(190, 35, Width - 206, 22), TextFormatFlags.Right | TextFormatFlags.EndEllipsis);
-            return;
+            using var focus = new Pen(Theme.Accent, scale.Exact(1.5F)) { DashStyle = DashStyle.Dot };
+            using var focusPath = DrawingHelpers.RoundedRectangle(
+                Rectangle.Inflate(card, -scale[2], -scale[2]),
+                scale.Exact(CardRadius));
+            e.Graphics.DrawPath(focus, focusPath);
         }
-
-        DrawText(graphics, metric.Name.ToUpperInvariant(), _utilityFont, Theme.Muted,
-            new Rectangle(204, 13, Width - 220, 17), TextFormatFlags.Right | TextFormatFlags.EndEllipsis);
-        DrawText(graphics, metric.Value, _valueFont, Theme.Text,
-            new Rectangle(194, 28, Width - 210, 24), TextFormatFlags.Right | TextFormatFlags.EndEllipsis);
-        DrawText(graphics, metric.Detail, _smallFont, Theme.Muted,
-            new Rectangle(190, 54, Width - 206, 18), TextFormatFlags.Right | TextFormatFlags.EndEllipsis);
-        DrawMeter(graphics, metric, 66, Height - 12, Width - 82, 4, providerColor);
     }
 
-    private void DrawExpanded(Graphics graphics, Color providerColor)
+    private void DrawCompact(Graphics graphics, LayoutScale scale, Color providerColor, Color severity)
     {
-        ProviderIconPainter.Draw(graphics, new Rectangle(16, 13, 38, 38), _state.ProviderId);
-        DrawText(graphics, _state.ProviderName, _nameFont, Theme.Text, new Rectangle(66, 11, Width - 190, 22),
+        ProviderIconPainter.Draw(graphics, scale.Rect(14, 16, 34, 34), _status.ProviderId);
+
+        var textLeft = scale[58];
+        var metric = _status.Snapshot?.Primary;
+        var valueText = metric?.DisplayRemaining ?? (_status.IsLoading ? "..." : "--");
+        var valueWidth = MeasureWidth(graphics, valueText, _valueFont);
+        var nameWidth = Math.Max(scale[40], Width - textLeft - valueWidth - scale[26]);
+
+        DrawingHelpers.DrawText(
+            graphics,
+            _status.ProviderName,
+            _nameFont,
+            Theme.Text,
+            new Rectangle(textLeft, scale[12], nameWidth, scale[20]),
             TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
 
-        var identity = ProviderIdentity(_state.Snapshot);
-        DrawText(graphics, identity, _smallFont, providerColor, new Rectangle(66, 34, Width - 190, 18),
+        var subtitle = _status.Snapshot?.Plan ?? (_status.IsLoading ? "Connecting" : "Not connected");
+        DrawingHelpers.DrawText(
+            graphics,
+            subtitle,
+            _smallFont,
+            _status.IsConnected ? providerColor : Theme.Muted,
+            new Rectangle(textLeft, scale[34], nameWidth, scale[16]),
             TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
 
-        var statusText = _state.IsLoading
-            ? "Refreshing"
-            : _state.Snapshot is not null && string.IsNullOrWhiteSpace(_state.Error)
-                ? "Connected"
-                : _state.Snapshot is not null
-                    ? "Update failed"
-                    : "Not connected";
-        var statusColor = statusText == "Connected" ? Theme.Success : statusText == "Refreshing" ? Theme.Signal : Theme.Critical;
-        using var dot = new SolidBrush(statusColor);
-        graphics.FillEllipse(dot, Width - 116, 22, 6, 6);
-        DrawText(graphics, statusText, _smallFont, statusColor, new Rectangle(Width - 104, 14, 88, 22),
+        var valueBounds = new Rectangle(
+            Width - scale[Gutter] - valueWidth,
+            scale[8],
+            valueWidth,
+            scale[26]);
+        DrawingHelpers.DrawText(graphics, valueText, _valueFont, severity, valueBounds, TextFormatFlags.Right);
+
+        if (metric is not null)
+        {
+            DrawingHelpers.DrawText(
+                graphics,
+                metric.Name.ToUpperInvariant(),
+                _utilityFont,
+                Theme.Muted,
+                new Rectangle(Width - scale[Gutter] - scale[160], scale[36], scale[160], scale[14]),
+                TextFormatFlags.Right | TextFormatFlags.EndEllipsis);
+        }
+
+        var detailBounds = new Rectangle(scale[14], scale[56], Width - scale[28], scale[16]);
+        DrawSplitLine(
+            graphics,
+            detailBounds,
+            DetailLeft(metric),
+            DetailRight(metric),
+            _smallFont,
+            Theme.Muted,
+            _status.IsStale ? Theme.Warning : Theme.Muted);
+
+        DrawMeter(graphics, metric, new Rectangle(scale[14], scale[78], Width - scale[28], scale[5]), providerColor);
+    }
+
+    private void DrawExpanded(Graphics graphics, LayoutScale scale, Color providerColor, Color severity)
+    {
+        ProviderIconPainter.Draw(graphics, scale.Rect(16, 12, 36, 36), _status.ProviderId);
+
+        var statusText = _status.StatusText;
+        var statusColor = statusText switch
+        {
+            "Connected" => Theme.Success,
+            "Refreshing" => Theme.Signal,
+            "Stale" => Theme.Warning,
+            _ => Theme.Critical,
+        };
+        var statusWidth = MeasureWidth(graphics, statusText, _smallFont) + scale[18];
+        var nameWidth = Math.Max(scale[60], Width - scale[64] - statusWidth - scale[24]);
+
+        var nameBounds = new Rectangle(scale[64], scale[10], nameWidth, scale[20]);
+        var nameText = _status.AccountUrl is null ? _status.ProviderName : $"{_status.ProviderName}  ↗";
+        DrawingHelpers.DrawText(
+            graphics,
+            nameText,
+            _nameFont,
+            Theme.Text,
+            nameBounds,
+            TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+        if (_status.AccountUrl is not null)
+        {
+            _linkBounds = new Rectangle(
+                nameBounds.X,
+                nameBounds.Y,
+                Math.Min(nameBounds.Width, MeasureWidth(graphics, nameText, _nameFont)),
+                nameBounds.Height);
+        }
+
+        DrawingHelpers.DrawText(
+            graphics,
+            Identity(),
+            _smallFont,
+            _status.IsConnected ? providerColor : Theme.Muted,
+            new Rectangle(scale[64], scale[32], nameWidth, scale[16]),
+            TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+
+        // Status is stated in words as well as colour, so it survives a colour-vision deficit.
+        using (var dot = new SolidBrush(statusColor))
+        {
+            graphics.FillEllipse(dot, Width - scale[Gutter] - statusWidth, scale[18], scale[6], scale[6]);
+        }
+
+        DrawingHelpers.DrawText(
+            graphics,
+            statusText,
+            _smallFont,
+            statusColor,
+            new Rectangle(Width - scale[Gutter] - statusWidth + scale[11], scale[12], statusWidth - scale[11], scale[18]),
             TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
 
-        if (_state.Snapshot is null)
+        if (_status.LastUpdated is { } updated)
         {
-            DrawConnectionState(graphics);
-            return;
+            DrawingHelpers.DrawText(
+                graphics,
+                UsageFormatting.Age(updated, DateTimeOffset.Now),
+                _smallFont,
+                Theme.Muted,
+                new Rectangle(Width - scale[Gutter] - scale[120], scale[32], scale[120], scale[16]),
+                TextFormatFlags.Right | TextFormatFlags.EndEllipsis);
         }
 
-        var metrics = AllMetrics(_state.Snapshot);
+        var metrics = _status.Snapshot?.Metrics ?? Array.Empty<UsageMetric>();
         if (metrics.Count == 0)
         {
-            DrawText(graphics, "No usage metrics were reported for this account.", _bodyFont, Theme.Muted,
-                new Rectangle(18, ExpandedHeaderHeight + 12, Width - 36, MetricHeight - 20),
-                TextFormatFlags.WordBreak | TextFormatFlags.VerticalCenter);
+            DrawConnectionBlock(graphics, scale);
             return;
         }
 
-        for (var index = 0; index < metrics.Count; index++)
+        var top = scale[HeaderHeight];
+        foreach (var metric in metrics)
         {
-            DrawMetricRow(graphics, metrics[index], ExpandedHeaderHeight + index * MetricHeight, providerColor);
+            var rowHeight = RowHeight(metric, scale);
+            DrawMetricRow(graphics, scale, metric, top, rowHeight, providerColor, severity);
+            top += rowHeight;
+        }
+
+        if (_status.IsStale && _status.Error is { Length: > 0 } staleError)
+        {
+            DrawingHelpers.DrawText(
+                graphics,
+                staleError,
+                _smallFont,
+                Theme.Warning,
+                new Rectangle(scale[18], top + scale[4], Width - scale[36], scale[16]),
+                TextFormatFlags.EndEllipsis);
         }
     }
 
-    private void DrawConnectionState(Graphics graphics)
+    private void DrawMetricRow(
+        Graphics graphics,
+        LayoutScale scale,
+        UsageMetric metric,
+        int top,
+        int rowHeight,
+        Color providerColor,
+        Color severity)
     {
-        var top = ExpandedHeaderHeight;
-        using var divider = new Pen(Theme.Hairline);
-        graphics.DrawLine(divider, 16, top, Width - 16, top);
-        var message = _state.IsLoading
-            ? $"Reading {_state.ProviderName} usage..."
-            : string.IsNullOrWhiteSpace(_state.Error)
-                ? "Connect this provider, then refresh the dashboard."
-                : _state.Error;
-        DrawText(graphics, message, _bodyFont, Theme.Muted, new Rectangle(18, top + 12, Width - 36, Height - top - 20),
+        using (var divider = new Pen(Theme.Hairline))
+        {
+            graphics.DrawLine(divider, scale[Gutter], top, Width - scale[Gutter], top);
+        }
+
+        var valueColor = metric.HasQuota ? Theme.ForUsage(metric.UsedPercent!.Value) : severity;
+        var valueText = metric.DisplayRemaining;
+        var valueWidth = MeasureWidth(graphics, valueText, _valueFont);
+
+        DrawingHelpers.DrawText(
+            graphics,
+            metric.Name.ToUpperInvariant(),
+            _utilityFont,
+            Theme.Muted,
+            new Rectangle(scale[18], top + scale[11], Math.Max(scale[40], Width - scale[36] - valueWidth - scale[8]), scale[16]),
+            TextFormatFlags.EndEllipsis);
+
+        DrawingHelpers.DrawText(
+            graphics,
+            valueText,
+            _valueFont,
+            metric.IsUnlimited ? Theme.Muted : valueColor,
+            new Rectangle(Width - scale[18] - valueWidth, top + scale[6], valueWidth, scale[24]),
+            TextFormatFlags.Right);
+
+        DrawSplitLine(
+            graphics,
+            new Rectangle(scale[18], top + scale[32], Width - scale[36], scale[16]),
+            metric.DisplayUsage,
+            UsageFormatting.RelativeReset(metric.ResetsAt, DateTimeOffset.Now),
+            _smallFont,
+            Theme.Muted,
+            Theme.Muted);
+
+        DrawMeter(
+            graphics,
+            metric,
+            new Rectangle(scale[18], top + scale[52], Width - scale[36], scale[5]),
+            providerColor);
+
+        if (rowHeight <= scale[MetricRowHeight])
+        {
+            return;
+        }
+
+        var trendTop = top + scale[62];
+        var trend = UsageForecast.Trend(_history, _status.ProviderId, metric);
+        if (trend.Count >= 2)
+        {
+            DrawingHelpers.DrawSparkline(
+                graphics,
+                new Rectangle(Width - scale[18] - scale[96], trendTop, scale[96], scale[18]),
+                trend,
+                valueColor);
+        }
+
+        var projection = UsageForecast.Project(_history, _status.ProviderId, metric, DateTimeOffset.Now);
+        if (projection is not null)
+        {
+            var text = projection.BeforeReset
+                ? $"At this pace, empty by {UsageFormatting.AbsoluteReset(projection.ExhaustedAt, DateTimeOffset.Now)}"
+                : "At this pace, the window resets first";
+            DrawingHelpers.DrawText(
+                graphics,
+                text,
+                _smallFont,
+                projection.BeforeReset ? Theme.Warning : Theme.Muted,
+                new Rectangle(scale[18], trendTop + scale[2], Width - scale[36] - scale[104], scale[16]),
+                TextFormatFlags.EndEllipsis);
+        }
+    }
+
+    private void DrawConnectionBlock(Graphics graphics, LayoutScale scale)
+    {
+        var top = scale[HeaderHeight];
+        using (var divider = new Pen(Theme.Hairline))
+        {
+            graphics.DrawLine(divider, scale[Gutter], top, Width - scale[Gutter], top);
+        }
+
+        var message = _status.IsLoading
+            ? $"Reading {_status.ProviderName} usage..."
+            : string.IsNullOrWhiteSpace(_status.Error)
+                ? "Connect this provider, then refresh."
+                : _status.Error;
+
+        DrawingHelpers.DrawText(
+            graphics,
+            message,
+            _bodyFont,
+            _status.IsLoading ? Theme.Muted : Theme.Critical,
+            new Rectangle(scale[18], top + scale[10], Width - scale[36], scale[34]),
             TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
-    }
 
-    private void DrawMetricRow(Graphics graphics, MetricItem metric, int top, Color providerColor)
-    {
-        using var divider = new Pen(Theme.Hairline);
-        graphics.DrawLine(divider, 16, top, Width - 16, top);
-        DrawText(graphics, metric.Name.ToUpperInvariant(), _utilityFont, Theme.Muted,
-            new Rectangle(18, top + 10, Width / 2, 18), TextFormatFlags.EndEllipsis);
-        DrawText(graphics, metric.Value, _valueFont, Theme.Text,
-            new Rectangle(Width / 2, top + 7, Width / 2 - 18, 24), TextFormatFlags.Right | TextFormatFlags.EndEllipsis);
-        DrawText(graphics, metric.Detail, _smallFont, Theme.Muted,
-            new Rectangle(18, top + 34, Width - 36, 17), TextFormatFlags.EndEllipsis);
-        DrawMeter(graphics, metric, 18, top + 55, Width - 36, 4, providerColor);
-    }
-
-    private static void DrawMeter(Graphics graphics, MetricItem metric, int left, int top, int width, int height, Color providerColor)
-    {
-        if (metric.UsedPercent is null)
+        if (_status.IsLoading || string.IsNullOrWhiteSpace(_status.SignInCommand))
         {
-            using var creditBrush = new SolidBrush(Color.FromArgb(165, providerColor));
-            graphics.FillRectangle(creditBrush, left, top, Math.Min(width, 34), height);
             return;
         }
 
-        using var track = new SolidBrush(Theme.Track);
-        using var fill = new SolidBrush(Theme.ForUsage(metric.UsedPercent.Value));
-        graphics.FillRectangle(track, left, top, Math.Max(1, width), height);
-        graphics.FillRectangle(fill, left, top, (int)(Math.Max(1, width) * metric.UsedPercent.Value / 100D), height);
+        var label = $"Copy  {_status.SignInCommand}";
+        var width = MeasureWidth(graphics, label, _smallFont) + scale[22];
+        _actionBounds = new Rectangle(scale[18], top + scale[48], width, scale[24]);
+        DrawingHelpers.FillCard(
+            graphics,
+            _actionBounds,
+            Theme.SurfaceRaised,
+            Theme.Accent,
+            scale.Exact(6));
+        DrawingHelpers.DrawText(
+            graphics,
+            label,
+            _smallFont,
+            Theme.Text,
+            _actionBounds,
+            TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
     }
 
-    private static MetricItem? PreferredMetric(UsageSnapshot? snapshot)
+    private static void DrawMeter(Graphics graphics, UsageMetric? metric, Rectangle bounds, Color providerColor)
     {
-        if (snapshot is null)
+        if (metric is null)
         {
-            return null;
+            DrawingHelpers.DrawCapacityMeter(graphics, bounds, 0, Theme.Muted, Theme.Track);
+            return;
         }
 
-        if (snapshot.Session is not null)
+        if (metric.IsUnlimited)
         {
-            return FromWindow(snapshot.Session);
+            DrawingHelpers.DrawCapacityMeter(graphics, bounds, 100, Theme.Blend(Theme.Muted, Theme.Track, 0.6), Theme.Track);
+            return;
         }
 
-        if (snapshot.Weekly is not null)
+        if (!metric.HasQuota)
         {
-            return FromWindow(snapshot.Weekly);
+            DrawingHelpers.DrawBalanceMarker(graphics, bounds, providerColor);
+            return;
         }
 
-        return FromCredits(snapshot);
+        DrawingHelpers.DrawCapacityMeter(
+            graphics,
+            bounds,
+            metric.RemainingPercent,
+            Theme.ForUsage(metric.UsedPercent!.Value),
+            Theme.Track);
     }
 
-    private static List<MetricItem> AllMetrics(UsageSnapshot snapshot)
+    private static void DrawSplitLine(
+        Graphics graphics,
+        Rectangle bounds,
+        string left,
+        string right,
+        Font font,
+        Color leftColor,
+        Color rightColor)
     {
-        var metrics = new List<MetricItem>();
-        if (snapshot.Session is not null)
+        var rightWidth = 0;
+        if (!string.IsNullOrEmpty(right))
         {
-            metrics.Add(FromWindow(snapshot.Session));
+            rightWidth = MeasureWidth(graphics, right, font);
+            DrawingHelpers.DrawText(
+                graphics,
+                right,
+                font,
+                rightColor,
+                bounds,
+                TextFormatFlags.Right | TextFormatFlags.EndEllipsis);
         }
 
-        if (snapshot.Weekly is not null)
+        if (string.IsNullOrEmpty(left))
         {
-            metrics.Add(FromWindow(snapshot.Weekly));
+            return;
         }
 
-        var credits = FromCredits(snapshot);
-        if (credits is not null)
+        // The gap is font-relative so it stays proportional at every DPI.
+        var available = bounds.Width - rightWidth - (rightWidth > 0 ? font.Height / 2 : 0);
+        if (available <= 0)
         {
-            metrics.Add(credits);
+            return;
         }
 
-        return metrics;
+        DrawingHelpers.DrawText(
+            graphics,
+            left,
+            font,
+            leftColor,
+            new Rectangle(bounds.X, bounds.Y, available, bounds.Height),
+            TextFormatFlags.EndEllipsis);
     }
 
-    private static MetricItem FromWindow(UsageWindow window)
+    private string DetailLeft(UsageMetric? metric)
     {
-        var reset = FormatReset(window.ResetsAt);
-        var detail = string.IsNullOrWhiteSpace(reset) ? window.DisplayUsage : $"{window.DisplayUsage}  -  {reset}";
-        return new MetricItem(window.Name, window.DisplayRemaining, detail, window.UsedPercent);
-    }
-
-    private static MetricItem? FromCredits(UsageSnapshot snapshot)
-    {
-        if (!string.IsNullOrWhiteSpace(snapshot.CreditBalance))
+        if (metric is not null)
         {
-            var detail = snapshot.AvailableResetCredits > 0
-                ? $"Balance  -  {snapshot.AvailableResetCredits} full reset{(snapshot.AvailableResetCredits == 1 ? string.Empty : "s")} available"
-                : "Available account balance";
-            return new MetricItem("Credits", snapshot.CreditBalance, detail, null);
+            return metric.DisplayUsage;
         }
 
-        return snapshot.AvailableResetCredits > 0
-            ? new MetricItem(
-                "Reset credits",
-                snapshot.AvailableResetCredits.ToString(System.Globalization.CultureInfo.InvariantCulture),
-                $"Full reset{(snapshot.AvailableResetCredits == 1 ? string.Empty : "s")} available",
-                null)
-            : null;
+        return _status.IsLoading
+            ? "Checking usage..."
+            : _status.Error ?? "No usage reported";
     }
 
-    private static string ProviderIdentity(UsageSnapshot? snapshot)
+    private string DetailRight(UsageMetric? metric)
     {
-        if (snapshot is null)
+        if (_status.IsStale)
+        {
+            return _status.LastUpdated is { } updated
+                ? $"stale, {UsageFormatting.Age(updated, DateTimeOffset.Now)}"
+                : "stale";
+        }
+
+        return metric is null ? string.Empty : UsageFormatting.RelativeReset(metric.ResetsAt, DateTimeOffset.Now);
+    }
+
+    private string Identity()
+    {
+        if (_status.Snapshot is not { } snapshot)
         {
             return "Account unavailable";
         }
 
         return string.IsNullOrWhiteSpace(snapshot.AccountName)
             ? snapshot.Plan
-            : $"{snapshot.Plan}  -  {snapshot.AccountName}";
+            : $"{snapshot.Plan}  ·  {snapshot.AccountName}";
     }
 
-    private static string FormatReset(DateTimeOffset? resetsAt)
+    private Color SeverityColor(Color providerColor) => _status.Snapshot is { } snapshot
+        ? Theme.ForUsage(snapshot.HighestUsedPercent)
+        : _status.IsLoading
+            ? Theme.Muted
+            : providerColor;
+
+    private bool IsCritical() =>
+        _status.Snapshot is { } snapshot &&
+        Theme.ForUsage(snapshot.HighestUsedPercent) == Theme.Critical;
+
+    private ProviderCardAction HitTest(Point location)
     {
-        if (resetsAt is null)
+        if (_actionBounds.Contains(location))
         {
-            return string.Empty;
+            return ProviderCardAction.CopyCommand;
         }
 
-        var remaining = resetsAt.Value - DateTimeOffset.Now;
-        if (remaining <= TimeSpan.Zero)
-        {
-            return "resetting now";
-        }
-
-        if (remaining.TotalDays >= 1)
-        {
-            return $"resets in {(int)remaining.TotalDays}d {remaining.Hours}h";
-        }
-
-        if (remaining.TotalHours >= 1)
-        {
-            return $"resets in {(int)remaining.TotalHours}h {remaining.Minutes}m";
-        }
-
-        return $"resets in {Math.Max(1, remaining.Minutes)}m";
+        return _linkBounds.Contains(location) && _status.AccountUrl is not null
+            ? ProviderCardAction.OpenAccount
+            : ProviderCardAction.None;
     }
 
-    private static int CalculateExpandedHeight(ProviderViewState state)
+    private ProviderCardAction PrimaryAction()
     {
-        if (state.Snapshot is null)
+        if (!_status.IsConnected && !string.IsNullOrWhiteSpace(_status.SignInCommand))
         {
-            return 122;
+            return ProviderCardAction.CopyCommand;
         }
 
-        return ExpandedHeaderHeight + Math.Max(1, AllMetrics(state.Snapshot).Count) * MetricHeight + 8;
+        return _status.AccountUrl is null ? ProviderCardAction.None : ProviderCardAction.OpenAccount;
     }
 
-    private static void DrawText(Graphics graphics, string text, Font font, Color color, Rectangle bounds, TextFormatFlags flags) =>
-        TextRenderer.DrawText(graphics, text, font, bounds, color, flags | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping);
+    private static int MeasureWidth(Graphics graphics, string text, Font font) =>
+        string.IsNullOrEmpty(text) ? 0 : TextRenderer.MeasureText(graphics, text, font).Width;
 
-    private static GraphicsPath RoundedRectangle(Rectangle bounds, float radius)
+    private int RowHeight(UsageMetric metric, LayoutScale scale) =>
+        _showTrend && metric.HasQuota ? scale[MetricRowWithTrendHeight] : scale[MetricRowHeight];
+
+    private void ApplyHeight()
     {
-        var diameter = radius * 2F;
-        var path = new GraphicsPath();
-        path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
-        path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
-        path.CloseFigure();
-        return path;
+        var scale = new LayoutScale(this);
+        if (!_expanded)
+        {
+            Height = scale[CompactHeight];
+            return;
+        }
+
+        var metrics = _status.Snapshot?.Metrics ?? Array.Empty<UsageMetric>();
+        if (metrics.Count == 0)
+        {
+            Height = scale[HeaderHeight] + scale[ConnectionBlockHeight];
+            return;
+        }
+
+        var height = scale[HeaderHeight] + scale[8];
+        foreach (var metric in metrics)
+        {
+            height += RowHeight(metric, scale);
+        }
+
+        if (_status.IsStale)
+        {
+            height += scale[20];
+        }
+
+        Height = height;
+    }
+
+    /// <summary>
+    /// Everything on the card is painted, so screen readers would otherwise see an empty
+    /// box. The description carries the same facts the pixels do.
+    /// </summary>
+    private void ApplyAccessibility()
+    {
+        AccessibleName = $"{_status.ProviderName} usage";
+        var parts = new List<string> { _status.StatusText };
+        if (_status.Snapshot is { } snapshot)
+        {
+            parts.Add(snapshot.Plan);
+            foreach (var metric in snapshot.Metrics)
+            {
+                var reset = UsageFormatting.RelativeReset(metric.ResetsAt, DateTimeOffset.Now);
+                parts.Add(string.IsNullOrEmpty(reset)
+                    ? $"{metric.Name}: {metric.DisplayRemaining}, {metric.DisplayUsage}"
+                    : $"{metric.Name}: {metric.DisplayRemaining}, {metric.DisplayUsage}, {reset}");
+            }
+        }
+
+        if (!string.IsNullOrWhiteSpace(_status.Error))
+        {
+            parts.Add(_status.Error);
+        }
+
+        AccessibleDescription = string.Join(". ", parts);
     }
 
     protected override void Dispose(bool disposing)
@@ -322,6 +690,4 @@ internal sealed class ProviderUsageCard : Control
 
         base.Dispose(disposing);
     }
-
-    private sealed record MetricItem(string Name, string Value, string Detail, int? UsedPercent);
 }

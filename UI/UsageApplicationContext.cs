@@ -1,3 +1,4 @@
+using Microsoft.Win32;
 using UsageAI.Models;
 using UsageAI.Services;
 
@@ -5,35 +6,38 @@ namespace UsageAI.UI;
 
 internal sealed class UsageApplicationContext : ApplicationContext
 {
+    private static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(30);
+    private const int MaximumTooltipLength = 127;
+    private const int MaximumBalloonTitle = 63;
+    private const int MaximumBalloonText = 255;
+
+    private readonly AppSettings _settings;
     private readonly IUsageClient[] _clients;
-    private readonly Dictionary<string, ProviderViewState> _states = new(StringComparer.OrdinalIgnoreCase);
+    private readonly UsageRefreshService _service;
     private readonly ContextMenuStrip _menu;
     private readonly NotifyIcon _trayIcon;
     private readonly UsagePopupForm _popup;
-    private readonly System.Windows.Forms.Timer _refreshTimer;
+    private readonly MessageWindow _messageWindow;
+    private readonly System.Windows.Forms.Timer _tickTimer;
     private readonly ToolStripMenuItem _startupItem;
-    private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private readonly CancellationTokenSource _shutdown = new();
     private Icon? _currentIcon;
-    private DateTimeOffset? _lastRefreshed;
     private bool _isExiting;
 
-    public UsageApplicationContext(IEnumerable<IUsageClient> clients)
+    public UsageApplicationContext(IEnumerable<IUsageClient> clients, AppSettings settings)
     {
+        _settings = settings;
         _clients = clients.ToArray();
-        if (_clients.Length == 0)
-        {
-            throw new ArgumentException("At least one usage provider is required.", nameof(clients));
-        }
+        Theme.Apply(_settings.Theme, _settings.WarningPercent, _settings.CriticalPercent);
 
-        foreach (var client in _clients)
-        {
-            _states[client.Id] = new ProviderViewState(client.Id, client.DisplayName, null, null, true);
-        }
+        _service = new UsageRefreshService(_clients, _settings);
+        _service.Updated += OnServiceUpdated;
+        _service.AlertsRaised += OnAlertsRaised;
 
-        _popup = new UsagePopupForm();
-        _popup.SetStates(OrderedStates(), isRefreshing: true, lastRefreshed: null);
-        _popup.RefreshRequested += async (_, _) => await RefreshAllAsync(showPopup: true);
+        _popup = new UsagePopupForm(_settings);
+        _popup.RefreshRequested += async (_, _) => await RefreshAsync(force: true);
+        _popup.SettingsRequested += (_, _) => OpenSettings();
+        PushStateToPopup();
 
         _menu = new ContextMenuStrip
         {
@@ -49,8 +53,9 @@ internal sealed class UsageApplicationContext : ApplicationContext
         };
         openItem.Click += (_, _) => OpenDashboard();
         _menu.Items.Add(openItem);
-        _menu.Items.Add("Refresh", null, async (_, _) => await RefreshAllAsync(showPopup: false));
+        _menu.Items.Add("Refresh", null, async (_, _) => await RefreshAsync(force: true));
         _menu.Items.Add(new ToolStripSeparator());
+        _menu.Items.Add("Settings...", null, (_, _) => OpenSettings());
         _startupItem = new ToolStripMenuItem("Start with Windows")
         {
             Checked = StartupManager.IsEnabled,
@@ -70,13 +75,23 @@ internal sealed class UsageApplicationContext : ApplicationContext
             Visible = true,
         };
         _trayIcon.MouseUp += TrayIconOnMouseUp;
+        _trayIcon.BalloonTipClicked += (_, _) => OpenDashboard();
 
-        _refreshTimer = new System.Windows.Forms.Timer
+        _messageWindow = new MessageWindow();
+        _messageWindow.ShowRequested += (_, _) => OpenDashboard();
+        _messageWindow.HotkeyPressed += (_, _) => ToggleCompactPopup();
+        ApplyHotkeySetting();
+
+        _tickTimer = new System.Windows.Forms.Timer
         {
-            Interval = (int)TimeSpan.FromMinutes(5).TotalMilliseconds,
+            Interval = (int)TickInterval.TotalMilliseconds,
         };
-        _refreshTimer.Tick += async (_, _) => await RefreshAllAsync(showPopup: false);
-        _refreshTimer.Start();
+        _tickTimer.Tick += async (_, _) => await RefreshIfDueAsync();
+        _tickTimer.Start();
+
+        SystemEvents.PowerModeChanged += OnPowerModeChanged;
+        SystemEvents.SessionSwitch += OnSessionSwitch;
+        SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
 
         Application.Idle += RefreshOnFirstIdle;
     }
@@ -84,84 +99,74 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private void RefreshOnFirstIdle(object? sender, EventArgs eventArgs)
     {
         Application.Idle -= RefreshOnFirstIdle;
-        _ = RefreshAllAsync(showPopup: false);
+        _ = RefreshAsync(force: true);
+        if (_settings.UpdateCheckEnabled)
+        {
+            _ = CheckForUpdatesAsync();
+        }
     }
 
-    private async Task RefreshAllAsync(bool showPopup)
+    private async Task RefreshIfDueAsync()
     {
-        var entered = await _refreshLock.WaitAsync(0);
-        if (!entered || _isExiting)
+        if (_isExiting || !_service.IsDue(DateTimeOffset.Now))
         {
             return;
         }
 
-        try
-        {
-            foreach (var client in _clients)
-            {
-                var current = _states[client.Id];
-                _states[client.Id] = current with { IsLoading = true };
-            }
-
-            UpdatePopup(isRefreshing: true);
-            if (showPopup && !_popup.Visible)
-            {
-                _popup.ShowNearTray(_popup.Mode);
-            }
-
-            var results = await Task.WhenAll(_clients.Select(FetchProviderAsync));
-            if (_isExiting)
-            {
-                return;
-            }
-
-            foreach (var result in results)
-            {
-                _states[result.ProviderId] = result;
-            }
-
-            _lastRefreshed = DateTimeOffset.Now;
-            UpdatePopup(isRefreshing: false);
-            UpdateTray();
-        }
-        finally
-        {
-            _refreshLock.Release();
-        }
+        await RefreshAsync(force: false);
     }
 
-    private async Task<ProviderViewState> FetchProviderAsync(IUsageClient client)
+    private async Task RefreshAsync(bool force)
     {
-        try
+        if (_isExiting)
         {
-            var snapshot = await client.GetUsageAsync(_shutdown.Token);
-            return new ProviderViewState(client.Id, client.DisplayName, snapshot, null, false);
+            return;
         }
-        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
-        {
-            return new ProviderViewState(client.Id, client.DisplayName, null, "Refresh cancelled.", false);
-        }
-        catch (Exception exception)
-        {
-            var message = exception is CodexUsageException or
-                ClaudeCodeUsageException or
-                ClaudeWebUsageException or
-                GitHubCopilotUsageException
-                ? exception.Message
-                : $"{client.DisplayName} usage is temporarily unavailable.";
-            return new ProviderViewState(client.Id, client.DisplayName, null, message, false);
-        }
+
+        await _service.RefreshAsync(force, _popup.Visible);
     }
 
-    private void UpdatePopup(bool isRefreshing) =>
-        _popup.SetStates(OrderedStates(), isRefreshing, _lastRefreshed);
+    private void OnServiceUpdated(object? sender, EventArgs eventArgs) => RunOnUi(() =>
+    {
+        if (_isExiting)
+        {
+            return;
+        }
 
-    private ProviderViewState[] OrderedStates() =>
-        _clients.Select(client => _states[client.Id]).ToArray();
+        PushStateToPopup();
+        UpdateTray();
+    });
+
+    private void OnAlertsRaised(object? sender, UsageAlertEventArgs eventArgs) => RunOnUi(() =>
+    {
+        if (_isExiting || eventArgs.Alerts.Count == 0 || !_settings.NotificationsEnabled)
+        {
+            return;
+        }
+
+        var primary = eventArgs.Alerts.OrderByDescending(alert => alert.Level).First();
+        var text = eventArgs.Alerts.Count > 1
+            ? $"{primary.Message} (+{eventArgs.Alerts.Count - 1} more)"
+            : primary.Message;
+        _trayIcon.ShowBalloonTip(
+            8_000,
+            Trim(primary.Title, MaximumBalloonTitle),
+            Trim(text, MaximumBalloonText),
+            primary.Level switch
+            {
+                AlertLevel.Critical => ToolTipIcon.Error,
+                AlertLevel.Warning => ToolTipIcon.Warning,
+                _ => ToolTipIcon.Info,
+            });
+    });
+
+    private void PushStateToPopup() =>
+        _popup.SetStates(_service.Statuses, _service.IsRefreshing, _service.LastRefreshed, _service.History);
 
     private void UpdateTray()
     {
-        var connected = OrderedStates().Where(state => state.Snapshot is not null).ToArray();
+        var statuses = _service.Statuses;
+        var connected = statuses.Where(status => status.Snapshot is not null).ToArray();
         if (connected.Length == 0)
         {
             ReplaceIcon(TrayIconFactory.Create(100, "!", hasError: true));
@@ -169,14 +174,14 @@ internal sealed class UsageApplicationContext : ApplicationContext
             return;
         }
 
-        var highestUsed = connected.Max(state => state.Snapshot!.HighestUsedPercent);
+        var highestUsed = connected.Max(status => status.Snapshot!.HighestUsedPercent);
         var glyph = connected.Length == 1 ? ProviderGlyph(connected[0].ProviderId) : "U";
         ReplaceIcon(TrayIconFactory.Create(highestUsed, glyph));
 
         var summaries = connected
-            .Select(state => $"{ShortProviderName(state.ProviderName)} {CompactMetric(state.Snapshot!)}")
+            .Select(status => $"{ShortProviderName(status.ProviderName)} {CompactMetric(status)}")
             .ToArray();
-        _trayIcon.Text = TrimToolTip($"UsageAI - {string.Join(" - ", summaries)}");
+        _trayIcon.Text = Trim($"UsageAI - {string.Join(" - ", summaries)}", MaximumTooltipLength);
     }
 
     private void ReplaceIcon(Icon icon)
@@ -197,6 +202,11 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     private void ToggleCompactPopup()
     {
+        if (_isExiting)
+        {
+            return;
+        }
+
         if (_popup.Visible && _popup.Mode == DashboardMode.Compact)
         {
             _popup.Hide();
@@ -206,7 +216,103 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _popup.ShowNearTray(DashboardMode.Compact);
     }
 
-    private void OpenDashboard() => _popup.ShowNearTray(DashboardMode.Full);
+    private void OpenDashboard()
+    {
+        if (!_isExiting)
+        {
+            _popup.ShowNearTray(DashboardMode.Full);
+        }
+    }
+
+    private void OpenSettings()
+    {
+        using var dialog = new SettingsForm(
+            _settings,
+            _clients.Select(client => (client.Id, client.DisplayName)).ToArray());
+        if (dialog.ShowDialog() != DialogResult.OK)
+        {
+            return;
+        }
+
+        Theme.Apply(_settings.Theme, _settings.WarningPercent, _settings.CriticalPercent);
+        ApplyHotkeySetting();
+        _service.ApplySettings();
+        PushStateToPopup();
+        UpdateTray();
+        _ = RefreshAsync(force: false);
+    }
+
+    private void ApplyHotkeySetting()
+    {
+        if (_settings.GlobalHotkeyEnabled)
+        {
+            _messageWindow.TryRegisterHotkey();
+        }
+        else
+        {
+            _messageWindow.UnregisterHotkey();
+        }
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        var release = await UpdateChecker.FindNewerReleaseAsync(_shutdown.Token);
+        if (release is null || _isExiting)
+        {
+            return;
+        }
+
+        RunOnUi(() => _trayIcon.ShowBalloonTip(
+            8_000,
+            "UsageAI update available",
+            $"{release} has been published. The current build is {AppIdentity.Version}.",
+            ToolTipIcon.Info));
+    }
+
+    private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs eventArgs)
+    {
+        if (eventArgs.Mode == PowerModes.Resume)
+        {
+            // Values read before sleeping are stale by definition.
+            RunOnUi(() => _ = RefreshAsync(force: true));
+        }
+    }
+
+    private void OnSessionSwitch(object sender, SessionSwitchEventArgs eventArgs)
+    {
+        if (eventArgs.Reason is SessionSwitchReason.SessionUnlock or SessionSwitchReason.SessionLogon)
+        {
+            RunOnUi(() => _ = RefreshAsync(force: false));
+        }
+    }
+
+    private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs eventArgs)
+    {
+        if (eventArgs.Category is not (UserPreferenceCategory.General or UserPreferenceCategory.Color) ||
+            _settings.Theme != ThemeMode.System)
+        {
+            return;
+        }
+
+        RunOnUi(() =>
+        {
+            Theme.Reapply(_settings.Theme);
+            _menu.BackColor = Theme.Surface;
+            _menu.ForeColor = Theme.Text;
+            UpdateTray();
+        });
+    }
+
+    private void RunOnUi(Action action)
+    {
+        if (_popup.IsHandleCreated && _popup.InvokeRequired)
+        {
+            _popup.BeginInvoke(action);
+            return;
+        }
+
+        action();
+    }
 
     private void StartupItemOnCheckedChanged(object? sender, EventArgs eventArgs)
     {
@@ -232,7 +338,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _isExiting = true;
         Application.Idle -= RefreshOnFirstIdle;
         _shutdown.Cancel();
-        _refreshTimer.Stop();
+        _tickTimer.Stop();
         _trayIcon.Visible = false;
         _popup.CloseForExit();
         ExitThread();
@@ -243,33 +349,39 @@ internal sealed class UsageApplicationContext : ApplicationContext
         if (disposing)
         {
             Application.Idle -= RefreshOnFirstIdle;
+            SystemEvents.PowerModeChanged -= OnPowerModeChanged;
+            SystemEvents.SessionSwitch -= OnSessionSwitch;
+            SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
+            _service.Updated -= OnServiceUpdated;
+            _service.AlertsRaised -= OnAlertsRaised;
             _shutdown.Cancel();
-            _refreshTimer.Dispose();
+            _tickTimer.Dispose();
+            _messageWindow.Dispose();
             _trayIcon.Dispose();
             _menu.Dispose();
             _popup.Dispose();
+            _service.Dispose();
             _currentIcon?.Dispose();
         }
 
         base.Dispose(disposing);
     }
 
-    private static string CompactMetric(UsageSnapshot snapshot)
+    private static string CompactMetric(ProviderStatus status)
     {
-        var window = snapshot.Session ?? snapshot.Weekly;
-        if (window is not null)
+        if (status.Snapshot is not { } snapshot)
         {
-            return window.RemainingText == "UNLIMITED" ? "unlimited" : $"{window.RemainingPercent}% left";
+            return "unavailable";
         }
 
-        if (!string.IsNullOrWhiteSpace(snapshot.CreditBalance))
+        var metric = snapshot.Metrics.FirstOrDefault(candidate => candidate.HasQuota) ?? snapshot.Primary;
+        if (metric is null)
         {
-            return $"{snapshot.CreditBalance} credits";
+            return status.IsStale ? "stale" : "connected";
         }
 
-        return snapshot.AvailableResetCredits > 0
-            ? $"{snapshot.AvailableResetCredits} resets"
-            : "connected";
+        var value = metric.IsUnlimited ? "unlimited" : metric.DisplayRemaining.ToLowerInvariant();
+        return status.IsStale ? $"{value} (stale)" : value;
     }
 
     private static string ProviderGlyph(string providerId) => providerId.ToLowerInvariant() switch
@@ -282,7 +394,8 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private static string ShortProviderName(string providerName) =>
         providerName.Equals("GitHub Copilot", StringComparison.OrdinalIgnoreCase) ? "Copilot" : providerName;
 
-    private static string TrimToolTip(string value) => value.Length <= 63 ? value : value[..60] + "...";
+    private static string Trim(string value, int maximumLength) =>
+        value.Length <= maximumLength ? value : value[..(maximumLength - 3)] + "...";
 
     private sealed class DarkColorTable : ProfessionalColorTable
     {

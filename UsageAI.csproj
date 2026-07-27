@@ -8,8 +8,9 @@
     <Nullable>enable</Nullable>
     <AssemblyName>UsageAI</AssemblyName>
     <RootNamespace>UsageAI</RootNamespace>
-    <Version>0.3.1</Version>
+    <Version>0.4.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
+    <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
     <EnableUnsafeBinaryFormatterSerialization>false</EnableUnsafeBinaryFormatterSerialization>
     <CheckSdkVulnerabilities>true</CheckSdkVulnerabilities>
     <EnableNETAnalyzers>true</EnableNETAnalyzers>

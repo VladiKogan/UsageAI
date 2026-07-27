@@ -8,9 +8,11 @@ internal static class ProviderIconPainter
     {
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var color = Theme.ForProvider(providerId);
-        using var background = new SolidBrush(Color.FromArgb(32, color));
-        using var border = new Pen(Color.FromArgb(105, color), 1F);
-        using var shape = RoundedRectangle(bounds, 10F);
+
+        // A tint that reads on a near-black card is nearly invisible on a white one.
+        using var background = new SolidBrush(Color.FromArgb(Theme.IsDark ? 32 : 40, color));
+        using var border = new Pen(Color.FromArgb(Theme.IsDark ? 105 : 125, color), 1F);
+        using var shape = DrawingHelpers.RoundedRectangle(bounds, bounds.Width * 0.26F);
         graphics.FillPath(background, shape);
         graphics.DrawPath(border, shape);
 
@@ -66,7 +68,7 @@ internal static class ProviderIconPainter
     private static void DrawCopilot(Graphics graphics, Pen pen, PointF center, float size)
     {
         var head = new RectangleF(center.X - size * 0.23F, center.Y - size * 0.16F, size * 0.46F, size * 0.34F);
-        using var path = RoundedRectangle(head, size * 0.10F);
+        using var path = DrawingHelpers.RoundedRectangle(head, size * 0.10F);
         graphics.DrawPath(pen, path);
         graphics.DrawLine(pen, center.X - size * 0.12F, head.Top, center.X - size * 0.18F, head.Top - size * 0.10F);
         graphics.DrawLine(pen, center.X + size * 0.12F, head.Top, center.X + size * 0.18F, head.Top - size * 0.10F);
@@ -82,18 +84,4 @@ internal static class ProviderIconPainter
             .Select(angle => new PointF(center.X + MathF.Cos(angle) * radius, center.Y + MathF.Sin(angle) * radius))
             .ToArray();
 
-    private static GraphicsPath RoundedRectangle(Rectangle bounds, float radius) =>
-        RoundedRectangle(new RectangleF(bounds.X, bounds.Y, bounds.Width, bounds.Height), radius);
-
-    private static GraphicsPath RoundedRectangle(RectangleF bounds, float radius)
-    {
-        var diameter = radius * 2F;
-        var path = new GraphicsPath();
-        path.AddArc(bounds.Left, bounds.Top, diameter, diameter, 180, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Top, diameter, diameter, 270, 90);
-        path.AddArc(bounds.Right - diameter, bounds.Bottom - diameter, diameter, diameter, 0, 90);
-        path.AddArc(bounds.Left, bounds.Bottom - diameter, diameter, diameter, 90, 90);
-        path.CloseFigure();
-        return path;
-    }
 }

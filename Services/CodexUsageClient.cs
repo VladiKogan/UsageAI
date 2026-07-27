@@ -15,6 +15,10 @@ internal sealed class CodexUsageClient : IUsageClient
 
     public string DisplayName => "Codex";
 
+    public string SignInCommand => "codex login";
+
+    public Uri AccountUrl { get; } = new("https://chatgpt.com/codex/settings/usage");
+
     public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default) =>
         ParseSnapshot(await GetRawUsageAsync(cancellationToken));
 
@@ -179,18 +183,35 @@ internal sealed class CodexUsageClient : IUsageClient
         (id.ValueKind == JsonValueKind.String &&
          id.GetString() == expectedId.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
-    private static UsageSnapshot ParseSnapshot(JsonElement result)
+    internal static UsageSnapshot ParseSnapshot(JsonElement result)
     {
         var rateLimits = SelectCodexBucket(result);
         var primary = ParseWindow(rateLimits, "primary", "Primary");
         var secondary = ParseWindow(rateLimits, "secondary", "Secondary");
         var (session, weekly) = ClassifyWindows(primary, secondary);
 
-        var plan = GetString(rateLimits, "planType") ?? "Codex";
-        var creditBalance = rateLimits.TryGetProperty("credits", out var credits) &&
-                            credits.ValueKind == JsonValueKind.Object
-            ? GetString(credits, "balance")
-            : null;
+        var metrics = new List<UsageMetric>();
+        if (session is not null)
+        {
+            metrics.Add(session);
+        }
+
+        if (weekly is not null)
+        {
+            metrics.Add(weekly);
+        }
+
+        if (rateLimits.TryGetProperty("credits", out var credits) &&
+            credits.ValueKind == JsonValueKind.Object &&
+            GetString(credits, "balance") is { Length: > 0 } balance)
+        {
+            metrics.Add(new UsageMetric(
+                "Credits",
+                UsageMetricKind.Balance,
+                null,
+                RemainingText: balance,
+                UsageText: "Available account balance"));
+        }
 
         var resetCredits = 0;
         if (result.TryGetProperty("rateLimitResetCredits", out var resetSummary) &&
@@ -200,39 +221,59 @@ internal sealed class CodexUsageClient : IUsageClient
             resetCount.TryGetInt32(out resetCredits);
         }
 
+        if (resetCredits > 0)
+        {
+            metrics.Add(new UsageMetric(
+                "Reset credits",
+                UsageMetricKind.Balance,
+                null,
+                RemainingText: resetCredits.ToString(System.Globalization.CultureInfo.CurrentCulture),
+                UsageText: $"Full reset{(resetCredits == 1 ? string.Empty : "s")} available"));
+        }
+
+        var plan = GetString(rateLimits, "planType") ?? "Codex";
         return new UsageSnapshot(
             FormatPlan(plan),
-            session,
-            weekly,
-            creditBalance,
-            Math.Max(0, resetCredits),
-            DateTimeOffset.Now);
+            metrics,
+            DateTimeOffset.Now,
+            "codex",
+            "Codex");
     }
 
-    private static (UsageWindow? Session, UsageWindow? Weekly) ClassifyWindows(
-        UsageWindow? primary,
-        UsageWindow? secondary)
+    private static (UsageMetric? Session, UsageMetric? Weekly) ClassifyWindows(
+        UsageMetric? primary,
+        UsageMetric? secondary)
     {
-        var windows = new[] { primary, secondary }.Where(window => window is not null).Cast<UsageWindow>().ToList();
-        UsageWindow? session = null;
-        UsageWindow? weekly = null;
+        var windows = new[] { primary, secondary }.Where(window => window is not null).Cast<UsageMetric>().ToList();
+        UsageMetric? session = null;
+        UsageMetric? weekly = null;
 
         foreach (var window in windows)
         {
             if (window.DurationMinutes is >= 1_440)
             {
-                weekly ??= window with { Name = FormatWindowName(window.DurationMinutes.Value, "Weekly") };
+                weekly ??= window with
+                {
+                    Name = FormatWindowName(window.DurationMinutes.Value, "Weekly"),
+                    Kind = UsageMetricKind.Rolling,
+                };
             }
             else
             {
-                session ??= window with { Name = FormatWindowName(window.DurationMinutes, "Session") };
+                session ??= window with
+                {
+                    Name = FormatWindowName(window.DurationMinutes, "Session"),
+                    Kind = UsageMetricKind.Session,
+                };
             }
         }
 
         if (session is null && weekly is null && primary is not null)
         {
-            session = primary with { Name = "Session" };
-            weekly = secondary is null ? null : secondary with { Name = "Weekly" };
+            session = primary with { Name = "Session", Kind = UsageMetricKind.Session };
+            weekly = secondary is null
+                ? null
+                : secondary with { Name = "Weekly", Kind = UsageMetricKind.Rolling };
         }
 
         return (session, weekly);
@@ -287,7 +328,7 @@ internal sealed class CodexUsageClient : IUsageClient
         throw new CodexUsageException("Codex returned no rate-limit windows. Sign in with `codex login`, then refresh.");
     }
 
-    private static UsageWindow? ParseWindow(JsonElement rateLimits, string propertyName, string name)
+    private static UsageMetric? ParseWindow(JsonElement rateLimits, string propertyName, string name)
     {
         if (!rateLimits.TryGetProperty(propertyName, out var window) || window.ValueKind != JsonValueKind.Object)
         {
@@ -315,7 +356,7 @@ internal sealed class CodexUsageClient : IUsageClient
             duration = durationMinutes;
         }
 
-        return new UsageWindow(name, Math.Clamp(used, 0, 100), resetsAt, duration);
+        return new UsageMetric(name, UsageMetricKind.Session, Math.Clamp(used, 0, 100), resetsAt, duration);
     }
 
     private static string? GetString(JsonElement element, string propertyName)

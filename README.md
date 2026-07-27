@@ -8,15 +8,15 @@ UsageAI reuses your existing local provider login. Codex data comes from the Cod
 
 ## What it shows
 
-- Codex five-hour and weekly usage, reset countdowns, reset credits, plan, and credit balance
-- Claude Code five-hour and weekly usage, resets, plan, and optional extra usage
-- GitHub Copilot AI-credit or premium-request usage, chat/completion quotas, monthly reset, plan, and account
-- A compact all-provider view with one prioritized metric per connected provider
-- A full dashboard with every available metric and connection status for all providers
-- Distinct provider icons and color-coded usage signals for quick scanning
-- A dynamic tray icon based on the most-used window
-- Five-minute background refresh and manual refresh
-- Optional start with Windows
+- Every usage window each provider reports, rather than a fixed pair: Codex five-hour, weekly, credits, and reset credits; Claude five-hour, weekly, weekly Opus, and extra usage; Copilot AI credits or premium requests, chat, and completions
+- A capacity meter whose fill and headline both show what is **left**, so they never move in opposite directions
+- Reset countdowns, plan, and account for each provider
+- A trend sparkline and a burn-rate forecast: "At this pace, empty by 15:20"
+- Tray notifications when a window crosses your alert thresholds, and when it resets
+- Colour that escalates with consumption across the value, the meter, the card rail, and the tray icon
+- The last good reading kept and labelled **stale** when a refresh fails, instead of an emptied dashboard
+- A compact all-provider view and a full dashboard with every metric and connection status
+- Light, dark, or follow-Windows themes, using your Windows accent colour
 
 ## Requirements
 
@@ -35,7 +35,35 @@ PowerShell can block the `codex.ps1` launcher; UsageAI intentionally uses `codex
 dotnet run --project .\UsageAI.csproj
 ```
 
-The app lives in the system tray. Left-click its icon for a compact view of every connected provider. The compact view shows the first available metric in this order: five-hour/session, weekly, then credits. Right-click the tray icon and choose **Open** for the full dashboard with all providers and usage metrics. The dashboard behaves like a regular Windows window: move it, resize it, minimize or maximize it, and close it back to the tray. UsageAI remembers its last normal position and size for the current session.
+The app lives in the system tray.
+
+| Action | Result |
+| --- | --- |
+| Left-click the tray icon | Compact view of every connected provider |
+| **Win+Alt+U** | Same as left-click, from anywhere |
+| Right-click ▸ **Open** | Full dashboard with all providers and metrics |
+| Right-click ▸ **Settings...** | Preferences (see below) |
+| Launching UsageAI again | Brings the running instance forward |
+| `Esc` | Hides the window |
+| `Tab` / `Enter` on a dashboard card | Opens the provider's usage page, or copies its sign-in command when disconnected |
+
+The dashboard behaves like a regular Windows window: move it, resize it, minimize or maximize it, and close it back to the tray. Its position and size are remembered between runs.
+
+## Settings
+
+**Settings...** in the tray menu covers:
+
+- Refresh interval, and whether to slow down while no window is open
+- Alert thresholds, and whether resets are announced
+- Theme, and the percentages at which the warning and critical colours start
+- Whether usage history is recorded, and whether the trend and forecast are shown
+- Which providers appear, and in what order
+- The global hotkey
+- An opt-in check for newer releases on GitHub
+
+Preferences, recorded history, and the cached last reading live in `%LOCALAPPDATA%\UsageAI`. Set `USAGEAI_DATA_DIR` to an absolute path to move them, for a portable install. History holds timestamps, provider ids, metric names, and percentages; it never leaves the machine and can be deleted from the settings window.
+
+## Diagnostics
 
 To validate one provider without opening the tray UI:
 
@@ -45,7 +73,7 @@ dotnet run --project .\UsageAI.csproj -- --diagnose claude
 dotnet run --project .\UsageAI.csproj -- --diagnose copilot
 ```
 
-Diagnostic output contains account identity and usage metadata. It never contains provider tokens, but review it before sharing it publicly.
+`--help` lists every switch and `--version` prints the build version. Diagnostic output contains account identity and usage metadata. It never contains provider tokens, but review it before sharing it publicly.
 
 ## Claude authentication
 
@@ -66,6 +94,21 @@ Remove-Item Env:USAGEAI_CLAUDE_SESSION_KEY
 
 The session key is kept in memory, is not forwarded to provider CLI child processes, and is never written by UsageAI. If it is missing, invalid, or no longer accepted, UsageAI safely falls back to Claude Code OAuth.
 
+## Build and test
+
+```powershell
+dotnet build .\UsageAI.sln -c Release
+dotnet run --project .\UsageAI.Tests\UsageAI.Tests.csproj
+```
+
+The test project is a dependency-free console harness covering credential handling, bounded I/O, provider response parsing, settings validation, history, forecasting, and alert behaviour. It runs with `dotnet run`, not `dotnet test`.
+
+To regenerate the screenshot:
+
+```powershell
+dotnet run --project .\UsageAI.csproj -- --render-preview .\usageai-preview.png
+```
+
 ## Build a personal executable
 
 ```powershell
@@ -74,7 +117,7 @@ dotnet publish .\UsageAI.csproj -c Release -r win-x64 --self-contained false -p:
 
 Run `publish\UsageAI.exe`. The single-file, framework-dependent build is deliberately small and uses the installed .NET 10 desktop runtime.
 
-UsageAI releases are built and checked locally, then uploaded manually to GitHub Releases.
+UsageAI releases are built and checked locally, then uploaded manually to GitHub Releases. The GitHub `Build` workflow only restores, builds, and tests; it never publishes.
 
 ## Troubleshooting
 
@@ -85,6 +128,8 @@ UsageAI releases are built and checked locally, then uploaded manually to GitHub
 - **Copilot is not signed in:** sign in through a GitHub Copilot IDE extension or Copilot CLI, then choose **Refresh**.
 - **A custom Copilot token is needed:** set `COPILOT_GITHUB_TOKEN` for the UsageAI process. The token is used in memory and is not persisted.
 - **GitHub CLI fallback is needed:** set `USAGEAI_ENABLE_GH_TOKEN_FALLBACK=1` for the UsageAI process. This is disabled by default because `gh auth token` can expose a broader GitHub token than Copilot usage requires.
+- **A card says "stale":** the last refresh failed, so the values shown are the previous good reading. The card carries the provider's own error message, and UsageAI backs off before retrying instead of polling a failing or rate-limited provider on a fixed cadence.
+- **The hotkey does nothing:** another application already owns Win+Alt+U. Turn it off in **Settings...** to stop UsageAI from claiming it.
 - **No tray icon:** open the Windows tray overflow menu and pin UsageAI.
 
-The provider protocols and usage endpoints can change. UsageAI keeps each integration isolated in its own usage client so future changes stay easy to update.
+The provider protocols and usage endpoints can change. UsageAI keeps each integration isolated in its own usage client so future changes stay easy to update, and each client's response parsing is covered by fixture tests.

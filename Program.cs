@@ -10,30 +10,46 @@ internal static class Program
     {
         ApplicationConfiguration.Initialize();
 
-        if (args.Contains("--render-preview", StringComparer.OrdinalIgnoreCase))
+        if (HasFlag(args, "--help") || HasFlag(args, "-h") || HasFlag(args, "/?"))
         {
-            RenderPreview(args);
+            Console.WriteLine(HelpText);
             return;
         }
 
-        if (args.Contains("--diagnose", StringComparer.OrdinalIgnoreCase))
+        if (HasFlag(args, "--version"))
         {
-            RunDiagnosticsAsync().GetAwaiter().GetResult();
+            Console.WriteLine(AppIdentity.Version);
+            return;
+        }
+
+        if (HasFlag(args, "--render-preview"))
+        {
+            PreviewRenderer.Render(args);
+            return;
+        }
+
+        if (HasFlag(args, "--diagnose"))
+        {
+            RunDiagnosticsAsync(args).GetAwaiter().GetResult();
             return;
         }
 
         using var instanceMutex = new Mutex(
             initiallyOwned: true,
-            "Local\\UsageAI.TrayApplication",
+            SingleInstance.MutexName,
             out var isFirstInstance);
         if (!isFirstInstance)
         {
+            // Bring the window of the instance that is already running forward, rather than
+            // exiting silently and looking like a failed launch.
+            SingleInstance.BroadcastShow();
             return;
         }
 
+        var settings = AppSettings.Load();
         try
         {
-            Application.Run(new UsageApplicationContext(CreateUsageClients()));
+            Application.Run(new UsageApplicationContext(CreateUsageClients(), settings));
         }
         finally
         {
@@ -41,11 +57,26 @@ internal static class Program
         }
     }
 
-    private static async Task RunDiagnosticsAsync()
+    private const string HelpText = """
+        UsageAI - a Windows tray meter for Codex, Claude Code, and GitHub Copilot usage.
+
+          UsageAI.exe                       Start the tray application.
+          UsageAI.exe --diagnose <provider>  Print one provider's usage as JSON.
+                                             Providers: codex, claude, copilot.
+          UsageAI.exe --render-preview [path] [--full]
+                                             Render a preview image of the popup.
+          UsageAI.exe --version              Print the application version.
+          UsageAI.exe --help                 Show this help.
+
+        Settings live in %LOCALAPPDATA%\UsageAI. Diagnostic output contains account
+        identity and usage metadata but never provider tokens.
+        """;
+
+    private static async Task RunDiagnosticsAsync(string[] args)
     {
         try
         {
-            var providerId = GetDiagnosticProviderId(Environment.GetCommandLineArgs());
+            var providerId = GetDiagnosticProviderId(args);
             var client = CreateUsageClients().FirstOrDefault(candidate =>
                 candidate.Id.Equals(providerId, StringComparison.OrdinalIgnoreCase));
             if (client is null)
@@ -81,83 +112,15 @@ internal static class Program
             new GitHubCopilotUsageClient(),
         };
 
+    private static bool HasFlag(string[] args, string flag) =>
+        args.Contains(flag, StringComparer.OrdinalIgnoreCase);
+
     private static string GetDiagnosticProviderId(string[] args)
     {
         var flagIndex = Array.FindIndex(args, argument =>
             argument.Equals("--diagnose", StringComparison.OrdinalIgnoreCase));
         return flagIndex >= 0 && flagIndex + 1 < args.Length && !args[flagIndex + 1].StartsWith('-')
             ? args[flagIndex + 1]
-            : UsageProviderSettings.SelectedProviderId;
-    }
-
-    private static void RenderPreview(string[] args)
-    {
-        var flagIndex = Array.FindIndex(args, argument =>
-            argument.Equals("--render-preview", StringComparison.OrdinalIgnoreCase));
-        var outputPath = flagIndex >= 0 &&
-                         flagIndex + 1 < args.Length &&
-                         !args[flagIndex + 1].StartsWith('-')
-            ? Path.GetFullPath(args[flagIndex + 1])
-            : Path.Combine(Environment.CurrentDirectory, "usageai-preview.png");
-
-        var now = DateTimeOffset.Now;
-        var states = new UI.ProviderViewState[]
-        {
-            new(
-                "codex",
-                "Codex",
-                new Models.UsageSnapshot(
-                    "Plus",
-                    new Models.UsageWindow("5-hour", 43, now.AddHours(2).AddMinutes(18), 300),
-                    new Models.UsageWindow("Weekly", 63, now.AddDays(3).AddHours(8), 10_080),
-                    "$12.50",
-                    3,
-                    now),
-                null,
-                false),
-            new(
-                "claude",
-                "Claude Code",
-                new Models.UsageSnapshot(
-                    "Max",
-                    new Models.UsageWindow("5-hour", 22, now.AddHours(3).AddMinutes(41), 300),
-                    new Models.UsageWindow("Weekly", 49, now.AddDays(4).AddHours(12), 10_080),
-                    "$4.10",
-                    0,
-                    now,
-                    "claude",
-                    "Claude Code"),
-                null,
-                false),
-            new(
-                "copilot",
-                "GitHub Copilot",
-                new Models.UsageSnapshot(
-                    "Pro",
-                    new Models.UsageWindow("AI credits", 76, now.AddDays(9), null, "24% LEFT", "72 of 300 left"),
-                    new Models.UsageWindow("Chat", 0, now.AddDays(9), null, "UNLIMITED", "No monthly limit"),
-                    null,
-                    0,
-                    now,
-                    "copilot",
-                    "GitHub Copilot",
-                    "octocat"),
-                null,
-                false),
-        };
-
-        using var form = new UsagePopupForm();
-        form.SetStates(states, isRefreshing: false, lastRefreshed: now);
-        form.SetMode(args.Contains("--full", StringComparer.OrdinalIgnoreCase)
-            ? UI.DashboardMode.Full
-            : UI.DashboardMode.Compact);
-        form.Location = new Point(-10_000, -10_000);
-        form.Show();
-        Application.DoEvents();
-        form.PerformLayout();
-        using var bitmap = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
-        form.DrawToBitmap(bitmap, form.ClientRectangle);
-        bitmap.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
-        form.Hide();
+            : "codex";
     }
 }

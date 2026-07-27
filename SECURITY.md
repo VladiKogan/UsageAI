@@ -19,3 +19,7 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
 - Claude web sessions are opt-in, memory-only, and never persisted by UsageAI.
 - Secrets are not forwarded to provider CLI child processes or included in diagnostic output.
 - Network destinations and redirects are constrained by the provider clients.
+
+## Local state
+
+UsageAI writes preferences, recorded usage history, and a cached copy of the last reading to `%LOCALAPPDATA%\UsageAI` (or to `USAGEAI_DATA_DIR` when set). These files hold plan names, the account identity a provider reports, metric names, timestamps, and usage percentages. They never hold tokens, cookies, or refresh credentials, they are written with the account's default file protection, and history can be deleted from the settings window. The only outbound request UsageAI makes beyond the provider usage endpoints is the release check, which is off unless you turn it on.
