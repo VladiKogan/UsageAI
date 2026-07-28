@@ -4,6 +4,10 @@ obj/
 publish/
 artifacts/
 UsageAI-win-*.zip
+UsageAI-*-Setup.exe
+UsageAI-*-portable.exe
+UsageAI-*.sha256
+installer/Output/
 .dotnet-cli/
 .nuget/
 *.user

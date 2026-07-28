@@ -11,8 +11,11 @@ writes to the repository; it is a check, not a release pipeline.
 
 Before a release, run the local build and tests, add a dated changelog entry,
 and keep the version in `UsageAI.csproj`, changelog heading, and annotated
-`vX.Y.Z` Git tag identical. Push the release commit and tag, then create the
-GitHub release and upload its Windows ZIP manually.
+`vX.Y.Z` Git tag identical. Push the release commit and tag, build the
+portable executable and the Inno Setup installer (see `README.md`'s
+"Build a personal executable" and "Build the installer" sections), then
+create the GitHub release and upload `UsageAI-<version>-portable.exe`,
+`UsageAI-<version>-Setup.exe`, and their `.sha256` files manually.
 
 ## Local validation
 

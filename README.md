@@ -6,14 +6,24 @@ UsageAI reuses your existing local provider login. Codex data comes from the Cod
 
 ![UsageAI tray popup](usageai-preview.png)
 
+## Install
+
+Download the latest release from the [Releases page](https://github.com/VladiKogan/UsageAI/releases):
+
+- **`UsageAI-<version>-Setup.exe`** — installer with a Start Menu shortcut and uninstaller. Installs the .NET 10 Desktop Runtime automatically if it isn't already on your machine.
+- **`UsageAI-<version>-portable.exe`** — a single file, no installation. Just run it.
+
+Both need Windows 10 or 11 (x64) and at least one signed-in provider (see [Requirements](#requirements) below). Each download has a matching `.sha256` file; see [Build and test](#build-and-test) for how to verify it.
+
 ## What it shows
 
 - Every usage window each provider reports, rather than a fixed pair: Codex five-hour, weekly, credits, and reset credits; Claude five-hour, weekly, weekly Opus, and extra usage; Copilot AI credits or premium requests, chat, and completions
-- A capacity meter whose fill and headline both show what is **left**, so they never move in opposite directions
+- A consumption meter whose fill and headline both show what is **used**, with capacity left shown as the secondary value
 - Reset countdowns, plan, and account for each provider
 - A trend sparkline and a burn-rate forecast: "At this pace, empty by 15:20"
 - Tray notifications when a window crosses your alert thresholds, and when it resets
 - Colour that escalates with consumption across the value, the meter, the card rail, and the tray icon
+- A selectable tray-icon provider, with an automatic mode that follows the connected provider with the highest usage
 - The last good reading kept and labelled **stale** when a refresh fails, instead of an emptied dashboard
 - A compact all-provider view and a full dashboard with every metric and connection status
 - Light, dark, or follow-Windows themes, using your Windows accent colour
@@ -57,7 +67,7 @@ The dashboard behaves like a regular Windows window: move it, resize it, minimiz
 - Alert thresholds, and whether resets are announced
 - Theme, and the percentages at which the warning and critical colours start
 - Whether usage history is recorded, and whether the trend and forecast are shown
-- Which providers appear, and in what order
+- Which provider drives the tray icon, which providers appear, and in what order
 - The global hotkey
 - An opt-in check for newer releases on GitHub
 
@@ -115,9 +125,28 @@ dotnet run --project .\UsageAI.csproj -- --render-preview .\usageai-preview.png
 dotnet publish .\UsageAI.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o .\publish
 ```
 
-Run `publish\UsageAI.exe`. The single-file, framework-dependent build is deliberately small and uses the installed .NET 10 desktop runtime.
+Run `publish\UsageAI.exe`. The single-file, framework-dependent build is deliberately small and uses the installed .NET 10 desktop runtime. This is the portable build; rename it to `UsageAI-<version>-portable.exe` before publishing it as a release asset.
 
-UsageAI releases are built and checked locally, then uploaded manually to GitHub Releases. The GitHub `Build` workflow only restores, builds, and tests; it never publishes.
+## Build the installer
+
+Install [Inno Setup](https://jrsoftware.org/isinfo.php) 6.3 or newer, publish the portable build above, then:
+
+```powershell
+& "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" .\installer\UsageAI.iss /DMyAppVersion=<version>
+```
+
+This produces `installer\Output\UsageAI-<version>-Setup.exe`. It installs to Program Files, adds a Start Menu shortcut and uninstaller, and checks for the .NET 10 Desktop Runtime at install time, silently installing it first if it's missing (see `installer\UsageAI.iss` for the check).
+
+Before uploading either asset to a release, generate its checksum:
+
+```powershell
+foreach ($file in 'publish\UsageAI.exe', 'installer\Output\UsageAI-<version>-Setup.exe') {
+    $hash = (Get-FileHash -Path $file -Algorithm SHA256).Hash.ToLower()
+    "$hash  $(Split-Path $file -Leaf)" | Set-Content -NoNewline "$(Split-Path $file -Leaf).sha256"
+}
+```
+
+UsageAI releases are built and checked locally, then uploaded manually to GitHub Releases as `UsageAI-<version>-Setup.exe`, `UsageAI-<version>-portable.exe`, and their `.sha256` files. The GitHub `Build` workflow only restores, builds, and tests; it never publishes.
 
 ## Troubleshooting
 
