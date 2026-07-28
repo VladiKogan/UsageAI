@@ -162,3 +162,7 @@ UsageAI releases are built and checked locally, then uploaded manually to GitHub
 - **No tray icon:** open the Windows tray overflow menu and pin UsageAI.
 
 The provider protocols and usage endpoints can change. UsageAI keeps each integration isolated in its own usage client so future changes stay easy to update, and each client's response parsing is covered by fixture tests.
+
+## License
+
+[MIT](LICENSE)
