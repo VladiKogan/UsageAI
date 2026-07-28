@@ -1,8 +1,8 @@
 # UsageAI
 
-A small, personal Windows tray meter for Codex, Claude Code, and GitHub Copilot usage limits.
+A small, personal Windows tray meter for Codex, Claude Code, GitHub Copilot, and Google Gemini usage limits.
 
-UsageAI reuses your existing local provider login. Codex data comes from the Codex CLI app-server; Claude Code data comes from Anthropic using an explicitly supplied Claude web session or Claude Code's saved OAuth login; Copilot data comes from GitHub using a token already saved by a Copilot IDE extension or Copilot CLI's secure Windows credential. UsageAI never prints those credentials and never scans browser storage.
+UsageAI reuses your existing local provider login. Codex data comes from the Codex CLI app-server; Claude Code data comes from Anthropic using an explicitly supplied Claude web session or Claude Code's saved OAuth login; Copilot data comes from GitHub using a token already saved by a Copilot IDE extension or Copilot CLI's secure Windows credential; Google Gemini data comes from Antigravity IDE's local language server probe or saved Gemini CLI OAuth credentials. UsageAI never prints those credentials and never scans browser storage.
 
 ![UsageAI tray popup](usageai-preview.png)
 
@@ -17,7 +17,7 @@ Both need Windows 10 or 11 (x64) and at least one signed-in provider (see [Requi
 
 ## What it shows
 
-- Every usage window each provider reports, rather than a fixed pair: Codex five-hour, weekly, credits, and reset credits; Claude five-hour, weekly, weekly Opus, and extra usage; Copilot AI credits or premium requests, chat, and completions
+- Every usage window each provider reports, rather than a fixed pair: Codex five-hour, weekly, credits, and reset credits; Claude five-hour, weekly, weekly Opus, and extra usage; Copilot AI credits or premium requests, chat, and completions; Google Gemini model groups (Gemini Models, Claude and GPT models) or Cloud Code API quotas
 - A consumption meter whose fill and headline both show what is **used**, with capacity left shown as the secondary value
 - Reset countdowns, plan, and account for each provider
 - A trend sparkline and a burn-rate forecast: "At this pace, empty by 15:20"
@@ -36,6 +36,7 @@ Both need Windows 10 or 11 (x64) and at least one signed-in provider (see [Requi
   - Codex CLI installed and signed in (`codex login`)
   - Claude Code installed and signed in (`claude`), or an explicitly supplied Claude web session key
   - GitHub Copilot signed in through an IDE extension or Copilot CLI
+  - Google Gemini signed in via `gemini` CLI or running Antigravity IDE
 
 PowerShell can block the `codex.ps1` launcher; UsageAI intentionally uses `codex.cmd`, so it works with the default Windows execution policy.
 
@@ -81,6 +82,7 @@ To validate one provider without opening the tray UI:
 dotnet run --project .\UsageAI.csproj -- --diagnose codex
 dotnet run --project .\UsageAI.csproj -- --diagnose claude
 dotnet run --project .\UsageAI.csproj -- --diagnose copilot
+dotnet run --project .\UsageAI.csproj -- --diagnose gemini
 ```
 
 `--help` lists every switch and `--version` prints the build version. Diagnostic output contains account identity and usage metadata. It never contains provider tokens, but review it before sharing it publicly.

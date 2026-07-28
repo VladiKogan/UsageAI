@@ -58,11 +58,11 @@ internal static class Program
     }
 
     private const string HelpText = """
-        UsageAI - a Windows tray meter for Codex, Claude Code, and GitHub Copilot usage.
+        UsageAI - a Windows tray meter for Codex, Claude Code, GitHub Copilot, and Google Gemini usage.
 
           UsageAI.exe                       Start the tray application.
           UsageAI.exe --diagnose <provider>  Print one provider's usage as JSON.
-                                             Providers: codex, claude, copilot.
+                                             Providers: codex, claude, copilot, gemini.
           UsageAI.exe --render-preview [path] [--full]
                                              Render a preview image of the popup.
           UsageAI.exe --version              Print the application version.
@@ -81,7 +81,7 @@ internal static class Program
                 candidate.Id.Equals(providerId, StringComparison.OrdinalIgnoreCase));
             if (client is null)
             {
-                throw new ArgumentException($"Unknown usage provider '{providerId}'. Use 'codex', 'claude', or 'copilot'.");
+                throw new ArgumentException($"Unknown usage provider '{providerId}'. Use 'codex', 'claude', 'copilot', or 'gemini'.");
             }
 
             var snapshot = await client.GetUsageAsync();
@@ -100,7 +100,8 @@ internal static class Program
         CodexUsageException or
         ClaudeCodeUsageException or
         ClaudeWebUsageException or
-        GitHubCopilotUsageException => exception.Message,
+        GitHubCopilotUsageException or
+        GeminiUsageException => exception.Message,
         _ => "UsageAI could not complete the diagnostic request.",
     };
 
@@ -110,6 +111,7 @@ internal static class Program
             new CodexUsageClient(),
             new ClaudeCodeUsageClient(),
             new GitHubCopilotUsageClient(),
+            new GeminiUsageClient(),
         };
 
     private static bool HasFlag(string[] args, string flag) =>

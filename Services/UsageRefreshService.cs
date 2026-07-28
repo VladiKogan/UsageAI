@@ -265,7 +265,8 @@ internal sealed class UsageRefreshService : IDisposable
             var message = exception is CodexUsageException or
                 ClaudeCodeUsageException or
                 ClaudeWebUsageException or
-                GitHubCopilotUsageException
+                GitHubCopilotUsageException or
+                GeminiUsageException
                 ? exception.Message
                 : $"{client.DisplayName} usage is temporarily unavailable.";
             var throttleHint = exception is IThrottledUsageException { RetryAfter.TotalSeconds: > 0 } throttled

@@ -32,6 +32,9 @@ internal static class ProviderIconPainter
             case "copilot":
                 DrawCopilot(graphics, pen, center, bounds.Width);
                 break;
+            case "gemini":
+                DrawGemini(graphics, pen, center, bounds.Width);
+                break;
             default:
                 DrawCodex(graphics, pen, center, bounds.Width);
                 break;
@@ -78,10 +81,37 @@ internal static class ProviderIconPainter
         graphics.FillEllipse(eyeBrush, center.X + size * 0.12F - eye / 2F, center.Y - eye / 2F, eye, eye);
     }
 
+    private static void DrawGemini(Graphics graphics, Pen pen, PointF center, float size)
+    {
+        var outer = size * 0.25F;
+        var inner = size * 0.07F;
+        using var path = new GraphicsPath();
+        path.AddBezier(
+            new PointF(center.X, center.Y - outer),
+            new PointF(center.X + inner, center.Y - inner),
+            new PointF(center.X + inner, center.Y - inner),
+            new PointF(center.X + outer, center.Y));
+        path.AddBezier(
+            new PointF(center.X + outer, center.Y),
+            new PointF(center.X + inner, center.Y + inner),
+            new PointF(center.X + inner, center.Y + inner),
+            new PointF(center.X, center.Y + outer));
+        path.AddBezier(
+            new PointF(center.X, center.Y + outer),
+            new PointF(center.X - inner, center.Y + inner),
+            new PointF(center.X - inner, center.Y + inner),
+            new PointF(center.X - outer, center.Y));
+        path.AddBezier(
+            new PointF(center.X - outer, center.Y),
+            new PointF(center.X - inner, center.Y - inner),
+            new PointF(center.X - inner, center.Y - inner),
+            new PointF(center.X, center.Y - outer));
+        graphics.DrawPath(pen, path);
+    }
+
     private static PointF[] Hexagon(PointF center, float radius, float offsetDegrees) =>
         Enumerable.Range(0, 6)
             .Select(index => (offsetDegrees + index * 60F) * MathF.PI / 180F)
             .Select(angle => new PointF(center.X + MathF.Cos(angle) * radius, center.Y + MathF.Sin(angle) * radius))
             .ToArray();
-
 }

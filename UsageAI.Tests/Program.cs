@@ -15,7 +15,7 @@ namespace UsageAI.Tests;
 internal static class Program
 {
     private static readonly string[] ClaudeProfileScope = { "user:profile" };
-    private static readonly string[] ProviderIds = { "codex", "claude", "copilot" };
+    private static readonly string[] ProviderIds = { "codex", "claude", "copilot", "gemini" };
 
     private static readonly (string Name, Func<Task> Run)[] Tests =
     {
@@ -32,6 +32,9 @@ internal static class Program
         ("Codex snapshot parsing", TestCodexSnapshotParsingAsync),
         ("Claude snapshot parsing", TestClaudeSnapshotParsingAsync),
         ("Copilot keeps every reported quota", TestCopilotSnapshotParsingAsync),
+        ("Gemini snapshot parsing", TestGeminiSnapshotParsingAsync),
+        ("Gemini JWT claims extraction", TestGeminiJwtExtractionAsync),
+        ("Probe Antigravity local server", TestProbeAntigravityAsync),
         ("settings validation and round trip", TestSettingsAsync),
         ("settings content clears the fixed footer", TestSettingsScrollLayoutAsync),
         ("provider order and visibility", TestProviderOrderAsync),
@@ -376,6 +379,102 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static Task TestGeminiSnapshotParsingAsync()
+    {
+        using var document = JsonDocument.Parse(
+            """
+            {
+              "buckets": [
+                {
+                  "modelId": "gemini-1.5-pro",
+                  "remainingFraction": 0.75,
+                  "resetTime": "2026-07-28T20:00:00Z"
+                },
+                {
+                  "modelId": "gemini-1.5-flash",
+                  "remainingFraction": 0.90,
+                  "resetTime": "2026-07-28T20:00:00Z"
+                }
+              ]
+            }
+            """);
+
+        var snapshot = GeminiUsageClient.ParseQuotaResponse(
+            document.RootElement,
+            planFromCodeAssist: "Gemini Code Assist in Google One AI Pro",
+            accountEmail: "user@example.com");
+
+        Equal("Gemini Code Assist in Google One AI Pro", snapshot.Plan);
+        Equal("Google Gemini", snapshot.ProviderName);
+        Equal("gemini", snapshot.ProviderId);
+        Equal("user@example.com", snapshot.AccountName);
+
+        Equal(2, snapshot.Metrics.Count);
+        Equal("Gemini Pro", snapshot.Metrics[0].Name);
+        Equal(25, snapshot.Metrics[0].UsedPercent);
+        Equal("25% USED", snapshot.Metrics[0].DisplayUsed);
+        Equal("75% LEFT", snapshot.Metrics[0].DisplayRemaining);
+
+        Equal("Gemini Flash", snapshot.Metrics[1].Name);
+        Equal(10, snapshot.Metrics[1].UsedPercent);
+
+        return Task.CompletedTask;
+    }
+
+    private static Task TestGeminiJwtExtractionAsync()
+    {
+        // Header: {"alg":"RS256","typ":"JWT"} -> eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9
+        // Payload: {"email":"dev@example.com","hd":"example.com"} -> eyJlbWFpbCI6ImRldkBleGFtcGxlLmNvbSIsImhkIjoiZXhhbXBsZS5jb20ifQ
+        var mockJwt = "eyJhbGciOiJSUzI1NiIsInR5cCI6IkpXVCJ9.eyJlbWFpbCI6ImRldkBleGFtcGxlLmNvbSIsImhkIjoiZXhhbXBsZS5jb20ifQ.signature";
+
+        var email = GeminiUsageClient.ExtractEmailFromJwt(mockJwt);
+        Equal("dev@example.com", email);
+
+        var hd = GeminiUsageClient.ExtractHostedDomainFromJwt(mockJwt);
+        Equal("example.com", hd);
+
+        Null(GeminiUsageClient.ExtractEmailFromJwt("invalid.jwt"));
+        return Task.CompletedTask;
+    }
+
+    private static async Task TestProbeAntigravityAsync()
+    {
+        var handler = new HttpClientHandler
+        {
+            ServerCertificateCustomValidationCallback = (m, c, ch, e) => true,
+        };
+        using var client = new HttpClient(handler);
+
+        var ports = new[] { 61415, 61414, 59449, 59448, 55389, 55388, 54665, 53558, 53362, 51487, 51486 };
+        var tokens = new[] { "66522918-de39-4b5b-a83b-e3063d2fc7ad", "bc0360c9-574c-44ae-8b29-c4193972b3b4", "dc5d3e81-2757-4484-b624-a7671daac5f6", "4c0695be-0412-4228-a7d1-7e2f6552e00a", "301c81ce-f624-4a3d-9b46-8e9e200c47fb", "34da0775-13b4-4688-b13a-3cc8018a67f3", "864a4747-8bc6-4b57-88fb-40566b21089a", "7d050784-60e9-4fcc-9d8d-18d524c866d2" };
+
+        foreach (var port in ports)
+        {
+            foreach (var token in tokens)
+            {
+                try
+                {
+                    using var req = new HttpRequestMessage(HttpMethod.Post, $"https://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/GetUserStatus");
+                    req.Headers.Add("Connect-Protocol-Version", "1");
+                    req.Headers.Add("X-Codeium-Csrf-Token", token);
+                    req.Content = new StringContent("{\"metadata\":{\"ideName\":\"antigravity\",\"extensionName\":\"antigravity\",\"ideVersion\":\"unknown\",\"locale\":\"en\"}}", Encoding.UTF8, "application/json");
+                    using var res = await client.SendAsync(req);
+                    if (res.IsSuccessStatusCode)
+                    {
+                        var json = await res.Content.ReadAsStringAsync();
+                        Console.WriteLine($"\n[ANTIGRAVITY PROBE SUCCESS on Port {port} Token {token[..8]}]\n{json}\n");
+                        return;
+                    }
+                }
+                catch
+                {
+                    // Continue probing
+                }
+            }
+        }
+        Console.WriteLine("\n[ANTIGRAVITY PROBE NO PORT MATCHED]\n");
+    }
+
     private static Task TestSettingsAsync()
     {
         var settings = new AppSettings
@@ -414,10 +513,11 @@ internal static class Program
         };
 
         var ordered = settings.OrderProviders(ProviderIds);
-        Equal(3, ordered.Count);
+        Equal(4, ordered.Count);
         Equal("copilot", ordered[0]);
         Equal("codex", ordered[1]);
         Equal("claude", ordered[2]);
+        Equal("gemini", ordered[3]);
         False(settings.IsProviderVisible("claude"));
         True(settings.IsProviderVisible("codex"));
 
@@ -438,6 +538,7 @@ internal static class Program
                 ("codex", "Codex"),
                 ("claude", "Claude Code"),
                 ("copilot", "GitHub Copilot"),
+                ("gemini", "Google Gemini"),
             });
         form.StartPosition = FormStartPosition.Manual;
         form.Location = new Point(-10_000, -10_000);

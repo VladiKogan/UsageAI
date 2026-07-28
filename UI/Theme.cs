@@ -52,6 +52,8 @@ internal static class Theme
 
     public static Color Copilot { get; private set; }
 
+    public static Color Gemini { get; private set; }
+
     /// <summary>The Windows accent colour, adjusted for legibility on the current background.</summary>
     public static Color Accent { get; private set; }
 
@@ -87,6 +89,7 @@ internal static class Theme
             Codex = Color.FromArgb(110, 211, 180);
             Claude = Color.FromArgb(222, 155, 112);
             Copilot = Color.FromArgb(157, 169, 255);
+            Gemini = Color.FromArgb(100, 170, 255);
         }
         else
         {
@@ -104,6 +107,7 @@ internal static class Theme
             Codex = Color.FromArgb(13, 122, 96);
             Claude = Color.FromArgb(166, 82, 26);
             Copilot = Color.FromArgb(70, 82, 191);
+            Gemini = Color.FromArgb(26, 115, 232);
         }
 
         Accent = ResolveAccent(dark);
@@ -123,6 +127,7 @@ internal static class Theme
     {
         "claude" => Claude,
         "copilot" => Copilot,
+        "gemini" => Gemini,
         _ => Codex,
     };
 
