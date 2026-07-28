@@ -112,6 +112,12 @@ internal sealed class AppSettings
     /// <summary>Provider ids in display order; unknown or missing ids fall back to registration order.</summary>
     public string[] ProviderOrder { get; set; } = Array.Empty<string>();
 
+    /// <summary>
+    /// Provider whose usage drives the tray gauge. Null means follow the connected provider
+    /// with the highest consumption.
+    /// </summary>
+    public string? TrayProviderId { get; set; }
+
     /// <summary>Saved dashboard bounds as x, y, width, height.</summary>
     public int[]? DashboardBounds { get; set; }
 
@@ -214,6 +220,7 @@ internal sealed class AppSettings
             : DefaultThresholds;
         HiddenProviders = NormalizeIds(HiddenProviders);
         ProviderOrder = NormalizeIds(ProviderOrder);
+        TrayProviderId = NormalizeId(TrayProviderId);
         if (DashboardBounds is { Length: not 4 })
         {
             DashboardBounds = null;
@@ -227,4 +234,15 @@ internal sealed class AppSettings
             .Take(16)
             .ToArray()
         : Array.Empty<string>();
+
+    private static string? NormalizeId(string? id)
+    {
+        if (string.IsNullOrWhiteSpace(id))
+        {
+            return null;
+        }
+
+        var normalized = id.Trim();
+        return normalized.Length <= 64 ? normalized : null;
+    }
 }

@@ -1,17 +1,21 @@
 using System.Diagnostics;
+using System.Drawing;
 using System.Net;
 using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
+using System.Windows.Forms;
 using UsageAI.Models;
 using UsageAI.Services;
+using UsageAI.UI;
 
 namespace UsageAI.Tests;
 
 internal static class Program
 {
     private static readonly string[] ClaudeProfileScope = { "user:profile" };
+    private static readonly string[] ProviderIds = { "codex", "claude", "copilot" };
 
     private static readonly (string Name, Func<Task> Run)[] Tests =
     {
@@ -29,7 +33,9 @@ internal static class Program
         ("Claude snapshot parsing", TestClaudeSnapshotParsingAsync),
         ("Copilot keeps every reported quota", TestCopilotSnapshotParsingAsync),
         ("settings validation and round trip", TestSettingsAsync),
+        ("settings content clears the fixed footer", TestSettingsScrollLayoutAsync),
         ("provider order and visibility", TestProviderOrderAsync),
+        ("tray provider selection, tooltip, and empty icon", TestTrayProviderSelectionAsync),
         ("usage history round trip", TestUsageHistoryAsync),
         ("snapshot cache round trip", TestSnapshotCacheAsync),
         ("burn-rate projection", TestForecastAsync),
@@ -285,10 +291,13 @@ internal static class Program
         Equal(UsageMetricKind.Session, snapshot.Metrics[0].Kind);
         Equal(43, snapshot.Metrics[0].UsedPercent);
         Equal(57, snapshot.Metrics[0].RemainingPercent);
+        Equal("43% USED", snapshot.Metrics[0].DisplayUsed);
+        Equal("57% LEFT", snapshot.Metrics[0].DisplaySecondary);
         Equal("Weekly", snapshot.Metrics[1].Name);
         Equal(UsageMetricKind.Rolling, snapshot.Metrics[1].Kind);
         Equal("Credits", snapshot.Metrics[2].Name);
         Equal("$12.50", snapshot.Metrics[2].DisplayRemaining);
+        Equal("$12.50", snapshot.Metrics[2].DisplayUsed);
         False(snapshot.Metrics[2].HasQuota);
         Equal("Reset credits", snapshot.Metrics[3].Name);
         Equal(63, snapshot.HighestUsedPercent);
@@ -358,7 +367,9 @@ internal static class Program
         Equal(3, snapshot.Metrics.Count);
         Equal("AI credits", snapshot.Metrics[0].Name);
         Equal(76, snapshot.Metrics[0].UsedPercent);
+        Equal("76% USED", snapshot.Metrics[0].DisplayUsed);
         Equal("24% LEFT", snapshot.Metrics[0].DisplayRemaining);
+        Equal("72 of 300 left", snapshot.Metrics[0].DisplaySecondary);
         True(snapshot.Metrics[1].IsUnlimited);
         False(snapshot.Metrics[1].HasQuota);
         Equal(76, snapshot.HighestUsedPercent);
@@ -373,6 +384,7 @@ internal static class Program
             WarningPercent = 95,
             CriticalPercent = 10,
             NotifyAtPercent = new[] { 150, 80, 80, 20 },
+            TrayProviderId = " claude ",
         };
         settings.Save();
 
@@ -381,11 +393,13 @@ internal static class Program
         Equal(2, settings.NotifyAtPercent.Length);
         Equal(20, settings.NotifyAtPercent[0]);
         Equal(80, settings.NotifyAtPercent[1]);
+        Equal("claude", settings.TrayProviderId);
 
         var reloaded = AppSettings.Load();
         Equal(AppSettings.MaximumRefreshMinutes, reloaded.RefreshIntervalMinutes);
         Equal(96, reloaded.CriticalPercent);
         Equal(2, reloaded.NotifyAtPercent.Length);
+        Equal("claude", reloaded.TrayProviderId);
 
         File.Delete(AppPaths.SettingsFile);
         return Task.CompletedTask;
@@ -399,7 +413,7 @@ internal static class Program
             HiddenProviders = new[] { "claude" },
         };
 
-        var ordered = settings.OrderProviders(new[] { "codex", "claude", "copilot" });
+        var ordered = settings.OrderProviders(ProviderIds);
         Equal(3, ordered.Count);
         Equal("copilot", ordered[0]);
         Equal("codex", ordered[1]);
@@ -411,6 +425,129 @@ internal static class Program
         True(settings.IsProviderVisible("claude"));
         settings.SetProviderVisible("codex", false);
         False(settings.IsProviderVisible("codex"));
+        return Task.CompletedTask;
+    }
+
+    private static Task TestSettingsScrollLayoutAsync()
+    {
+        var settings = new AppSettings { TrayProviderId = "claude" };
+        using var form = new SettingsForm(
+            settings,
+            new[]
+            {
+                ("codex", "Codex"),
+                ("claude", "Claude Code"),
+                ("copilot", "GitHub Copilot"),
+            });
+        form.StartPosition = FormStartPosition.Manual;
+        form.Location = new Point(-10_000, -10_000);
+        form.Show();
+        Application.DoEvents();
+        form.PerformLayout();
+
+        var shell = form.Controls.OfType<TableLayoutPanel>().Single();
+        shell.PerformLayout();
+        Equal(2, shell.RowCount);
+
+        var content = shell.GetControlFromPosition(0, 0) as Panel
+            ?? throw new InvalidOperationException("The settings content area is missing.");
+        var footer = shell.GetControlFromPosition(0, 1)
+            ?? throw new InvalidOperationException("The settings footer is missing.");
+        Equal(content.Bottom, footer.Top);
+        Equal(shell.ClientSize.Height, footer.Bottom);
+
+        content.PerformLayout();
+        if (!content.VerticalScroll.Visible)
+        {
+            throw new InvalidOperationException(
+                $"Expected a vertical scrollbar for {content.DisplayRectangle.Height}px of settings content " +
+                $"inside a {content.ClientSize.Height}px viewport.");
+        }
+
+        if (content.HorizontalScroll.Visible)
+        {
+            throw new InvalidOperationException("The settings content unexpectedly requires horizontal scrolling.");
+        }
+
+        var settingsTable = content.Controls.OfType<TableLayoutPanel>().Single();
+        var trayProvider = settingsTable.Controls
+            .OfType<ComboBox>()
+            .Single(combo => combo.Items.Cast<object>().Any(item => item.ToString() == "Automatic"));
+        Equal("Claude Code", trayProvider.SelectedItem!.ToString());
+
+        var finalControl = settingsTable.Controls
+            .Cast<Control>()
+            .Single(control => settingsTable.GetRow(control) == settingsTable.RowCount - 1);
+        content.AutoScrollPosition = new Point(0, content.VerticalScroll.Maximum);
+        Application.DoEvents();
+        content.PerformLayout();
+        var finalControlBottom = settingsTable.Top + finalControl.Bottom;
+        if (finalControlBottom > content.ClientSize.Height)
+        {
+            throw new InvalidOperationException(
+                $"The final settings control ends at {finalControlBottom}px after scrolling, " +
+                $"outside the {content.ClientSize.Height}px viewport.");
+        }
+
+        trayProvider.SelectedIndex = trayProvider.Items
+            .Cast<object>()
+            .Select((item, index) => (Item: item, Index: index))
+            .Single(entry => entry.Item.ToString() == "GitHub Copilot")
+            .Index;
+        var save = footer.Controls
+            .OfType<Button>()
+            .Single(button => button.Text == "Save");
+        save.PerformClick();
+        Equal("copilot", settings.TrayProviderId);
+        return Task.CompletedTask;
+    }
+
+    private static Task TestTrayProviderSelectionAsync()
+    {
+        var now = DateTimeOffset.Now;
+        var codex = new ProviderStatus(
+            "codex",
+            "Codex",
+            SampleSnapshot(40, now),
+            null,
+            false);
+        var claude = new ProviderStatus(
+            "claude",
+            "Claude Code",
+            SampleSnapshot(80, now) with
+            {
+                ProviderId = "claude",
+                ProviderName = "Claude Code",
+            },
+            null,
+            false);
+        var connected = new[] { codex, claude };
+
+        Equal("claude", UsageApplicationContext.SelectTrayStatus(connected, null)!.ProviderId);
+        Equal("codex", UsageApplicationContext.SelectTrayStatus(connected, "CODEX")!.ProviderId);
+        Equal("claude", UsageApplicationContext.SelectTrayStatus(connected, "copilot")!.ProviderId);
+        Null(UsageApplicationContext.SelectTrayStatus(Array.Empty<ProviderStatus>(), "codex"));
+        Equal("UsageAI - Claude Code: 80% used", UsageApplicationContext.TrayTooltip(claude));
+
+        using var emptyIcon = TrayIconFactory.Create(
+            0,
+            "A",
+            size: 16,
+            identityColor: Theme.ForProvider("claude"));
+        using var emptyBitmap = emptyIcon.ToBitmap();
+        var strongPixels = 0;
+        for (var y = 0; y < emptyBitmap.Height; y++)
+        {
+            for (var x = 0; x < emptyBitmap.Width; x++)
+            {
+                if (emptyBitmap.GetPixel(x, y).A >= 180)
+                {
+                    strongPixels++;
+                }
+            }
+        }
+
+        True(strongPixels >= 24);
         return Task.CompletedTask;
     }
 

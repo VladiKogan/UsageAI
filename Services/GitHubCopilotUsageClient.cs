@@ -197,7 +197,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
     /// Tries the token that last worked first and skips ones GitHub already rejected, so a
     /// refresh does not replay every discovered credential against GitHub every five minutes.
     /// </summary>
-    private IEnumerable<string> PrioritizeTokens(IReadOnlyList<string> tokens)
+    private List<string> PrioritizeTokens(IReadOnlyList<string> tokens)
     {
         var candidates = tokens.Where(token => !_rejectedTokens.Contains(token)).ToList();
         if (candidates.Count == 0)

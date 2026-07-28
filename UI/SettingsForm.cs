@@ -22,6 +22,7 @@ internal sealed class SettingsForm : Form
     private readonly NumericUpDown _warningPercent;
     private readonly NumericUpDown _criticalPercent;
     private readonly ComboBox _theme;
+    private readonly ComboBox _trayProvider;
     private readonly CheckBox _historyEnabled;
     private readonly CheckBox _forecastEnabled;
     private readonly CheckBox _hotkeyEnabled;
@@ -45,16 +46,39 @@ internal sealed class SettingsForm : Form
         ClientSize = new Size(scale[470], scale[640]);
         Font = Own(Typography.Text(9F));
 
-        _layout = new TableLayoutPanel
+        var shell = new TableLayoutPanel
+        {
+            ColumnCount = 1,
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            RowCount = 2,
+        };
+        shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, scale[52]));
+        Controls.Add(shell);
+
+        var scrollHost = new Panel
         {
             AutoScroll = true,
-            ColumnCount = 2,
             Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+        };
+        shell.Controls.Add(scrollHost, 0, 0);
+
+        _layout = new TableLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            ColumnCount = 2,
+            Dock = DockStyle.Top,
+            Margin = Padding.Empty,
             Padding = scale.Pad(18, 16, 18, 8),
         };
         _layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
         _layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
-        Controls.Add(_layout);
+        scrollHost.Controls.Add(_layout);
 
         _refreshInterval = CreateNumeric(AppSettings.MinimumRefreshMinutes, AppSettings.MaximumRefreshMinutes);
         _slowWhenHidden = CreateCheckBox("Slow down while no window is open");
@@ -79,6 +103,17 @@ internal sealed class SettingsForm : Form
         };
         _theme.Items.AddRange(ThemeChoices);
 
+        _trayProvider = new ComboBox
+        {
+            BackColor = Theme.SurfaceRaised,
+            Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = Theme.Text,
+            Margin = scale.Pad(0, 4, 0, 4),
+        };
+        _trayProvider.Items.Add(new ProviderEntry(string.Empty, "Automatic"));
+
         _providers = new CheckedListBox
         {
             BackColor = Theme.SurfaceRaised,
@@ -94,9 +129,11 @@ internal sealed class SettingsForm : Form
         {
             var provider = providers.First(candidate =>
                 candidate.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
+            var entry = new ProviderEntry(provider.Id, provider.DisplayName);
             _providers.Items.Add(
-                new ProviderEntry(provider.Id, provider.DisplayName),
+                entry,
                 _settings.IsProviderVisible(provider.Id));
+            _trayProvider.Items.Add(entry);
         }
 
         AddSection("Refresh");
@@ -124,6 +161,14 @@ internal sealed class SettingsForm : Form
         }));
 
         AddSection("Providers");
+        AddRow("Tray icon provider", _trayProvider);
+        AddSpan(new Label
+        {
+            AutoSize = true,
+            ForeColor = Theme.Muted,
+            Margin = scale.Pad(0, 0, 0, 8),
+            Text = "Automatic follows the connected provider with the highest usage.",
+        });
         AddSpan(new Label
         {
             AutoSize = true,
@@ -140,9 +185,9 @@ internal sealed class SettingsForm : Form
 
         var buttons = new FlowLayoutPanel
         {
-            Dock = DockStyle.Bottom,
+            Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.RightToLeft,
-            Height = scale[52],
+            Margin = Padding.Empty,
             Padding = scale.Pad(0, 10, 18, 10),
         };
         var save = CreateDialogButton("Save", scale, primary: true);
@@ -151,7 +196,7 @@ internal sealed class SettingsForm : Form
         cancel.DialogResult = DialogResult.Cancel;
         buttons.Controls.Add(save);
         buttons.Controls.Add(cancel);
-        Controls.Add(buttons);
+        shell.Controls.Add(buttons, 0, 1);
         AcceptButton = save;
         CancelButton = cancel;
 
@@ -176,6 +221,19 @@ internal sealed class SettingsForm : Form
         _forecastEnabled.Checked = _settings.ForecastEnabled;
         _hotkeyEnabled.Checked = _settings.GlobalHotkeyEnabled;
         _updateCheckEnabled.Checked = _settings.UpdateCheckEnabled;
+        _trayProvider.SelectedIndex = 0;
+        if (_settings.TrayProviderId is { } trayProviderId)
+        {
+            for (var index = 1; index < _trayProvider.Items.Count; index++)
+            {
+                var entry = (ProviderEntry)_trayProvider.Items[index]!;
+                if (entry.Id.Equals(trayProviderId, StringComparison.OrdinalIgnoreCase))
+                {
+                    _trayProvider.SelectedIndex = index;
+                    break;
+                }
+            }
+        }
     }
 
     private void Apply()
@@ -197,6 +255,9 @@ internal sealed class SettingsForm : Form
         _settings.ForecastEnabled = _forecastEnabled.Checked;
         _settings.GlobalHotkeyEnabled = _hotkeyEnabled.Checked;
         _settings.UpdateCheckEnabled = _updateCheckEnabled.Checked;
+        _settings.TrayProviderId = _trayProvider.SelectedItem is ProviderEntry { Id.Length: > 0 } trayProvider
+            ? trayProvider.Id
+            : null;
 
         var order = new List<string>();
         for (var index = 0; index < _providers.Items.Count; index++)
@@ -212,7 +273,7 @@ internal sealed class SettingsForm : Form
         Close();
     }
 
-    private Control CreateOrderButtons(LayoutScale scale)
+    private FlowLayoutPanel CreateOrderButtons(LayoutScale scale)
     {
         var panel = new FlowLayoutPanel
         {

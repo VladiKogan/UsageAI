@@ -519,7 +519,7 @@ internal sealed class UsagePopupForm : Form
             _summaryLabel.ForeColor = headline.HasQuota
                 ? Theme.ForUsage(headline.UsedPercent!.Value)
                 : Theme.Muted;
-            _summaryLabel.Text = $"{ShortName(worst.ProviderName)} {headline.DisplayRemaining}".ToUpperInvariant();
+            _summaryLabel.Text = $"{ShortName(worst.ProviderName)} {headline.DisplayUsed}".ToUpperInvariant();
         }
         else if (_isRefreshing)
         {

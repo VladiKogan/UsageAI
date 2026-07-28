@@ -52,14 +52,11 @@ internal static class DrawingHelpers
             color,
             flags | TextFormatFlags.NoPadding | TextFormatFlags.PreserveGraphicsClipping);
 
-    /// <summary>
-    /// Draws a capacity meter. The fill length is the share still available, so the bar and
-    /// the headline percentage always move in the same direction.
-    /// </summary>
+    /// <summary>Draws a consumption meter whose fill length is the share already used.</summary>
     public static void DrawCapacityMeter(
         Graphics graphics,
         Rectangle bounds,
-        int remainingPercent,
+        int usedPercent,
         Color fill,
         Color track)
     {
@@ -75,14 +72,14 @@ internal static class DrawingHelpers
             graphics.FillPath(trackBrush, trackPath);
         }
 
-        var remaining = Math.Clamp(remainingPercent, 0, 100);
-        var width = (int)Math.Round(bounds.Width * remaining / 100D);
+        var used = Math.Clamp(usedPercent, 0, 100);
+        var width = (int)Math.Round(bounds.Width * used / 100D);
         if (width <= 0)
         {
             return;
         }
 
-        // Keep a rounded cap legible even when almost nothing is left.
+        // Keep a rounded cap legible even when almost nothing has been used.
         width = Math.Max(width, bounds.Height);
         width = Math.Min(width, bounds.Width);
         using var fillPath = RoundedRectangle(new Rectangle(bounds.X, bounds.Y, width, bounds.Height), radius);

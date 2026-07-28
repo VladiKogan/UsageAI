@@ -174,14 +174,13 @@ internal sealed class UsageApplicationContext : ApplicationContext
             return;
         }
 
-        var highestUsed = connected.Max(status => status.Snapshot!.HighestUsedPercent);
-        var glyph = connected.Length == 1 ? ProviderGlyph(connected[0].ProviderId) : "U";
-        ReplaceIcon(TrayIconFactory.Create(highestUsed, glyph));
-
-        var summaries = connected
-            .Select(status => $"{ShortProviderName(status.ProviderName)} {CompactMetric(status)}")
-            .ToArray();
-        _trayIcon.Text = Trim($"UsageAI - {string.Join(" - ", summaries)}", MaximumTooltipLength);
+        var trayStatus = SelectTrayStatus(connected, _settings.TrayProviderId)!;
+        var usedPercent = trayStatus.Snapshot!.HighestUsedPercent;
+        ReplaceIcon(TrayIconFactory.Create(
+            usedPercent,
+            ProviderGlyph(trayStatus.ProviderId),
+            identityColor: Theme.ForProvider(trayStatus.ProviderId)));
+        _trayIcon.Text = TrayTooltip(trayStatus);
     }
 
     private void ReplaceIcon(Icon icon)
@@ -367,21 +366,34 @@ internal sealed class UsageApplicationContext : ApplicationContext
         base.Dispose(disposing);
     }
 
-    private static string CompactMetric(ProviderStatus status)
+    internal static string TrayTooltip(ProviderStatus status) => Trim(
+        $"UsageAI - {ShortProviderName(status.ProviderName)}: " +
+        $"{status.Snapshot?.HighestUsedPercent ?? 0}% used",
+        MaximumTooltipLength);
+
+    /// <summary>
+    /// Resolves the provider represented by the tray gauge. An unavailable pinned provider
+    /// falls back to the most-consumed connected provider until it reconnects.
+    /// </summary>
+    internal static ProviderStatus? SelectTrayStatus(
+        IReadOnlyList<ProviderStatus> connected,
+        string? preferredProviderId)
     {
-        if (status.Snapshot is not { } snapshot)
+        if (!string.IsNullOrWhiteSpace(preferredProviderId))
         {
-            return "unavailable";
+            var preferred = connected.FirstOrDefault(status =>
+                status.Snapshot is not null &&
+                status.ProviderId.Equals(preferredProviderId, StringComparison.OrdinalIgnoreCase));
+            if (preferred is not null)
+            {
+                return preferred;
+            }
         }
 
-        var metric = snapshot.Metrics.FirstOrDefault(candidate => candidate.HasQuota) ?? snapshot.Primary;
-        if (metric is null)
-        {
-            return status.IsStale ? "stale" : "connected";
-        }
-
-        var value = metric.IsUnlimited ? "unlimited" : metric.DisplayRemaining.ToLowerInvariant();
-        return status.IsStale ? $"{value} (stale)" : value;
+        return connected
+            .Where(status => status.Snapshot is not null)
+            .OrderByDescending(status => status.Snapshot!.HighestUsedPercent)
+            .FirstOrDefault();
     }
 
     private static string ProviderGlyph(string providerId) => providerId.ToLowerInvariant() switch

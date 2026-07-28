@@ -22,7 +22,12 @@ internal static class TrayIconFactory
         }
     }
 
-    public static Icon Create(int usedPercent, string glyph = "C", bool hasError = false, int size = 0)
+    public static Icon Create(
+        int usedPercent,
+        string glyph = "C",
+        bool hasError = false,
+        int size = 0,
+        Color? identityColor = null)
     {
         var pixels = Math.Clamp(size <= 0 ? PreferredSize : size, 16, 64);
         using var bitmap = new Bitmap(pixels, pixels, PixelFormat.Format32bppArgb);
@@ -37,22 +42,46 @@ internal static class TrayIconFactory
             var diameter = pixels - inset * 2F;
             var circle = new RectangleF(inset, inset, diameter, diameter);
 
-            // A translucent grey track reads on both light and dark taskbars; the previous
-            // filled dark disc disappeared against a dark shell.
-            using (var track = new Pen(Color.FromArgb(90, 140, 152, 168), ringWidth))
+            // A dark outer edge plus a light inner track keeps the empty ring visible on
+            // both light and dark taskbars, regardless of the UsageAI theme.
+            using (var trackOutline = new Pen(
+                       Color.FromArgb(210, 24, 30, 40),
+                       ringWidth + Math.Max(1.5F, pixels * 0.08F)))
+            using (var track = new Pen(Color.FromArgb(235, 205, 214, 226), ringWidth))
             {
+                graphics.DrawEllipse(trackOutline, circle);
                 graphics.DrawEllipse(track, circle);
             }
 
-            using (var arc = new Pen(color, ringWidth)
-                   {
-                       StartCap = LineCap.Round,
-                       EndCap = LineCap.Round,
-                   })
+            var normalizedUsage = Math.Clamp(usedPercent, 0, 100);
+            if (hasError || normalizedUsage > 0)
             {
+                using var arc = new Pen(color, ringWidth)
+                {
+                    StartCap = LineCap.Round,
+                    EndCap = LineCap.Round,
+                };
                 // The arc shows consumption, matching the meters in the popup.
-                var sweep = hasError ? 360F : Math.Max(10F, 360F * Math.Clamp(usedPercent, 0, 100) / 100F);
+                var sweep = hasError ? 360F : Math.Max(10F, 360F * normalizedUsage / 100F);
                 graphics.DrawArc(arc, circle, -90, sweep);
+            }
+
+            if (!hasError && normalizedUsage == 0)
+            {
+                // At 16px there is no room for a readable glyph. A solid identity marker
+                // prevents an empty gauge from collapsing visually into the taskbar.
+                var markerDiameter = Math.Max(3F, pixels * 0.22F);
+                var markerBounds = new RectangleF(
+                    (pixels - markerDiameter) / 2F,
+                    (pixels - markerDiameter) / 2F,
+                    markerDiameter,
+                    markerDiameter);
+                using var markerOutline = new SolidBrush(Color.FromArgb(220, 24, 30, 40));
+                using var marker = new SolidBrush(identityColor ?? color);
+                graphics.FillEllipse(
+                    markerOutline,
+                    RectangleF.Inflate(markerBounds, pixels * 0.05F, pixels * 0.05F));
+                graphics.FillEllipse(marker, markerBounds);
             }
 
             var displayedGlyph = hasError ? "!" : glyph;

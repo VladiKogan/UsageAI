@@ -43,7 +43,15 @@ internal sealed record UsageMetric(
     [JsonIgnore]
     public int RemainingPercent => Math.Clamp(100 - (UsedPercent ?? 0), 0, 100);
 
-    /// <summary>The headline value. Both this and the meter fill encode remaining capacity.</summary>
+    /// <summary>The primary quota value. It moves in the same direction as the consumption meter.</summary>
+    [JsonIgnore]
+    public string DisplayUsed => IsUnlimited
+        ? "UNLIMITED"
+        : UsedPercent is { } used
+            ? $"{Math.Clamp(used, 0, 100)}% USED"
+            : DisplayRemaining;
+
+    /// <summary>The secondary value describing the capacity still available.</summary>
     [JsonIgnore]
     public string DisplayRemaining =>
         RemainingText ?? (IsUnlimited ? "UNLIMITED" : $"{RemainingPercent}% LEFT");
@@ -55,6 +63,15 @@ internal sealed record UsageMetric(
             : UsedPercent is { } used
                 ? $"{used}% used"
                 : "Not reported");
+
+    /// <summary>
+    /// Supporting card text: provider-specific quota detail when available, otherwise the
+    /// remaining percentage; non-quota metrics retain their descriptive usage text.
+    /// </summary>
+    [JsonIgnore]
+    public string DisplaySecondary => HasQuota
+        ? UsageText ?? DisplayRemaining
+        : DisplayUsage;
 
     /// <summary>Stable identity for history samples and alert de-duplication.</summary>
     [JsonIgnore]
@@ -78,7 +95,7 @@ internal sealed record UsageSnapshot(
     /// <summary>The metric shown in the compact view: the first real quota, else the first balance.</summary>
     [JsonIgnore]
     public UsageMetric? Primary =>
-        Metrics.FirstOrDefault(metric => metric.HasQuota) ?? Metrics.FirstOrDefault();
+        Metrics.FirstOrDefault(metric => metric.HasQuota) ?? (Metrics.Count > 0 ? Metrics[0] : null);
 
     [JsonIgnore]
     public int HighestUsedPercent => Metrics

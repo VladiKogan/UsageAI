@@ -27,8 +27,8 @@ internal sealed class ProviderCardActionEventArgs : EventArgs
 
 /// <summary>
 /// One provider's card. Compact and expanded modes share the same grammar: a label on the
-/// left, the headline value on the right, supporting detail beneath, and a capacity meter
-/// across the bottom. The meter fill and the headline both encode what is left, so they
+/// left, the headline value on the right, supporting detail beneath, and a consumption meter
+/// across the bottom. The meter fill and the headline both encode what is used, so they
 /// never move in opposite directions.
 /// </summary>
 internal sealed class ProviderUsageCard : Control
@@ -203,7 +203,7 @@ internal sealed class ProviderUsageCard : Control
 
         var textLeft = scale[58];
         var metric = _status.Snapshot?.Primary;
-        var valueText = metric?.DisplayRemaining ?? (_status.IsLoading ? "..." : "--");
+        var valueText = metric?.DisplayUsed ?? (_status.IsLoading ? "..." : "--");
         var valueWidth = MeasureWidth(graphics, valueText, _valueFont);
         var nameWidth = Math.Max(scale[40], Width - textLeft - valueWidth - scale[26]);
 
@@ -363,7 +363,7 @@ internal sealed class ProviderUsageCard : Control
         }
 
         var valueColor = metric.HasQuota ? Theme.ForUsage(metric.UsedPercent!.Value) : severity;
-        var valueText = metric.DisplayRemaining;
+        var valueText = metric.DisplayUsed;
         var valueWidth = MeasureWidth(graphics, valueText, _valueFont);
 
         DrawingHelpers.DrawText(
@@ -385,7 +385,7 @@ internal sealed class ProviderUsageCard : Control
         DrawSplitLine(
             graphics,
             new Rectangle(scale[18], top + scale[32], Width - scale[36], scale[16]),
-            metric.DisplayUsage,
+            SecondaryText(metric),
             UsageFormatting.RelativeReset(metric.ResetsAt, DateTimeOffset.Now),
             _smallFont,
             Theme.Muted,
@@ -484,7 +484,7 @@ internal sealed class ProviderUsageCard : Control
 
         if (metric.IsUnlimited)
         {
-            DrawingHelpers.DrawCapacityMeter(graphics, bounds, 100, Theme.Blend(Theme.Muted, Theme.Track, 0.6), Theme.Track);
+            DrawingHelpers.DrawCapacityMeter(graphics, bounds, 0, Theme.Muted, Theme.Track);
             return;
         }
 
@@ -497,7 +497,7 @@ internal sealed class ProviderUsageCard : Control
         DrawingHelpers.DrawCapacityMeter(
             graphics,
             bounds,
-            metric.RemainingPercent,
+            metric.UsedPercent!.Value,
             Theme.ForUsage(metric.UsedPercent!.Value),
             Theme.Track);
     }
@@ -549,7 +549,7 @@ internal sealed class ProviderUsageCard : Control
     {
         if (metric is not null)
         {
-            return metric.DisplayUsage;
+            return SecondaryText(metric);
         }
 
         return _status.IsLoading
@@ -568,6 +568,8 @@ internal sealed class ProviderUsageCard : Control
 
         return metric is null ? string.Empty : UsageFormatting.RelativeReset(metric.ResetsAt, DateTimeOffset.Now);
     }
+
+    private static string SecondaryText(UsageMetric metric) => metric.DisplaySecondary;
 
     private string Identity()
     {
@@ -663,9 +665,12 @@ internal sealed class ProviderUsageCard : Control
             foreach (var metric in snapshot.Metrics)
             {
                 var reset = UsageFormatting.RelativeReset(metric.ResetsAt, DateTimeOffset.Now);
+                var values = metric.HasQuota
+                    ? $"{metric.DisplayUsed}, {metric.DisplaySecondary}"
+                    : $"{metric.DisplayRemaining}, {metric.DisplayUsage}";
                 parts.Add(string.IsNullOrEmpty(reset)
-                    ? $"{metric.Name}: {metric.DisplayRemaining}, {metric.DisplayUsage}"
-                    : $"{metric.Name}: {metric.DisplayRemaining}, {metric.DisplayUsage}, {reset}");
+                    ? $"{metric.Name}: {values}"
+                    : $"{metric.Name}: {values}, {reset}");
             }
         }
 
