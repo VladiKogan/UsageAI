@@ -8,6 +8,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Google Gemini provider integration (`gemini`), supporting both local Antigravity IDE language server probe detection and Gemini CLI OAuth authentication (`cloudcode-pa.googleapis.com`).
+- Antigravity IDE model grouping in the detailed dashboard view into unified model groups (**Gemini Models** and **Claude and GPT models**), reflecting exact real-time remaining fractions and reset countdowns.
+- Automatic OAuth client credential resolution with fallback for Gemini CLI token refresh.
+- Google Gemini icon painting (4-pointed sparkle star) and brand color theme definitions (Google Sky Blue / Brand Blue).
 - An Inno Setup installer (`installer\UsageAI.iss`) producing `UsageAI-<version>-Setup.exe`, with a Start Menu shortcut, uninstaller, and an install-time check that silently installs the .NET 10 Desktop Runtime if it's missing. The portable single-file build remains available as `UsageAI-<version>-portable.exe`. Both stay part of the existing manual local-build-and-upload release process; no hosted release automation was added.
 
 ## [0.4.0] - 2026-07-28
