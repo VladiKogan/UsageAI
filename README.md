@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="Resources/logo.png" alt="UsageAI Logo" width="128" />
+</p>
+
 # UsageAI
 
 A small, personal Windows tray meter for Codex, Claude Code, GitHub Copilot, and Google Gemini usage limits.

@@ -33,6 +33,7 @@ VersionInfoVersion={#MyAppVersion}
 DefaultDirName={autopf}\{#MyAppName}
 DefaultGroupName={#MyAppName}
 DisableProgramGroupPage=yes
+SetupIconFile=..\Resources\app.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 OutputDir=.\Output
 OutputBaseFilename=UsageAI-{#MyAppVersion}-Setup

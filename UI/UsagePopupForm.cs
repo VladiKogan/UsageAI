@@ -749,6 +749,19 @@ internal sealed class UsagePopupForm : Form
 
     private sealed class UsageMarkControl : Control
     {
+        private static readonly Lazy<Image?> LogoImage = new(() =>
+        {
+            try
+            {
+                var path = Path.Combine(AppContext.BaseDirectory, "Resources", "logo.png");
+                return File.Exists(path) ? Image.FromFile(path) : null;
+            }
+            catch
+            {
+                return null;
+            }
+        });
+
         public UsageMarkControl()
         {
             DoubleBuffered = true;
@@ -759,19 +772,35 @@ internal sealed class UsagePopupForm : Form
         {
             base.OnPaint(e);
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
             var scale = new LayoutScale(this);
             var side = Math.Min(Width, Height);
             var box = new Rectangle(0, Math.Max(0, (Height - side) / 2), Math.Max(1, side - 1), Math.Max(1, side - 1));
-            DrawingHelpers.FillCard(e.Graphics, box, Theme.SurfaceRaised, Theme.Hairline, scale.Exact(9));
 
-            var barWidth = Math.Max(2, box.Width / 9);
-            var baseline = box.Bottom - box.Height / 4;
-            using var codex = new SolidBrush(Theme.Codex);
-            using var claude = new SolidBrush(Theme.Claude);
-            using var copilot = new SolidBrush(Theme.Copilot);
-            e.Graphics.FillRectangle(codex, box.Left + box.Width / 4, baseline - box.Height / 2, barWidth, box.Height / 2);
-            e.Graphics.FillRectangle(claude, box.Left + box.Width / 2 - barWidth / 2, baseline - box.Height / 3, barWidth, box.Height / 3);
-            e.Graphics.FillRectangle(copilot, box.Right - box.Width / 4 - barWidth, baseline - box.Height * 5 / 8, barWidth, box.Height * 5 / 8);
+            var logo = LogoImage.Value;
+            if (logo != null)
+            {
+                using var path = DrawingHelpers.RoundedRectangle(box, scale.Exact(9));
+                var state = e.Graphics.Save();
+                e.Graphics.SetClip(path);
+                e.Graphics.DrawImage(logo, box);
+                e.Graphics.Restore(state);
+                using var pen = new Pen(Theme.Hairline);
+                using var outlinePath = DrawingHelpers.RoundedRectangle(box, scale.Exact(9));
+                e.Graphics.DrawPath(pen, outlinePath);
+            }
+            else
+            {
+                DrawingHelpers.FillCard(e.Graphics, box, Theme.SurfaceRaised, Theme.Hairline, scale.Exact(9));
+                var barWidth = Math.Max(2, box.Width / 9);
+                var baseline = box.Bottom - box.Height / 4;
+                using var codex = new SolidBrush(Theme.Codex);
+                using var claude = new SolidBrush(Theme.Claude);
+                using var copilot = new SolidBrush(Theme.Copilot);
+                e.Graphics.FillRectangle(codex, box.Left + box.Width / 4, baseline - box.Height / 2, barWidth, box.Height / 2);
+                e.Graphics.FillRectangle(claude, box.Left + box.Width / 2 - barWidth / 2, baseline - box.Height / 3, barWidth, box.Height / 3);
+                e.Graphics.FillRectangle(copilot, box.Right - box.Width / 4 - barWidth, baseline - box.Height * 5 / 8, barWidth, box.Height * 5 / 8);
+            }
         }
     }
 
