@@ -418,6 +418,35 @@ internal static class Program
         Equal("Gemini Flash", snapshot.Metrics[1].Name);
         Equal(10, snapshot.Metrics[1].UsedPercent);
 
+        using var antigravityDoc = JsonDocument.Parse(
+            """
+            {
+              "userStatus": {
+                "email": "dev@example.com",
+                "cascadeModelConfigData": {
+                  "clientModelConfigs": [
+                    {
+                      "label": "Gemini 3.6 Flash (High)",
+                      "quotaInfo": { "remainingFraction": 0.80, "resetTime": "2026-07-29T18:00:00Z" }
+                    },
+                    {
+                      "label": "Claude Sonnet 4.6 (Thinking)",
+                      "quotaInfo": { "resetTime": "2026-07-29T18:00:00Z" }
+                    }
+                  ]
+                }
+              }
+            }
+            """);
+
+        var agSnapshot = GeminiUsageClient.ParseAntigravityUserStatus(antigravityDoc.RootElement);
+        NotNull(agSnapshot);
+        Equal(2, agSnapshot!.Metrics.Count);
+        Equal("Gemini Models", agSnapshot.Metrics[0].Name);
+        Equal(20, agSnapshot.Metrics[0].UsedPercent);
+        Equal("Claude and GPT models", agSnapshot.Metrics[1].Name);
+        Equal(100, agSnapshot.Metrics[1].UsedPercent);
+
         return Task.CompletedTask;
     }
 

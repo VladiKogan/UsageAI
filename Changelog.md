@@ -15,6 +15,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Application logo and multi-resolution Windows icon (`Resources\app.ico` and `Resources\logo.png`), integrated into `UsageAI.csproj`, the Inno Setup installer (`installer\UsageAI.iss`), application header UI, and project documentation.
 - An Inno Setup installer (`installer\UsageAI.iss`) producing `UsageAI-<version>-Setup.exe`, with a Start Menu shortcut, uninstaller, and an install-time check that silently installs the .NET 10 Desktop Runtime if it's missing. The portable single-file build remains available as `UsageAI-<version>-portable.exe`. Both stay part of the existing manual local-build-and-upload release process; no hosted release automation was added.
 
+### Fixed
+
+- Handled omitted `remainingFraction` values in Google Gemini / Antigravity IDE model quota info blocks so model groups with depleted quotas (such as **Claude and GPT models**) remain visible at 100% usage with their reset countdown rather than being discarded.
+
 ## [0.4.0] - 2026-07-28
 
 ### Added

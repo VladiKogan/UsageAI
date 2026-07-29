@@ -200,12 +200,7 @@ internal sealed class GeminiUsageClient : IUsageClient
                     continue;
                 }
 
-                var remainingFraction = GetDouble(quotaInfo, "remainingFraction");
-                if (remainingFraction is null)
-                {
-                    continue;
-                }
-
+                var remainingFraction = GetDouble(quotaInfo, "remainingFraction") ?? 0.0;
                 var resetTime = ParseIsoDate(GetString(quotaInfo, "resetTime"));
                 var groupKey = GetModelGroupName(label);
 
@@ -215,9 +210,9 @@ internal sealed class GeminiUsageClient : IUsageClient
                     groupQuotas[groupKey] = quotaList;
                 }
 
-                if (!quotaList.Any(q => Math.Abs(q.RemainingFraction - remainingFraction.Value) < 0.001 && q.ResetTime == resetTime))
+                if (!quotaList.Any(q => Math.Abs(q.RemainingFraction - remainingFraction) < 0.001 && q.ResetTime == resetTime))
                 {
-                    quotaList.Add((remainingFraction.Value, resetTime));
+                    quotaList.Add((remainingFraction, resetTime));
                 }
             }
         }
@@ -367,8 +362,8 @@ internal sealed class GeminiUsageClient : IUsageClient
             }
 
             var modelId = GetString(bucket, "modelId");
-            var remainingFraction = GetDouble(bucket, "remainingFraction");
-            if (string.IsNullOrWhiteSpace(modelId) || remainingFraction is null)
+            var remainingFraction = GetDouble(bucket, "remainingFraction") ?? 0.0;
+            if (string.IsNullOrWhiteSpace(modelId))
             {
                 continue;
             }
@@ -376,9 +371,9 @@ internal sealed class GeminiUsageClient : IUsageClient
             var resetTimeString = GetString(bucket, "resetTime");
             var resetTime = ParseIsoDate(resetTimeString);
 
-            if (!modelQuotas.TryGetValue(modelId, out var existing) || remainingFraction.Value < existing.RemainingFraction)
+            if (!modelQuotas.TryGetValue(modelId, out var existing) || remainingFraction < existing.RemainingFraction)
             {
-                modelQuotas[modelId] = (remainingFraction.Value, resetTime);
+                modelQuotas[modelId] = (remainingFraction, resetTime);
             }
         }
 
