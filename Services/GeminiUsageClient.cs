@@ -84,7 +84,8 @@ internal sealed class GeminiUsageClient : IUsageClient
 
             var handler = new HttpClientHandler
             {
-                ServerCertificateCustomValidationCallback = (_, _, _, _) => true,
+                ServerCertificateCustomValidationCallback = (request, _, _, _) =>
+                    request.RequestUri?.Host is "127.0.0.1" or "localhost",
             };
             using var localClient = new HttpClient(handler)
             {
@@ -911,14 +912,21 @@ internal sealed class GeminiUsageClient : IUsageClient
             var list = new List<ProcessInfo>();
             try
             {
+                var powershellExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+                if (!File.Exists(powershellExe))
+                {
+                    powershellExe = "powershell.exe";
+                }
+
                 var startInfo = new ProcessStartInfo
                 {
-                    FileName = "powershell.exe",
-                    Arguments = "-ExecutionPolicy Bypass -Command \"Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*language_server_windows*' -or $_.Name -like 'language_server.exe' } | ForEach-Object { \\\"$($_.ProcessId)`t$($_.CommandLine)\\\" }\"",
+                    FileName = powershellExe,
+                    Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*language_server_windows*' -or $_.Name -like 'language_server.exe' } | ForEach-Object { \\\"$($_.ProcessId)`t$($_.CommandLine)\\\" }\"",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardOutput = true,
                 };
+                ProcessSecurity.ApplyMinimalEnvironment(startInfo);
 
                 using var process = Process.Start(startInfo);
                 if (process is null)
@@ -1018,14 +1026,21 @@ internal sealed class GeminiUsageClient : IUsageClient
             var ports = new List<ushort>();
             try
             {
+                var powershellExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
+                if (!File.Exists(powershellExe))
+                {
+                    powershellExe = "powershell.exe";
+                }
+
                 var startInfo = new ProcessStartInfo
                 {
-                    FileName = "powershell.exe",
-                    Arguments = $"-ExecutionPolicy Bypass -Command \"Get-NetTCPConnection -OwningProcess {pid} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort\"",
+                    FileName = powershellExe,
+                    Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"Get-NetTCPConnection -OwningProcess {pid} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort\"",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardOutput = true,
                 };
+                ProcessSecurity.ApplyMinimalEnvironment(startInfo);
 
                 using var process = Process.Start(startInfo);
                 if (process is null)
