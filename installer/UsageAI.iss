@@ -7,7 +7,7 @@
 ;
 ; Build:
 ;   dotnet publish ..\UsageAI.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o ..\publish
-;   iscc UsageAI.iss /DMyAppVersion=0.4.0
+;   iscc UsageAI.iss /DMyAppVersion=0.5.0
 ;
 ; Requires Inno Setup 6.3+ (https://jrsoftware.org/isinfo.php) for the
 ; x64compatible architecture identifiers used below.

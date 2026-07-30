@@ -21,6 +21,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private readonly System.Windows.Forms.Timer _tickTimer;
     private readonly ToolStripMenuItem _startupItem;
     private readonly CancellationTokenSource _shutdown = new();
+    private readonly SynchronizationContext _syncContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
     private Icon? _currentIcon;
     private bool _isExiting;
 
@@ -175,7 +176,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         }
 
         var trayStatus = SelectTrayStatus(connected, _settings.TrayProviderId)!;
-        var usedPercent = trayStatus.Snapshot!.HighestUsedPercent;
+        var usedPercent = TrayUsedPercent(trayStatus);
         ReplaceIcon(TrayIconFactory.Create(
             usedPercent,
             ProviderGlyph(trayStatus.ProviderId),
@@ -212,6 +213,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
             return;
         }
 
+        PushStateToPopup();
         _popup.ShowNearTray(DashboardMode.Compact);
     }
 
@@ -219,6 +221,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
     {
         if (!_isExiting)
         {
+            PushStateToPopup();
             _popup.ShowNearTray(DashboardMode.Full);
         }
     }
@@ -304,13 +307,14 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     private void RunOnUi(Action action)
     {
-        if (_popup.IsHandleCreated && _popup.InvokeRequired)
+        if (SynchronizationContext.Current == _syncContext)
         {
-            _popup.BeginInvoke(action);
-            return;
+            action();
         }
-
-        action();
+        else
+        {
+            _syncContext.Post(_ => action(), null);
+        }
     }
 
     private void StartupItemOnCheckedChanged(object? sender, EventArgs eventArgs)
@@ -368,8 +372,11 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     internal static string TrayTooltip(ProviderStatus status) => Trim(
         $"UsageAI - {ShortProviderName(status.ProviderName)}: " +
-        $"{status.Snapshot?.HighestUsedPercent ?? 0}% used",
+        $"{TrayUsedPercent(status)}% used",
         MaximumTooltipLength);
+
+    internal static int TrayUsedPercent(ProviderStatus status) =>
+        status.Snapshot?.Primary?.UsedPercent ?? status.Snapshot?.HighestUsedPercent ?? 0;
 
     /// <summary>
     /// Resolves the provider represented by the tray gauge. An unavailable pinned provider
@@ -392,7 +399,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
         return connected
             .Where(status => status.Snapshot is not null)
-            .OrderByDescending(status => status.Snapshot!.HighestUsedPercent)
+            .OrderByDescending(TrayUsedPercent)
             .FirstOrDefault();
     }
 

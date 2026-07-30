@@ -3,6 +3,8 @@ using System.Diagnostics;
 using System.Net;
 using System.Net.Security;
 using System.Reflection;
+using System.Security.AccessControl;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using System.Text;
 using System.Text.Json;
@@ -196,6 +198,103 @@ internal static class SecureLocalFile
         {
             Array.Clear(buffer, 0, buffer.Length);
             ArrayPool<char>.Shared.Return(buffer);
+        }
+    }
+
+    public static void ReplaceTextPreservingMetadata(
+        string path,
+        string expectedContents,
+        string replacementContents)
+    {
+        string? temporaryPath = null;
+        try
+        {
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
+            {
+                throw new IOException("Refusing to replace a credential-file reparse point.");
+            }
+
+            var currentContents = ReadAllText(path);
+            if (!string.Equals(currentContents, expectedContents, StringComparison.Ordinal))
+            {
+                throw new IOException("The credential file changed before it could be replaced.");
+            }
+
+            var originalFile = new FileInfo(path);
+            const AccessControlSections securitySections =
+                AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group;
+            var originalSecurityDescriptor = originalFile
+                .GetAccessControl(securitySections)
+                .GetSecurityDescriptorBinaryForm();
+            var wasEncrypted = (originalFile.Attributes & FileAttributes.Encrypted) != 0;
+
+            temporaryPath = Path.Combine(
+                Path.GetDirectoryName(path)!,
+                $".{Path.GetFileName(path)}.usageai-tmp.{Environment.ProcessId}.{Guid.NewGuid():N}");
+
+            using (new FileStream(
+                       temporaryPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       bufferSize: 1,
+                       FileOptions.WriteThrough))
+            {
+            }
+
+            var temporarySecurity = new FileSecurity();
+            temporarySecurity.SetSecurityDescriptorBinaryForm(originalSecurityDescriptor, securitySections);
+            new FileInfo(temporaryPath).SetAccessControl(temporarySecurity);
+            if (wasEncrypted)
+            {
+                File.Encrypt(temporaryPath);
+            }
+
+            var serialized = Encoding.UTF8.GetBytes(replacementContents);
+            try
+            {
+                using var temporaryStream = new FileStream(
+                    temporaryPath,
+                    FileMode.Truncate,
+                    FileAccess.Write,
+                    FileShare.None,
+                    bufferSize: 4096,
+                    FileOptions.WriteThrough);
+                temporaryStream.Write(serialized);
+                temporaryStream.Flush(flushToDisk: true);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(serialized);
+            }
+
+            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0 ||
+                !string.Equals(ReadAllText(path), expectedContents, StringComparison.Ordinal))
+            {
+                throw new IOException("The credential file changed before it could be replaced.");
+            }
+
+            File.Replace(temporaryPath, path, destinationBackupFileName: null, ignoreMetadataErrors: false);
+            temporaryPath = null;
+
+            // ReplaceFile can normalize the owner when the process has an elevated token.
+            var replacementSecurity = new FileSecurity();
+            replacementSecurity.SetSecurityDescriptorBinaryForm(originalSecurityDescriptor, securitySections);
+            new FileInfo(path).SetAccessControl(replacementSecurity);
+        }
+        finally
+        {
+            if (temporaryPath is not null)
+            {
+                try
+                {
+                    File.Delete(temporaryPath);
+                }
+                catch
+                {
+                    // A failed best-effort cleanup must not hide the original failure.
+                }
+            }
         }
     }
 }

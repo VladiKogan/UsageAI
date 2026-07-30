@@ -56,13 +56,18 @@ internal static class TrayIconFactory
             var normalizedUsage = Math.Clamp(usedPercent, 0, 100);
             if (hasError || normalizedUsage > 0)
             {
+                var sweep = hasError ? 360F : Math.Max(10F, 360F * normalizedUsage / 100F);
+                var fillAlpha = Math.Clamp((int)(55 + normalizedUsage * 0.85), 55, 160);
+                using (var fillBrush = new SolidBrush(Color.FromArgb(fillAlpha, color)))
+                {
+                    graphics.FillPie(fillBrush, circle.X, circle.Y, circle.Width, circle.Height, -90, sweep);
+                }
+
                 using var arc = new Pen(color, ringWidth)
                 {
                     StartCap = LineCap.Round,
                     EndCap = LineCap.Round,
                 };
-                // The arc shows consumption, matching the meters in the popup.
-                var sweep = hasError ? 360F : Math.Max(10F, 360F * normalizedUsage / 100F);
                 graphics.DrawArc(arc, circle, -90, sweep);
             }
 
