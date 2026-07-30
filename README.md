@@ -2,106 +2,111 @@
   <img src="Resources/logo.png" alt="UsageAI Logo" width="128" />
 </p>
 
-# UsageAI
+<h1 align="center">UsageAI</h1>
 
-A small, personal Windows tray meter for Codex, Claude Code, GitHub Copilot, and Google Gemini usage limits.
+<p align="center">
+  <b>Every AI coding limit you're burning through — in one tiny tray icon.</b><br />
+  Codex · Claude Code · GitHub Copilot · Google Gemini
+</p>
 
-UsageAI reuses your existing local provider login. Codex data comes from the Codex CLI app-server; Claude Code data comes from Anthropic using an explicitly supplied Claude web session or Claude Code's saved OAuth login; Copilot data comes from GitHub using a token already saved by a Copilot IDE extension or Copilot CLI's secure Windows credential; Google Gemini data comes from Antigravity IDE's local language server probe or saved Gemini CLI OAuth credentials. UsageAI never prints those credentials and never scans browser storage.
+<p align="center">
+  <a href="https://github.com/VladiKogan/UsageAI/releases/latest"><img src="https://img.shields.io/github/v/release/VladiKogan/UsageAI?style=flat-square&color=2ea043" alt="Latest release" /></a>
+  <a href="https://github.com/VladiKogan/UsageAI/releases"><img src="https://img.shields.io/github/downloads/VladiKogan/UsageAI/total?style=flat-square&color=0aa5c9" alt="Downloads" /></a>
+  <img src="https://img.shields.io/badge/Windows-10%20%7C%2011-0078d4?style=flat-square" alt="Windows 10 and 11" />
+  <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-blue?style=flat-square" alt="MIT license" /></a>
+</p>
+
+<p align="center">
+  <a href="#-get-it"><b>Download</b></a> ·
+  <a href="#-what-youll-see">What you'll see</a> ·
+  <a href="#-your-credentials-stay-yours">Privacy</a> ·
+  <a href="#-troubleshooting">Troubleshooting</a>
+</p>
+
+---
+
+You're mid-refactor and the model stops. Weekly limit. Nobody told you it was close.
+
+**UsageAI** is a tiny Windows tray app that keeps every AI coding limit you have in one glance — how much you've used, how fast you're burning it, and exactly when it resets. No dashboards to open, no logins to repeat, no surprises at 2 a.m.
 
 ![UsageAI tray popup](usageai-preview.png)
 
-## Install
+## ⚡ Get it
 
-Download the latest release from the [Releases page](https://github.com/VladiKogan/UsageAI/releases):
+Grab the latest build from the **[Releases page](https://github.com/VladiKogan/UsageAI/releases)**:
 
-- **`UsageAI-<version>-Setup.exe`** — installer with a Start Menu shortcut and uninstaller. Installs the .NET 10 Desktop Runtime automatically if it isn't already on your machine.
-- **`UsageAI-<version>-portable.exe`** — a single file, no installation. Just run it.
+| | |
+| --- | --- |
+| 🚀 **`UsageAI-<version>-Setup.exe`** | The easy one. Start Menu shortcut, clean uninstall, and it installs the .NET 10 Desktop Runtime for you if you don't have it. |
+| 🎒 **`UsageAI-<version>-portable.exe`** | One file. No install. Drop it anywhere and double-click — it uses the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) if you already have it. |
 
-Both need Windows 10 or 11 (x64) and at least one signed-in provider (see [Requirements](#requirements) below). Each download has a matching `.sha256` file; see [Build and test](#build-and-test) for how to verify it.
+Windows 10 or 11 (x64), plus at least one AI tool you're already signed in to. That's the whole setup — UsageAI reuses the login you already have, so there's nothing new to create, paste, or remember.
 
-## What it shows
+> Every download ships with a matching `.sha256` file if you like to verify what you run.
 
-- Every usage window each provider reports, rather than a fixed pair: Codex five-hour, weekly, credits, and reset credits; Claude five-hour, weekly, weekly Opus, and extra usage; Copilot AI credits or premium requests, chat, and completions; Google Gemini model groups (Gemini Models, Claude and GPT models) or Cloud Code API quotas
-- A consumption meter whose fill and headline both show what is **used**, with capacity left shown as the secondary value
-- Reset countdowns, plan, and account for each provider
-- A trend sparkline and a burn-rate forecast: "At this pace, empty by 15:20"
-- Tray notifications when a window crosses your alert thresholds, and when it resets
-- Dynamic color-coded tray icon gauges with filled pie sectors advancing from Emerald Green (<50%), Cyan Blue (50%–71%), Amber Orange (72%–89%), to Vivid Red (≥90%)
-- Prioritized active primary session metrics (such as Claude's 5-hour limit) for real-time tray and header tracking
-- A selectable tray-icon provider, with an automatic mode that follows the connected provider with the highest active primary usage
-- The last good reading kept and labelled **stale** when a refresh fails, instead of an emptied dashboard
-- A compact Glance View and a full detailed dashboard with an adaptive multi-column layout that expands with the available window width and fills the available height
-- Native Windows Immersive Dark Mode title bars and dark scrollbars across the dashboard and settings windows
-- Persistent window size and position memory saved between sessions
-- Light, dark, or follow-Windows themes, using your Windows accent colour
+## 👀 What you'll see
 
-## Requirements
+**A tray icon that actually tells you something.** It fills up like a gauge as you burn through your limit and shifts colour along the way — green under 50%, blue up to 71%, amber to 89%, red once you're at 90% and it's time to pace yourself.
 
-- Windows 10 or 11
-- [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0)
-- At least one supported provider login:
-  - Codex CLI installed and signed in (`codex login`)
-  - Claude Code installed and signed in (`claude`), or an explicitly supplied Claude web session key
-  - GitHub Copilot signed in through an IDE extension or Copilot CLI
-  - Google Gemini signed in via `gemini` CLI or running Antigravity IDE
+**Every window each provider reports — not just one number.** Codex 5-hour, weekly, credits and reset credits. Claude 5-hour, weekly, weekly Opus and extra usage. Copilot AI credits or premium requests, chat and completions. Gemini model groups (Gemini Models, Claude and GPT models) or Cloud Code API quotas.
 
-PowerShell can block the `codex.ps1` launcher; UsageAI intentionally uses `codex.cmd`, so it works with the default Windows execution policy.
+**"At this pace, empty by 15:20."** A trend sparkline plus a burn-rate forecast, so you find out you're running hot *before* the wall, not after it.
 
-## Run it
+**A heads-up before it matters.** Tray notifications when a limit crosses the threshold you picked — and again when it resets and you're free to go.
 
-```powershell
-dotnet run --project .\UsageAI.csproj
-```
+**Reset countdowns, plan and account** for each provider, so you always know what you're on and how long until it refills.
 
-The app lives in the system tray.
+**One glance or the full picture.** Left-click for a compact popup; open the dashboard for a responsive multi-column view that reflows as you resize it and fills the space you give it.
 
-| Action | Result |
+**It never goes blank.** If a refresh fails, UsageAI keeps the last good reading and marks it **stale**, with the provider's own error message attached — then backs off before retrying instead of hammering a rate-limited API.
+
+**It looks like it belongs on your desktop.** Native Windows dark title bars and scrollbars, light/dark/follow-Windows themes, your Windows accent colour, and window size and position remembered between runs.
+
+## 🖱️ Living in the tray
+
+| Do this | Get this |
 | --- | --- |
 | Left-click the tray icon | Compact view of every connected provider |
-| **Win+Alt+U** | Same as left-click, from anywhere |
-| Right-click ▸ **Open** | Full dashboard with all providers and metrics |
-| Right-click ▸ **Settings...** | Preferences (see below) |
-| Launching UsageAI again | Brings the running instance forward |
-| `Esc` | Hides the window |
-| `Tab` / `Enter` on a dashboard card | Opens the provider's usage page, or copies its sign-in command when disconnected |
+| **Win+Alt+U** | Same thing, from anywhere |
+| Right-click ▸ **Open** | Full dashboard, all providers and metrics |
+| Right-click ▸ **Settings...** | Preferences |
+| Launch UsageAI again | Brings the running window forward |
+| `Esc` | Back to the tray |
+| `Tab` / `Enter` on a card | Opens that provider's usage page — or copies its sign-in command if it's disconnected |
 
-The dashboard behaves like a regular Windows window: move it, resize it, minimize or maximize it, and close it back to the tray. Its position and size are remembered between runs.
+The dashboard is a normal Windows window: move it, resize it, maximize it, close it back to the tray.
 
-## Settings
+## 🔌 Works with what you already use
 
-**Settings...** in the tray menu covers:
+| Provider | You need |
+| --- | --- |
+| **Codex** | Codex CLI signed in (`codex login`) |
+| **Claude Code** | Claude Code signed in (`claude`), or a Claude web session key you supply yourself |
+| **GitHub Copilot** | Signed in through a Copilot IDE extension or Copilot CLI |
+| **Google Gemini** | Signed in via the `gemini` CLI, or Antigravity IDE running |
 
-- Refresh interval, and whether to slow down while no window is open
-- Alert thresholds, and whether resets are announced
-- Theme, and the percentages at which the warning and critical colours start
-- Whether usage history is recorded, and whether the trend and forecast are shown
-- Which provider drives the tray icon, which providers appear, and in what order
-- The global hotkey
-- An opt-in check for newer releases on GitHub
+One is enough to get going. Connect the rest whenever you like — cards appear as providers show up.
 
-Preferences, recorded history, and the cached last reading live in `%LOCALAPPDATA%\UsageAI`. Set `USAGEAI_DATA_DIR` to an absolute path to move them, for a portable install. History holds timestamps, provider ids, metric names, and percentages; it never leaves the machine and can be deleted from the settings window.
+## 🔒 Your credentials stay yours
 
-## Diagnostics
+UsageAI reads the login your tools already made, and nothing else:
 
-To validate one provider without opening the tray UI:
+- 🚫 **Never scans your browser storage** — no cookie extraction, ever.
+- 🚫 **Never prints or writes your credentials.** Tokens are used in memory and stay there.
+- 🏠 **Nothing leaves your machine** except the usage request to the provider itself.
+- 🗑️ **Your history is yours to delete** — one button in Settings.
 
-```powershell
-dotnet run --project .\UsageAI.csproj -- --diagnose codex
-dotnet run --project .\UsageAI.csproj -- --diagnose claude
-dotnet run --project .\UsageAI.csproj -- --diagnose copilot
-dotnet run --project .\UsageAI.csproj -- --diagnose gemini
-```
+Preferences, usage history and the cached last reading live in `%LOCALAPPDATA%\UsageAI` (set `USAGEAI_DATA_DIR` to move them for a portable install). History is just timestamps, provider ids, metric names and percentages.
 
-`--help` lists every switch and `--version` prints the build version. Diagnostic output contains account identity and usage metadata. It never contains provider tokens, but review it before sharing it publicly.
-
-## Claude authentication
+<details>
+<summary><b>Using a Claude web session key (optional)</b></summary>
 
 UsageAI tries Claude authentication in this order:
 
-1. An explicitly supplied Claude web session key from `USAGEAI_CLAUDE_SESSION_KEY`. The compatible `CLAUDE_AI_SESSION_KEY` and `CLAUDE_WEB_SESSION_KEY` names are also accepted.
+1. An explicitly supplied Claude web session key from `USAGEAI_CLAUDE_SESSION_KEY` (the compatible `CLAUDE_AI_SESSION_KEY` and `CLAUDE_WEB_SESSION_KEY` names also work).
 2. Claude Code's saved OAuth login from its normal credential store.
 
-The first option follows Win-CodexBar's web-usage approach, but UsageAI deliberately does not extract cookies from browsers. A Claude session cookie is more privileged than a usage-only token: supply it only to the UsageAI process, do not place it in source control or scripts, and rotate it immediately if it is exposed.
+The first option follows [Win-CodexBar](https://github.com/nesszer/Win-CodexBar)'s web-usage approach, but UsageAI deliberately does not extract cookies from browsers. A Claude session cookie is more privileged than a usage-only token: supply it only to the UsageAI process, keep it out of source control and scripts, and rotate it immediately if it's exposed.
 
 For a process-scoped PowerShell session:
 
@@ -111,42 +116,104 @@ dotnet run --project .\UsageAI.csproj
 Remove-Item Env:USAGEAI_CLAUDE_SESSION_KEY
 ```
 
-The session key is kept in memory, is not forwarded to provider CLI child processes, and is never written by UsageAI. If it is missing, invalid, or no longer accepted, UsageAI safely falls back to Claude Code OAuth.
+The key is kept in memory, is never forwarded to provider CLI child processes, and is never written to disk by UsageAI. If it's missing, invalid or no longer accepted, UsageAI quietly falls back to Claude Code OAuth.
 
-## Build and test
+</details>
+
+## ⚙️ Make it yours
+
+**Settings...** in the tray menu lets you tune:
+
+- How often it refreshes — and whether to ease off while no window is open
+- Alert thresholds, and whether resets get announced
+- Theme, and where the warning and critical colours kick in
+- Whether history is recorded, and whether the trend and forecast are shown
+- Which provider drives the tray icon (or let it follow whichever is running hottest), which providers appear, and in what order
+- The global hotkey
+- An opt-in check for newer releases
+
+## 🩹 Troubleshooting
+
+<details>
+<summary><b>Something's not showing up</b></summary>
+
+- **"Codex CLI was not found"** — make sure `codex.cmd` is on your `PATH`, or set `CODEX_PATH` to its full path. (UsageAI intentionally uses `codex.cmd` rather than `codex.ps1`, so it works with the default Windows PowerShell execution policy.)
+- **"Codex is not signed in"** — run `codex login` in a terminal, then hit **Refresh**.
+- **"Claude Code is not signed in"** — run `claude` and finish signing in, or use the session-key method above, then hit **Refresh**.
+- **"Copilot is not signed in"** — sign in through a Copilot IDE extension or Copilot CLI, then hit **Refresh**.
+- **A card says "stale"** — the last refresh failed, so you're looking at the previous good reading. The card shows the provider's own error message, and UsageAI backs off before retrying instead of hammering a failing or rate-limited provider.
+- **The hotkey does nothing** — another app already owns Win+Alt+U. Turn it off in **Settings...** to release it.
+- **No tray icon** — open the Windows tray overflow menu and pin UsageAI.
+
+</details>
+
+<details>
+<summary><b>Supplying your own tokens</b></summary>
+
+- **Custom Claude OAuth token:** set `USAGEAI_CLAUDE_OAUTH_TOKEN` for the UsageAI process. It needs the `user:profile` scope and is never persisted.
+- **Custom Copilot token:** set `COPILOT_GITHUB_TOKEN` for the UsageAI process. Used in memory only.
+- **GitHub CLI fallback:** set `USAGEAI_ENABLE_GH_TOKEN_FALLBACK=1`. Off by default, because `gh auth token` can expose a broader GitHub token than usage tracking needs.
+
+</details>
+
+Provider protocols and usage endpoints change over time. UsageAI keeps each integration isolated in its own usage client, with response parsing covered by fixture tests, so keeping up stays cheap.
+
+## 🛠️ Build it yourself
+
+<details>
+<summary><b>Run from source, test, and package</b></summary>
+
+You'll need the [.NET 10 SDK](https://dotnet.microsoft.com/download/dotnet/10.0).
+
+**Run it:**
+
+```powershell
+dotnet run --project .\UsageAI.csproj
+```
+
+**Build and test:**
 
 ```powershell
 dotnet build .\UsageAI.sln -c Release
 dotnet run --project .\UsageAI.Tests\UsageAI.Tests.csproj
 ```
 
-The test project is a dependency-free console harness covering credential handling, bounded I/O, provider response parsing, settings validation, history, forecasting, and alert behaviour. It runs with `dotnet run`, not `dotnet test`.
+The test project is a dependency-free console harness covering credential handling, bounded I/O, provider response parsing, settings validation, history, forecasting and alert behaviour. It runs with `dotnet run`, not `dotnet test`.
 
-To regenerate the screenshot:
+**Check one provider without the UI:**
+
+```powershell
+dotnet run --project .\UsageAI.csproj -- --diagnose codex
+dotnet run --project .\UsageAI.csproj -- --diagnose claude
+dotnet run --project .\UsageAI.csproj -- --diagnose copilot
+dotnet run --project .\UsageAI.csproj -- --diagnose gemini
+```
+
+`--help` lists every switch; `--version` prints the build version. Diagnostic output includes account identity and usage metadata — never provider tokens, but review it before sharing publicly.
+
+**Regenerate the screenshot:**
 
 ```powershell
 dotnet run --project .\UsageAI.csproj -- --render-preview .\usageai-preview.png
 ```
 
-## Build a personal executable
+**Build the portable executable:**
 
 ```powershell
 dotnet publish .\UsageAI.csproj -c Release -r win-x64 --self-contained false -p:PublishSingleFile=true -o .\publish
 ```
 
-Run `publish\UsageAI.exe`. The single-file, framework-dependent build is deliberately small and uses the installed .NET 10 desktop runtime. This is the portable build; rename it to `UsageAI-<version>-portable.exe` before publishing it as a release asset.
+Run `publish\UsageAI.exe`. The single-file, framework-dependent build is deliberately small and uses the installed .NET 10 desktop runtime. Rename it to `UsageAI-<version>-portable.exe` before publishing it as a release asset.
 
-## Build the installer
-
-Install [Inno Setup](https://jrsoftware.org/isinfo.php) 6.3 or newer, publish the portable build above, then:
+**Build the installer** — install [Inno Setup](https://jrsoftware.org/isinfo.php) 6.3 or newer, publish the portable build above, then:
 
 ```powershell
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" .\installer\UsageAI.iss /DMyAppVersion=<version>
 ```
 
-This produces `installer\Output\UsageAI-<version>-Setup.exe`. It installs to Program Files, adds a Start Menu shortcut and uninstaller, and checks for the .NET 10 Desktop Runtime at install time, silently installing it first if it's missing (see `installer\UsageAI.iss` for the check).
+This produces `installer\Output\UsageAI-<version>-Setup.exe`. It installs to Program Files, adds a Start Menu shortcut and uninstaller, and silently installs the .NET 10 Desktop Runtime at install time if it's missing (see `installer\UsageAI.iss`).
 
-Before uploading either asset to a release, generate its checksum:
+**Checksum both assets before uploading:**
 
 ```powershell
 foreach ($file in 'publish\UsageAI.exe', 'installer\Output\UsageAI-<version>-Setup.exe') {
@@ -155,23 +222,15 @@ foreach ($file in 'publish\UsageAI.exe', 'installer\Output\UsageAI-<version>-Set
 }
 ```
 
-UsageAI releases are built and checked locally, then uploaded manually to GitHub Releases as `UsageAI-<version>-Setup.exe`, `UsageAI-<version>-portable.exe`, and their `.sha256` files. The GitHub `Build` workflow only restores, builds, and tests; it never publishes.
+Releases are built and checked locally, then uploaded manually to GitHub Releases as `UsageAI-<version>-Setup.exe`, `UsageAI-<version>-portable.exe` and their `.sha256` files. The GitHub `Build` workflow only restores, builds and tests — it never publishes.
 
-## Troubleshooting
+</details>
 
-- **Codex CLI was not found:** ensure `codex.cmd` is on `PATH`, or set `CODEX_PATH` to its full path.
-- **Codex is not signed in:** run `codex login` in a terminal, then choose **Refresh**.
-- **Claude Code is not signed in:** run `claude` and complete sign-in, or use the opt-in Claude session-key method above, then choose **Refresh**.
-- **A custom Claude OAuth token is needed:** set `USAGEAI_CLAUDE_OAUTH_TOKEN` for the UsageAI process. The token must have the `user:profile` scope and is never persisted by UsageAI.
-- **Copilot is not signed in:** sign in through a GitHub Copilot IDE extension or Copilot CLI, then choose **Refresh**.
-- **A custom Copilot token is needed:** set `COPILOT_GITHUB_TOKEN` for the UsageAI process. The token is used in memory and is not persisted.
-- **GitHub CLI fallback is needed:** set `USAGEAI_ENABLE_GH_TOKEN_FALLBACK=1` for the UsageAI process. This is disabled by default because `gh auth token` can expose a broader GitHub token than Copilot usage requires.
-- **A card says "stale":** the last refresh failed, so the values shown are the previous good reading. The card carries the provider's own error message, and UsageAI backs off before retrying instead of polling a failing or rate-limited provider on a fixed cadence.
-- **The hotkey does nothing:** another application already owns Win+Alt+U. Turn it off in **Settings...** to stop UsageAI from claiming it.
-- **No tray icon:** open the Windows tray overflow menu and pin UsageAI.
+---
 
-The provider protocols and usage endpoints can change. UsageAI keeps each integration isolated in its own usage client so future changes stay easy to update, and each client's response parsing is covered by fixture tests.
-
-## License
-
-[MIT](LICENSE)
+<p align="center">
+  <a href="https://github.com/VladiKogan/UsageAI/releases/latest"><b>⬇️ Download UsageAI</b></a> ·
+  <a href="Changelog.md">Changelog</a> ·
+  <a href="SECURITY.md">Security</a> ·
+  <a href="LICENSE">MIT</a>
+</p>
