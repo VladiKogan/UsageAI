@@ -2,6 +2,7 @@ using System.Diagnostics;
 using System.Drawing;
 using System.Net;
 using System.Security.AccessControl;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
@@ -28,13 +29,15 @@ internal static class Program
         ("Claude organization parsing", TestClaudeOrganizationParsingAsync),
         ("Claude credential ACL preservation", TestClaudeCredentialAclPreservationAsync),
         ("Claude credential lost-update protection", TestClaudeCredentialLostUpdateAsync),
+        ("Gemini credential ACL and EFS preservation", TestGeminiCredentialAclPreservationAsync),
+        ("Gemini credential lost-update protection", TestGeminiCredentialLostUpdateAsync),
         ("cross-process refresh lock", TestCrossProcessLockAsync),
         ("Codex snapshot parsing", TestCodexSnapshotParsingAsync),
         ("Claude snapshot parsing", TestClaudeSnapshotParsingAsync),
         ("Copilot keeps every reported quota", TestCopilotSnapshotParsingAsync),
         ("Gemini snapshot parsing", TestGeminiSnapshotParsingAsync),
         ("Gemini JWT claims extraction", TestGeminiJwtExtractionAsync),
-        ("Probe Antigravity local server", TestProbeAntigravityAsync),
+        ("Antigravity candidates stay PID-bound", TestAntigravityCandidateBindingAsync),
         ("settings validation and round trip", TestSettingsAsync),
         ("settings content clears the fixed footer", TestSettingsScrollLayoutAsync),
         ("provider order and visibility", TestProviderOrderAsync),
@@ -45,6 +48,8 @@ internal static class Program
         ("projection ignores a window reset", TestForecastResetAsync),
         ("alert thresholds and debouncing", TestNotificationsAsync),
         ("release version comparison", TestUpdateComparisonAsync),
+        ("Primary metric prioritization in tray and header", TestPrimaryMetricTrayTooltipAsync),
+        ("Theme usage fill colors and tray pie icon", TestThemeUsageColorsAsync),
     };
 
     private static async Task<int> Main()
@@ -186,6 +191,7 @@ internal static class Program
                 FileSystemRights.FullControl,
                 AccessControlType.Allow));
             new FileInfo(path).SetAccessControl(security);
+
             const AccessControlSections comparedSections =
                 AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group;
             var before = new FileInfo(path).GetAccessControl(comparedSections)
@@ -236,6 +242,103 @@ internal static class Program
                 "stale-refresh"));
 
             Equal(original, File.ReadAllText(path));
+        }
+        finally
+        {
+            DeleteTestDirectory(directory);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static Task TestGeminiCredentialAclPreservationAsync()
+    {
+        var directory = CreateTestDirectory();
+        try
+        {
+            var path = Path.Combine(directory, "oauth_creds.json");
+            File.WriteAllText(path, GeminiCredentialJson("old-access", "refresh-token"));
+
+            var sid = WindowsIdentity.GetCurrent().User
+                ?? throw new InvalidOperationException("The current Windows SID is unavailable.");
+            var security = new FileSecurity();
+            security.SetOwner(sid);
+            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
+            security.AddAccessRule(new FileSystemAccessRule(
+                sid,
+                FileSystemRights.FullControl,
+                AccessControlType.Allow));
+            new FileInfo(path).SetAccessControl(security);
+
+            var efsEnabled = false;
+            try
+            {
+                File.Encrypt(path);
+                efsEnabled =
+                    (File.GetAttributes(path) & FileAttributes.Encrypted) != 0;
+            }
+            catch (Exception exception) when (exception is IOException
+                                                  or UnauthorizedAccessException
+                                                  or PlatformNotSupportedException
+                                                  or CryptographicException)
+            {
+                // EFS is optional on Windows editions and filesystems.
+            }
+
+            const AccessControlSections comparedSections =
+                AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group;
+            var before = new FileInfo(path).GetAccessControl(comparedSections)
+                .GetSecurityDescriptorSddlForm(comparedSections);
+
+            GeminiUsageClient.TryPersistRefreshedCredentials(
+                new GeminiUsageClient.GeminiCredentials(
+                    "new-access",
+                    "refresh-token",
+                    "new-id-token",
+                    DateTimeOffset.UtcNow.AddHours(1),
+                    path));
+
+            var after = new FileInfo(path).GetAccessControl(comparedSections)
+                .GetSecurityDescriptorSddlForm(comparedSections);
+            Equal(before, after);
+            using var updated = JsonDocument.Parse(File.ReadAllText(path));
+            Equal("new-access", updated.RootElement.GetProperty("access_token").GetString());
+            Equal("new-id-token", updated.RootElement.GetProperty("id_token").GetString());
+            Equal("keep-this-value", updated.RootElement.GetProperty("custom").GetString());
+            Equal(0, Directory.GetFiles(directory, ".oauth_creds.json.usageai-tmp.*").Length);
+            if (efsEnabled)
+            {
+                True((File.GetAttributes(path) & FileAttributes.Encrypted) != 0);
+            }
+
+            Console.WriteLine($"INFO Gemini EFS preservation exercised: {efsEnabled}");
+        }
+        finally
+        {
+            DeleteTestDirectory(directory);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static Task TestGeminiCredentialLostUpdateAsync()
+    {
+        var directory = CreateTestDirectory();
+        try
+        {
+            var path = Path.Combine(directory, "oauth_creds.json");
+            var current = GeminiCredentialJson("other-access", "other-refresh");
+            File.WriteAllText(path, current);
+
+            GeminiUsageClient.TryPersistRefreshedCredentials(
+                new GeminiUsageClient.GeminiCredentials(
+                    "new-access",
+                    "stale-refresh",
+                    "new-id-token",
+                    DateTimeOffset.UtcNow.AddHours(1),
+                    path));
+
+            Equal(current, File.ReadAllText(path));
         }
         finally
         {
@@ -447,6 +550,98 @@ internal static class Program
         Equal("Claude and GPT models", agSnapshot.Metrics[1].Name);
         Equal(100, agSnapshot.Metrics[1].UsedPercent);
 
+        using var summaryDoc = JsonDocument.Parse(
+            """
+            {
+              "response": {
+                "groups": [
+                  {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                      {
+                        "bucketId": "gemini_5h",
+                        "displayName": "5 hour",
+                        "window": "5h",
+                        "remainingFraction": 0.70,
+                        "resetTime": "2026-07-29T18:00:00Z"
+                      },
+                      {
+                        "bucketId": "gemini_weekly",
+                        "displayName": "Weekly",
+                        "window": "weekly",
+                        "remainingFraction": 0.55,
+                        "resetTime": "2026-08-03T18:00:00Z"
+                      }
+                    ]
+                  },
+                  {
+                    "displayName": "Claude and GPT models",
+                    "buckets": [
+                      {
+                        "bucketId": "claude_gpt_5h",
+                        "displayName": "5 hour",
+                        "remainingFraction": 0.40,
+                        "resetTime": "2026-07-29T18:00:00Z"
+                      },
+                      {
+                        "bucketId": "claude_gpt_weekly",
+                        "displayName": "Weekly",
+                        "remainingFraction": 0.25,
+                        "resetTime": "2026-08-03T18:00:00Z"
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+            """);
+
+        var summaryMetrics = GeminiUsageClient.ParseQuotaSummaryResponse(summaryDoc.RootElement);
+        Equal(4, summaryMetrics.Count);
+        Equal("Gemini Models (5-hour)", summaryMetrics[0].Name);
+        Equal(UsageMetricKind.Session, summaryMetrics[0].Kind);
+        Equal(300L, summaryMetrics[0].DurationMinutes);
+        Equal(30, summaryMetrics[0].UsedPercent);
+        Equal("Gemini Models (Weekly)", summaryMetrics[1].Name);
+        Equal(UsageMetricKind.Rolling, summaryMetrics[1].Kind);
+        Equal(10_080L, summaryMetrics[1].DurationMinutes);
+        Equal(45, summaryMetrics[1].UsedPercent);
+        Equal("Claude and GPT models (5-hour)", summaryMetrics[2].Name);
+        Equal("Claude and GPT models (Weekly)", summaryMetrics[3].Name);
+        Equal(75, summaryMetrics[3].UsedPercent);
+
+        var mergedMetrics = GeminiUsageClient.MergeAntigravityQuotaSummaryMetrics(
+            agSnapshot.Metrics,
+            summaryMetrics);
+        Equal(4, mergedMetrics.Count);
+        Equal("Gemini Models (5-hour)", mergedMetrics[0].Name);
+        Equal("Gemini Models (Weekly)", mergedMetrics[1].Name);
+        Equal("Claude and GPT models (5-hour)", mergedMetrics[2].Name);
+        Equal("Claude and GPT models (Weekly)", mergedMetrics[3].Name);
+
+        using var alternateEnvelopeDoc = JsonDocument.Parse(
+            """
+            {
+              "quotaSummary": {
+                "groups": [
+                  {
+                    "displayName": "Gemini Models",
+                    "buckets": [
+                      {
+                        "bucketId": "gemini_weekly",
+                        "remainingFraction": 0.90
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+            """);
+        var alternateMetrics = GeminiUsageClient.ParseQuotaSummaryResponse(alternateEnvelopeDoc.RootElement);
+        Equal(1, alternateMetrics.Count);
+        Equal("Gemini Models (Weekly)", alternateMetrics[0].Name);
+        Equal(10, alternateMetrics[0].UsedPercent);
+
         return Task.CompletedTask;
     }
 
@@ -466,42 +661,30 @@ internal static class Program
         return Task.CompletedTask;
     }
 
-    private static async Task TestProbeAntigravityAsync()
+    private static Task TestAntigravityCandidateBindingAsync()
     {
-        var handler = new HttpClientHandler
-        {
-            ServerCertificateCustomValidationCallback = (m, c, ch, e) => true,
-        };
-        using var client = new HttpClient(handler);
+        var process = new GeminiUsageClient.ProcessInfo(
+            "synthetic-primary-token",
+            "synthetic-extension-token",
+            ExtensionPort: 52_000,
+            Pid: 42);
 
-        var ports = new[] { 61415, 61414, 59449, 59448, 55389, 55388, 54665, 53558, 53362, 51487, 51486 };
-        var tokens = new[] { "66522918-de39-4b5b-a83b-e3063d2fc7ad", "bc0360c9-574c-44ae-8b29-c4193972b3b4", "dc5d3e81-2757-4484-b624-a7671daac5f6", "4c0695be-0412-4228-a7d1-7e2f6552e00a", "301c81ce-f624-4a3d-9b46-8e9e200c47fb", "34da0775-13b4-4688-b13a-3cc8018a67f3", "864a4747-8bc6-4b57-88fb-40566b21089a", "7d050784-60e9-4fcc-9d8d-18d524c866d2" };
+        var candidates = process.GetBoundCandidates(new ushort[] { 51_001, 51_001 });
+        Equal(2, candidates.Count);
+        True(candidates.All(candidate => candidate.Pid == 42));
+        True(candidates.All(candidate => candidate.Port == 51_001));
+        True(candidates.Any(candidate => candidate.Token == "synthetic-primary-token"));
+        True(candidates.Any(candidate => candidate.Token == "synthetic-extension-token"));
+        False(candidates.Any(candidate => candidate.Port == 52_000));
+        True(process.IsListeningPortStillOwned(candidates[0], new ushort[] { 51_001 }));
+        False(process.IsListeningPortStillOwned(candidates[0], new ushort[] { 52_000 }));
+        False(process.IsListeningPortStillOwned(
+            new GeminiUsageClient.BoundAntigravityCandidate(43, 51_001, "synthetic-token"),
+            new ushort[] { 51_001 }));
 
-        foreach (var port in ports)
-        {
-            foreach (var token in tokens)
-            {
-                try
-                {
-                    using var req = new HttpRequestMessage(HttpMethod.Post, $"https://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/GetUserStatus");
-                    req.Headers.Add("Connect-Protocol-Version", "1");
-                    req.Headers.Add("X-Codeium-Csrf-Token", token);
-                    req.Content = new StringContent("{\"metadata\":{\"ideName\":\"antigravity\",\"extensionName\":\"antigravity\",\"ideVersion\":\"unknown\",\"locale\":\"en\"}}", Encoding.UTF8, "application/json");
-                    using var res = await client.SendAsync(req);
-                    if (res.IsSuccessStatusCode)
-                    {
-                        var json = await res.Content.ReadAsStringAsync();
-                        Console.WriteLine($"\n[ANTIGRAVITY PROBE SUCCESS on Port {port} Token {token[..8]}]\n{json}\n");
-                        return;
-                    }
-                }
-                catch
-                {
-                    // Continue probing
-                }
-            }
-        }
-        Console.WriteLine("\n[ANTIGRAVITY PROBE NO PORT MATCHED]\n");
+        var pidless = process with { Pid = null };
+        Equal(0, pidless.GetBoundCandidates(new ushort[] { 51_001 }).Count);
+        return Task.CompletedTask;
     }
 
     private static Task TestSettingsAsync()
@@ -836,6 +1019,17 @@ internal static class Program
         }
         """;
 
+    private static string GeminiCredentialJson(string accessToken, string refreshToken) =>
+        $$"""
+        {
+          "access_token": "{{accessToken}}",
+          "refresh_token": "{{refreshToken}}",
+          "id_token": "old-id-token",
+          "expiry_date": 1000,
+          "custom": "keep-this-value"
+        }
+        """;
+
     private static string CreateTestDirectory()
     {
         var root = Path.Combine(Path.GetTempPath(), "UsageAI.SecurityTests", Guid.NewGuid().ToString("N"));
@@ -912,6 +1106,60 @@ internal static class Program
         {
             throw new InvalidOperationException("Expected a value, got null.");
         }
+    }
+
+    private static Task TestPrimaryMetricTrayTooltipAsync()
+    {
+        var now = DateTimeOffset.Now;
+        var snapshot = new UsageSnapshot(
+            "Claude Pro",
+            new[]
+            {
+                new UsageMetric("5-hour", UsageMetricKind.Session, 8, now.AddHours(3), 300),
+                new UsageMetric("Weekly", UsageMetricKind.Rolling, 92, now.AddDays(4), 10_080),
+            },
+            now,
+            "claude",
+            "Claude Code");
+        var status = new ProviderStatus("claude", "Claude Code", snapshot, null, false);
+        var competingSnapshot = new UsageSnapshot(
+            "Plus",
+            new[]
+            {
+                new UsageMetric("5-hour", UsageMetricKind.Session, 40, now.AddHours(2), 300),
+                new UsageMetric("Weekly", UsageMetricKind.Rolling, 40, now.AddDays(3), 10_080),
+            },
+            now,
+            "codex",
+            "Codex");
+        var competingStatus = new ProviderStatus("codex", "Codex", competingSnapshot, null, false);
+        var statuses = new[] { status, competingStatus };
+
+        Equal("UsageAI - Claude Code: 8% used", UsageApplicationContext.TrayTooltip(status));
+        Equal(8, UsageApplicationContext.TrayUsedPercent(status));
+        Equal("codex", UsageApplicationContext.SelectTrayStatus(statuses, null)!.ProviderId);
+        Equal("claude", UsageApplicationContext.SelectTrayStatus(statuses, "claude")!.ProviderId);
+        Equal("codex", UsagePopupForm.SelectHeadlineStatus(statuses)!.ProviderId);
+        return Task.CompletedTask;
+    }
+
+    private static Task TestThemeUsageColorsAsync()
+    {
+        Equal(Theme.Success, Theme.ForUsage(8));
+        Equal(Theme.Success, Theme.ForUsage(45));
+        Equal(Theme.Signal, Theme.ForUsage(50));
+        Equal(Theme.Signal, Theme.ForUsage(70));
+        Equal(Theme.Warning, Theme.ForUsage(75));
+        Equal(Theme.Critical, Theme.ForUsage(92));
+
+        using var filledIcon = TrayIconFactory.Create(
+            45,
+            "A",
+            size: 24,
+            identityColor: Theme.ForProvider("claude"));
+        using var bitmap = filledIcon.ToBitmap();
+        True(bitmap.Width == 24 && bitmap.Height == 24);
+        return Task.CompletedTask;
     }
 
     private static void TryRemoveDataDirectory()

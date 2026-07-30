@@ -26,10 +26,13 @@ Both need Windows 10 or 11 (x64) and at least one signed-in provider (see [Requi
 - Reset countdowns, plan, and account for each provider
 - A trend sparkline and a burn-rate forecast: "At this pace, empty by 15:20"
 - Tray notifications when a window crosses your alert thresholds, and when it resets
-- Colour that escalates with consumption across the value, the meter, the card rail, and the tray icon
-- A selectable tray-icon provider, with an automatic mode that follows the connected provider with the highest usage
+- Dynamic color-coded tray icon gauges with filled pie sectors advancing from Emerald Green (<50%), Cyan Blue (50%–71%), Amber Orange (72%–89%), to Vivid Red (≥90%)
+- Prioritized active primary session metrics (such as Claude's 5-hour limit) for real-time tray and header tracking
+- A selectable tray-icon provider, with an automatic mode that follows the connected provider with the highest active primary usage
 - The last good reading kept and labelled **stale** when a refresh fails, instead of an emptied dashboard
-- A compact all-provider view and a full dashboard with every metric and connection status
+- A compact Glance View and a full detailed dashboard with an adaptive multi-column layout that expands with the available window width and fills the available height
+- Native Windows Immersive Dark Mode title bars and dark scrollbars across the dashboard and settings windows
+- Persistent window size and position memory saved between sessions
 - Light, dark, or follow-Windows themes, using your Windows accent colour
 
 ## Requirements

@@ -121,6 +121,7 @@ internal static class Theme
     public static Color ForUsage(int usedPercent) =>
         usedPercent >= _criticalPercent ? Critical :
         usedPercent >= _warningPercent ? Warning :
+        usedPercent < 50 ? Success :
         Signal;
 
     public static Color ForProvider(string providerId) => providerId.ToLowerInvariant() switch

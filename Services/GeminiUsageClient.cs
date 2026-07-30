@@ -94,18 +94,21 @@ internal sealed class GeminiUsageClient : IUsageClient
 
             foreach (var proc in processes)
             {
-                var candidatePorts = proc.GetCandidatePorts();
-                var candidateTokens = proc.GetCandidateTokens();
-
-                foreach (var port in candidatePorts)
+                foreach (var candidate in proc.GetBoundCandidates())
                 {
-                    foreach (var token in candidateTokens)
+                    if (!proc.IsListeningPortStillOwned(candidate))
                     {
-                        var snapshot = await TryQueryAntigravityPortAsync(localClient, port, token, cancellationToken);
-                        if (snapshot is not null)
-                        {
-                            return snapshot;
-                        }
+                        continue;
+                    }
+
+                    var snapshot = await TryQueryAntigravityPortAsync(
+                        localClient,
+                        candidate.Port,
+                        candidate.Token,
+                        cancellationToken);
+                    if (snapshot is not null)
+                    {
+                        return snapshot;
                     }
                 }
             }
@@ -142,11 +145,67 @@ internal sealed class GeminiUsageClient : IUsageClient
             }
 
             using var document = await SecureHttp.ReadJsonDocumentAsync(response, cancellationToken);
-            return ParseAntigravityUserStatus(document.RootElement);
+            var snapshot = ParseAntigravityUserStatus(document.RootElement);
+            if (snapshot is null)
+            {
+                return null;
+            }
+
+            var summaryMetrics = await TryQueryAntigravityQuotaSummaryPortAsync(
+                client,
+                port,
+                csrfToken,
+                cancellationToken);
+            return summaryMetrics.Count == 0
+                ? snapshot
+                : snapshot with
+                {
+                    Metrics = MergeAntigravityQuotaSummaryMetrics(snapshot.Metrics, summaryMetrics),
+                };
         }
         catch
         {
             return null;
+        }
+    }
+
+    private static async Task<IReadOnlyList<UsageMetric>> TryQueryAntigravityQuotaSummaryPortAsync(
+        HttpClient client,
+        ushort port,
+        string csrfToken,
+        CancellationToken cancellationToken)
+    {
+        try
+        {
+            var url =
+                $"https://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary";
+            using var request = new HttpRequestMessage(HttpMethod.Post, url);
+            request.Headers.Add("Connect-Protocol-Version", "1");
+            request.Headers.Add("X-Codeium-Csrf-Token", csrfToken);
+            request.Content = new StringContent(
+                "{\"request\":{},\"forceRefresh\":false}",
+                Encoding.UTF8,
+                "application/json");
+
+            using var response = await client.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
+            if (!response.IsSuccessStatusCode)
+            {
+                return Array.Empty<UsageMetric>();
+            }
+
+            using var document = await SecureHttp.ReadJsonDocumentAsync(response, cancellationToken);
+            return ParseQuotaSummaryResponse(document.RootElement);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return Array.Empty<UsageMetric>();
         }
     }
 
@@ -279,7 +338,10 @@ internal sealed class GeminiUsageClient : IUsageClient
 
     private static async Task<UsageSnapshot> FetchUsageSnapshotAsync(GeminiCredentials credentials, CancellationToken cancellationToken)
     {
-        var codeAssistPlan = await LoadCodeAssistPlanAsync(credentials.AccessToken!, credentials.IdToken, cancellationToken);
+        var codeAssistPlan = await LoadCodeAssistPlanAsync(
+            credentials.AccessToken!,
+            credentials.IdToken,
+            cancellationToken);
 
         using var request = new HttpRequestMessage(HttpMethod.Post, QuotaEndpoint);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentials.AccessToken);
@@ -434,6 +496,213 @@ internal sealed class GeminiUsageClient : IUsageClient
             accountEmail);
     }
 
+    internal static IReadOnlyList<UsageMetric> ParseQuotaSummaryResponse(JsonElement root)
+    {
+        if (!TryGetQuotaSummaryGroups(root, out var groups))
+        {
+            return Array.Empty<UsageMetric>();
+        }
+
+        var parsed = new List<(int GroupOrder, int WindowOrder, int SourceOrder, UsageMetric Metric)>();
+        var sourceOrder = 0;
+
+        foreach (var group in groups.EnumerateArray())
+        {
+            if (group.ValueKind != JsonValueKind.Object)
+            {
+                continue;
+            }
+
+            var groupName = GetString(group, "displayName");
+            if (string.IsNullOrWhiteSpace(groupName) ||
+                !group.TryGetProperty("buckets", out var buckets) ||
+                buckets.ValueKind != JsonValueKind.Array)
+            {
+                continue;
+            }
+
+            foreach (var bucket in buckets.EnumerateArray())
+            {
+                if (bucket.ValueKind != JsonValueKind.Object)
+                {
+                    continue;
+                }
+
+                if (GetDouble(bucket, "remainingFraction") is not { } remainingFraction)
+                {
+                    continue;
+                }
+
+                var usedPercent = Math.Clamp(
+                    (int)Math.Round((1.0 - remainingFraction) * 100.0, MidpointRounding.AwayFromZero),
+                    0,
+                    100);
+                var resetTime = ParseIsoDate(GetString(bucket, "resetTime"));
+                var window = ClassifyQuotaSummaryWindow(bucket);
+
+                parsed.Add((
+                    QuotaSummaryGroupOrder(groupName),
+                    window.Order,
+                    sourceOrder++,
+                    new UsageMetric(
+                        $"{groupName} ({window.Name})",
+                        window.Kind,
+                        usedPercent,
+                        resetTime,
+                        window.DurationMinutes)));
+            }
+        }
+
+        return parsed
+            .OrderBy(item => item.GroupOrder)
+            .ThenBy(item => item.WindowOrder)
+            .ThenBy(item => item.SourceOrder)
+            .Select(item => item.Metric)
+            .ToArray();
+    }
+
+    internal static IReadOnlyList<UsageMetric> MergeAntigravityQuotaSummaryMetrics(
+        IReadOnlyList<UsageMetric> currentMetrics,
+        IReadOnlyList<UsageMetric> summaryMetrics)
+    {
+        if (summaryMetrics.Count == 0)
+        {
+            return currentMetrics;
+        }
+
+        var summaryGroups = summaryMetrics
+            .Select(metric => QuotaSummaryGroupName(metric.Name))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        var merged = new List<UsageMetric>();
+
+        foreach (var groupName in summaryGroups)
+        {
+            var groupSummary = summaryMetrics
+                .Where(metric => QuotaSummaryGroupName(metric.Name)
+                    .Equals(groupName, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+
+            if (!groupSummary.Any(metric => metric.Kind == UsageMetricKind.Session))
+            {
+                var existingFiveHour = currentMetrics.FirstOrDefault(metric =>
+                    BelongsToQuotaSummaryGroup(metric.Name, groupName));
+                if (existingFiveHour is not null)
+                {
+                    merged.Add(existingFiveHour with
+                    {
+                        Name = $"{groupName} (5-hour)",
+                        Kind = UsageMetricKind.Session,
+                        DurationMinutes = 300,
+                    });
+                }
+            }
+
+            merged.AddRange(groupSummary);
+        }
+
+        merged.AddRange(currentMetrics.Where(metric =>
+            !summaryGroups.Any(groupName => BelongsToQuotaSummaryGroup(metric.Name, groupName))));
+        return merged;
+    }
+
+    private static bool TryGetQuotaSummaryGroups(JsonElement root, out JsonElement groups)
+    {
+        if (TryGetGroups(root, out groups))
+        {
+            return true;
+        }
+
+        if (root.TryGetProperty("response", out var response) &&
+            response.ValueKind == JsonValueKind.Object)
+        {
+            if (TryGetGroups(response, out groups))
+            {
+                return true;
+            }
+
+            if (response.TryGetProperty("quotaSummary", out var responseSummary) &&
+                responseSummary.ValueKind == JsonValueKind.Object &&
+                TryGetGroups(responseSummary, out groups))
+            {
+                return true;
+            }
+        }
+
+        if (root.TryGetProperty("quotaSummary", out var quotaSummary) &&
+            quotaSummary.ValueKind == JsonValueKind.Object &&
+            TryGetGroups(quotaSummary, out groups))
+        {
+            return true;
+        }
+
+        groups = default;
+        return false;
+
+        static bool TryGetGroups(JsonElement container, out JsonElement value)
+        {
+            if (container.TryGetProperty("groups", out value) &&
+                value.ValueKind == JsonValueKind.Array)
+            {
+                return true;
+            }
+
+            value = default;
+            return false;
+        }
+    }
+
+    private static QuotaSummaryWindow ClassifyQuotaSummaryWindow(JsonElement bucket)
+    {
+        var displayName = GetString(bucket, "displayName");
+        var descriptor = string.Join(
+            " ",
+            GetString(bucket, "bucketId"),
+            displayName,
+            GetString(bucket, "window")).ToLowerInvariant();
+
+        if (descriptor.Contains("week", StringComparison.Ordinal) ||
+            descriptor.Contains("7-day", StringComparison.Ordinal) ||
+            descriptor.Contains("7 day", StringComparison.Ordinal) ||
+            descriptor.Contains("7d", StringComparison.Ordinal))
+        {
+            return new QuotaSummaryWindow("Weekly", UsageMetricKind.Rolling, 10_080, 1);
+        }
+
+        if (descriptor.Contains("5-hour", StringComparison.Ordinal) ||
+            descriptor.Contains("5 hour", StringComparison.Ordinal) ||
+            descriptor.Contains("5h", StringComparison.Ordinal) ||
+            descriptor.Contains("five", StringComparison.Ordinal) ||
+            descriptor.Contains("session", StringComparison.Ordinal))
+        {
+            return new QuotaSummaryWindow("5-hour", UsageMetricKind.Session, 300, 0);
+        }
+
+        return new QuotaSummaryWindow(
+            string.IsNullOrWhiteSpace(displayName) ? "Quota" : displayName,
+            UsageMetricKind.Rolling,
+            null,
+            2);
+    }
+
+    private static int QuotaSummaryGroupOrder(string groupName) =>
+        groupName.Equals("Gemini Models", StringComparison.OrdinalIgnoreCase)
+            ? 0
+            : groupName.Contains("Claude", StringComparison.OrdinalIgnoreCase) ||
+              groupName.Contains("GPT", StringComparison.OrdinalIgnoreCase)
+                ? 1
+                : 2;
+
+    private static string QuotaSummaryGroupName(string metricName)
+    {
+        var suffixStart = metricName.LastIndexOf(" (", StringComparison.Ordinal);
+        return suffixStart > 0 ? metricName[..suffixStart] : metricName;
+    }
+
+    private static bool BelongsToQuotaSummaryGroup(string metricName, string groupName) =>
+        metricName.Equals(groupName, StringComparison.OrdinalIgnoreCase) ||
+        metricName.StartsWith($"{groupName} (", StringComparison.OrdinalIgnoreCase);
+
     private static string FormatModelDisplayName(string modelId)
     {
         if (modelId.Contains("pro", StringComparison.OrdinalIgnoreCase))
@@ -449,7 +718,10 @@ internal sealed class GeminiUsageClient : IUsageClient
         return CultureInfo.CurrentCulture.TextInfo.ToTitleCase(modelId.Replace('-', ' ').Replace('_', ' '));
     }
 
-    private static async Task<string?> LoadCodeAssistPlanAsync(string accessToken, string? idToken, CancellationToken cancellationToken)
+    private static async Task<string?> LoadCodeAssistPlanAsync(
+        string accessToken,
+        string? idToken,
+        CancellationToken cancellationToken)
     {
         try
         {
@@ -549,12 +821,13 @@ internal sealed class GeminiUsageClient : IUsageClient
     {
         if (_refreshedCredentials is { } cached &&
             cached.SourcePath == credentials.SourcePath &&
+            !string.IsNullOrWhiteSpace(cached.AccessToken) &&
             !cached.IsExpired)
         {
             return cached;
         }
 
-        if (!credentials.IsExpired)
+        if (!string.IsNullOrWhiteSpace(credentials.AccessToken) && !credentials.IsExpired)
         {
             return credentials;
         }
@@ -765,7 +1038,7 @@ internal sealed class GeminiUsageClient : IUsageClient
         }
     }
 
-    private static void TryPersistRefreshedCredentials(GeminiCredentials credentials)
+    internal static void TryPersistRefreshedCredentials(GeminiCredentials credentials)
     {
         if (credentials.SourcePath is null || !File.Exists(credentials.SourcePath))
         {
@@ -783,6 +1056,17 @@ internal sealed class GeminiUsageClient : IUsageClient
                 dict[prop.Name] = prop.Value.Clone();
             }
 
+            var sourceRefreshToken = CredentialInput.NormalizeToken(
+                GetString(document.RootElement, "refresh_token") ??
+                GetString(document.RootElement, "refreshToken"));
+            if (!string.Equals(
+                    sourceRefreshToken,
+                    credentials.RefreshToken,
+                    StringComparison.Ordinal))
+            {
+                return;
+            }
+
             dict["access_token"] = credentials.AccessToken;
             if (credentials.IdToken is not null)
             {
@@ -795,7 +1079,10 @@ internal sealed class GeminiUsageClient : IUsageClient
             }
 
             var updatedJson = JsonSerializer.Serialize(dict, IndentedJsonOptions);
-            AppPaths.WriteAllTextAtomic(credentials.SourcePath, updatedJson);
+            SecureLocalFile.ReplaceTextPreservingMetadata(
+                credentials.SourcePath,
+                originalJson,
+                updatedJson);
         }
         catch
         {
@@ -896,7 +1183,7 @@ internal sealed class GeminiUsageClient : IUsageClient
             ? value
             : null;
 
-    private sealed record ProcessInfo(
+    internal sealed record ProcessInfo(
         string CsrfToken,
         string? ExtensionServerCsrfToken,
         ushort? ExtensionPort,
@@ -972,33 +1259,48 @@ internal sealed class GeminiUsageClient : IUsageClient
             return list;
         }
 
-        public List<ushort> GetCandidatePorts()
+        public IReadOnlyList<BoundAntigravityCandidate> GetBoundCandidates()
         {
-            var ports = new List<ushort>();
-            if (Pid is { } pid)
+            if (Pid is not { } pid)
             {
-                ports.AddRange(GetListeningPortsForPid(pid));
+                return Array.Empty<BoundAntigravityCandidate>();
             }
 
-            if (ExtensionPort is { } ep && ep > 0)
-            {
-                for (ushort offset = 0; offset < 20; offset++)
-                {
-                    ports.Add((ushort)(ep + offset));
-                }
-            }
-
-            var knownPorts = new ushort[] { 61415, 61414, 59449, 59448, 55389, 55388, 54665, 53558, 53362, 51487, 51486 };
-            foreach (var kp in knownPorts)
-            {
-                if (!ports.Contains(kp))
-                {
-                    ports.Add(kp);
-                }
-            }
-
-            return ports;
+            return GetBoundCandidates(GetListeningPortsForPid(pid));
         }
+
+        internal IReadOnlyList<BoundAntigravityCandidate> GetBoundCandidates(
+            IEnumerable<ushort> pidOwnedPorts)
+        {
+            if (Pid is not { } pid)
+            {
+                return Array.Empty<BoundAntigravityCandidate>();
+            }
+
+            var tokens = GetCandidateTokens();
+            return pidOwnedPorts
+                .Distinct()
+                .SelectMany(port => tokens.Select(token =>
+                    new BoundAntigravityCandidate(pid, port, token)))
+                .ToArray();
+        }
+
+        public bool IsListeningPortStillOwned(BoundAntigravityCandidate candidate)
+        {
+            if (Pid is not { } pid)
+            {
+                return false;
+            }
+
+            return IsListeningPortStillOwned(candidate, GetListeningPortsForPid(pid));
+        }
+
+        internal bool IsListeningPortStillOwned(
+            BoundAntigravityCandidate candidate,
+            IEnumerable<ushort> pidOwnedPorts) =>
+            Pid is { } pid &&
+            candidate.Pid == pid &&
+            pidOwnedPorts.Contains(candidate.Port);
 
         public List<string> GetCandidateTokens()
         {
@@ -1066,7 +1368,15 @@ internal sealed class GeminiUsageClient : IUsageClient
         }
     }
 
+    internal sealed record BoundAntigravityCandidate(uint Pid, ushort Port, string Token);
+
     private sealed record OAuthClientCredentials(string ClientId, string ClientSecret);
+
+    private sealed record QuotaSummaryWindow(
+        string Name,
+        UsageMetricKind Kind,
+        long? DurationMinutes,
+        int Order);
 
     internal sealed record GeminiCredentials(
         string? AccessToken,

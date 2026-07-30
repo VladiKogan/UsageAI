@@ -14,7 +14,7 @@ internal enum DashboardMode
 internal sealed class UsagePopupForm : Form
 {
     private const int CompactWidthBaseline = 416;
-    private const int FullWidthBaseline = 560;
+    private const int FullWidthBaseline = 620;
     private const int HeaderRowBaseline = 58;
     private const int FooterRowBaseline = 46;
 
@@ -26,8 +26,10 @@ internal sealed class UsagePopupForm : Form
     private readonly Label _subtitleLabel;
     private readonly Label _summaryLabel;
     private readonly Label _updatedLabel;
+    private readonly Button _detailsButton;
     private readonly Button _refreshButton;
     private readonly Button _settingsButton;
+    private readonly TableLayoutPanel _footer;
     private readonly UsageMarkControl _mark;
     private IReadOnlyList<ProviderStatus> _states = Array.Empty<ProviderStatus>();
     private IReadOnlyList<UsageSample> _history = Array.Empty<UsageSample>();
@@ -37,8 +39,8 @@ internal sealed class UsagePopupForm : Form
     private DateTimeOffset? _lastRefreshed;
     private Rectangle? _dashboardBounds;
     private bool _dashboardWasShown;
-    private bool _layoutRefreshPending;
     private bool _updatingCardWidths;
+    private readonly System.Windows.Forms.Timer _uiTickTimer;
 
     public UsagePopupForm(AppSettings settings)
     {
@@ -143,6 +145,7 @@ internal sealed class UsagePopupForm : Form
             Padding = Padding.Empty,
             WrapContents = false,
         };
+        _content.HandleCreated += OnContentHandleCreated;
         _content.SizeChanged += (_, _) => RefreshDashboardLayout();
         _shell.Controls.Add(_content, 0, 1);
 
@@ -156,26 +159,30 @@ internal sealed class UsagePopupForm : Form
             Text = "Checking accounts...",
             TextAlign = ContentAlignment.MiddleLeft,
         };
+        _detailsButton = CreateButton("Details", scale, primary: false);
+        _detailsButton.Click += (_, _) => ShowNearTray(DashboardMode.Full);
         _settingsButton = CreateButton("Settings", scale, primary: false);
         _settingsButton.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
         _refreshButton = CreateButton("Refresh", scale, primary: true);
         _refreshButton.Click += (_, _) => RefreshRequested?.Invoke(this, EventArgs.Empty);
 
-        var footer = new TableLayoutPanel
+        _footer = new TableLayoutPanel
         {
-            ColumnCount = 3,
+            ColumnCount = 4,
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
             RowCount = 1,
         };
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[86]));
-        footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[92]));
-        footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        footer.Controls.Add(_updatedLabel, 0, 0);
-        footer.Controls.Add(_settingsButton, 1, 0);
-        footer.Controls.Add(_refreshButton, 2, 0);
-        _shell.Controls.Add(footer, 0, 2);
+        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[76]));
+        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[76]));
+        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[84]));
+        _footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _footer.Controls.Add(_updatedLabel, 0, 0);
+        _footer.Controls.Add(_detailsButton, 1, 0);
+        _footer.Controls.Add(_settingsButton, 2, 0);
+        _footer.Controls.Add(_refreshButton, 3, 0);
+        _shell.Controls.Add(_footer, 0, 2);
 
         if (_settings.DashboardBounds is { Length: 4 } saved)
         {
@@ -198,6 +205,16 @@ internal sealed class UsagePopupForm : Form
             }
         };
         Theme.Changed += OnThemeChanged;
+
+        _uiTickTimer = new System.Windows.Forms.Timer { Interval = 5000 };
+        _uiTickTimer.Tick += (_, _) =>
+        {
+            if (Visible && !IsDisposed && !Disposing)
+            {
+                UpdateStatus();
+                _content.Invalidate(invalidateChildren: true);
+            }
+        };
     }
 
     public event EventHandler? RefreshRequested;
@@ -220,6 +237,12 @@ internal sealed class UsagePopupForm : Form
 
         _mode = mode;
         ConfigureWindowPresentation();
+        _detailsButton.Visible = mode == DashboardMode.Compact;
+        _content.FlowDirection = mode == DashboardMode.Full
+            ? FlowDirection.LeftToRight
+            : FlowDirection.TopDown;
+        _content.WrapContents = mode == DashboardMode.Full;
+        ApplyScaledChrome();
         _titleLabel.Text = mode == DashboardMode.Compact ? "Usage at a glance" : "Usage dashboard";
         _subtitleLabel.Text = mode == DashboardMode.Compact
             ? "Your connected AI accounts"
@@ -321,10 +344,32 @@ internal sealed class UsagePopupForm : Form
         e.Graphics.DrawRectangle(border, 0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
     }
 
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark);
+    }
+
+    protected override void OnVisibleChanged(EventArgs e)
+    {
+        base.OnVisibleChanged(e);
+        if (Visible)
+        {
+            _uiTickTimer.Start();
+            UpdateStatus();
+            _content.Invalidate(invalidateChildren: true);
+        }
+        else
+        {
+            _uiTickTimer.Stop();
+        }
+    }
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
+            _uiTickTimer.Dispose();
             Theme.Changed -= OnThemeChanged;
         }
 
@@ -378,9 +423,14 @@ internal sealed class UsagePopupForm : Form
         _refreshButton.BackColor = Theme.Accent;
         _refreshButton.ForeColor = Theme.OnAccent;
         _refreshButton.FlatAppearance.BorderColor = Theme.Accent;
+        _detailsButton.BackColor = Theme.SurfaceRaised;
+        _detailsButton.ForeColor = Theme.Text;
+        _detailsButton.FlatAppearance.BorderColor = Theme.Hairline;
         _settingsButton.BackColor = Theme.SurfaceRaised;
         _settingsButton.ForeColor = Theme.Text;
         _settingsButton.FlatAppearance.BorderColor = Theme.Hairline;
+        WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark);
+        WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark);
         UpdateStatus();
     }
 
@@ -392,6 +442,9 @@ internal sealed class UsagePopupForm : Form
         _shell.RowStyles[2] = new RowStyle(SizeType.Absolute, scale[FooterRowBaseline]);
         _header.ColumnStyles[0] = new ColumnStyle(SizeType.Absolute, scale[46]);
         _header.ColumnStyles[2] = new ColumnStyle(SizeType.Absolute, scale[150]);
+        _footer.ColumnStyles[1] = new ColumnStyle(SizeType.Absolute, _mode == DashboardMode.Compact ? scale[76] : 0);
+        _footer.ColumnStyles[2] = new ColumnStyle(SizeType.Absolute, scale[76]);
+        _footer.ColumnStyles[3] = new ColumnStyle(SizeType.Absolute, scale[84]);
     }
 
     private void RebuildCards()
@@ -508,18 +561,15 @@ internal sealed class UsagePopupForm : Form
         _refreshButton.Enabled = !_isRefreshing;
         _refreshButton.Text = _isRefreshing ? "Reading" : "Refresh";
 
-        // The most-consumed provider earns the header slot; a connected count is not news.
-        var worst = connected
-            .Where(state => state.Snapshot is not null)
-            .OrderByDescending(state => state.Snapshot!.HighestUsedPercent)
-            .FirstOrDefault();
-        var headline = worst is null ? null : Headline(worst.Snapshot);
-        if (worst is not null && headline is not null)
+        // The provider with the busiest primary session earns the header slot.
+        var headlineStatus = SelectHeadlineStatus(connected);
+        var headline = headlineStatus is null ? null : Headline(headlineStatus.Snapshot);
+        if (headlineStatus is not null && headline is not null)
         {
             _summaryLabel.ForeColor = headline.HasQuota
                 ? Theme.ForUsage(headline.UsedPercent!.Value)
                 : Theme.Muted;
-            _summaryLabel.Text = $"{ShortName(worst.ProviderName)} {headline.DisplayUsed}".ToUpperInvariant();
+            _summaryLabel.Text = $"{ShortName(headlineStatus.ProviderName)} {headline.DisplayUsed}".ToUpperInvariant();
         }
         else if (_isRefreshing)
         {
@@ -532,17 +582,32 @@ internal sealed class UsagePopupForm : Form
             _summaryLabel.Text = "NOT CONNECTED";
         }
 
+        var latestUpdated = _states
+            .Select(state => state.LastUpdated ?? state.Snapshot?.FetchedAt)
+            .Where(updated => updated.HasValue)
+            .Select(updated => updated!.Value)
+            .DefaultIfEmpty()
+            .Max();
+
+        var displayTime = latestUpdated != default ? (DateTimeOffset?)latestUpdated : _lastRefreshed;
         var stale = _states.Count(state => state.IsStale);
+
         _updatedLabel.Text = _isRefreshing
             ? "Checking all providers..."
-            : _lastRefreshed is null
+            : displayTime is null
                 ? "Waiting for first refresh"
                 : stale > 0
-                    ? $"Updated {UsageFormatting.Age(_lastRefreshed.Value, DateTimeOffset.Now)}, {stale} stale"
-                    : $"Updated {UsageFormatting.Age(_lastRefreshed.Value, DateTimeOffset.Now)}";
+                    ? $"Updated {UsageFormatting.Age(displayTime.Value, DateTimeOffset.Now)}, {stale} stale"
+                    : $"Updated {UsageFormatting.Age(displayTime.Value, DateTimeOffset.Now)}";
     }
 
-    /// <summary>The metric that best represents a provider: the most consumed real quota.</summary>
+    internal static ProviderStatus? SelectHeadlineStatus(IReadOnlyList<ProviderStatus> states) =>
+        states
+            .Where(state => state.Snapshot is not null)
+            .OrderByDescending(state => Headline(state.Snapshot)?.UsedPercent ?? 0)
+            .FirstOrDefault();
+
+    /// <summary>The metric that best represents a provider's active usage session.</summary>
     private static UsageMetric? Headline(UsageSnapshot? snapshot)
     {
         if (snapshot is null)
@@ -550,11 +615,7 @@ internal sealed class UsagePopupForm : Form
             return null;
         }
 
-        var metered = snapshot.Metrics
-            .Where(metric => metric.HasQuota)
-            .OrderByDescending(metric => metric.UsedPercent!.Value)
-            .FirstOrDefault();
-        return metered ?? snapshot.Primary;
+        return snapshot.Primary ?? snapshot.Metrics.FirstOrDefault(metric => metric.HasQuota);
     }
 
     private static string ShortName(string providerName) =>
@@ -564,9 +625,30 @@ internal sealed class UsagePopupForm : Form
     {
         var scale = new LayoutScale(this);
         var width = scale[_mode == DashboardMode.Compact ? CompactWidthBaseline : FullWidthBaseline];
-        var contentHeight = _content.Controls
-            .Cast<Control>()
-            .Sum(control => control.Height + control.Margin.Vertical);
+        int contentHeight;
+        if (_mode == DashboardMode.Compact || _content.Controls.Count <= 1)
+        {
+            contentHeight = _content.Controls
+                .Cast<Control>()
+                .Sum(control => control.Height + control.Margin.Vertical);
+        }
+        else
+        {
+            var hasVerticalScroll = _content.VerticalScroll.Visible;
+            var availableWidth = width - _shell.Padding.Horizontal - (hasVerticalScroll ? SystemInformation.VerticalScrollBarWidth : 0);
+            var gap = scale[10];
+            var minCardWidth = scale[250];
+            var cols = Math.Max(1, (availableWidth + gap) / (minCardWidth + gap));
+            var colHeights = new int[cols];
+            var cardHeights = _content.Controls.Cast<Control>().Select(c => c.Height + gap).ToArray();
+            for (var i = 0; i < cardHeights.Length; i++)
+            {
+                colHeights[i % cols] += cardHeights[i];
+            }
+
+            contentHeight = colHeights.Max();
+        }
+
         contentHeight = Math.Max(scale[104], contentHeight);
         var chromeHeight = _shell.Padding.Vertical + scale[HeaderRowBaseline] + scale[FooterRowBaseline];
         var nonClientWidth = Width - ClientSize.Width;
@@ -590,10 +672,12 @@ internal sealed class UsagePopupForm : Form
                 FormBorderStyle = FormBorderStyle.Sizable;
                 MaximizeBox = true;
                 MinimizeBox = true;
-                MinimumSize = new Size(scale[480], scale[360]);
+                MinimumSize = new Size(scale[440], scale[300]);
                 ShowInTaskbar = true;
                 Text = "UsageAI Dashboard";
                 TopMost = false;
+                WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark);
+                WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark);
                 return;
             }
 
@@ -640,7 +724,7 @@ internal sealed class UsagePopupForm : Form
             _dashboardWasShown = true;
             _dashboardBounds = Bounds;
         }
-        else if ((changedToFull || !Visible) && _dashboardBounds is { } savedBounds)
+        else if (changedToFull && _dashboardBounds is { } savedBounds)
         {
             Bounds = FitToWorkingArea(savedBounds, workingArea);
         }
@@ -689,63 +773,107 @@ internal sealed class UsagePopupForm : Form
 
     private void UpdateCardWidths()
     {
-        if (_updatingCardWidths || _content.IsDisposed)
+        if (_updatingCardWidths || _content.IsDisposed || Disposing || IsDisposed)
         {
             return;
         }
 
         _updatingCardWidths = true;
+        _content.SuspendLayout();
         try
         {
+            var scale = new LayoutScale(this);
             var hasVerticalScroll = _content.VerticalScroll.Visible;
-            var width = _content.ClientSize.Width - (hasVerticalScroll ? SystemInformation.VerticalScrollBarWidth : 0);
-            width = Math.Max(220, width);
-            foreach (Control control in _content.Controls)
+            var availableWidth = _content.ClientSize.Width - (hasVerticalScroll ? SystemInformation.VerticalScrollBarWidth : 0);
+            if (availableWidth < scale[100])
             {
-                if (control.Width != width)
+                return;
+            }
+
+            if (_mode == DashboardMode.Compact)
+            {
+                var cardWidth = Math.Max(scale[220], availableWidth);
+                foreach (Control control in _content.Controls)
                 {
-                    control.Width = width;
+                    control.Margin = new Padding(0, 0, 0, scale[10]);
+                    if (control.Width != cardWidth)
+                    {
+                        control.Width = cardWidth;
+                    }
+                }
+            }
+            else
+            {
+                var gap = scale[10];
+                var minCardWidth = scale[250];
+                var cols = Math.Max(1, (availableWidth + gap) / (minCardWidth + gap));
+                var cardWidth = Math.Max(scale[220], (availableWidth - (cols - 1) * gap) / cols);
+
+                var count = _content.Controls.Count;
+                var rows = Math.Max(1, (count + cols - 1) / cols);
+                var availableHeight = _content.ClientSize.Height;
+
+                var rowHeights = new int[rows];
+                for (var i = 0; i < count; i++)
+                {
+                    var rowIndex = i / cols;
+                    var card = _content.Controls[i] as ProviderUsageCard;
+                    var naturalH = card?.NaturalHeight ?? _content.Controls[i].Height;
+                    rowHeights[rowIndex] = Math.Max(rowHeights[rowIndex], naturalH);
+                }
+
+                var totalNaturalHeight = rowHeights.Sum() + Math.Max(0, (rows - 1) * gap);
+                var extraHeight = Math.Max(0, availableHeight - totalNaturalHeight);
+                var extraPerRow = rows > 0 ? extraHeight / rows : 0;
+
+                for (var i = 0; i < count; i++)
+                {
+                    var control = _content.Controls[i];
+                    var colIndex = i % cols;
+                    var rowIndex = i / cols;
+                    var rightMargin = colIndex == cols - 1 ? 0 : gap;
+                    var bottomMargin = rowIndex == rows - 1 ? 0 : gap;
+                    var margin = new Padding(0, 0, rightMargin, bottomMargin);
+                    if (control.Margin != margin)
+                    {
+                        control.Margin = margin;
+                    }
+
+                    var targetHeight = rowHeights[rowIndex] + extraPerRow;
+                    if (control.Width != cardWidth || control.Height != targetHeight)
+                    {
+                        control.Size = new Size(cardWidth, targetHeight);
+                    }
                 }
             }
         }
         finally
         {
-            _updatingCardWidths = false;
+            try
+            {
+                _content.ResumeLayout(performLayout: true);
+            }
+            finally
+            {
+                _updatingCardWidths = false;
+            }
         }
     }
 
     private void RefreshDashboardLayout()
     {
-        if (_content.IsDisposed || Disposing || IsDisposed)
+        if (_content.IsDisposed || Disposing || IsDisposed || _updatingCardWidths)
         {
             return;
         }
 
-        _content.PerformLayout();
         UpdateCardWidths();
         _content.Invalidate(invalidateChildren: true);
         Invalidate();
-
-        if (_layoutRefreshPending || !IsHandleCreated)
-        {
-            return;
-        }
-
-        _layoutRefreshPending = true;
-        BeginInvoke((Action)(() =>
-        {
-            _layoutRefreshPending = false;
-            if (_content.IsDisposed || Disposing || IsDisposed)
-            {
-                return;
-            }
-
-            _content.PerformLayout();
-            UpdateCardWidths();
-            _content.Invalidate(invalidateChildren: true);
-            Invalidate();
-        }));
     }
+
+    private void OnContentHandleCreated(object? sender, EventArgs eventArgs) =>
+        WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark);
 
     private sealed class UsageMarkControl : Control
     {

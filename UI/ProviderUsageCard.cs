@@ -34,12 +34,12 @@ internal sealed class ProviderCardActionEventArgs : EventArgs
 internal sealed class ProviderUsageCard : Control
 {
     private const int CompactHeight = 98;
-    private const int HeaderHeight = 58;
-    private const int MetricRowHeight = 72;
-    private const int MetricRowWithTrendHeight = 92;
-    private const int ConnectionBlockHeight = 86;
+    private const int HeaderHeight = 46;
+    private const int MetricRowHeight = 54;
+    private const int MetricRowWithTrendHeight = 72;
+    private const int ConnectionBlockHeight = 70;
     private const int CardRadius = 12;
-    private const int Gutter = 16;
+    private const int Gutter = 14;
 
     private readonly Font _nameFont = Typography.Display(10F);
     private readonly Font _bodyFont = Typography.Text(8.5F);
@@ -52,6 +52,8 @@ internal sealed class ProviderUsageCard : Control
     private readonly bool _showTrend;
     private Rectangle _actionBounds = Rectangle.Empty;
     private Rectangle _linkBounds = Rectangle.Empty;
+
+    public int NaturalHeight { get; private set; }
 
     public ProviderUsageCard(
         ProviderStatus status,
@@ -151,6 +153,11 @@ internal sealed class ProviderUsageCard : Control
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
+        if (Width < 40 || Height < 20)
+        {
+            return;
+        }
+
         e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
         e.Graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         _actionBounds = Rectangle.Empty;
@@ -329,9 +336,12 @@ internal sealed class ProviderUsageCard : Control
         }
 
         var top = scale[HeaderHeight];
+        var extraY = Math.Max(0, Height - NaturalHeight);
+        var extraPerRow = metrics.Count > 0 ? extraY / metrics.Count : 0;
+
         foreach (var metric in metrics)
         {
-            var rowHeight = RowHeight(metric, scale);
+            var rowHeight = RowHeight(metric, scale) + extraPerRow;
             DrawMetricRow(graphics, scale, metric, top, rowHeight, providerColor, severity);
             top += rowHeight;
         }
@@ -371,7 +381,7 @@ internal sealed class ProviderUsageCard : Control
             metric.Name.ToUpperInvariant(),
             _utilityFont,
             Theme.Muted,
-            new Rectangle(scale[18], top + scale[11], Math.Max(scale[40], Width - scale[36] - valueWidth - scale[8]), scale[16]),
+            new Rectangle(scale[14], top + scale[8], Math.Max(scale[40], Width - scale[28] - valueWidth - scale[8]), scale[16]),
             TextFormatFlags.EndEllipsis);
 
         DrawingHelpers.DrawText(
@@ -379,12 +389,12 @@ internal sealed class ProviderUsageCard : Control
             valueText,
             _valueFont,
             metric.IsUnlimited ? Theme.Muted : valueColor,
-            new Rectangle(Width - scale[18] - valueWidth, top + scale[6], valueWidth, scale[24]),
+            new Rectangle(Width - scale[14] - valueWidth, top + scale[4], valueWidth, scale[22]),
             TextFormatFlags.Right);
 
         DrawSplitLine(
             graphics,
-            new Rectangle(scale[18], top + scale[32], Width - scale[36], scale[16]),
+            new Rectangle(scale[14], top + scale[26], Width - scale[28], scale[16]),
             SecondaryText(metric),
             UsageFormatting.RelativeReset(metric.ResetsAt, DateTimeOffset.Now),
             _smallFont,
@@ -394,21 +404,21 @@ internal sealed class ProviderUsageCard : Control
         DrawMeter(
             graphics,
             metric,
-            new Rectangle(scale[18], top + scale[52], Width - scale[36], scale[5]),
-            providerColor);
-
-        if (rowHeight <= scale[MetricRowHeight])
+            new Rectangle(scale[14], top + scale[44], Width - scale[28], scale[4]),
+            providerColor);        var baseRowHeight = RowHeight(metric, scale);
+        if (baseRowHeight <= scale[MetricRowHeight])
         {
             return;
         }
 
-        var trendTop = top + scale[62];
+        var trendTop = top + scale[52];
+        var sparklineWidth = Math.Clamp((Width - scale[28]) / 3, scale[84], scale[220]);
         var trend = UsageForecast.Trend(_history, _status.ProviderId, metric);
         if (trend.Count >= 2)
         {
             DrawingHelpers.DrawSparkline(
                 graphics,
-                new Rectangle(Width - scale[18] - scale[96], trendTop, scale[96], scale[18]),
+                new Rectangle(Width - scale[14] - sparklineWidth, trendTop, sparklineWidth, scale[16]),
                 trend,
                 valueColor);
         }
@@ -424,7 +434,7 @@ internal sealed class ProviderUsageCard : Control
                 text,
                 _smallFont,
                 projection.BeforeReset ? Theme.Warning : Theme.Muted,
-                new Rectangle(scale[18], trendTop + scale[2], Width - scale[36] - scale[104], scale[16]),
+                new Rectangle(scale[14], trendTop + scale[1], Math.Max(scale[40], Width - scale[28] - sparklineWidth - scale[8]), scale[16]),
                 TextFormatFlags.EndEllipsis);
         }
     }
@@ -626,14 +636,16 @@ internal sealed class ProviderUsageCard : Control
         var scale = new LayoutScale(this);
         if (!_expanded)
         {
-            Height = scale[CompactHeight];
+            NaturalHeight = scale[CompactHeight];
+            Height = NaturalHeight;
             return;
         }
 
         var metrics = _status.Snapshot?.Metrics ?? Array.Empty<UsageMetric>();
         if (metrics.Count == 0)
         {
-            Height = scale[HeaderHeight] + scale[ConnectionBlockHeight];
+            NaturalHeight = scale[HeaderHeight] + scale[ConnectionBlockHeight];
+            Height = NaturalHeight;
             return;
         }
 
@@ -648,7 +660,11 @@ internal sealed class ProviderUsageCard : Control
             height += scale[20];
         }
 
-        Height = height;
+        NaturalHeight = height;
+        if (Height < NaturalHeight)
+        {
+            Height = NaturalHeight;
+        }
     }
 
     /// <summary>

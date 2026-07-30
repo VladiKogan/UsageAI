@@ -65,6 +65,7 @@ internal sealed class SettingsForm : Form
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
         };
+        scrollHost.HandleCreated += OnScrollableControlHandleCreated;
         shell.Controls.Add(scrollHost, 0, 0);
 
         _layout = new TableLayoutPanel
@@ -125,6 +126,7 @@ internal sealed class SettingsForm : Form
             IntegralHeight = false,
             Margin = scale.Pad(0, 4, 0, 4),
         };
+        _providers.HandleCreated += OnScrollableControlHandleCreated;
         foreach (var id in _settings.OrderProviders(providers.Select(provider => provider.Id).ToArray()))
         {
             var provider = providers.First(candidate =>
@@ -167,7 +169,7 @@ internal sealed class SettingsForm : Form
             AutoSize = true,
             ForeColor = Theme.Muted,
             Margin = scale.Pad(0, 0, 0, 8),
-            Text = "Automatic follows the connected provider with the highest usage.",
+            Text = "Automatic follows the connected provider with the highest active primary usage.",
         });
         AddSpan(new Label
         {
@@ -406,6 +408,20 @@ internal sealed class SettingsForm : Form
     {
         _ownedFonts.Add(font);
         return font;
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark);
+    }
+
+    private static void OnScrollableControlHandleCreated(object? sender, EventArgs eventArgs)
+    {
+        if (sender is Control control)
+        {
+            WindowThemeHelpers.ApplyDarkScrollbar(control, Theme.IsDark);
+        }
     }
 
     protected override void Dispose(bool disposing)

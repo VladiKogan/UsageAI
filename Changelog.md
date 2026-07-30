@@ -6,18 +6,37 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-07-30
+
 ### Added
 
 - Google Gemini provider integration (`gemini`), supporting both local Antigravity IDE language server probe detection and Gemini CLI OAuth authentication (`cloudcode-pa.googleapis.com`).
 - Antigravity IDE model grouping in the detailed dashboard view into unified model groups (**Gemini Models** and **Claude and GPT models**), reflecting exact real-time remaining fractions and reset countdowns.
+- Antigravity quota-summary integration so the detailed Google Gemini card shows both the 5-hour and weekly windows for **Gemini Models** and **Claude and GPT models**.
 - Automatic OAuth client credential resolution with fallback for Gemini CLI token refresh.
 - Google Gemini icon painting (4-pointed sparkle star) and brand color theme definitions (Google Sky Blue / Brand Blue).
 - Application logo and multi-resolution Windows icon (`Resources\app.ico` and `Resources\logo.png`), integrated into `UsageAI.csproj`, the Inno Setup installer (`installer\UsageAI.iss`), application header UI, and project documentation.
 - An Inno Setup installer (`installer\UsageAI.iss`) producing `UsageAI-<version>-Setup.exe`, with a Start Menu shortcut, uninstaller, and an install-time check that silently installs the .NET 10 Desktop Runtime if it's missing. The portable single-file build remains available as `UsageAI-<version>-portable.exe`. Both stay part of the existing manual local-build-and-upload release process; no hosted release automation was added.
+- **Glance View Details Button**: Added a dedicated **Details** button in the Glance View footer (`DashboardMode.Compact`) to switch into the full detailed dashboard directly.
+- **Responsive Multi-Column Dashboard Layout**: Redesigned the detailed dashboard view into an adaptive multi-column grid that adds or removes columns with the available window width while dynamically resizing provider cards, sparkline graphs, capacity meters, and text bounds.
+- **Dynamic Content & Height Filling**: Provider usage cards stretch vertically and horizontally to fill available window dimensions evenly.
+- **Native Windows Immersive Dark Mode Headers & Scrollbars**: Integrated native Windows DWM title bar styling (`DWMWA_USE_IMMERSIVE_DARK_MODE`) and UxTheme dark scrollbar styling (`DarkMode_Explorer`) across the dashboard and settings windows via `WindowThemeHelpers.cs`.
+- **Dynamic Tray Icon Fill & Color Progression**: Implemented color-coded filled pie sectors (`FillPie`) in the system tray icon, advancing from Emerald Green (<50%), Cyan Blue (50%–71%), Amber Orange (72%–89%), to Vivid Red (≥90%).
+- **Primary Session Metric Prioritization**: Configured tray tooltips, tray gauge selection, and popup header summaries to prioritize each provider's active primary session metric (e.g. Claude Code 5-hour limit) for real-time tracking during active coding sessions.
+- **Expanded Regression Test Suite**: Expanded the test harness in `UsageAI.Tests` from 26 to 30 checks, adding coverage for primary session metric prioritization, theme usage color fill progression, Gemini credential-file ACL/EFS protection, and PID-bound Antigravity probing.
 
 ### Fixed
 
 - Handled omitted `remainingFraction` values in Google Gemini / Antigravity IDE model quota info blocks so model groups with depleted quotas (such as **Claude and GPT models**) remain visible at 100% usage with their reset countdown rather than being discarded.
+- **Static Footer Timestamp**: Fixed frozen `"Updated just now"` footer status label by adding a 5-second UI tick timer (`_uiTickTimer`) in `UsagePopupForm.cs` that dynamically re-evaluates relative age against `DateTimeOffset.Now` using provider statuses' `LastUpdated` / `FetchedAt` timestamps.
+- **Real-Time Thread-Safe UI Updates**: Fixed thread synchronization in `UsageApplicationContext.cs` using `SynchronizationContext` so background usage updates reliably post to the UI thread even when the popup window handle is hidden or recreated.
+- **Window Layout Re-Entrancy Crash**: Fixed re-entrancy layout loops during window resizing by batching control size changes and performing one guarded flow-layout pass afterward.
+
+### Security
+
+- Preserved owner, group, DACL, and EFS metadata when persisting refreshed Gemini OAuth credentials, with stale-file and reparse-point checks before replacement.
+- Bound Antigravity authentication tokens to listening ports owned by the process that supplied them, with an ownership recheck immediately before each authenticated request.
+- Removed hard-coded live Antigravity CSRF credentials, fixed-port probing, certificate-validation bypass, and live response logging from the test harness; replaced them with a synthetic PID-binding regression check.
 
 ## [0.4.0] - 2026-07-28
 
