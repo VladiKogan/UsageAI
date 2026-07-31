@@ -19,3 +19,5 @@ installer/Output/
 *.key
 **/.credentials.json
 **/auth.json
+CLAUDE.md
+AGENTS.md
