@@ -50,10 +50,49 @@ internal static class Program
         ("release version comparison", TestUpdateComparisonAsync),
         ("Primary metric prioritization in tray and header", TestPrimaryMetricTrayTooltipAsync),
         ("Theme usage fill colors and tray pie icon", TestThemeUsageColorsAsync),
+        ("model formatting and provider status states", CoverageExpansionTests.TestModelFormattingAsync),
+        ("refresh orchestration, alerts, history, and backoff", CoverageExpansionTests.TestRefreshOrchestrationAsync),
+        ("refresh concurrency and shutdown cancellation", CoverageExpansionTests.TestRefreshConcurrencyAsync),
+        ("Claude HTTP success and error handling", CoverageExpansionTests.TestClaudeHttpAsync),
+        ("Copilot HTTP success and error handling", CoverageExpansionTests.TestCopilotHttpAsync),
+        ("Gemini OAuth HTTP success and error handling", CoverageExpansionTests.TestGeminiHttpAsync),
+        ("Codex app-server protocol and errors", CoverageExpansionTests.TestCodexProtocolAsync),
+        ("Claude web fallback HTTP flows", CoverageExpansionTests.TestClaudeWebHttpAsync),
+        ("release update HTTP handling", CoverageExpansionTests.TestUpdateCheckerHttpAsync),
+        ("provider parser edge cases", CoverageExpansionTests.TestProviderParserEdgesAsync),
+        ("corrupt local state recovery", CoverageExpansionTests.TestCorruptLocalStateAsync),
+        ("security utility edge cases", CoverageExpansionTests.TestSecurityUtilityEdgesAsync),
+        ("custom UI rendering paths", CoverageExpansionTests.TestUiRenderingAsync),
+        ("application context lifecycle and tray updates", CoverageExpansionTests.TestApplicationContextAsync),
+        ("preview and command-line entry points", CoverageExpansionTests.TestPreviewAndEntryPointsAsync),
+        ("provider credential refresh and discovery branches", CoverageExpansionTests.TestProviderCredentialBranchesAsync),
+        ("Gemini local probe and fallback branches", CoverageExpansionTests.TestGeminiDeepBranchesAsync),
+        ("remaining UI interaction branches", CoverageExpansionTests.TestRemainingUiBranchesAsync),
+        ("low-level stream, credential, and process branches", CoverageExpansionTests.TestLowLevelBranchesAsync),
     };
 
-    private static async Task<int> Main()
+    private static async Task<int> Main(string[] args)
     {
+        if (args.FirstOrDefault() == "app-server")
+        {
+            return await RunFakeCodexAppServerAsync();
+        }
+
+        if (args.Length >= 2 &&
+            args[0] == "auth" &&
+            args[1] == "token")
+        {
+            var fixture = Environment.GetEnvironmentVariable("GH_CONFIG_DIR");
+            if (fixture == "usageai-test-gh-failure")
+            {
+                await Console.Error.WriteLineAsync("synthetic gh failure");
+                return 1;
+            }
+
+            await Console.Out.WriteLineAsync(fixture ?? string.Empty);
+            return 0;
+        }
+
         // Keep every file-touching test inside a scratch directory instead of the real profile.
         Environment.SetEnvironmentVariable(
             "USAGEAI_DATA_DIR",
@@ -77,6 +116,68 @@ internal static class Program
         TryRemoveDataDirectory();
         Console.WriteLine($"{Tests.Length - failures}/{Tests.Length} checks passed.");
         return failures == 0 ? 0 : 1;
+    }
+
+    private static async Task<int> RunFakeCodexAppServerAsync()
+    {
+        var scenario = Environment.GetEnvironmentVariable("CODEX_HOME") ?? "success";
+        if (scenario.EndsWith("premature-exit", StringComparison.Ordinal))
+        {
+            return 0;
+        }
+
+        if (await Console.In.ReadLineAsync() is null)
+        {
+            return 2;
+        }
+
+        await Console.Out.WriteLineAsync("not-json");
+        await Console.Out.WriteLineAsync("""{"id":"1","result":{}}""");
+        await Console.Out.FlushAsync();
+
+        // The initialized notification and rate-limit request are separate protocol lines.
+        if (await Console.In.ReadLineAsync() is null ||
+            await Console.In.ReadLineAsync() is null)
+        {
+            return 3;
+        }
+
+        if (scenario.EndsWith("auth-error", StringComparison.Ordinal))
+        {
+            await Console.Error.WriteLineAsync("authentication login required");
+            await Console.Error.FlushAsync();
+            await Console.Out.WriteLineAsync(
+                """{"id":2,"error":{"message":"authentication required"}}""");
+        }
+        else if (scenario.EndsWith("missing-result", StringComparison.Ordinal))
+        {
+            await Console.Out.WriteLineAsync("""{"id":99,"result":{}}""");
+            await Console.Out.WriteLineAsync("""{"id":2}""");
+        }
+        else if (scenario.EndsWith("generic-error", StringComparison.Ordinal))
+        {
+            await Console.Out.WriteLineAsync(
+                """{"id":2,"error":{"message":"server unavailable"}}""");
+        }
+        else if (scenario.EndsWith("too-many", StringComparison.Ordinal))
+        {
+            for (var index = 0; index < 512; index++)
+            {
+                await Console.Out.WriteLineAsync(
+                    $"{{\"id\":{index + 1000},\"result\":{{}}}}");
+            }
+        }
+        else
+        {
+            await Console.Out.WriteLineAsync("""{"method":"server/notice","params":{}}""");
+            await Console.Out.WriteLineAsync(
+                """
+                {"id":2,"result":{"rateLimitsByLimitId":{"codex":{"planType":"pro","primary":{"usedPercent":44,"windowDurationMins":300},"secondary":{"usedPercent":61,"windowDurationMins":10080}}}}}
+                """);
+        }
+
+        await Console.Out.FlushAsync();
+        return 0;
     }
 
     private static Task TestCredentialInputAsync()

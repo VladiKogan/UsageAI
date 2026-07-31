@@ -8,24 +8,31 @@ namespace UsageAI.Services;
 internal static class ClaudeWebUsageClient
 {
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
-    private static readonly HttpClient Client = SecureHttp.CreateClient(RequestTimeout);
+    private static readonly HttpClient SharedClient = SecureHttp.CreateClient(RequestTimeout);
     private static readonly Uri AccountEndpoint = new("https://claude.ai/api/account");
     private static readonly Uri OrganizationsEndpoint = new("https://claude.ai/api/organizations");
 
     public static bool IsConfigured => GetSessionKey() is not null;
 
-    public static async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken)
+    public static Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken) =>
+        GetUsageAsync(SharedClient, cancellationToken);
+
+    internal static async Task<UsageSnapshot> GetUsageAsync(
+        HttpClient client,
+        CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(client);
         var sessionKey = GetSessionKey()
             ?? throw new ClaudeWebUsageException("Claude web session authentication is not configured.");
 
         try
         {
-            using var account = await TryGetJsonAsync(AccountEndpoint, sessionKey, cancellationToken);
+            using var account = await TryGetJsonAsync(client, AccountEndpoint, sessionKey, cancellationToken);
             var organizationId = account is null ? null : FindOrganizationId(account.RootElement);
             if (organizationId is null)
             {
                 using var organizations = await GetJsonAsync(
+                    client,
                     OrganizationsEndpoint,
                     sessionKey,
                     cancellationToken);
@@ -39,7 +46,7 @@ internal static class ClaudeWebUsageClient
 
             var escapedOrganizationId = Uri.EscapeDataString(organizationId);
             var usageEndpoint = new Uri($"https://claude.ai/api/organizations/{escapedOrganizationId}/usage");
-            using var usage = await GetJsonAsync(usageEndpoint, sessionKey, cancellationToken);
+            using var usage = await GetJsonAsync(client, usageEndpoint, sessionKey, cancellationToken);
 
             var plan = ClaudeCodeUsageClient.FormatPlan(
                 account is null ? null : GetString(account.RootElement, "rate_limit_tier"));
@@ -50,7 +57,11 @@ internal static class ClaudeWebUsageClient
 
             var overageEndpoint = new Uri(
                 $"https://claude.ai/api/organizations/{escapedOrganizationId}/overage_spend_limit");
-            using var overage = await TryGetJsonAsync(overageEndpoint, sessionKey, cancellationToken);
+            using var overage = await TryGetJsonAsync(
+                client,
+                overageEndpoint,
+                sessionKey,
+                cancellationToken);
             if (overage is not null &&
                 ClaudeCodeUsageClient.CreateExtraUsageMetric(overage.RootElement) is { } overageMetric)
             {
@@ -81,12 +92,13 @@ internal static class ClaudeWebUsageClient
     }
 
     private static async Task<JsonDocument> GetJsonAsync(
+        HttpClient client,
         Uri endpoint,
         string sessionKey,
         CancellationToken cancellationToken)
     {
         using var request = CreateRequest(endpoint, sessionKey);
-        using var response = await Client.SendAsync(
+        using var response = await client.SendAsync(
             request,
             HttpCompletionOption.ResponseHeadersRead,
             cancellationToken);
@@ -108,13 +120,14 @@ internal static class ClaudeWebUsageClient
     }
 
     private static async Task<JsonDocument?> TryGetJsonAsync(
+        HttpClient client,
         Uri endpoint,
         string sessionKey,
         CancellationToken cancellationToken)
     {
         try
         {
-            return await GetJsonAsync(endpoint, sessionKey, cancellationToken);
+            return await GetJsonAsync(client, endpoint, sessionKey, cancellationToken);
         }
         catch (ClaudeWebUsageException)
         {

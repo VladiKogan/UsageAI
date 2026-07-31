@@ -11,7 +11,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
 {
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
     private static readonly Uri UserEndpoint = new("https://api.github.com/copilot_internal/user");
-    private static readonly HttpClient Client = SecureHttp.CreateClient(RequestTimeout);
+    private static readonly HttpClient SharedClient = SecureHttp.CreateClient(RequestTimeout);
     private const int MaxTokenCandidates = 16;
     private static readonly JsonDocumentOptions JsonOptions = new()
     {
@@ -21,7 +21,22 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
     };
 
     private readonly HashSet<string> _rejectedTokens = new(StringComparer.Ordinal);
+    private readonly HttpClient _client;
+    private readonly Func<CancellationToken, Task<IReadOnlyList<string>>> _tokenProvider;
     private string? _workingToken;
+
+    public GitHubCopilotUsageClient()
+        : this(SharedClient, null)
+    {
+    }
+
+    internal GitHubCopilotUsageClient(
+        HttpClient client,
+        Func<CancellationToken, Task<IReadOnlyList<string>>>? tokenProvider = null)
+    {
+        _client = client ?? throw new ArgumentNullException(nameof(client));
+        _tokenProvider = tokenProvider ?? FindTokensAsync;
+    }
 
     public string Id => "copilot";
 
@@ -33,7 +48,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
 
     public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default)
     {
-        var tokens = await FindTokensAsync(cancellationToken);
+        var tokens = await _tokenProvider(cancellationToken);
         if (tokens.Count == 0)
         {
             throw new GitHubCopilotUsageException(
@@ -52,7 +67,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 request.Headers.UserAgent.ParseAdd(AppIdentity.UserAgent);
 
-                using var response = await Client.SendAsync(
+                using var response = await _client.SendAsync(
                     request,
                     HttpCompletionOption.ResponseHeadersRead,
                     cancellationToken);

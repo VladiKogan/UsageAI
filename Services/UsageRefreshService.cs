@@ -210,10 +210,9 @@ internal sealed class UsageRefreshService : IDisposable
 
     public void Dispose()
     {
-        // The token source is cancelled but not disposed: an in-flight fetch still holds the
-        // token, and disposing it underneath would throw during shutdown.
+        // These synchronization objects are intentionally not disposed: an in-flight fetch
+        // still holds the token and will release the semaphore during shutdown.
         _shutdown.Cancel();
-        _refreshLock.Dispose();
     }
 
     private void ScheduleNext(DateTimeOffset now, bool anyWindowVisible) =>

@@ -15,10 +15,25 @@ internal sealed class GeminiUsageClient : IUsageClient
     private const string CodeAssistEndpoint = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
     private const string TokenRefreshEndpoint = "https://oauth2.googleapis.com/token";
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
-    private static readonly HttpClient Client = SecureHttp.CreateClient(RequestTimeout);
+    private static readonly HttpClient SharedClient = SecureHttp.CreateClient(RequestTimeout);
     private static readonly JsonSerializerOptions IndentedJsonOptions = new() { WriteIndented = true };
 
+    private readonly HttpClient _client;
+    private readonly Func<CancellationToken, Task<UsageSnapshot?>> _localProbe;
     private GeminiCredentials? _refreshedCredentials;
+
+    public GeminiUsageClient()
+        : this(SharedClient, TryFetchAntigravityLocalSnapshotAsync)
+    {
+    }
+
+    internal GeminiUsageClient(
+        HttpClient client,
+        Func<CancellationToken, Task<UsageSnapshot?>>? localProbe = null)
+    {
+        _client = client ?? throw new ArgumentNullException(nameof(client));
+        _localProbe = localProbe ?? TryFetchAntigravityLocalSnapshotAsync;
+    }
 
     public string Id => "gemini";
 
@@ -31,7 +46,7 @@ internal sealed class GeminiUsageClient : IUsageClient
     public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default)
     {
         // 1. Try local Antigravity LanguageServer probe if running
-        var antigravitySnapshot = await TryFetchAntigravityLocalSnapshotAsync(cancellationToken);
+        var antigravitySnapshot = await _localProbe(cancellationToken);
         if (antigravitySnapshot is not null)
         {
             return antigravitySnapshot;
@@ -336,7 +351,9 @@ internal sealed class GeminiUsageClient : IUsageClient
         return "Other Models";
     }
 
-    private static async Task<UsageSnapshot> FetchUsageSnapshotAsync(GeminiCredentials credentials, CancellationToken cancellationToken)
+    private async Task<UsageSnapshot> FetchUsageSnapshotAsync(
+        GeminiCredentials credentials,
+        CancellationToken cancellationToken)
     {
         var codeAssistPlan = await LoadCodeAssistPlanAsync(
             credentials.AccessToken!,
@@ -351,7 +368,7 @@ internal sealed class GeminiUsageClient : IUsageClient
 
         try
         {
-            using var response = await Client.SendAsync(
+            using var response = await _client.SendAsync(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
@@ -718,7 +735,7 @@ internal sealed class GeminiUsageClient : IUsageClient
         return CultureInfo.CurrentCulture.TextInfo.ToTitleCase(modelId.Replace('-', ' ').Replace('_', ' '));
     }
 
-    private static async Task<string?> LoadCodeAssistPlanAsync(
+    private async Task<string?> LoadCodeAssistPlanAsync(
         string accessToken,
         string? idToken,
         CancellationToken cancellationToken)
@@ -734,7 +751,7 @@ internal sealed class GeminiUsageClient : IUsageClient
                 Encoding.UTF8,
                 "application/json");
 
-            using var response = await Client.SendAsync(
+            using var response = await _client.SendAsync(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
@@ -844,7 +861,7 @@ internal sealed class GeminiUsageClient : IUsageClient
         return refreshed;
     }
 
-    private static async Task<GeminiCredentials> RefreshCredentialsAsync(
+    private async Task<GeminiCredentials> RefreshCredentialsAsync(
         GeminiCredentials credentials,
         CancellationToken cancellationToken)
     {
@@ -864,7 +881,7 @@ internal sealed class GeminiUsageClient : IUsageClient
 
         try
         {
-            using var response = await Client.SendAsync(
+            using var response = await _client.SendAsync(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);

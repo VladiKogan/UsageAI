@@ -26,6 +26,14 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private bool _isExiting;
 
     public UsageApplicationContext(IEnumerable<IUsageClient> clients, AppSettings settings)
+        : this(clients, settings, showTrayIcon: true)
+    {
+    }
+
+    internal UsageApplicationContext(
+        IEnumerable<IUsageClient> clients,
+        AppSettings settings,
+        bool showTrayIcon)
     {
         _settings = settings;
         _clients = clients.ToArray();
@@ -73,7 +81,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
             ContextMenuStrip = _menu,
             Icon = _currentIcon,
             Text = "UsageAI - checking connected providers",
-            Visible = true,
+            Visible = showTrayIcon,
         };
         _trayIcon.MouseUp += TrayIconOnMouseUp;
         _trayIcon.BalloonTipClicked += (_, _) => OpenDashboard();

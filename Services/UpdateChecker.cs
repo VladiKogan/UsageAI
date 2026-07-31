@@ -15,12 +15,18 @@ internal static class UpdateChecker
     private static readonly Uri LatestReleaseEndpoint =
         new("https://api.github.com/repos/VladiKogan/UsageAI/releases/latest");
 
-    private static readonly HttpClient Client = SecureHttp.CreateClient(RequestTimeout);
+    private static readonly HttpClient SharedClient = SecureHttp.CreateClient(RequestTimeout);
     private static readonly char[] PrereleaseSeparators = { '-', '+' };
 
     /// <summary>The newer release tag, or null when up to date or the check cannot be made.</summary>
-    public static async Task<string?> FindNewerReleaseAsync(CancellationToken cancellationToken)
+    public static Task<string?> FindNewerReleaseAsync(CancellationToken cancellationToken) =>
+        FindNewerReleaseAsync(SharedClient, cancellationToken);
+
+    internal static async Task<string?> FindNewerReleaseAsync(
+        HttpClient client,
+        CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(client);
         try
         {
             using var request = new HttpRequestMessage(HttpMethod.Get, LatestReleaseEndpoint);
@@ -28,7 +34,7 @@ internal static class UpdateChecker
             request.Headers.UserAgent.ParseAdd(AppIdentity.UserAgent);
             request.Headers.Add("X-GitHub-Api-Version", "2022-11-28");
 
-            using var response = await Client.SendAsync(
+            using var response = await client.SendAsync(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);

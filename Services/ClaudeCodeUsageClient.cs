@@ -18,8 +18,24 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
     private static readonly Uri UsageEndpoint = new("https://api.anthropic.com/api/oauth/usage");
     private static readonly Uri TokenEndpoint = new("https://platform.claude.com/v1/oauth/token");
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
-    private static readonly HttpClient Client = SecureHttp.CreateClient(RequestTimeout);
+    private static readonly HttpClient SharedClient = SecureHttp.CreateClient(RequestTimeout);
+    private readonly HttpClient _client;
+    private readonly Func<IReadOnlyList<string>> _keyringPasswords;
     private ClaudeCredentials? _refreshedCredentials;
+
+    public ClaudeCodeUsageClient()
+        : this(SharedClient, null)
+    {
+    }
+
+    internal ClaudeCodeUsageClient(
+        HttpClient client,
+        Func<IReadOnlyList<string>>? keyringPasswords = null)
+    {
+        _client = client ?? throw new ArgumentNullException(nameof(client));
+        _keyringPasswords = keyringPasswords ??
+            (() => WindowsCredentialReader.FindKeyringPasswords(CredentialManagerService));
+    }
 
     public string Id => "claude";
 
@@ -61,7 +77,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 
         try
         {
-            using var response = await Client.SendAsync(
+            using var response = await _client.SendAsync(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
@@ -158,7 +174,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             "Claude Code");
     }
 
-    private static ClaudeCredentials LoadCredentials()
+    private ClaudeCredentials LoadCredentials()
     {
         var environmentToken = CredentialInput.NormalizeToken(
             Environment.GetEnvironmentVariable("USAGEAI_CLAUDE_OAUTH_TOKEN"));
@@ -193,7 +209,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             }
         }
 
-        foreach (var savedCredential in WindowsCredentialReader.FindKeyringPasswords(CredentialManagerService))
+        foreach (var savedCredential in _keyringPasswords())
         {
             try
             {
@@ -297,7 +313,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         }
     }
 
-    private static async Task<ClaudeCredentials> RefreshCredentialsAsync(
+    private async Task<ClaudeCredentials> RefreshCredentialsAsync(
         ClaudeCredentials credentials,
         CancellationToken cancellationToken)
     {
@@ -319,7 +335,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 
         try
         {
-            using var response = await Client.SendAsync(
+            using var response = await _client.SendAsync(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);

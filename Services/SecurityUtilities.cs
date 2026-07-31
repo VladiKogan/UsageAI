@@ -494,9 +494,8 @@ internal sealed class CrossProcessFileLock : IAsyncDisposable
         string? lockDirectoryOverride = null)
     {
         var lockDirectory = lockDirectoryOverride ?? Path.Combine(
-                Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
-                "UsageAI",
-                "locks");
+            AppPaths.DataDirectory,
+            "locks");
         Directory.CreateDirectory(lockDirectory);
         var lockPath = Path.Combine(lockDirectory, $"{lockName}.lock");
         var startedAt = Stopwatch.GetTimestamp();
