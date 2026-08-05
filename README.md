@@ -29,7 +29,9 @@ You're mid-refactor and the model stops. Weekly limit. Nobody told you it was cl
 
 **UsageAI** is a tiny Windows tray app that keeps every AI coding limit you have in one glance — how much you've used, how fast you're burning it, and exactly when it resets. No dashboards to open, no logins to repeat, no surprises at 2 a.m.
 
-![UsageAI tray popup](usageai-preview.png)
+<p align="center">
+  <img src="usageai-preview.png" alt="UsageAI tray popup" width="420" />
+</p>
 
 ## ⚡ Get it
 
@@ -58,7 +60,9 @@ Windows 10 or 11 (x64), plus at least one AI tool you're already signed in to. T
 
 **One glance or the full picture.** Left-click for a compact popup; open the dashboard for a responsive multi-column view that reflows as you resize it and fills the space you give it.
 
-![UsageAI detailed dashboard](usageai-dashboard-preview.png)
+<p align="center">
+  <img src="usageai-dashboard-preview.png" alt="UsageAI detailed dashboard" width="750" />
+</p>
 
 **It never goes blank.** If a refresh fails, UsageAI keeps the last good reading and marks it **stale**, with the provider's own error message attached — then backs off before retrying instead of hammering a rate-limited API.
 

@@ -621,7 +621,7 @@ internal sealed class UsagePopupForm : Form
     private static string ShortName(string providerName) =>
         providerName.Equals("GitHub Copilot", StringComparison.OrdinalIgnoreCase) ? "Copilot" : providerName;
 
-    private void ApplyPreferredSize(Rectangle workingArea)
+    internal void ApplyPreferredSize(Rectangle workingArea)
     {
         var scale = new LayoutScale(this);
         var width = scale[_mode == DashboardMode.Compact ? CompactWidthBaseline : FullWidthBaseline];
