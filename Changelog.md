@@ -8,11 +8,14 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Google Gemini Preview Block & Sparkline Curves**: Integrated the Google Gemini provider block and multi-point session reset sparklines into the `--render-preview` pipeline (`UI/PreviewRenderer.cs`), displaying Gemini Models and Claude/GPT Models metrics with realistic usage trend curves.
+- **High-Resolution Anti-Aliased Preview Pipeline**: Upgraded `--render-preview` to use high-quality bicubic interpolation and smoothing modes, producing crisp vector-smooth high-resolution preview images (`usageai-preview.png` and `usageai-dashboard-preview.png`).
 - **Expanded Regression Test Suite**: Expanded the console harness in `UsageAI.Tests` from 30 to 49 checks (`UsageAI.Tests\CoverageExpansionTests.cs`), adding coverage for refresh orchestration, throttling and backoff, shutdown cancellation, provider HTTP and OAuth flows, the Codex `app-server` protocol, corrupt local-state recovery, provider parser edge cases, custom UI rendering, application lifecycle, preview rendering, and command-line entry points. Two of the checks exercise Windows ACL and EFS behaviour and need an elevated shell; without one the suite reports 47 of 49.
 - Test seams on the provider clients, `UpdateChecker`, and `UsageApplicationContext`, which now accept an `HttpClient` plus credential and probe delegates through `internal` constructors so fetch and authentication paths can be driven from tests without network access.
 
 ### Fixed
 
+- **Full Dashboard Preview Canvas Geometry**: Fixed `--full` dashboard preview rendering in `UI/PreviewRenderer.cs` to use borderless presentation (`FormBorderStyle = FormBorderStyle.None`) and a wider canvas layout (`940×930`), eliminating system caption bar artifacts, vertical footer cutoff, scrollbars, and metric label truncation.
 - Cross-process refresh locks were created under a hard-coded `%LOCALAPPDATA%\UsageAI\locks` path, ignoring `USAGEAI_DATA_DIR`. A portable install pointed at another directory now keeps its lock files with the rest of its local state instead of writing into the roaming profile.
 - A shutdown race in `UsageRefreshService.Dispose` where an in-flight refresh could release a semaphore that had already been disposed, throwing during exit.
 

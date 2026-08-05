@@ -58,6 +58,8 @@ Windows 10 or 11 (x64), plus at least one AI tool you're already signed in to. T
 
 **One glance or the full picture.** Left-click for a compact popup; open the dashboard for a responsive multi-column view that reflows as you resize it and fills the space you give it.
 
+![UsageAI detailed dashboard](usageai-dashboard-preview.png)
+
 **It never goes blank.** If a refresh fails, UsageAI keeps the last good reading and marks it **stale**, with the provider's own error message attached — then backs off before retrying instead of hammering a rate-limited API.
 
 **It looks like it belongs on your desktop.** Native Windows dark title bars and scrollbars, light/dark/follow-Windows themes, your Windows accent colour, and window size and position remembered between runs.
@@ -191,10 +193,11 @@ dotnet run --project .\UsageAI.csproj -- --diagnose gemini
 
 `--help` lists every switch; `--version` prints the build version. Diagnostic output includes account identity and usage metadata — never provider tokens, but review it before sharing publicly.
 
-**Regenerate the screenshot:**
+**Regenerate the screenshots:**
 
 ```powershell
 dotnet run --project .\UsageAI.csproj -- --render-preview .\usageai-preview.png
+dotnet run --project .\UsageAI.csproj -- --render-preview .\usageai-dashboard-preview.png --full
 ```
 
 **Build the portable executable:**
