@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-08-10
+
 ### Added
 
 - **Google Gemini Preview Block & Sparkline Curves**: Integrated the Google Gemini provider block and multi-point session reset sparklines into the `--render-preview` pipeline (`UI/PreviewRenderer.cs`), displaying Gemini Models and Claude/GPT Models metrics with realistic usage trend curves.
