@@ -20,6 +20,14 @@ The extension reads credentials already created by provider CLIs and IDE integra
 
 The extension is desktop-only because provider discovery requires local files and child processes. It deliberately does not run in vscode.dev or github.dev.
 
+## Install
+
+The current extension release is **0.1.7**. Install it from the
+[Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai)
+or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai). For manual installation, download
+[`usageai-0.1.7.vsix`](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.1/usageai-0.1.7.vsix)
+and run **Extensions: Install from VSIX...** in VS Code or Antigravity.
+
 ## Use
 
 1. Select the UsageAI icon in the Activity Bar.

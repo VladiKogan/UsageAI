@@ -30,18 +30,19 @@ You're mid-refactor and the model stops. Weekly limit. Nobody told you it was cl
 **UsageAI** is a tiny Windows tray app that keeps every AI coding limit you have in one glance — how much you've used, how fast you're burning it, and exactly when it resets. No dashboards to open, no logins to repeat, no surprises at 2 a.m.
 
 <p align="center">
-  <img src="usageai-preview.png" alt="UsageAI compact tray popup with branded provider icons" width="420" />
+  <img src="usageai-preview.png?v=0.7.1" alt="UsageAI 0.7.1 compact tray popup with centered provider icons" width="420" />
 </p>
 
 ## ⚡ Get it
 
-Grab the latest build from the **[Releases page](https://github.com/VladiKogan/UsageAI/releases)**:
+Current release: **UsageAI for Windows 0.7.1** and **UsageAI editor extension 0.1.7**.
+You can also browse the complete **[Releases page](https://github.com/VladiKogan/UsageAI/releases)**.
 
 | | |
 | --- | --- |
-| 🚀 **`UsageAI-<version>-Setup.exe`** | The easy one. Start Menu shortcut, clean uninstall, and it installs the .NET 10 Desktop Runtime for you if you don't have it. |
-| 🎒 **`UsageAI-<version>-portable.exe`** | One file. No install. Drop it anywhere and double-click — it uses the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) if you already have it. |
-| 🧩 **`usageai-<version>.vsix`** | The VS Code and Antigravity extension. Install it from the editor's **Extensions: Install from VSIX...** command. |
+| 🚀 **[UsageAI-0.7.1-Setup.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.1/UsageAI-0.7.1-Setup.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.1/UsageAI-0.7.1-Setup.exe.sha256)) | The easy one. Start Menu shortcut, clean uninstall, and it installs the .NET 10 Desktop Runtime for you if you don't have it. |
+| 🎒 **[UsageAI-0.7.1-portable.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.1/UsageAI-0.7.1-portable.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.1/UsageAI-0.7.1-portable.exe.sha256)) | One file. No install. Drop it anywhere and double-click — it uses the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) if you already have it. |
+| 🧩 **[usageai-0.1.7.vsix](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.1/usageai-0.1.7.vsix)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.1/usageai-0.1.7.vsix.sha256)) | The VS Code and Antigravity extension. Install it from the editor's **Extensions: Install from VSIX...** command. |
 
 Windows 10 or 11 (x64), plus at least one AI tool you're already signed in to. That's the whole setup — UsageAI reuses the login you already have, so there's nothing new to create, paste, or remember.
 
@@ -84,7 +85,7 @@ npm.cmd run package:vsix
 **One glance or the full picture.** Left-click for a compact popup; open the dashboard for a responsive multi-column view that reflows as you resize it and fills the space you give it.
 
 <p align="center">
-  <img src="usageai-dashboard-preview.png" alt="UsageAI detailed dashboard with branded provider icons" width="750" />
+  <img src="usageai-dashboard-preview.png?v=0.7.1" alt="UsageAI 0.7.1 dashboard with centered provider icons" width="750" />
 </p>
 
 **It never goes blank.** If a refresh fails, UsageAI keeps the last good reading and marks it **stale**, with the provider's own error message attached — then backs off before retrying instead of hammering a rate-limited API.
@@ -243,16 +244,22 @@ Run `publish\UsageAI.exe`. The single-file, framework-dependent build is deliber
 
 This produces `installer\Output\UsageAI-<version>-Setup.exe`. It installs to Program Files, adds a Start Menu shortcut and uninstaller, and silently installs the .NET 10 Desktop Runtime at install time if it's missing (see `installer\UsageAI.iss`).
 
-**Checksum both assets before uploading:**
+**Name and checksum both Windows assets before uploading:**
 
 ```powershell
-foreach ($file in 'publish\UsageAI.exe', 'installer\Output\UsageAI-<version>-Setup.exe') {
+$version = '<version>'
+$portable = "publish\UsageAI-$version-portable.exe"
+Copy-Item 'publish\UsageAI.exe' $portable
+
+foreach ($file in $portable, "installer\Output\UsageAI-$version-Setup.exe") {
     $hash = (Get-FileHash -Path $file -Algorithm SHA256).Hash.ToLower()
-    "$hash  $(Split-Path $file -Leaf)" | Set-Content -NoNewline "$(Split-Path $file -Leaf).sha256"
+    "$hash  $(Split-Path $file -Leaf)" | Set-Content -NoNewline "$file.sha256"
 }
 ```
 
-Releases are built and checked locally, then uploaded manually to GitHub Releases as `UsageAI-<version>-Setup.exe`, `UsageAI-<version>-portable.exe` and their `.sha256` files. The GitHub `Build` workflow only restores, builds and tests — it never publishes.
+Releases are built and checked locally, then uploaded manually to GitHub Releases as
+`UsageAI-<version>-Setup.exe`, `UsageAI-<version>-portable.exe`, the separately versioned editor VSIX,
+and their `.sha256` files. The GitHub `Build` workflow only restores, builds and tests — it never publishes.
 
 </details>
 
