@@ -2,8 +2,11 @@ import * as vscode from "vscode";
 import {
   highestUsedPercent,
   normalizeStatusBarProviders,
+  segmentedUsageBar,
+  statusBarMetrics,
   type ProviderState,
   type StatusBarProviderId,
+  type UsageMetric,
   type UsageSnapshot,
 } from "./model";
 
@@ -12,6 +15,13 @@ const providerLabels: Record<Exclude<StatusBarProviderId, "hottest">, string> = 
   claude: "Claude",
   copilot: "Copilot",
   gemini: "Gemini",
+};
+
+const providerIcons: Record<Exclude<StatusBarProviderId, "hottest">, string> = {
+  codex: "$(usageai-codex)",
+  claude: "$(usageai-claude)",
+  copilot: "$(usageai-copilot)",
+  gemini: "$(usageai-gemini)",
 };
 
 export class StatusBarController implements vscode.Disposable {
@@ -65,7 +75,7 @@ export class StatusBarController implements vscode.Disposable {
         return;
       }
 
-      renderUnavailable(item, "UsageAI", states);
+      renderUnavailable(item, providerId, "UsageAI", states);
       return;
     }
 
@@ -75,7 +85,7 @@ export class StatusBarController implements vscode.Disposable {
       return;
     }
 
-    renderUnavailable(item, providerLabels[providerId], state ? [state] : []);
+    renderUnavailable(item, providerId, providerLabels[providerId], state ? [state] : []);
   }
 
   private disposeItems(): void {
@@ -96,12 +106,52 @@ function renderSnapshot(
   label: string,
 ): void {
   const staleLabel = state.stale ? " (stale)" : "";
-  item.text = `$(pulse) ${label} ${highestUsedPercent(state.snapshot)}%`;
-  item.tooltip = `${state.displayName} · ${state.snapshot.plan}${staleLabel}\nClick to open UsageAI`;
+  const metrics = statusBarMetrics(state.snapshot);
+  const readings = metrics.length > 0
+    ? metrics.map((metric) => `${metric.usedPercent ?? 0}%`).join(" | ")
+    : `${highestUsedPercent(state.snapshot)}%`;
+  item.text = `${providerIcon(state.id)} ${label} ${readings}`;
+  item.tooltip = snapshotTooltip(state, metrics, staleLabel);
+}
+
+function snapshotTooltip(
+  state: ProviderState & { snapshot: UsageSnapshot },
+  metrics: readonly UsageMetric[],
+  staleLabel: string,
+): vscode.MarkdownString {
+  const tooltip = new vscode.MarkdownString(undefined, true);
+  tooltip.appendMarkdown(`${providerIcon(state.id)} **`);
+  tooltip.appendText(state.displayName);
+  tooltip.appendMarkdown("**");
+  tooltip.appendText(` · ${state.snapshot.plan}${staleLabel}`);
+
+  if (metrics.length > 0) {
+    tooltip.appendMarkdown("\n\n");
+    tooltip.appendCodeblock(formatMeterRows(metrics), "text");
+  }
+
+  const fetchedAt = new Date(state.snapshot.fetchedAt);
+  if (!Number.isNaN(fetchedAt.getTime())) {
+    tooltip.appendMarkdown("\n\n*Last updated:* ");
+    tooltip.appendText(fetchedAt.toLocaleTimeString());
+  }
+
+  tooltip.appendMarkdown("\n\n[Open UsageAI](command:usageai.show) · [Refresh](command:usageai.refresh)");
+  tooltip.isTrusted = { enabledCommands: ["usageai.show", "usageai.refresh"] };
+  return tooltip;
+}
+
+function formatMeterRows(metrics: readonly UsageMetric[]): string {
+  const labelWidth = Math.max(...metrics.map((metric) => metric.name.length));
+  return metrics.map((metric) => {
+    const percent = metric.usedPercent ?? 0;
+    return `${metric.name.padEnd(labelWidth)}  ${segmentedUsageBar(percent)}  ${percent}%`;
+  }).join("\n");
 }
 
 function renderUnavailable(
   item: vscode.StatusBarItem,
+  providerId: StatusBarProviderId,
   label: string,
   states: readonly ProviderState[],
 ): void {
@@ -112,9 +162,15 @@ function renderUnavailable(
     item.text = `$(warning) ${label}`;
     item.tooltip = `${label} needs attention. Click to open UsageAI.`;
   } else {
-    item.text = `$(pulse) ${label} —`;
+    item.text = `${providerIcon(providerId)} ${label} —`;
     item.tooltip = `${label} has no usage reading. Click to open UsageAI.`;
   }
+}
+
+function providerIcon(providerId: string): string {
+  return providerId in providerIcons
+    ? providerIcons[providerId as keyof typeof providerIcons]
+    : "$(dashboard)";
 }
 
 function shortProviderName(state: ProviderState): string {

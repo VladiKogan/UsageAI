@@ -5,7 +5,7 @@ Keep Codex, Claude Code, GitHub Copilot, and Google Gemini quota usage visible w
 UsageAI adds two editor-native surfaces:
 
 - A persistent dashboard in the Activity Bar. Move it to the Secondary Sidebar or Panel if that fits your layout better.
-- Compact Status Bar readings for selected providers, or whichever connected provider is currently hottest.
+- Compact Status Bar readings with provider-specific icons for selected providers, or whichever connected provider is currently hottest. Session and weekly percentages appear side by side, with segmented meters in the hover card.
 
 The extension reads credentials already created by provider CLIs and IDE integrations. It never scans browser storage and never sends credentials into the webview.
 
@@ -60,8 +60,8 @@ npm.cmd run package:vsix
 The resulting VSIX can be installed manually in both VS Code and Antigravity. Marketplace publication uses the same artifact:
 
 ```powershell
-npm.cmd run publish:vscode -- --packagePath usageai-0.1.6.vsix
-npm.cmd run publish:openvsx -- usageai-0.1.6.vsix
+npm.cmd run publish:vscode -- --packagePath usageai-0.1.7.vsix
+npm.cmd run publish:openvsx -- usageai-0.1.7.vsix
 ```
 
 Publishing requires separate publisher identities and credentials for Visual Studio Marketplace and Open VSX.

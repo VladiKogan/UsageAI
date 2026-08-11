@@ -2,7 +2,7 @@
   "name": "usageai",
   "displayName": "UsageAI",
   "description": "Keep Codex, Claude Code, GitHub Copilot, and Gemini usage visible while you code.",
-  "version": "0.1.6",
+  "version": "0.1.7",
   "publisher": "vladikogan",
   "license": "MIT",
   "engines": {
@@ -47,6 +47,36 @@
     "virtualWorkspaces": true
   },
   "contributes": {
+    "icons": {
+      "usageai-codex": {
+        "description": "Codex provider",
+        "default": {
+          "fontPath": "./media/usageai-providers.woff",
+          "fontCharacter": "\\E001"
+        }
+      },
+      "usageai-claude": {
+        "description": "Claude provider",
+        "default": {
+          "fontPath": "./media/usageai-providers.woff",
+          "fontCharacter": "\\E002"
+        }
+      },
+      "usageai-copilot": {
+        "description": "GitHub Copilot provider",
+        "default": {
+          "fontPath": "./media/usageai-providers.woff",
+          "fontCharacter": "\\E003"
+        }
+      },
+      "usageai-gemini": {
+        "description": "Google Gemini provider",
+        "default": {
+          "fontPath": "./media/usageai-providers.woff",
+          "fontCharacter": "\\E004"
+        }
+      }
+    },
     "viewsContainers": {
       "activitybar": [
         {

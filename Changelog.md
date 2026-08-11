@@ -6,6 +6,15 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- The editor Status Bar now shows the session and weekly percentages side by side, with segmented quota meters, the last-updated time, and Open/Refresh actions in its hover card.
+- Provider-specific monochrome Codex/OpenAI, Claude, GitHub Copilot, and Gemini glyphs for editor Status Bar readings. The bundled icon font inherits the active theme and requires no external font installation.
+
+### Changed
+
+- Replaced the editor extension's generic pulse icon with the matching provider glyph while retaining loading and warning icons.
+
 ## [0.7.0] - 2026-08-11
 
 ### Added

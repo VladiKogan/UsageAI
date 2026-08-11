@@ -93,6 +93,30 @@ export function highestUsedPercent(snapshot: UsageSnapshot): number {
     .reduce((highest, metric) => Math.max(highest, metric.usedPercent ?? 0), 0);
 }
 
+export function statusBarMetrics(snapshot: UsageSnapshot): UsageMetric[] {
+  const quotaMetrics = snapshot.metrics.filter(hasQuota);
+  const session = quotaMetrics.find((metric) => metric.kind === "session");
+  const rolling = quotaMetrics.find((metric) => metric.kind === "rolling");
+  const preferred = [session, rolling].filter((metric): metric is UsageMetric => Boolean(metric));
+
+  for (const metric of quotaMetrics) {
+    if (!preferred.includes(metric)) {
+      preferred.push(metric);
+    }
+  }
+
+  return preferred.slice(0, 2);
+}
+
+export function segmentedUsageBar(usedPercent: number, segmentCount = 10): string {
+  const safeSegmentCount = Math.max(1, Math.round(segmentCount));
+  const filledCount = Math.round((clampPercent(usedPercent) / 100) * safeSegmentCount);
+  return [
+    ...Array.from({ length: filledCount }, () => "■"),
+    ...Array.from({ length: safeSegmentCount - filledCount }, () => "□"),
+  ].join(" ");
+}
+
 export function primaryMetric(snapshot: UsageSnapshot): UsageMetric | undefined {
   return snapshot.metrics.find(hasQuota) ?? snapshot.metrics[0];
 }

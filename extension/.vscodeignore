@@ -8,3 +8,4 @@ node_modules/**
 dist/test/**
 **/*.map
 *.vsix
+*.sha256

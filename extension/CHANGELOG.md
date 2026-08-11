@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.1.7
+
+- Added provider-specific Codex, Claude, GitHub Copilot, and Gemini icons to Status Bar readings.
+- Added side-by-side session and weekly percentages, segmented quota meters, the last-updated time, and Open/Refresh actions to the Status Bar hover card.
+
 ## 0.1.6
 
 - Applied the general Providers order to selected Status Bar items instead of rebuilding them in a fixed order.

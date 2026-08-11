@@ -6,6 +6,8 @@ import {
   formatResetCountdown,
   normalizeStatusBarProviders,
   primaryMetric,
+  segmentedUsageBar,
+  statusBarMetrics,
   statusBarProvidersFromCheckboxes,
   type UsageClient,
   type UsageSnapshot,
@@ -27,6 +29,22 @@ const snapshot: UsageSnapshot = {
 test("model selects real quota before balance", () => {
   assert.equal(primaryMetric(snapshot)?.name, "Weekly");
   assert.equal(highestUsedPercent(snapshot), 74);
+});
+
+test("status bar prioritizes session and weekly windows", () => {
+  const windows: UsageSnapshot = {
+    ...snapshot,
+    metrics: [
+      { name: "Credits", kind: "balance", usedPercent: null, remainingText: "$5" },
+      { name: "Weekly", kind: "rolling", usedPercent: 39 },
+      { name: "5-hour", kind: "session", usedPercent: 24 },
+      { name: "Weekly Opus", kind: "rolling", usedPercent: 12 },
+    ],
+  };
+
+  assert.deepEqual(statusBarMetrics(windows).map((metric) => metric.name), ["5-hour", "Weekly"]);
+  assert.equal(segmentedUsageBar(24), "■ ■ □ □ □ □ □ □ □ □");
+  assert.equal(segmentedUsageBar(39), "■ ■ ■ ■ □ □ □ □ □ □");
 });
 
 test("status bar provider selection supports legacy and multiple values", () => {
