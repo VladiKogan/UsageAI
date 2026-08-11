@@ -10,6 +10,8 @@ UsageAI-*.sha256
 installer/Output/
 .dotnet-cli/
 .nuget/
+.codex-security-tmp/
+.agents/
 *.user
 *.suo
 .env
