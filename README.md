@@ -41,8 +41,26 @@ Grab the latest build from the **[Releases page](https://github.com/VladiKogan/U
 | --- | --- |
 | 🚀 **`UsageAI-<version>-Setup.exe`** | The easy one. Start Menu shortcut, clean uninstall, and it installs the .NET 10 Desktop Runtime for you if you don't have it. |
 | 🎒 **`UsageAI-<version>-portable.exe`** | One file. No install. Drop it anywhere and double-click — it uses the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) if you already have it. |
+| 🧩 **`usageai-<version>.vsix`** | The VS Code and Antigravity extension. Install it from the editor's **Extensions: Install from VSIX...** command. |
 
 Windows 10 or 11 (x64), plus at least one AI tool you're already signed in to. That's the whole setup — UsageAI reuses the login you already have, so there's nothing new to create, paste, or remember.
+
+### VS Code and Antigravity extension
+
+The pure TypeScript editor extension lives in [`extension/`](extension/README.md). It adds a UsageAI
+Activity Bar view that can stay pinned in the Primary or Secondary Sidebar, plus an always-available
+Status Bar summary. One VSIX targets both VS Code and Antigravity; marketplace publication is kept
+separate for Visual Studio Marketplace and Open VSX.
+
+Until the first marketplace release, download the VSIX from the GitHub release and select
+**Extensions: Install from VSIX...** in VS Code or Antigravity. To build it from source instead:
+
+```powershell
+cd extension
+npm.cmd install
+npm.cmd test
+npm.cmd run package:vsix
+```
 
 > Every download ships with a matching `.sha256` file if you like to verify what you run.
 

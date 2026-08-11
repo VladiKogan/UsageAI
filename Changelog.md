@@ -6,6 +6,22 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-08-11
+
+### Added
+
+- A pure TypeScript UsageAI editor extension under `extension/`, targeting both VS Code and Antigravity with one VSIX. It contributes a persistent Activity Bar dashboard, Status Bar summary, configurable polling, cached stale readings, and local clients for Codex, Claude Code, GitHub Copilot, Gemini CLI, and Antigravity quota summaries.
+- Multi-provider Status Bar selection for the editor extension, with one compact item per selected provider and compatibility with earlier single-provider settings.
+- Native Settings UI checkboxes for each editor Status Bar provider, avoiding manual `settings.json` editing.
+- Editor settings organized into General, Status Bar, and Usage Levels sections for clearer navigation.
+- Extension parser and orchestration tests using Node's built-in test runner, plus validation in the existing non-publishing GitHub workflow.
+
+### Fixed
+
+- The editor extension now uses a dedicated monochrome quota-dial icon for Activity Bar surfaces, instead of flattening the full-colour marketplace PNG into a white square.
+- Editor reset countdowns of one day or longer now use days and hours instead of large hour and minute values.
+- The editor's Providers display order now also controls the order of selected Status Bar items.
+
 ## [0.6.0] - 2026-08-10
 
 ### Added

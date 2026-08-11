@@ -13,6 +13,9 @@ installer/Output/
 *.user
 *.suo
 .env
+extension/node_modules/
+extension/dist/
+extension/*.vsix
 .env.*
 *.pfx
 *.p12

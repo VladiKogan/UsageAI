@@ -1,0 +1,261 @@
+{
+  "name": "usageai",
+  "displayName": "UsageAI",
+  "description": "Keep Codex, Claude Code, GitHub Copilot, and Gemini usage visible while you code.",
+  "version": "0.1.6",
+  "publisher": "vladikogan",
+  "license": "MIT",
+  "engines": {
+    "vscode": "^1.90.0",
+    "node": ">=20"
+  },
+  "categories": [
+    "Other",
+    "Visualization",
+    "Machine Learning"
+  ],
+  "keywords": [
+    "usage",
+    "quota",
+    "codex",
+    "claude",
+    "copilot",
+    "gemini",
+    "antigravity"
+  ],
+  "icon": "media/logo.png",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/VladiKogan/UsageAI"
+  },
+  "bugs": {
+    "url": "https://github.com/VladiKogan/UsageAI/issues"
+  },
+  "homepage": "https://github.com/VladiKogan/UsageAI#readme",
+  "main": "./dist/src/extension.js",
+  "extensionKind": [
+    "ui"
+  ],
+  "activationEvents": [
+    "onStartupFinished",
+    "onView:usageai.dashboard"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": true
+    },
+    "virtualWorkspaces": true
+  },
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "usageai",
+          "title": "UsageAI",
+          "icon": "media/activity.svg"
+        }
+      ]
+    },
+    "views": {
+      "usageai": [
+        {
+          "type": "webview",
+          "id": "usageai.dashboard",
+          "name": "Usage",
+          "icon": "media/activity.svg",
+          "contextualTitle": "UsageAI"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "usageai.show",
+        "title": "UsageAI: Show Usage"
+      },
+      {
+        "command": "usageai.refresh",
+        "title": "UsageAI: Refresh"
+      },
+      {
+        "command": "usageai.openSettings",
+        "title": "UsageAI: Open Settings"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "usageai.refresh",
+          "when": "view == usageai.dashboard",
+          "group": "navigation@1"
+        },
+        {
+          "command": "usageai.openSettings",
+          "when": "view == usageai.dashboard",
+          "group": "navigation@2"
+        }
+      ]
+    },
+    "configuration": [
+      {
+        "title": "UsageAI",
+        "order": 10,
+        "properties": {
+          "usageai.providers": {
+            "type": "array",
+            "default": [
+              "codex",
+              "claude",
+              "copilot",
+              "gemini"
+            ],
+            "uniqueItems": true,
+            "items": {
+              "type": "string",
+              "enum": [
+                "codex",
+                "claude",
+                "copilot",
+                "gemini"
+              ]
+            },
+            "order": 10,
+            "description": "Providers to display, in dashboard and Status Bar order."
+          },
+          "usageai.refreshIntervalMinutes": {
+            "type": "number",
+            "default": 5,
+            "minimum": 1,
+            "maximum": 120,
+            "order": 20,
+            "description": "How often to refresh provider usage while the UsageAI view is visible."
+          },
+          "usageai.backgroundRefreshIntervalMinutes": {
+            "type": "number",
+            "default": 15,
+            "minimum": 5,
+            "maximum": 240,
+            "order": 30,
+            "description": "How often to refresh while the UsageAI view is hidden."
+          },
+          "usageai.enableGitHubCliFallback": {
+            "type": "boolean",
+            "default": false,
+            "order": 40,
+            "description": "Allow UsageAI to invoke `gh auth token` when no Copilot credential file is usable."
+          }
+        }
+      },
+      {
+        "title": "UsageAI: Status Bar",
+        "order": 20,
+        "properties": {
+          "usageai.statusBarProviders.hottestWhenNoneSelected": {
+            "type": "boolean",
+            "default": true,
+            "order": 10,
+            "description": "Show the connected provider with the highest usage when no individual provider is checked."
+          },
+          "usageai.statusBarProviders.codex": {
+            "type": "boolean",
+            "default": false,
+            "order": 20,
+            "description": "Show Codex in the Status Bar."
+          },
+          "usageai.statusBarProviders.claude": {
+            "type": "boolean",
+            "default": false,
+            "order": 30,
+            "description": "Show Claude in the Status Bar."
+          },
+          "usageai.statusBarProviders.copilot": {
+            "type": "boolean",
+            "default": false,
+            "order": 40,
+            "description": "Show GitHub Copilot in the Status Bar."
+          },
+          "usageai.statusBarProviders.gemini": {
+            "type": "boolean",
+            "default": false,
+            "order": 50,
+            "description": "Show Gemini in the Status Bar."
+          },
+          "usageai.statusBarProvider": {
+            "default": [
+              "hottest"
+            ],
+            "oneOf": [
+              {
+                "type": "array",
+                "uniqueItems": true,
+                "items": {
+                  "type": "string",
+                  "enum": [
+                    "hottest",
+                    "codex",
+                    "claude",
+                    "copilot",
+                    "gemini"
+                  ]
+                }
+              },
+              {
+                "type": "string",
+                "enum": [
+                  "hottest",
+                  "codex",
+                  "claude",
+                  "copilot",
+                  "gemini"
+                ]
+              }
+            ],
+            "order": 100,
+            "description": "Legacy provider selection retained for upgrade compatibility.",
+            "deprecationMessage": "Use the UsageAI Status Bar checkboxes instead.",
+            "markdownDeprecationMessage": "Use the **UsageAI: Status Bar** checkboxes instead."
+          }
+        }
+      },
+      {
+        "title": "UsageAI: Usage Levels",
+        "order": 30,
+        "properties": {
+          "usageai.warningPercent": {
+            "type": "number",
+            "default": 72,
+            "minimum": 1,
+            "maximum": 100,
+            "order": 10,
+            "description": "Usage percentage at which meters enter the warning state."
+          },
+          "usageai.criticalPercent": {
+            "type": "number",
+            "default": 90,
+            "minimum": 1,
+            "maximum": 100,
+            "order": 20,
+            "description": "Usage percentage at which meters enter the critical state."
+          }
+        }
+      }
+    ]
+  },
+  "scripts": {
+    "clean": "node ./scripts/clean.mjs",
+    "compile": "tsc -p tsconfig.json",
+    "watch": "tsc -p tsconfig.json --watch",
+    "lint": "tsc -p tsconfig.json --noEmit",
+    "test": "npm run compile && node --test dist/test/*.test.js",
+    "vscode:prepublish": "npm run compile",
+    "package:vsix": "vsce package",
+    "publish:vscode": "vsce publish",
+    "publish:openvsx": "ovsx publish"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.6.0",
+    "ovsx": "^0.10.4",
+    "typescript": "^5.9.2"
+  }
+}
