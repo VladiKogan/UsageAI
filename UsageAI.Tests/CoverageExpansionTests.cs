@@ -1294,6 +1294,7 @@ internal static class CoverageExpansionTests
             DrawingHelpers.DrawBalanceMarker(graphics, Rectangle.Empty, Color.Blue);
             DrawingHelpers.DrawSparkline(graphics, new Rectangle(5, 110, 140, 30), SparklineValues, Color.Green);
             DrawingHelpers.DrawSparkline(graphics, Rectangle.Empty, SingleSparklineValue, Color.Green);
+            True(ProviderIconPainter.IsBrandFontAvailable);
             foreach (var provider in IconProviderIds)
             {
                 ProviderIconPainter.Draw(graphics, new Rectangle(170, 5, 48, 48), provider);

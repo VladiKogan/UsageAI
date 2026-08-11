@@ -1,9 +1,18 @@
 using System.Drawing.Drawing2D;
+using System.Drawing.Text;
+using System.Runtime.InteropServices;
 
 namespace UsageAI.UI;
 
 internal static class ProviderIconPainter
 {
+    private const string FontResourceName = "UsageAI.Resources.usageai-providers.ttf";
+    private static readonly Lazy<ProviderIconFont?> IconFont = new(
+        LoadIconFont,
+        LazyThreadSafetyMode.ExecutionAndPublication);
+
+    internal static bool IsBrandFontAvailable => IconFont.Value is not null;
+
     public static void Draw(Graphics graphics, Rectangle bounds, string providerId)
     {
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
@@ -16,102 +25,110 @@ internal static class ProviderIconPainter
         graphics.FillPath(background, shape);
         graphics.DrawPath(border, shape);
 
-        var center = new PointF(bounds.Left + bounds.Width / 2F, bounds.Top + bounds.Height / 2F);
-        using var pen = new Pen(color, Math.Max(1.7F, bounds.Width / 18F))
+        var loadedFont = IconFont.Value;
+        if (loadedFont is null)
         {
-            StartCap = LineCap.Round,
-            EndCap = LineCap.Round,
-            LineJoin = LineJoin.Round,
+            DrawFallback(graphics, bounds, color, providerId);
+            return;
+        }
+
+        using var brush = new SolidBrush(color);
+        using var format = new StringFormat(StringFormat.GenericTypographic);
+        using var glyphPath = new GraphicsPath();
+        glyphPath.AddString(
+            GlyphFor(providerId),
+            loadedFont.Family,
+            (int)FontStyle.Regular,
+            Math.Max(1F, bounds.Width * 0.54F),
+            Point.Empty,
+            format);
+
+        var inkBounds = glyphPath.GetBounds();
+        if (inkBounds.Width <= 0 || inkBounds.Height <= 0)
+        {
+            DrawFallback(graphics, bounds, color, providerId);
+            return;
+        }
+
+        using var transform = new Matrix();
+        transform.Translate(
+            bounds.Left + bounds.Width / 2F - (inkBounds.Left + inkBounds.Width / 2F),
+            bounds.Top + bounds.Height / 2F - (inkBounds.Top + inkBounds.Height / 2F));
+        glyphPath.Transform(transform);
+        graphics.FillPath(brush, glyphPath);
+        GC.KeepAlive(loadedFont);
+    }
+
+    private static string GlyphFor(string providerId) => providerId.ToLowerInvariant() switch
+    {
+        "claude" => "\uE002",
+        "copilot" => "\uE003",
+        "gemini" => "\uE004",
+        _ => "\uE001",
+    };
+
+    private static void DrawFallback(Graphics graphics, Rectangle bounds, Color color, string providerId)
+    {
+        var label = string.IsNullOrWhiteSpace(providerId) ? "?" : providerId[..1].ToUpperInvariant();
+        using var font = new Font(
+            FontFamily.GenericSansSerif,
+            Math.Max(1F, bounds.Width * 0.4F),
+            FontStyle.Bold,
+            GraphicsUnit.Pixel);
+        using var brush = new SolidBrush(color);
+        using var format = new StringFormat
+        {
+            Alignment = StringAlignment.Center,
+            LineAlignment = StringAlignment.Center,
         };
+        graphics.DrawString(label, font, brush, bounds, format);
+    }
 
-        switch (providerId.ToLowerInvariant())
+    private static ProviderIconFont? LoadIconFont()
+    {
+        nint fontMemory = 0;
+        PrivateFontCollection? collection = null;
+        try
         {
-            case "claude":
-                DrawClaude(graphics, pen, center, bounds.Width);
-                break;
-            case "copilot":
-                DrawCopilot(graphics, pen, center, bounds.Width);
-                break;
-            case "gemini":
-                DrawGemini(graphics, pen, center, bounds.Width);
-                break;
-            default:
-                DrawCodex(graphics, pen, center, bounds.Width);
-                break;
+            using var stream = typeof(ProviderIconPainter).Assembly.GetManifestResourceStream(FontResourceName);
+            if (stream is null || stream.Length is <= 0 or > 128 * 1024)
+            {
+                return null;
+            }
+
+            var fontBytes = new byte[checked((int)stream.Length)];
+            stream.ReadExactly(fontBytes);
+            fontMemory = Marshal.AllocCoTaskMem(fontBytes.Length);
+            Marshal.Copy(fontBytes, 0, fontMemory, fontBytes.Length);
+
+            collection = new PrivateFontCollection();
+            collection.AddMemoryFont(fontMemory, fontBytes.Length);
+            var family = collection.Families.FirstOrDefault();
+            if (family is null)
+            {
+                collection.Dispose();
+                Marshal.FreeCoTaskMem(fontMemory);
+                return null;
+            }
+
+            // This holder is rooted by the static Lazy for the process lifetime. GDI+ requires
+            // both the collection and the backing memory to remain alive while its font is used.
+            return new ProviderIconFont(collection, family, fontMemory);
+        }
+        catch (Exception exception) when (exception is ArgumentException or ExternalException or IOException or NotSupportedException)
+        {
+            collection?.Dispose();
+            if (fontMemory != 0)
+            {
+                Marshal.FreeCoTaskMem(fontMemory);
+            }
+
+            return null;
         }
     }
 
-    private static void DrawCodex(Graphics graphics, Pen pen, PointF center, float size)
-    {
-        var outer = size * 0.22F;
-        var inner = size * 0.105F;
-        var outerPoints = Hexagon(center, outer, -30F);
-        var innerPoints = Hexagon(center, inner, -30F);
-        graphics.DrawPolygon(pen, outerPoints);
-        graphics.DrawPolygon(pen, innerPoints);
-        for (var index = 0; index < 6; index++)
-        {
-            graphics.DrawLine(pen, outerPoints[index], innerPoints[(index + 1) % 6]);
-        }
-    }
-
-    private static void DrawClaude(Graphics graphics, Pen pen, PointF center, float size)
-    {
-        var inner = size * 0.075F;
-        var outer = size * 0.235F;
-        for (var index = 0; index < 8; index++)
-        {
-            var angle = MathF.PI * index / 4F;
-            var start = new PointF(center.X + MathF.Cos(angle) * inner, center.Y + MathF.Sin(angle) * inner);
-            var end = new PointF(center.X + MathF.Cos(angle) * outer, center.Y + MathF.Sin(angle) * outer);
-            graphics.DrawLine(pen, start, end);
-        }
-    }
-
-    private static void DrawCopilot(Graphics graphics, Pen pen, PointF center, float size)
-    {
-        var head = new RectangleF(center.X - size * 0.23F, center.Y - size * 0.16F, size * 0.46F, size * 0.34F);
-        using var path = DrawingHelpers.RoundedRectangle(head, size * 0.10F);
-        graphics.DrawPath(pen, path);
-        graphics.DrawLine(pen, center.X - size * 0.12F, head.Top, center.X - size * 0.18F, head.Top - size * 0.10F);
-        graphics.DrawLine(pen, center.X + size * 0.12F, head.Top, center.X + size * 0.18F, head.Top - size * 0.10F);
-        using var eyeBrush = new SolidBrush(pen.Color);
-        var eye = Math.Max(2F, size * 0.055F);
-        graphics.FillEllipse(eyeBrush, center.X - size * 0.12F - eye / 2F, center.Y - eye / 2F, eye, eye);
-        graphics.FillEllipse(eyeBrush, center.X + size * 0.12F - eye / 2F, center.Y - eye / 2F, eye, eye);
-    }
-
-    private static void DrawGemini(Graphics graphics, Pen pen, PointF center, float size)
-    {
-        var outer = size * 0.25F;
-        var inner = size * 0.07F;
-        using var path = new GraphicsPath();
-        path.AddBezier(
-            new PointF(center.X, center.Y - outer),
-            new PointF(center.X + inner, center.Y - inner),
-            new PointF(center.X + inner, center.Y - inner),
-            new PointF(center.X + outer, center.Y));
-        path.AddBezier(
-            new PointF(center.X + outer, center.Y),
-            new PointF(center.X + inner, center.Y + inner),
-            new PointF(center.X + inner, center.Y + inner),
-            new PointF(center.X, center.Y + outer));
-        path.AddBezier(
-            new PointF(center.X, center.Y + outer),
-            new PointF(center.X - inner, center.Y + inner),
-            new PointF(center.X - inner, center.Y + inner),
-            new PointF(center.X - outer, center.Y));
-        path.AddBezier(
-            new PointF(center.X - outer, center.Y),
-            new PointF(center.X - inner, center.Y - inner),
-            new PointF(center.X - inner, center.Y - inner),
-            new PointF(center.X, center.Y - outer));
-        graphics.DrawPath(pen, path);
-    }
-
-    private static PointF[] Hexagon(PointF center, float radius, float offsetDegrees) =>
-        Enumerable.Range(0, 6)
-            .Select(index => (offsetDegrees + index * 60F) * MathF.PI / 180F)
-            .Select(angle => new PointF(center.X + MathF.Cos(angle) * radius, center.Y + MathF.Sin(angle) * radius))
-            .ToArray();
+    private sealed record ProviderIconFont(
+        PrivateFontCollection Collection,
+        FontFamily Family,
+        nint FontMemory);
 }

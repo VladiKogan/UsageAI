@@ -30,7 +30,7 @@ You're mid-refactor and the model stops. Weekly limit. Nobody told you it was cl
 **UsageAI** is a tiny Windows tray app that keeps every AI coding limit you have in one glance — how much you've used, how fast you're burning it, and exactly when it resets. No dashboards to open, no logins to repeat, no surprises at 2 a.m.
 
 <p align="center">
-  <img src="usageai-preview.png" alt="UsageAI tray popup" width="420" />
+  <img src="usageai-preview.png" alt="UsageAI compact tray popup with branded provider icons" width="420" />
 </p>
 
 ## ⚡ Get it
@@ -49,11 +49,14 @@ Windows 10 or 11 (x64), plus at least one AI tool you're already signed in to. T
 
 The pure TypeScript editor extension lives in [`extension/`](extension/README.md). It adds a UsageAI
 Activity Bar view that can stay pinned in the Primary or Secondary Sidebar, plus an always-available
-Status Bar summary. One VSIX targets both VS Code and Antigravity; marketplace publication is kept
-separate for Visual Studio Marketplace and Open VSX.
+Status Bar summary. The Status Bar shows session and weekly percentages side by side; hover it for
+segmented meters, the last-updated time, and quick Open/Refresh actions. One VSIX targets both VS Code
+and Antigravity; marketplace publication is kept separate for Visual Studio Marketplace and Open VSX.
 
-Until the first marketplace release, download the VSIX from the GitHub release and select
-**Extensions: Install from VSIX...** in VS Code or Antigravity. To build it from source instead:
+Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai)
+or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai). For manual installation, download
+the VSIX from the GitHub release and select **Extensions: Install from VSIX...** in VS Code or
+Antigravity. To build it from source instead:
 
 ```powershell
 cd extension
@@ -76,10 +79,12 @@ npm.cmd run package:vsix
 
 **Reset countdowns, plan and account** for each provider, so you always know what you're on and how long until it refills.
 
+**The providers look like themselves.** Codex, Claude, GitHub Copilot, and Gemini use the same recognizable monochrome brand marks in the Windows dashboard and editor Status Bar, coloured by the surrounding native theme.
+
 **One glance or the full picture.** Left-click for a compact popup; open the dashboard for a responsive multi-column view that reflows as you resize it and fills the space you give it.
 
 <p align="center">
-  <img src="usageai-dashboard-preview.png" alt="UsageAI detailed dashboard" width="750" />
+  <img src="usageai-dashboard-preview.png" alt="UsageAI detailed dashboard with branded provider icons" width="750" />
 </p>
 
 **It never goes blank.** If a refresh fails, UsageAI keeps the last good reading and marks it **stale**, with the provider's own error message attached — then backs off before retrying instead of hammering a rate-limited API.

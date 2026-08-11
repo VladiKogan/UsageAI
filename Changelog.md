@@ -6,14 +6,21 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.1] - 2026-08-11
+
 ### Added
 
 - The editor Status Bar now shows the session and weekly percentages side by side, with segmented quota meters, the last-updated time, and Open/Refresh actions in its hover card.
-- Provider-specific monochrome Codex/OpenAI, Claude, GitHub Copilot, and Gemini glyphs for editor Status Bar readings. The bundled icon font inherits the active theme and requires no external font installation.
+- Shared monochrome Codex/OpenAI, Claude, GitHub Copilot, and Gemini brand glyphs for the editor Status Bar and desktop provider cards. The icon fonts are bundled with each app, inherit the active theme, and require no external font installation.
 
 ### Changed
 
-- Replaced the editor extension's generic pulse icon with the matching provider glyph while retaining loading and warning icons.
+- Replaced the desktop app's hand-drawn provider symbols and the editor extension's generic pulse icon with the shared provider glyph set, while retaining state-specific loading and warning icons.
+- Regenerated the compact popup and full dashboard previews to show the new provider icons.
+
+### Fixed
+
+- Centered desktop provider logos by their visible vector bounds instead of the font line box, removing the upward offset in both compact and full dashboard cards.
 
 ## [0.7.0] - 2026-08-11
 
