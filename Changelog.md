@@ -6,6 +6,18 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.2] - 2026-08-13
+
+### Added
+
+- Added a bounded, read-only Google Antigravity CLI fallback for Gemini in both the desktop app and
+  editor extension. UsageAI first tries an existing local Antigravity server, then briefly invokes
+  official `agy /usage`, and retains the legacy Gemini CLI path for compatibility.
+
+### Fixed
+
+- Made Claude Code authentication strictly read-only in both the desktop app and editor extension. UsageAI no longer exchanges Claude's shared refresh token or rewrites `.credentials.json`, preventing token-rotation races that could force Claude Code to sign in again.
+
 ## [0.7.1] - 2026-08-11
 
 ### Added

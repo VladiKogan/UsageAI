@@ -5,17 +5,13 @@ import { normalizeToken, parseRetryAfter, readBoundedText, requestJson, userHome
 import { getArray, getBoolean, getNumber, getObject, getString, isObject, parseDate } from "./json";
 
 const usageEndpoint = "https://api.anthropic.com/api/oauth/usage";
-const tokenEndpoint = "https://platform.claude.com/v1/oauth/token";
 const oauthBeta = "oauth-2025-04-20";
-const oauthClientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
 
 interface ClaudeCredentials {
   readonly accessToken: string;
-  readonly refreshToken?: string;
   readonly expiresAt?: number;
   readonly scopes: readonly string[];
   readonly plan: string;
-  readonly sourceToken: string;
 }
 
 export class ClaudeUsageClient implements UsageClient {
@@ -23,7 +19,6 @@ export class ClaudeUsageClient implements UsageClient {
   public readonly displayName = "Claude Code";
   public readonly signInCommand = "claude";
   public readonly accountUrl = "https://claude.ai/settings/usage";
-  private refreshedCredentials: ClaudeCredentials | undefined;
 
   public async getUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
     if (getClaudeSessionKey()) {
@@ -34,8 +29,8 @@ export class ClaudeUsageClient implements UsageClient {
       }
     }
 
-    let credentials = await this.loadCredentials();
-    credentials = await this.ensureFreshCredentials(credentials, signal);
+    const credentials = await this.loadCredentials();
+    assertClaudeCredentialsUsable(credentials);
     if (credentials.scopes.length > 0 && !credentials.scopes.includes("user:profile")) {
       throw new UsageProviderError(
         "Claude Code's OAuth token is missing the user:profile scope. Run `claude` to sign in again.",
@@ -90,7 +85,6 @@ export class ClaudeUsageClient implements UsageClient {
           .filter((scope) => scope.length > 0 && scope.length <= 128)
           .slice(0, 32),
         plan: "Claude (OAuth)",
-        sourceToken: environmentToken,
       };
     }
 
@@ -110,68 +104,13 @@ export class ClaudeUsageClient implements UsageClient {
     }
   }
 
-  private async ensureFreshCredentials(
-    credentials: ClaudeCredentials,
-    signal?: AbortSignal,
-  ): Promise<ClaudeCredentials> {
-    if (this.refreshedCredentials?.sourceToken === credentials.sourceToken &&
-        (this.refreshedCredentials.expiresAt ?? 0) > Date.now() + 300_000) {
-      return this.refreshedCredentials;
-    }
-    if (!credentials.expiresAt || credentials.expiresAt > Date.now() + 300_000) {
-      return credentials;
-    }
-    if (!credentials.refreshToken) {
-      throw new UsageProviderError("Claude Code's login has expired. Run `claude` to sign in again, then refresh.");
-    }
+}
 
-    const body: Record<string, unknown> = {
-      grant_type: "refresh_token",
-      refresh_token: credentials.refreshToken,
-      client_id: oauthClientId,
-    };
-    if (credentials.scopes.length > 0) {
-      body.scope = credentials.scopes.join(" ");
-    }
-    try {
-      const response = await requestJson(tokenEndpoint, {
-        method: "POST",
-        allowedHosts: ["platform.claude.com"],
-        headers: {
-          "Content-Type": "application/json",
-          "anthropic-beta": oauthBeta,
-        },
-        body: JSON.stringify(body),
-        ...(signal ? { signal } : {}),
-      });
-      if (response.status < 200 || response.status >= 300) {
-        throw new UsageProviderError("Claude Code's login could not be refreshed. Run `claude` to sign in again.");
-      }
-      const accessToken = normalizeToken(getString(response.data, "access_token"));
-      if (!accessToken) {
-        throw new UsageProviderError("Anthropic returned an empty OAuth access token.");
-      }
-      const refreshToken = normalizeToken(getString(response.data, "refresh_token")) ?? credentials.refreshToken;
-      const expiresIn = Math.max(60, Math.min(604_800, getNumber(response.data, "expires_in") ?? 3_600));
-      const scopes = (getString(response.data, "scope") ?? "")
-        .split(" ")
-        .map((scope) => scope.trim())
-        .filter((scope) => scope.length > 0 && scope.length <= 128)
-        .slice(0, 32);
-      this.refreshedCredentials = {
-        ...credentials,
-        accessToken,
-        refreshToken,
-        expiresAt: Date.now() + expiresIn * 1000,
-        scopes: scopes.length > 0 ? scopes : credentials.scopes,
-      };
-      return this.refreshedCredentials;
-    } catch (error) {
-      if (error instanceof UsageProviderError) {
-        throw error;
-      }
-      throw new UsageProviderError("Claude Code's login could not be refreshed. Run `claude` to sign in again.", 0, { cause: error });
-    }
+export function assertClaudeCredentialsUsable(credentials: { readonly expiresAt?: number }): void {
+  if (credentials.expiresAt !== undefined && credentials.expiresAt <= Date.now()) {
+    throw new UsageProviderError(
+      "Claude Code's login has expired. Open `claude` so Claude Code can refresh it, then refresh UsageAI.",
+    );
   }
 }
 
@@ -182,7 +121,6 @@ export function parseClaudeCredentials(rawJson: string): ClaudeCredentials {
   if (!accessToken) {
     throw new UsageProviderError("Claude Code's saved login has no OAuth access token.");
   }
-  const refreshToken = normalizeToken(getString(oauth, "refreshToken"));
   const scopes = (getArray(oauth, "scopes") ?? [])
     .filter((scope): scope is string => typeof scope === "string")
     .map((scope) => scope.trim())
@@ -191,11 +129,9 @@ export function parseClaudeCredentials(rawJson: string): ClaudeCredentials {
   const expiresAt = getNumber(oauth, "expiresAt");
   return {
     accessToken,
-    ...(refreshToken ? { refreshToken } : {}),
     ...(expiresAt !== undefined ? { expiresAt } : {}),
     scopes,
     plan: formatClaudePlan(getString(oauth, "subscriptionType") ?? getString(oauth, "rateLimitTier")),
-    sourceToken: refreshToken ?? accessToken,
   };
 }
 

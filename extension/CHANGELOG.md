@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+## 0.1.8
+
+- Added a bounded official `agy /usage` fallback for Gemini when no local Antigravity language server
+  is running, with closed stdin, process-tree cleanup, and negative caching after failed cold starts.
+- Made Claude Code authentication strictly read-only so the extension no longer exchanges the CLI's shared refresh token or leaves `.credentials.json` with a stale rotated token.
+
 ## 0.1.7
 
 - Added provider-specific Codex, Claude, GitHub Copilot, and Gemini icons to Status Bar readings.

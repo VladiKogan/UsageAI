@@ -323,6 +323,62 @@ internal static class CoverageExpansionTests
         }
     }
 
+    public static async Task TestClaudeCredentialsAreReadOnlyAsync()
+    {
+        var environment = SaveEnvironment(
+            "USAGEAI_CLAUDE_OAUTH_TOKEN",
+            "USAGEAI_CLAUDE_SESSION_KEY",
+            "CLAUDE_AI_SESSION_KEY",
+            "CLAUDE_WEB_SESSION_KEY",
+            "CLAUDE_CONFIG_DIR");
+        var directory = Path.Combine(AppPaths.DataDirectory, $"claude-read-only-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            Environment.SetEnvironmentVariable("USAGEAI_CLAUDE_OAUTH_TOKEN", null);
+            Environment.SetEnvironmentVariable("USAGEAI_CLAUDE_SESSION_KEY", null);
+            Environment.SetEnvironmentVariable("CLAUDE_AI_SESSION_KEY", null);
+            Environment.SetEnvironmentVariable("CLAUDE_WEB_SESSION_KEY", null);
+            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", directory);
+
+            var credentialPath = Path.Combine(directory, ".credentials.json");
+            var original = $$"""
+                {
+                  "claudeAiOauth":{
+                    "accessToken":"expired-access",
+                    "refreshToken":"shared-refresh-token",
+                    "expiresAt":{{DateTimeOffset.UtcNow.AddMinutes(-1).ToUnixTimeMilliseconds()}},
+                    "scopes":["user:profile"],
+                    "subscriptionType":"pro"
+                  }
+                }
+                """;
+            File.WriteAllText(credentialPath, original);
+
+            var requests = 0;
+            using var http = new HttpClient(new StubHttpHandler((request, _, _) =>
+            {
+                requests++;
+                return Task.FromResult(request.RequestUri!.AbsolutePath.Contains("oauth/token", StringComparison.Ordinal)
+                    ? JsonResponse(
+                        HttpStatusCode.OK,
+                        """{"access_token":"replacement-access","refresh_token":"replacement-refresh","expires_in":3600}""")
+                    : JsonResponse(HttpStatusCode.OK, """{"five_hour":{"utilization":12}}"""));
+            }));
+
+            var exception = await ThrowsAsync<ClaudeCodeUsageException>(
+                () => new ClaudeCodeUsageClient(http, () => Array.Empty<string>()).GetUsageAsync());
+            True(exception.Message.Contains("expired", StringComparison.OrdinalIgnoreCase));
+            Equal(0, requests);
+            Equal(original, File.ReadAllText(credentialPath));
+        }
+        finally
+        {
+            RestoreEnvironment(environment);
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     public static async Task TestCopilotHttpAsync()
     {
         var environment = SaveEnvironment(
@@ -1029,12 +1085,9 @@ internal static class CoverageExpansionTests
         True(credentials.IsExpired);
         var claudeCredentials = new ClaudeCodeUsageClient.ClaudeCredentials(
             "access",
-            null,
             DateTimeOffset.UtcNow.AddHours(1),
             Array.Empty<string>(),
-            "Claude",
-            null,
-            "source");
+            "Claude");
         False(claudeCredentials.IsExpired);
 
         var forecastNow = DateTimeOffset.Now;
@@ -1740,8 +1793,7 @@ internal static class CoverageExpansionTests
                   "scopes":[" user:profile ",null,17],
                   "rateLimitTier":"enterprise"
                 }
-                """,
-                null);
+                """);
             Equal("flat-access", flatCredentials.AccessToken);
             Equal(DateTimeOffset.MinValue, flatCredentials.ExpiresAt);
             Equal("Claude Enterprise", flatCredentials.Plan);
@@ -1750,91 +1802,7 @@ internal static class CoverageExpansionTests
                 InvokePrivateStatic<ClaudeCodeUsageClient.ClaudeCredentials>(
                     typeof(ClaudeCodeUsageClient),
                     "ParseCredentials",
-                    """{"refreshToken":"only-refresh"}""",
-                    null));
-
-            var expired = new ClaudeCodeUsageClient.ClaudeCredentials(
-                "expired-access",
-                "old-refresh",
-                DateTimeOffset.UtcNow.AddHours(-1),
-                UserProfileScope,
-                "Claude",
-                null,
-                "old-refresh");
-            using (var http = new HttpClient(new StubHttpHandler(async (request, _, cancellationToken) =>
-                   {
-                       True(request.RequestUri!.AbsoluteUri.Contains("/oauth/token", StringComparison.Ordinal));
-                       var body = await request.Content!.ReadAsStringAsync(cancellationToken);
-                       True(body.Contains("old-refresh", StringComparison.Ordinal));
-                       return JsonResponse(
-                           HttpStatusCode.OK,
-                           """{"access_token":"fresh-access","refresh_token":"fresh-refresh","expires_in":7200,"scope":"user:profile account:read"}""");
-                   })))
-            {
-                var client = new ClaudeCodeUsageClient(http);
-                var refreshed = await InvokePrivateTaskResultAsync<ClaudeCodeUsageClient.ClaudeCredentials>(
-                    client,
-                    "RefreshCredentialsAsync",
-                    expired,
-                    CancellationToken.None);
-                Equal("fresh-access", refreshed.AccessToken);
-                Equal("fresh-refresh", refreshed.RefreshToken);
-                Equal(2, refreshed.Scopes.Count);
-
-                SetPrivateField<ClaudeCodeUsageClient.ClaudeCredentials?>(
-                    client,
-                    "_refreshedCredentials",
-                    refreshed);
-                var cached = await InvokePrivateTaskResultAsync<ClaudeCodeUsageClient.ClaudeCredentials>(
-                    client,
-                    "EnsureFreshCredentialsAsync",
-                    expired,
-                    CancellationToken.None);
-                Equal(refreshed, cached);
-            }
-
-            var noRefresh = expired with { RefreshToken = null };
-            using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
-                       throw new InvalidOperationException("HTTP should not be reached."))))
-            {
-                var exception = await ThrowsAsync<ClaudeCodeUsageException>(() =>
-                    InvokePrivateTaskResultAsync<ClaudeCodeUsageClient.ClaudeCredentials>(
-                        new ClaudeCodeUsageClient(http),
-                        "EnsureFreshCredentialsAsync",
-                        noRefresh,
-                        CancellationToken.None));
-                True(exception.Message.Contains("no refresh", StringComparison.OrdinalIgnoreCase) ||
-                     exception.Message.Contains("expired", StringComparison.OrdinalIgnoreCase));
-            }
-
-            foreach (var responseFactory in new Func<HttpRequestMessage, HttpResponseMessage>[]
-                     {
-                         _ => new HttpResponseMessage(HttpStatusCode.BadRequest),
-                         _ => JsonResponse(HttpStatusCode.OK, """{"expires_in":3600}"""),
-                         _ => JsonResponse(HttpStatusCode.OK, "{invalid"),
-                     })
-            {
-                using var http = new HttpClient(new StubHttpHandler((request, _, _) =>
-                    Task.FromResult(responseFactory(request))));
-                await ThrowsAsync<ClaudeCodeUsageException>(() =>
-                    InvokePrivateTaskResultAsync<ClaudeCodeUsageClient.ClaudeCredentials>(
-                        new ClaudeCodeUsageClient(http),
-                        "RefreshCredentialsAsync",
-                        expired,
-                        CancellationToken.None));
-            }
-
-            using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
-                       throw new OperationCanceledException())))
-            {
-                var exception = await ThrowsAsync<ClaudeCodeUsageException>(() =>
-                    InvokePrivateTaskResultAsync<ClaudeCodeUsageClient.ClaudeCredentials>(
-                        new ClaudeCodeUsageClient(http),
-                        "RefreshCredentialsAsync",
-                        expired,
-                        CancellationToken.None));
-                True(exception.Message.Contains("timed out", StringComparison.OrdinalIgnoreCase));
-            }
+                    """{"refreshToken":"only-refresh"}"""));
 
             Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", "relative-config");
             using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
@@ -1888,63 +1856,6 @@ internal static class CoverageExpansionTests
                 Equal("Claude Pro", snapshot.Plan);
                 Equal(14, snapshot.Primary!.UsedPercent);
             }
-
-            var sourcePath = Path.Combine(directory, "refresh-source.json");
-            var sourceExpired = expired with
-            {
-                RefreshToken = "disk-refresh",
-                SourcePath = sourcePath,
-                SourceCredentialToken = "disk-refresh",
-            };
-            File.WriteAllText(
-                sourcePath,
-                $$"""
-                {
-                  "claudeAiOauth":{
-                    "accessToken":"disk-fresh",
-                    "refreshToken":"disk-refresh",
-                    "expiresAt":{{DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeMilliseconds()}},
-                    "scopes":["user:profile"]
-                  }
-                }
-                """);
-            using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
-                       throw new InvalidOperationException("HTTP should not be reached."))))
-            {
-                var freshFromDisk =
-                    await InvokePrivateTaskResultAsync<ClaudeCodeUsageClient.ClaudeCredentials>(
-                        new ClaudeCodeUsageClient(http, () => Array.Empty<string>()),
-                        "EnsureFreshCredentialsAsync",
-                        sourceExpired,
-                        CancellationToken.None);
-                Equal("disk-fresh", freshFromDisk.AccessToken);
-            }
-
-            File.WriteAllText(sourcePath, "{invalid");
-            using (var http = new HttpClient(new StubHttpHandler((request, _, _) =>
-                       Task.FromResult(JsonResponse(
-                           HttpStatusCode.OK,
-                           """{"access_token":"recovered-access","expires_in":3600}""")))))
-            {
-                var recovered =
-                    await InvokePrivateTaskResultAsync<ClaudeCodeUsageClient.ClaudeCredentials>(
-                        new ClaudeCodeUsageClient(http, () => Array.Empty<string>()),
-                        "EnsureFreshCredentialsAsync",
-                        sourceExpired,
-                        CancellationToken.None);
-                Equal("recovered-access", recovered.AccessToken);
-            }
-
-            ClaudeCodeUsageClient.TryPersistRefreshedCredentials(
-                sourceExpired with { SourcePath = null });
-            ClaudeCodeUsageClient.TryPersistRefreshedCredentials(
-                sourceExpired with { SourcePath = Path.Combine(directory, "missing-source.json") });
-            var oversizedSource = Path.Combine(directory, "oversized-source.json");
-            File.WriteAllText(
-                oversizedSource,
-                new string('x', checked(SecureLocalFile.MaxCredentialFileCharacters * 4 + 1)));
-            ClaudeCodeUsageClient.TryPersistRefreshedCredentials(
-                sourceExpired with { SourcePath = oversizedSource });
 
             Equal("Claude Free", ClaudeCodeUsageClient.FormatPlan("free"));
             Equal("Claude Max", ClaudeCodeUsageClient.FormatPlan("max"));
@@ -2141,7 +2052,7 @@ internal static class CoverageExpansionTests
             Environment.SetEnvironmentVariable("GEMINI_CONFIG_DIR", directory);
             Environment.SetEnvironmentVariable("GEMINI_CLIENT_ID", "test-client");
             Environment.SetEnvironmentVariable("GEMINI_CLIENT_SECRET", "test-secret");
-            Equal("gemini", new GeminiUsageClient().SignInCommand);
+            Equal("agy", new GeminiUsageClient().SignInCommand);
 
             var environmentCredentials = InvokePrivateStatic<object>(
                 typeof(GeminiUsageClient),

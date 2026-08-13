@@ -35,9 +35,10 @@ interface AntigravityProcess {
 export class GeminiUsageClient implements UsageClient {
   public readonly id = "gemini";
   public readonly displayName = "Google Gemini";
-  public readonly signInCommand = "gemini";
+  public readonly signInCommand = "agy";
   public readonly accountUrl = "https://aistudio.google.com/";
   private refreshedCredentials: GeminiCredentials | undefined;
+  private agyRetryAfter = 0;
 
   public async getUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
     const antigravity = await tryFetchAntigravitySnapshot(signal);
@@ -45,12 +46,22 @@ export class GeminiUsageClient implements UsageClient {
       return antigravity;
     }
 
+    if (Date.now() >= this.agyRetryAfter) {
+      const agy = await tryFetchAgySnapshot(signal);
+      if (agy) {
+        return agy;
+      }
+      this.agyRetryAfter = Date.now() + 30 * 60_000;
+    }
+
     let credentials: GeminiCredentials;
     try {
       credentials = await loadCredentials();
     } catch (error) {
+      // Let a disconnected user's next manual refresh observe a newly completed agy sign-in.
+      this.agyRetryAfter = 0;
       throw new UsageProviderError(
-        "Gemini is not signed in and Antigravity IDE was not detected. Sign in with `gemini` or start Antigravity IDE.",
+        "Gemini is not signed in. Run `agy` (recommended) or `gemini` in Terminal, then refresh.",
         0,
         { cause: error },
       );
@@ -287,6 +298,333 @@ async function tryFetchAntigravitySnapshot(signal?: AbortSignal): Promise<UsageS
   return undefined;
 }
 
+async function tryFetchAgySnapshot(signal?: AbortSignal): Promise<UsageSnapshot | undefined> {
+  const executable = await findAgyExecutable();
+  if (!executable) {
+    return undefined;
+  }
+
+  const child = spawnSecure(
+    executable,
+    ["-p", "/usage", "--output-format", "json"],
+    ["ANTIGRAVITY_CLI_PATH", "GOOGLE_CLOUD_PROJECT", "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR", "SSL_CERT_FILE"],
+  );
+  child.stdin.end();
+  const ownedPids = new Set<number>([child.pid ?? 0].filter((pid) => pid > 0));
+  let stdout = "";
+  child.stdout.setEncoding("utf8");
+  child.stderr.setEncoding("utf8");
+  child.stdout.on("data", (chunk: string) => {
+    stdout = (stdout + chunk).slice(0, 262_144);
+  });
+  // Always drain stderr, but never retain or surface the CLI's account/login diagnostics.
+  child.stderr.on("data", () => undefined);
+
+  const probeController = new AbortController();
+  const timeout = setTimeout(() => probeController.abort(new Error("The Antigravity CLI probe timed out.")), 8_000);
+  timeout.unref();
+  const abortFromCaller = () => probeController.abort(
+    signal?.reason instanceof Error ? signal.reason : new Error("Operation cancelled."),
+  );
+  signal?.addEventListener("abort", abortFromCaller, { once: true });
+  const deadline = Date.now() + 8_000;
+  try {
+    while (Date.now() < deadline && !probeController.signal.aborted) {
+      if (child.pid) {
+        const candidates = await discoverManagedAgyPorts(child.pid);
+        candidates.forEach(({ pid }) => ownedPids.add(pid));
+        for (const port of [...new Set(candidates.map(({ port }) => port).filter(validPort))].slice(0, 32)) {
+          const snapshot = await queryAgyPort(port, probeController.signal);
+          if (snapshot) {
+            return snapshot;
+          }
+          if (probeController.signal.aborted) {
+            break;
+          }
+        }
+      }
+
+      if (child.exitCode !== null) {
+        break;
+      }
+      await abortableDelay(250, probeController.signal);
+    }
+  } catch (error) {
+    if (signal?.aborted) {
+      throw error;
+    }
+  } finally {
+    clearTimeout(timeout);
+    signal?.removeEventListener("abort", abortFromCaller);
+    terminateOwnedAgy(child.pid, ownedPids);
+  }
+
+  return parseAgyUsageOutput(stdout);
+}
+
+async function findAgyExecutable(): Promise<string | undefined> {
+  const configured = process.env.ANTIGRAVITY_CLI_PATH?.trim().replace(/^"|"$/g, "");
+  if (configured && path.isAbsolute(configured)) {
+    try {
+      await access(configured);
+      return path.resolve(configured);
+    } catch {
+      // Continue through official install locations.
+    }
+  }
+
+  const fromPath = await findExecutable(process.platform === "win32" ? ["agy.exe"] : ["agy"]);
+  if (fromPath) {
+    return fromPath;
+  }
+
+  const candidates = process.platform === "win32"
+    ? [path.join(process.env.LOCALAPPDATA ?? "", "agy", "bin", "agy.exe")]
+    : [path.join(userHome(), ".local", "bin", "agy"), "/opt/homebrew/bin/agy", "/usr/local/bin/agy"];
+  for (const candidate of candidates) {
+    if (!candidate || !path.isAbsolute(candidate)) {
+      continue;
+    }
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      // Try the next well-known location.
+    }
+  }
+  return undefined;
+}
+
+async function discoverManagedAgyPorts(rootPid: number): Promise<Array<{ readonly pid: number; readonly port: number }>> {
+  if (process.platform === "win32") {
+    const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
+    const powershell = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    try {
+      const script = `$root=${rootPid};$all=Get-CimInstance Win32_Process;$ids=[System.Collections.Generic.HashSet[int]]::new();` +
+        "$null=$ids.Add($root);do{$changed=$false;foreach($p in $all){if($ids.Contains([int]$p.ParentProcessId)-and$ids.Add([int]$p.ProcessId)){$changed=$true}}}while($changed);" +
+        "foreach($owner in $ids){\"P`t$owner\";Get-NetTCPConnection -OwningProcess $owner -State Listen -ErrorAction SilentlyContinue|ForEach-Object{\"L`t$owner`t$($_.LocalPort)\"}}";
+      const result = await collectProcessOutput(
+        spawnSecure(powershell, ["-NoProfile", "-NonInteractive", "-Command", script]),
+        3_000,
+        262_144,
+      );
+      return parseOwnedPortLines(result.stdout);
+    } catch {
+      return [];
+    }
+  }
+
+  const ps = await findExecutable(["ps"]);
+  if (!ps) {
+    return [];
+  }
+  try {
+    const result = await collectProcessOutput(
+      spawnSecure(ps, ["-ax", "-ww", "-o", "pid=,ppid=,command="]),
+      3_000,
+      262_144,
+    );
+    const processes = result.stdout.split(/\r?\n/).flatMap((line) => {
+      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
+      return match?.[1] && match[2] ? [{ pid: Number(match[1]), parentPid: Number(match[2]) }] : [];
+    });
+    const pids = new Set<number>([rootPid]);
+    let changed = true;
+    while (changed) {
+      changed = false;
+      for (const candidate of processes) {
+        if (pids.has(candidate.parentPid) && !pids.has(candidate.pid)) {
+          pids.add(candidate.pid);
+          changed = true;
+        }
+      }
+    }
+    const candidates: Array<{ readonly pid: number; readonly port: number }> = [];
+    for (const pid of [...pids].slice(0, 16)) {
+      for (const port of await listeningPorts(pid)) {
+        candidates.push({ pid, port });
+      }
+      if (!candidates.some((candidate) => candidate.pid === pid)) {
+        candidates.push({ pid, port: 0 });
+      }
+    }
+    return candidates;
+  } catch {
+    return [];
+  }
+}
+
+function parseOwnedPortLines(output: string): Array<{ readonly pid: number; readonly port: number }> {
+  const pids = new Set<number>();
+  const candidates: Array<{ readonly pid: number; readonly port: number }> = [];
+  for (const line of output.split(/\r?\n/)) {
+    const parts = line.trim().split("\t");
+    if (parts[0] === "P" && parts[1]) {
+      const pid = Number(parts[1]);
+      if (Number.isInteger(pid) && pid > 0) pids.add(pid);
+    } else if (parts[0] === "L" && parts[1] && parts[2]) {
+      const pid = Number(parts[1]);
+      const port = Number(parts[2]);
+      if (Number.isInteger(pid) && pid > 0 && validPort(port)) {
+        pids.add(pid);
+        candidates.push({ pid, port });
+      }
+    }
+  }
+  for (const pid of pids) {
+    if (!candidates.some((candidate) => candidate.pid === pid)) {
+      candidates.push({ pid, port: 0 });
+    }
+  }
+  return candidates;
+}
+
+async function queryAgyPort(port: number, signal?: AbortSignal): Promise<UsageSnapshot | undefined> {
+  try {
+    const statusResponse = await requestJson(
+      `https://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/GetUserStatus`,
+      {
+        method: "POST",
+        allowedHosts: ["127.0.0.1"],
+        allowLoopbackSelfSigned: true,
+        timeoutMs: 2_000,
+        headers: { "Connect-Protocol-Version": "1", "Content-Type": "application/json" },
+        body: JSON.stringify({
+          metadata: { ideName: "antigravity", extensionName: "antigravity", ideVersion: "unknown", locale: "en" },
+        }),
+        ...(signal ? { signal } : {}),
+      },
+    ).catch(() => undefined);
+    const status = statusResponse && statusResponse.status >= 200 && statusResponse.status < 300
+      ? parseAntigravityUserStatus(statusResponse.data)
+      : undefined;
+    const summaryResponse = await requestJson(
+      `https://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary`,
+      {
+        method: "POST",
+        allowedHosts: ["127.0.0.1"],
+        allowLoopbackSelfSigned: true,
+        timeoutMs: 2_000,
+        headers: { "Connect-Protocol-Version": "1", "Content-Type": "application/json" },
+        body: JSON.stringify({ request: {}, forceRefresh: false }),
+        ...(signal ? { signal } : {}),
+      },
+    ).catch(() => undefined);
+    const metrics = summaryResponse && summaryResponse.status >= 200 && summaryResponse.status < 300
+      ? parseAntigravityQuotaSummary(summaryResponse.data)
+      : [];
+    if (status) {
+      return metrics.length > 0 ? { ...status, metrics: mergeQuotaSummary(status.metrics, metrics) } : status;
+    }
+    return metrics.length > 0 ? {
+      plan: "Antigravity",
+      metrics,
+      fetchedAt: new Date().toISOString(),
+      providerId: "gemini",
+      providerName: "Google Gemini",
+    } : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function parseAgyUsageOutput(output: string): UsageSnapshot | undefined {
+  if (!output.trim()) {
+    return undefined;
+  }
+  let root: unknown;
+  try {
+    root = JSON.parse(output) as unknown;
+  } catch {
+    const start = output.indexOf("{");
+    const end = output.lastIndexOf("}");
+    if (start < 0 || end <= start) return undefined;
+    try {
+      root = JSON.parse(output.slice(start, end + 1)) as unknown;
+    } catch {
+      return undefined;
+    }
+  }
+  const quota = findQuotaContainer(root, 0);
+  const metrics = quota ? parseAntigravityQuotaSummary(quota) : [];
+  if (metrics.length === 0) return undefined;
+  const accountName = findNestedString(root, ["email", "accountEmail"]);
+  return {
+    plan: findNestedString(root, ["plan", "planName", "tier"]) ?? "Antigravity",
+    metrics,
+    fetchedAt: new Date().toISOString(),
+    providerId: "gemini",
+    providerName: "Google Gemini",
+    ...(accountName ? { accountName } : {}),
+  };
+}
+
+function findQuotaContainer(value: unknown, depth: number): unknown | undefined {
+  if (depth > 12) return undefined;
+  if (parseAntigravityQuotaSummary(value).length > 0) return value;
+  if (typeof value === "string" && value.length <= 262_144) {
+    try {
+      return findQuotaContainer(JSON.parse(value) as unknown, depth + 1);
+    } catch {
+      return undefined;
+    }
+  }
+  if (Array.isArray(value)) {
+    for (const child of value) {
+      const found = findQuotaContainer(child, depth + 1);
+      if (found) return found;
+    }
+  } else if (isObject(value)) {
+    for (const child of Object.values(value)) {
+      const found = findQuotaContainer(child, depth + 1);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+function findNestedString(value: unknown, names: readonly string[]): string | undefined {
+  if (Array.isArray(value)) {
+    for (const child of value) {
+      const found = findNestedString(child, names);
+      if (found) return found;
+    }
+  } else if (isObject(value)) {
+    for (const [name, child] of Object.entries(value)) {
+      if (names.some((candidate) => candidate.toLowerCase() === name.toLowerCase()) && typeof child === "string") {
+        return child;
+      }
+      const found = findNestedString(child, names);
+      if (found) return found;
+    }
+  }
+  return undefined;
+}
+
+function terminateOwnedAgy(rootPid: number | undefined, ownedPids: ReadonlySet<number>): void {
+  for (const pid of [...ownedPids].filter((value) => value > 0 && value !== process.pid).reverse()) {
+    try {
+      process.kill(pid);
+    } catch {
+      // It already exited or is no longer accessible.
+    }
+  }
+  if (rootPid && !ownedPids.has(rootPid)) {
+    try { process.kill(rootPid); } catch { /* It already exited. */ }
+  }
+}
+
+function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(resolve, milliseconds);
+    timer.unref();
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(signal.reason instanceof Error ? signal.reason : new Error("Operation cancelled."));
+    }, { once: true });
+  });
+}
+
 async function queryAntigravity(
   port: number,
   csrfToken: string,
@@ -369,7 +707,8 @@ export function parseAntigravityQuotaSummary(root: unknown): readonly UsageMetri
       continue;
     }
     for (const bucket of buckets) {
-      const remaining = getNumber(bucket, "remainingFraction");
+      const remaining = getNumber(bucket, "remainingFraction")
+        ?? getNumber(getObject(bucket, "remaining"), "remainingFraction");
       if (remaining === undefined) {
         continue;
       }

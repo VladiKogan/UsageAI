@@ -15,7 +15,6 @@ namespace UsageAI.Tests;
 
 internal static class Program
 {
-    private static readonly string[] ClaudeProfileScope = { "user:profile" };
     private static readonly string[] ProviderIds = { "codex", "claude", "copilot", "gemini" };
 
     private static readonly (string Name, Func<Task> Run)[] Tests =
@@ -27,8 +26,6 @@ internal static class Program
         ("bounded credential files", TestBoundedCredentialFileAsync),
         ("Claude session-key normalization", TestClaudeSessionKeyAsync),
         ("Claude organization parsing", TestClaudeOrganizationParsingAsync),
-        ("Claude credential ACL preservation", TestClaudeCredentialAclPreservationAsync),
-        ("Claude credential lost-update protection", TestClaudeCredentialLostUpdateAsync),
         ("Gemini credential ACL and EFS preservation", TestGeminiCredentialAclPreservationAsync),
         ("Gemini credential lost-update protection", TestGeminiCredentialLostUpdateAsync),
         ("cross-process refresh lock", TestCrossProcessLockAsync),
@@ -36,6 +33,7 @@ internal static class Program
         ("Claude snapshot parsing", TestClaudeSnapshotParsingAsync),
         ("Copilot keeps every reported quota", TestCopilotSnapshotParsingAsync),
         ("Gemini snapshot parsing", TestGeminiSnapshotParsingAsync),
+        ("official agy output and fallback order", TestAgyFallbackAsync),
         ("Gemini JWT claims extraction", TestGeminiJwtExtractionAsync),
         ("Antigravity candidates stay PID-bound", TestAntigravityCandidateBindingAsync),
         ("settings validation and round trip", TestSettingsAsync),
@@ -54,6 +52,7 @@ internal static class Program
         ("refresh orchestration, alerts, history, and backoff", CoverageExpansionTests.TestRefreshOrchestrationAsync),
         ("refresh concurrency and shutdown cancellation", CoverageExpansionTests.TestRefreshConcurrencyAsync),
         ("Claude HTTP success and error handling", CoverageExpansionTests.TestClaudeHttpAsync),
+        ("Claude credentials are read only", CoverageExpansionTests.TestClaudeCredentialsAreReadOnlyAsync),
         ("Copilot HTTP success and error handling", CoverageExpansionTests.TestCopilotHttpAsync),
         ("Gemini OAuth HTTP success and error handling", CoverageExpansionTests.TestGeminiHttpAsync),
         ("Codex app-server protocol and errors", CoverageExpansionTests.TestCodexProtocolAsync),
@@ -271,84 +270,6 @@ internal static class Program
             }
             """);
         Equal("organization-id", ClaudeWebUsageClient.FindOrganizationId(document.RootElement));
-        return Task.CompletedTask;
-    }
-
-    private static Task TestClaudeCredentialAclPreservationAsync()
-    {
-        var directory = CreateTestDirectory();
-        try
-        {
-            var path = Path.Combine(directory, ".credentials.json");
-            File.WriteAllText(path, CredentialJson("old-access", "old-refresh"));
-
-            var sid = WindowsIdentity.GetCurrent().User
-                ?? throw new InvalidOperationException("The current Windows SID is unavailable.");
-            var security = new FileSecurity();
-            security.SetOwner(sid);
-            security.SetAccessRuleProtection(isProtected: true, preserveInheritance: false);
-            security.AddAccessRule(new FileSystemAccessRule(
-                sid,
-                FileSystemRights.FullControl,
-                AccessControlType.Allow));
-            new FileInfo(path).SetAccessControl(security);
-
-            const AccessControlSections comparedSections =
-                AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group;
-            var before = new FileInfo(path).GetAccessControl(comparedSections)
-                .GetSecurityDescriptorSddlForm(comparedSections);
-
-            ClaudeCodeUsageClient.TryPersistRefreshedCredentials(new ClaudeCodeUsageClient.ClaudeCredentials(
-                "new-access",
-                "new-refresh",
-                DateTimeOffset.UtcNow.AddHours(1),
-                ClaudeProfileScope,
-                "Claude",
-                path,
-                "old-refresh"));
-
-            var after = new FileInfo(path).GetAccessControl(comparedSections)
-                .GetSecurityDescriptorSddlForm(comparedSections);
-            Equal(before, after);
-            var updated = File.ReadAllText(path);
-            True(updated.Contains("new-access", StringComparison.Ordinal));
-            True(updated.Contains("new-refresh", StringComparison.Ordinal));
-            True(updated.Contains("keep-this-value", StringComparison.Ordinal));
-            Equal(0, Directory.GetFiles(directory, ".credentials.json.usageai-tmp.*").Length);
-        }
-        finally
-        {
-            DeleteTestDirectory(directory);
-        }
-
-        return Task.CompletedTask;
-    }
-
-    private static Task TestClaudeCredentialLostUpdateAsync()
-    {
-        var directory = CreateTestDirectory();
-        try
-        {
-            var path = Path.Combine(directory, ".credentials.json");
-            var original = CredentialJson("other-access", "other-refresh");
-            File.WriteAllText(path, original);
-
-            ClaudeCodeUsageClient.TryPersistRefreshedCredentials(new ClaudeCodeUsageClient.ClaudeCredentials(
-                "new-access",
-                "new-refresh",
-                DateTimeOffset.UtcNow.AddHours(1),
-                ClaudeProfileScope,
-                "Claude",
-                path,
-                "stale-refresh"));
-
-            Equal(original, File.ReadAllText(path));
-        }
-        finally
-        {
-            DeleteTestDirectory(directory);
-        }
-
         return Task.CompletedTask;
     }
 
@@ -730,7 +651,7 @@ internal static class Program
                     "buckets": [
                       {
                         "bucketId": "gemini_weekly",
-                        "remainingFraction": 0.90
+                        "remaining": { "remainingFraction": 0.90 }
                       }
                     ]
                   }
@@ -744,6 +665,60 @@ internal static class Program
         Equal(10, alternateMetrics[0].UsedPercent);
 
         return Task.CompletedTask;
+    }
+
+    private static async Task TestAgyFallbackAsync()
+    {
+        var output =
+            """
+            {
+              "type": "result",
+              "result": {
+                "planName": "Google AI Pro",
+                "accountEmail": "agy@example.com",
+                "quotaSummary": {
+                  "groups": [
+                    {
+                      "displayName": "Gemini Models",
+                      "buckets": [
+                        {
+                          "bucketId": "gemini_5h",
+                          "remaining": { "remainingFraction": 0.72 },
+                          "resetTime": "2026-08-13T17:00:00Z"
+                        },
+                        {
+                          "bucketId": "gemini_weekly",
+                          "remainingFraction": 0.44
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+            """;
+        var parsed = AgyUsageProbe.ParseOutput(output);
+        NotNull(parsed);
+        Equal("Google AI Pro", parsed!.Plan);
+        Equal("agy@example.com", parsed.AccountName);
+        Equal(2, parsed.Metrics.Count);
+        Equal(28, parsed.Metrics[0].UsedPercent);
+        Equal(56, parsed.Metrics[1].UsedPercent);
+        Null(AgyUsageProbe.ParseOutput("not JSON"));
+
+        var expected = new UsageSnapshot(
+            "Antigravity",
+            new[] { new UsageMetric("Gemini Models", UsageMetricKind.Rolling, 17) },
+            DateTimeOffset.Now,
+            "gemini",
+            "Google Gemini");
+        using var http = new HttpClient();
+        var client = new GeminiUsageClient(
+            http,
+            _ => Task.FromResult<UsageSnapshot?>(null),
+            _ => Task.FromResult<UsageSnapshot?>(expected));
+        Equal(expected, await client.GetUsageAsync());
+        Equal("agy", client.SignInCommand);
     }
 
     private static Task TestGeminiJwtExtractionAsync()
@@ -1105,20 +1080,6 @@ internal static class Program
             at,
             "codex",
             "Codex");
-
-    private static string CredentialJson(string accessToken, string refreshToken) =>
-        $$"""
-        {
-          "mcpOAuth": { "server": { "accessToken": "keep-this-value" } },
-          "claudeAiOauth": {
-            "accessToken": "{{accessToken}}",
-            "refreshToken": "{{refreshToken}}",
-            "expiresAt": 1000,
-            "scopes": ["user:profile"],
-            "subscriptionType": "max"
-          }
-        }
-        """;
 
     private static string GeminiCredentialJson(string accessToken, string refreshToken) =>
         $$"""

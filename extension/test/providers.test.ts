@@ -1,11 +1,16 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { parseClaudeCredentials, parseClaudeSnapshot } from "../src/providers/claude";
+import {
+  assertClaudeCredentialsUsable,
+  parseClaudeCredentials,
+  parseClaudeSnapshot,
+} from "../src/providers/claude";
 import { parseCodexSnapshot } from "../src/providers/codex";
 import { parseCopilotSnapshot } from "../src/providers/copilot";
 import {
   parseAntigravityQuotaSummary,
   parseAntigravityUserStatus,
+  parseAgyUsageOutput,
   parseGeminiQuotaResponse,
 } from "../src/providers/gemini";
 
@@ -37,6 +42,7 @@ test("Claude parses OAuth credentials and every reported limit", () => {
     },
   }));
   assert.equal(credentials.plan, "Claude Max 20x");
+  assert.equal("refreshToken" in credentials, false);
   const snapshot = parseClaudeSnapshot({
     five_hour: { utilization: 22, resets_at: "2026-07-27T21:00:00Z" },
     seven_day: { utilization: 0.49 },
@@ -48,6 +54,23 @@ test("Claude parses OAuth credentials and every reported limit", () => {
   }, credentials.plan);
   assert.deepEqual(snapshot.metrics.map((metric) => metric.usedPercent), [22, 51, 12, null]);
   assert.equal(snapshot.metrics[3]?.remainingText, "$4.10 / $50.00");
+});
+
+test("Claude credentials remain read only after access-token expiry", () => {
+  const credentials = parseClaudeCredentials(JSON.stringify({
+    claudeAiOauth: {
+      accessToken: "expired-access-token",
+      refreshToken: "shared-refresh-token",
+      expiresAt: Date.now() - 1,
+      scopes: ["user:profile"],
+    },
+  }));
+
+  assert.equal("refreshToken" in credentials, false);
+  assert.throws(
+    () => assertClaudeCredentialsUsable(credentials),
+    /expired.*Claude Code can refresh/i,
+  );
 });
 
 test("Copilot retains metered and unlimited quotas", () => {
@@ -113,4 +136,25 @@ test("Gemini parses CLI and Antigravity quota shapes", () => {
     ["Gemini Models (5-hour)", 30],
     ["Gemini Models (Weekly)", 45],
   ]);
+
+  const agy = parseAgyUsageOutput(JSON.stringify({
+    type: "result",
+    result: {
+      planName: "Google AI Pro",
+      accountEmail: "agy@example.com",
+      quotaSummary: {
+        groups: [{
+          displayName: "Gemini Models",
+          buckets: [
+            { bucketId: "gemini_5h", remaining: { remainingFraction: 0.72 } },
+            { bucketId: "gemini_weekly", remainingFraction: 0.44 },
+          ],
+        }],
+      },
+    },
+  }));
+  assert.ok(agy);
+  assert.equal(agy.plan, "Google AI Pro");
+  assert.equal(agy.accountName, "agy@example.com");
+  assert.deepEqual(agy.metrics.map((metric) => metric.usedPercent), [28, 56]);
 });

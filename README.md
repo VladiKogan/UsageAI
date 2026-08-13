@@ -30,19 +30,19 @@ You're mid-refactor and the model stops. Weekly limit. Nobody told you it was cl
 **UsageAI** is a tiny Windows tray app that keeps every AI coding limit you have in one glance — how much you've used, how fast you're burning it, and exactly when it resets. No dashboards to open, no logins to repeat, no surprises at 2 a.m.
 
 <p align="center">
-  <img src="usageai-preview.png?v=0.7.1" alt="UsageAI 0.7.1 compact tray popup with centered provider icons" width="420" />
+  <img src="usageai-preview.png?v=0.7.2" alt="UsageAI 0.7.2 compact tray popup with centered provider icons" width="420" />
 </p>
 
 ## ⚡ Get it
 
-Current release: **UsageAI for Windows 0.7.1** and **UsageAI editor extension 0.1.7**.
+Current release: **UsageAI for Windows 0.7.2** and **UsageAI editor extension 0.1.8**.
 You can also browse the complete **[Releases page](https://github.com/VladiKogan/UsageAI/releases)**.
 
 | | |
 | --- | --- |
-| 🚀 **[UsageAI-0.7.1-Setup.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.1/UsageAI-0.7.1-Setup.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.1/UsageAI-0.7.1-Setup.exe.sha256)) | The easy one. Start Menu shortcut, clean uninstall, and it installs the .NET 10 Desktop Runtime for you if you don't have it. |
-| 🎒 **[UsageAI-0.7.1-portable.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.1/UsageAI-0.7.1-portable.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.1/UsageAI-0.7.1-portable.exe.sha256)) | One file. No install. Drop it anywhere and double-click — it uses the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) if you already have it. |
-| 🧩 **[usageai-0.1.7.vsix](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.1/usageai-0.1.7.vsix)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.1/usageai-0.1.7.vsix.sha256)) | The VS Code and Antigravity extension. Install it from the editor's **Extensions: Install from VSIX...** command. |
+| 🚀 **[UsageAI-0.7.2-Setup.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.2/UsageAI-0.7.2-Setup.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.2/UsageAI-0.7.2-Setup.exe.sha256)) | The easy one. Start Menu shortcut, clean uninstall, and it installs the .NET 10 Desktop Runtime for you if you don't have it. |
+| 🎒 **[UsageAI-0.7.2-portable.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.2/UsageAI-0.7.2-portable.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.2/UsageAI-0.7.2-portable.exe.sha256)) | One file. No install. Drop it anywhere and double-click — it uses the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) if you already have it. |
+| 🧩 **[usageai-0.1.8.vsix](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.2/usageai-0.1.8.vsix)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.2/usageai-0.1.8.vsix.sha256)) | The VS Code and Antigravity extension. Install it from the editor's **Extensions: Install from VSIX...** command. |
 
 Windows 10 or 11 (x64), plus at least one AI tool you're already signed in to. That's the whole setup — UsageAI reuses the login you already have, so there's nothing new to create, paste, or remember.
 
@@ -85,7 +85,7 @@ npm.cmd run package:vsix
 **One glance or the full picture.** Left-click for a compact popup; open the dashboard for a responsive multi-column view that reflows as you resize it and fills the space you give it.
 
 <p align="center">
-  <img src="usageai-dashboard-preview.png?v=0.7.1" alt="UsageAI 0.7.1 dashboard with centered provider icons" width="750" />
+  <img src="usageai-dashboard-preview.png?v=0.7.2" alt="UsageAI 0.7.2 dashboard with centered provider icons" width="750" />
 </p>
 
 **It never goes blank.** If a refresh fails, UsageAI keeps the last good reading and marks it **stale**, with the provider's own error message attached — then backs off before retrying instead of hammering a rate-limited API.
@@ -113,7 +113,7 @@ The dashboard is a normal Windows window: move it, resize it, maximize it, close
 | **Codex** | Codex CLI signed in (`codex login`) |
 | **Claude Code** | Claude Code signed in (`claude`), or a Claude web session key you supply yourself |
 | **GitHub Copilot** | Signed in through a Copilot IDE extension or Copilot CLI |
-| **Google Gemini** | Signed in via the `gemini` CLI, or Antigravity IDE running |
+| **Google Gemini** | Signed in via `agy` (recommended) or the `gemini` CLI, or Antigravity running |
 
 One is enough to get going. Connect the rest whenever you like — cards appear as providers show up.
 
@@ -122,9 +122,15 @@ One is enough to get going. Connect the rest whenever you like — cards appear 
 UsageAI reads the login your tools already made, and nothing else:
 
 - 🚫 **Never scans your browser storage** — no cookie extraction, ever.
-- 🚫 **Never prints or writes your credentials.** Tokens are used in memory and stay there.
+- 🚫 **Never prints your credentials.** Claude's shared OAuth credentials are read-only: UsageAI never refreshes or rewrites them.
 - 🏠 **Nothing leaves your machine** except the usage request to the provider itself.
 - 🗑️ **Your history is yours to delete** — one button in Settings.
+
+For Gemini, UsageAI first reuses a running Antigravity language server. If none is available, it
+briefly invokes Google's official `agy` CLI in read-only `/usage` mode with closed stdin, bounded
+output, and an eight-second deadline. UsageAI never reads or writes Antigravity's credential store;
+the official CLI remains the sole owner of that login. A failed `agy` cold start is skipped for 30
+minutes before UsageAI tries it again, and the last successful snapshot stays visible meanwhile.
 
 Preferences, usage history and the cached last reading live in `%LOCALAPPDATA%\UsageAI` (set `USAGEAI_DATA_DIR` to move them for a portable install). History is just timestamps, provider ids, metric names and percentages.
 

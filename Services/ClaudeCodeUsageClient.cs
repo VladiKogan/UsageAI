@@ -1,11 +1,7 @@
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
-using System.Security.AccessControl;
-using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
-using System.Text.Json.Nodes;
 using UsageAI.Models;
 
 namespace UsageAI.Services;
@@ -14,14 +10,11 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 {
     private const string CredentialManagerService = "Claude Code-credentials";
     private const string OAuthBeta = "oauth-2025-04-20";
-    private const string OAuthClientId = "9d1c250a-e61b-44d9-88ed-5944d1962f5e";
     private static readonly Uri UsageEndpoint = new("https://api.anthropic.com/api/oauth/usage");
-    private static readonly Uri TokenEndpoint = new("https://platform.claude.com/v1/oauth/token");
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
     private static readonly HttpClient SharedClient = SecureHttp.CreateClient(RequestTimeout);
     private readonly HttpClient _client;
     private readonly Func<IReadOnlyList<string>> _keyringPasswords;
-    private ClaudeCredentials? _refreshedCredentials;
 
     public ClaudeCodeUsageClient()
         : this(SharedClient, null)
@@ -60,7 +53,11 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         }
 
         var credentials = LoadCredentials();
-        credentials = await EnsureFreshCredentialsAsync(credentials, cancellationToken);
+        if (credentials.IsExpired)
+        {
+            throw new ClaudeCodeUsageException(
+                "Claude Code's login has expired. Open `claude` so Claude Code can refresh it, then refresh UsageAI.");
+        }
 
         if (credentials.Scopes.Count > 0 &&
             !credentials.Scopes.Contains("user:profile", StringComparer.Ordinal))
@@ -188,11 +185,8 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             return new ClaudeCredentials(
                 environmentToken,
                 null,
-                null,
                 scopes,
-                "Claude (OAuth)",
-                null,
-                environmentToken);
+                "Claude (OAuth)");
         }
 
         Exception? fileError = null;
@@ -201,7 +195,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         {
             try
             {
-                return ParseCredentials(SecureLocalFile.ReadAllText(credentialPath), credentialPath);
+                return ParseCredentials(SecureLocalFile.ReadAllText(credentialPath));
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or ClaudeCodeUsageException)
             {
@@ -213,7 +207,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         {
             try
             {
-                return ParseCredentials(savedCredential, null);
+                return ParseCredentials(savedCredential);
             }
             catch (Exception exception) when (exception is JsonException or ClaudeCodeUsageException)
             {
@@ -232,160 +226,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             "Claude Code is not signed in. Run `claude` to sign in, then refresh.");
     }
 
-    private async Task<ClaudeCredentials> EnsureFreshCredentialsAsync(
-        ClaudeCredentials credentials,
-        CancellationToken cancellationToken)
-    {
-        if (_refreshedCredentials is { } cached &&
-            cached.SourceCredentialToken == credentials.SourceCredentialToken &&
-            cached.ExpiresAt is { } cachedExpiry &&
-            cachedExpiry > DateTimeOffset.UtcNow.AddMinutes(5))
-        {
-            credentials = cached;
-        }
-
-        if (!credentials.IsExpired)
-        {
-            return credentials;
-        }
-
-        CrossProcessFileLock? refreshLock = null;
-        try
-        {
-            if (credentials.SourcePath is not null)
-            {
-                try
-                {
-                    refreshLock = await CrossProcessFileLock.AcquireAsync(
-                        "claude-oauth-refresh",
-                        RequestTimeout,
-                        cancellationToken);
-                }
-                catch (TimeoutException exception)
-                {
-                    throw new ClaudeCodeUsageException(
-                        "Another UsageAI instance is still refreshing Claude Code's login.",
-                        exception);
-                }
-            }
-
-            if (credentials.SourcePath is { } sourcePath && File.Exists(sourcePath))
-            {
-                try
-                {
-                    var diskCredentials = ParseCredentials(
-                        SecureLocalFile.ReadAllText(sourcePath),
-                        sourcePath);
-                    if (!diskCredentials.IsExpired)
-                    {
-                        return diskCredentials;
-                    }
-
-                    credentials = diskCredentials;
-                }
-                catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
-                {
-                    // The already-loaded refresh token can still be used if Claude Code briefly holds the file.
-                }
-            }
-
-            if (string.IsNullOrWhiteSpace(credentials.RefreshToken))
-            {
-                throw new ClaudeCodeUsageException(
-                    "Claude Code's login has expired. Run `claude` to sign in again, then refresh.");
-            }
-
-            var refreshed = await RefreshCredentialsAsync(credentials, cancellationToken);
-            _refreshedCredentials = refreshed;
-            if (credentials.SourcePath is not null)
-            {
-                TryPersistRefreshedCredentials(refreshed);
-            }
-
-            return refreshed;
-        }
-        finally
-        {
-            if (refreshLock is not null)
-            {
-                await refreshLock.DisposeAsync();
-            }
-        }
-    }
-
-    private async Task<ClaudeCredentials> RefreshCredentialsAsync(
-        ClaudeCredentials credentials,
-        CancellationToken cancellationToken)
-    {
-        var body = new Dictionary<string, object?>
-        {
-            ["grant_type"] = "refresh_token",
-            ["refresh_token"] = credentials.RefreshToken,
-            ["client_id"] = OAuthClientId,
-        };
-        if (credentials.Scopes.Count > 0)
-        {
-            body["scope"] = string.Join(' ', credentials.Scopes);
-        }
-
-        using var request = new HttpRequestMessage(HttpMethod.Post, TokenEndpoint);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        request.Headers.Add("anthropic-beta", OAuthBeta);
-        request.Content = new StringContent(JsonSerializer.Serialize(body), Encoding.UTF8, "application/json");
-
-        try
-        {
-            using var response = await _client.SendAsync(
-                request,
-                HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken);
-            if (!response.IsSuccessStatusCode)
-            {
-                throw new ClaudeCodeUsageException(
-                    "Claude Code's login could not be refreshed. Run `claude` to sign in again.");
-            }
-
-            using var document = await SecureHttp.ReadJsonDocumentAsync(response, cancellationToken);
-            var root = document.RootElement;
-            var accessToken = CredentialInput.NormalizeToken(GetString(root, "access_token"));
-            if (accessToken is null)
-            {
-                throw new ClaudeCodeUsageException("Anthropic returned an empty OAuth access token.");
-            }
-
-            var refreshToken = CredentialInput.NormalizeToken(GetString(root, "refresh_token"));
-            var expiresIn = GetDouble(root, "expires_in") ?? 3_600;
-            var scopes = (GetString(root, "scope") ?? string.Empty)
-                .Split(' ', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
-                .Where(scope => scope.Length <= 128)
-                .Take(32)
-                .ToArray();
-
-            return credentials with
-            {
-                AccessToken = accessToken,
-                RefreshToken = refreshToken ?? credentials.RefreshToken,
-                ExpiresAt = DateTimeOffset.UtcNow.AddSeconds(Math.Clamp(expiresIn, 60, 604_800)),
-                Scopes = scopes.Length == 0 ? credentials.Scopes : scopes,
-            };
-        }
-        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
-        {
-            throw new ClaudeCodeUsageException("Claude Code's login refresh timed out.");
-        }
-        catch (ClaudeCodeUsageException)
-        {
-            throw;
-        }
-        catch (Exception exception)
-        {
-            throw new ClaudeCodeUsageException(
-                "Claude Code's login could not be refreshed because the provider returned invalid or unavailable data.",
-                exception);
-        }
-    }
-
-    private static ClaudeCredentials ParseCredentials(string json, string? sourcePath)
+    private static ClaudeCredentials ParseCredentials(string json)
     {
         using var document = JsonDocument.Parse(json, new JsonDocumentOptions
         {
@@ -429,188 +270,11 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         }
 
         var planSource = GetString(oauth, "subscriptionType") ?? GetString(oauth, "rateLimitTier");
-        var refreshToken = CredentialInput.NormalizeToken(GetString(oauth, "refreshToken"));
         return new ClaudeCredentials(
             accessToken,
-            refreshToken,
             expiresAt,
             scopes,
-            FormatPlan(planSource),
-            sourcePath,
-            refreshToken ?? accessToken);
-    }
-
-    internal static void TryPersistRefreshedCredentials(ClaudeCredentials credentials)
-    {
-        var path = credentials.SourcePath;
-        if (path is null || !File.Exists(path))
-        {
-            return;
-        }
-
-        string? temporaryPath = null;
-        try
-        {
-            if ((File.GetAttributes(path) & FileAttributes.ReparsePoint) != 0)
-            {
-                return;
-            }
-
-            using var sourceStream = new FileStream(
-                path,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read | FileShare.Delete,
-                bufferSize: 4096,
-                FileOptions.SequentialScan);
-            if (sourceStream.Length > SecureLocalFile.MaxCredentialFileCharacters * 4L)
-            {
-                return;
-            }
-
-            string originalJson;
-            using (var reader = new StreamReader(
-                       sourceStream,
-                       Encoding.UTF8,
-                       detectEncodingFromByteOrderMarks: true,
-                       bufferSize: 4096,
-                       leaveOpen: true))
-            {
-                originalJson = reader.ReadToEnd();
-            }
-
-            if (originalJson.Length > SecureLocalFile.MaxCredentialFileCharacters)
-            {
-                return;
-            }
-
-            var sourceCredentials = ParseCredentials(originalJson, path);
-            if (!string.Equals(
-                    sourceCredentials.SourceCredentialToken,
-                    credentials.SourceCredentialToken,
-                    StringComparison.Ordinal))
-            {
-                return;
-            }
-
-            var root = JsonNode.Parse(originalJson) as JsonObject;
-            var oauth = root?["claudeAiOauth"] as JsonObject;
-            if (root is null || oauth is null)
-            {
-                return;
-            }
-
-            oauth["accessToken"] = credentials.AccessToken;
-            if (!string.IsNullOrWhiteSpace(credentials.RefreshToken))
-            {
-                oauth["refreshToken"] = credentials.RefreshToken;
-            }
-
-            if (credentials.ExpiresAt is { } expiresAt)
-            {
-                oauth["expiresAt"] = expiresAt.ToUnixTimeMilliseconds();
-            }
-
-            if (credentials.Scopes.Count > 0)
-            {
-                oauth["scopes"] = new JsonArray(
-                    credentials.Scopes.Select(scope => JsonValue.Create(scope)).ToArray());
-            }
-
-            temporaryPath = Path.Combine(
-                Path.GetDirectoryName(path)!,
-                $".credentials.json.usageai-tmp.{Environment.ProcessId}.{Guid.NewGuid():N}");
-
-            var originalFile = new FileInfo(path);
-            const AccessControlSections securitySections =
-                AccessControlSections.Access | AccessControlSections.Owner | AccessControlSections.Group;
-            var originalSecurityDescriptor = originalFile
-                .GetAccessControl(securitySections)
-                .GetSecurityDescriptorBinaryForm();
-            var wasEncrypted = (originalFile.Attributes & FileAttributes.Encrypted) != 0;
-
-            using (new FileStream(
-                       temporaryPath,
-                       FileMode.CreateNew,
-                       FileAccess.Write,
-                       FileShare.None,
-                       bufferSize: 1,
-                       FileOptions.WriteThrough))
-            {
-            }
-
-            var temporarySecurity = new FileSecurity();
-            temporarySecurity.SetSecurityDescriptorBinaryForm(originalSecurityDescriptor, securitySections);
-            new FileInfo(temporaryPath).SetAccessControl(temporarySecurity);
-            if (wasEncrypted)
-            {
-                File.Encrypt(temporaryPath);
-            }
-
-            var serialized = Encoding.UTF8.GetBytes(
-                root.ToJsonString(new JsonSerializerOptions { WriteIndented = true }));
-            try
-            {
-                using var temporaryStream = new FileStream(
-                    temporaryPath,
-                    FileMode.Truncate,
-                    FileAccess.Write,
-                    FileShare.None,
-                    bufferSize: 4096,
-                    FileOptions.WriteThrough);
-                temporaryStream.Write(serialized);
-                temporaryStream.Flush(flushToDisk: true);
-            }
-            finally
-            {
-                CryptographicOperations.ZeroMemory(serialized);
-            }
-
-            File.Replace(temporaryPath, path, destinationBackupFileName: null, ignoreMetadataErrors: false);
-            temporaryPath = null;
-            // ReplaceFile can normalize the owner when the process has an elevated token.
-            var replacementSecurity = new FileSecurity();
-            replacementSecurity.SetSecurityDescriptorBinaryForm(originalSecurityDescriptor, securitySections);
-            new FileInfo(path).SetAccessControl(replacementSecurity);
-        }
-        catch (IOException)
-        {
-            // The refreshed token remains cached for this UsageAI process.
-        }
-        catch (UnauthorizedAccessException)
-        {
-            // The refreshed token remains cached for this UsageAI process.
-        }
-        catch (JsonException)
-        {
-            // Do not replace a credential file that changed to an unexpected format.
-        }
-        catch (System.Security.SecurityException)
-        {
-            // Never fall back to a replacement that could weaken the original file's protection.
-        }
-        catch (CryptographicException)
-        {
-            // Never replace an EFS-protected credential with an unencrypted file.
-        }
-        catch (PlatformNotSupportedException)
-        {
-            // The refreshed token remains cached for this UsageAI process.
-        }
-        finally
-        {
-            if (temporaryPath is not null)
-            {
-                try
-                {
-                    File.Delete(temporaryPath);
-                }
-                catch
-                {
-                    // A failed best-effort cleanup must not hide valid usage data.
-                }
-            }
-        }
+            FormatPlan(planSource));
     }
 
     private static UsageMetric? ParseWindow(
@@ -857,14 +521,11 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 
     internal sealed record ClaudeCredentials(
         string AccessToken,
-        string? RefreshToken,
         DateTimeOffset? ExpiresAt,
         IReadOnlyList<string> Scopes,
-        string Plan,
-        string? SourcePath,
-        string SourceCredentialToken)
+        string Plan)
     {
-        public bool IsExpired => ExpiresAt is { } expiresAt && expiresAt <= DateTimeOffset.UtcNow.AddMinutes(5);
+        public bool IsExpired => ExpiresAt is { } expiresAt && expiresAt <= DateTimeOffset.UtcNow;
     }
 }
 

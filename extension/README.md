@@ -1,53 +1,84 @@
 # UsageAI for VS Code and Antigravity
 
-Keep Codex, Claude Code, GitHub Copilot, and Google Gemini quota usage visible while you code.
+See how much of your Codex, Claude Code, GitHub Copilot, and Google Gemini allowance you have used—without leaving your editor.
 
-UsageAI adds two editor-native surfaces:
+UsageAI gives you a clear dashboard in the Activity Bar and optional Status Bar readings for the providers you care about. It uses the provider sign-ins already available on your computer, so there is no separate UsageAI account to create.
 
-- A persistent dashboard in the Activity Bar. Move it to the Secondary Sidebar or Panel if that fits your layout better.
-- Compact Status Bar readings with provider-specific icons for selected providers, or whichever connected provider is currently hottest. Session and weekly percentages appear side by side, with segmented meters in the hover card.
+## Preview
 
-The extension reads credentials already created by provider CLIs and IDE integrations. It never scans browser storage and never sends credentials into the webview.
+<p align="center">
+  <img src="media/dashboard-preview.png" alt="UsageAI quota dashboard in Visual Studio Code, showing Codex, Claude Code, GitHub Copilot, and Google Gemini usage" width="460" />
+</p>
 
-## Requirements
+Open UsageAI from the Activity Bar to see each provider's usage, remaining allowance, and reset time in one place. You can also move the view to the Secondary Sidebar or Panel to match your editor layout.
 
-- VS Code 1.90 or newer, or a compatible Antigravity IDE build.
-- At least one signed-in provider:
-  - Codex CLI (`codex login`)
-  - Claude Code (`claude`) or an explicitly supplied `USAGEAI_CLAUDE_SESSION_KEY`
-  - GitHub Copilot through a supported local credential file, `COPILOT_GITHUB_TOKEN`, or the opt-in GitHub CLI fallback
-  - Gemini CLI (`gemini`) or a running Antigravity language server
+<p align="center">
+  <img src="media/status-bar-preview.png" alt="UsageAI provider readings in the Visual Studio Code Status Bar with the Claude Code usage details open" width="568" />
+</p>
 
-The extension is desktop-only because provider discovery requires local files and child processes. It deliberately does not run in vscode.dev or github.dev.
+Choose one or more providers for compact Status Bar readings. Hover over a reading to see its usage windows, segmented meters, last update time, and quick links to open or refresh UsageAI.
 
 ## Install
 
-The current extension release is **0.1.7**. Install it from the
-[Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai)
-or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai). For manual installation, download
-[`usageai-0.1.7.vsix`](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.1/usageai-0.1.7.vsix)
-and run **Extensions: Install from VSIX...** in VS Code or Antigravity.
+The current extension release is **0.1.8**. Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai) or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai).
 
-## Use
+For a manual installation, download [`usageai-0.1.8.vsix`](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.2/usageai-0.1.8.vsix), then run **Extensions: Install from VSIX...** in VS Code or Antigravity.
 
-1. Select the UsageAI icon in the Activity Bar.
-2. Leave the Usage view open, or move it to the Secondary Sidebar.
-3. Select the Status Bar reading whenever you want to bring the view back.
+## Get started
 
-Use **UsageAI: Refresh** and **UsageAI: Open Settings** from the Command Palette for manual control.
+1. Make sure you are signed in to at least one supported AI provider.
+2. Select the UsageAI icon in the Activity Bar.
+3. Give the first refresh a moment to find your local provider sign-ins and load their usage.
+4. Select any UsageAI Status Bar reading to reopen the dashboard.
 
-Choose providers using the checkboxes in the **UsageAI: Status Bar** settings section. Each checked provider gets its own Status Bar item. If no provider is checked, **Hottest When None Selected** controls whether the highest-usage provider is shown; uncheck it to hide all UsageAI Status Bar items.
+You can also run **UsageAI: Show Usage**, **UsageAI: Refresh**, or **UsageAI: Open Settings** from the Command Palette.
 
-The **UsageAI: Providers** list controls both dashboard and Status Bar order. It also determines which providers are enabled and refreshed.
+## Supported providers
+
+You only need one of these sign-in methods:
+
+| Provider | What UsageAI looks for |
+| --- | --- |
+| Codex | A Codex CLI sign-in created by `codex login` |
+| Claude Code | A Claude Code sign-in created by running `claude`, or the optional `USAGEAI_CLAUDE_SESSION_KEY` environment variable |
+| GitHub Copilot | A supported local Copilot credential, `COPILOT_GITHUB_TOKEN`, or the optional GitHub CLI fallback |
+| Google Gemini | An Antigravity CLI sign-in created by running `agy` (recommended), a Gemini CLI sign-in, or a running Antigravity language server |
+
+UsageAI requires VS Code 1.90 or newer, or a compatible Antigravity IDE build. It is a desktop extension because it needs access to local provider files and commands; it does not run in vscode.dev or github.dev.
+
+## Choose what appears
+
+Open **UsageAI: Open Settings** to personalize the extension:
+
+- **UsageAI: Providers** enables providers and sets their order in both the dashboard and Status Bar.
+- The **UsageAI: Status Bar** checkboxes give each selected provider its own compact reading.
+- If no provider checkbox is selected, **Hottest When None Selected** shows the connected provider with the highest current usage. Turn it off to hide UsageAI from the Status Bar.
+- **Warning Percent** and **Critical Percent** control when usage meters change color.
+- The foreground and background refresh intervals control how often readings update while the dashboard is open or hidden.
+
+For GitHub Copilot, **Enable GitHub CLI Fallback** lets UsageAI run `gh auth token` only when it cannot use a supported local credential file. This option is off by default.
+
+## Reading the dashboard
+
+- Percentages and meter fill show how much quota has been **used**.
+- The text under each meter shows what remains and when that limit resets.
+- Providers can report more than one limit, such as a session window and a weekly window; UsageAI shows each one separately.
+- If a refresh fails, the last successful reading stays visible and is marked as stale instead of disappearing.
+
+If a provider says it is not connected, sign in with that provider's CLI or IDE integration and run **UsageAI: Refresh**. You can use the provider card's sign-in action when one is available.
 
 ## Privacy and security
 
-- Provider tokens stay in the extension host and are never posted to the webview.
-- Provider endpoints are allowlisted, redirects are blocked, and JSON responses are size-limited.
-- Antigravity CSRF tokens are paired only with listening ports owned by the process that supplied them, with an ownership recheck immediately before use.
-- Refreshed OAuth access tokens are cached only in memory for the life of the editor process.
-- Cached snapshots contain usage metadata, plan/account labels, and reset times—but no credentials.
-- The optional Claude web session remains environment-only and is never persisted.
+Your provider credentials stay in the extension host. UsageAI does not scan browser storage, send credentials to the dashboard webview, or include credentials in its cached usage snapshots.
+
+Additional protections include allowlisted provider endpoints, blocked redirects, size-limited responses, read-only Claude OAuth credentials, in-memory-only refresh caching for other providers, and ownership checks before using a local Antigravity connection. The optional Claude web session key remains an environment variable and is never saved by UsageAI.
+
+When no Antigravity language server is already available, the extension may briefly invoke Google's
+official `agy` CLI in read-only `/usage` mode. Stdin is closed, output and runtime are bounded, failed
+cold starts are suppressed for 30 minutes, and only the process tree started by UsageAI is cleaned up.
+The extension never reads or modifies Antigravity credentials.
+
+Cached snapshots may contain usage information, reset times, plan names, and account labels so the extension can keep the last successful reading available.
 
 ## Development
 
@@ -68,8 +99,8 @@ npm.cmd run package:vsix
 The resulting VSIX can be installed manually in both VS Code and Antigravity. Marketplace publication uses the same artifact:
 
 ```powershell
-npm.cmd run publish:vscode -- --packagePath usageai-0.1.7.vsix
-npm.cmd run publish:openvsx -- usageai-0.1.7.vsix
+npm.cmd run publish:vscode -- --packagePath usageai-0.1.8.vsix
+npm.cmd run publish:openvsx -- usageai-0.1.8.vsix
 ```
 
 Publishing requires separate publisher identities and credentials for Visual Studio Marketplace and Open VSX.

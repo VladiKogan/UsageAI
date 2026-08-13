@@ -20,26 +20,35 @@ internal sealed class GeminiUsageClient : IUsageClient
 
     private readonly HttpClient _client;
     private readonly Func<CancellationToken, Task<UsageSnapshot?>> _localProbe;
+    private readonly Func<CancellationToken, Task<UsageSnapshot?>> _agyProbe;
     private GeminiCredentials? _refreshedCredentials;
+    private DateTimeOffset _agyRetryAfterUtc;
 
     public GeminiUsageClient()
-        : this(SharedClient, TryFetchAntigravityLocalSnapshotAsync)
+        : this(
+            SharedClient,
+            TryFetchAntigravityLocalSnapshotAsync,
+            AgyUsageProbe.TryFetchAsync)
     {
     }
 
     internal GeminiUsageClient(
         HttpClient client,
-        Func<CancellationToken, Task<UsageSnapshot?>>? localProbe = null)
+        Func<CancellationToken, Task<UsageSnapshot?>>? localProbe = null,
+        Func<CancellationToken, Task<UsageSnapshot?>>? agyProbe = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _localProbe = localProbe ?? TryFetchAntigravityLocalSnapshotAsync;
+        // Internal callers are tests with injected transports. Keep process discovery opt-in there;
+        // the public constructor wires the real official-CLI probe.
+        _agyProbe = agyProbe ?? (_ => Task.FromResult<UsageSnapshot?>(null));
     }
 
     public string Id => "gemini";
 
     public string DisplayName => "Google Gemini";
 
-    public string SignInCommand => "gemini";
+    public string SignInCommand => "agy";
 
     public Uri AccountUrl { get; } = new("https://aistudio.google.com/");
 
@@ -52,7 +61,20 @@ internal sealed class GeminiUsageClient : IUsageClient
             return antigravitySnapshot;
         }
 
-        // 2. Fallback to Gemini CLI OAuth API
+        // 2. Ask the official Antigravity CLI. A failed cold start is negatively cached so
+        // Gemini-CLI-only users do not pay the process timeout on every refresh.
+        if (DateTimeOffset.UtcNow >= _agyRetryAfterUtc)
+        {
+            var agySnapshot = await _agyProbe(cancellationToken);
+            if (agySnapshot is not null)
+            {
+                return agySnapshot;
+            }
+
+            _agyRetryAfterUtc = DateTimeOffset.UtcNow.AddMinutes(30);
+        }
+
+        // 3. Compatibility fallback to Gemini CLI OAuth API
         GeminiCredentials credentials;
         try
         {
@@ -60,8 +82,11 @@ internal sealed class GeminiUsageClient : IUsageClient
         }
         catch (GeminiUsageException)
         {
+            // A disconnected user may have just completed `agy` sign-in before pressing Refresh.
+            // Let that explicit recovery attempt bypass the negative cache.
+            _agyRetryAfterUtc = default;
             throw new GeminiUsageException(
-                "Gemini is not signed in and Antigravity IDE is not running. Sign in with `gemini` in Terminal or start Antigravity IDE.");
+                "Gemini is not signed in. Run `agy` (recommended) or `gemini` in Terminal, then refresh.");
         }
 
         if (string.IsNullOrWhiteSpace(credentials.AccessToken) || credentials.IsExpired)
@@ -545,7 +570,7 @@ internal sealed class GeminiUsageClient : IUsageClient
                     continue;
                 }
 
-                if (GetDouble(bucket, "remainingFraction") is not { } remainingFraction)
+                if (GetRemainingFraction(bucket) is not { } remainingFraction)
                 {
                     continue;
                 }
@@ -700,6 +725,20 @@ internal sealed class GeminiUsageClient : IUsageClient
             UsageMetricKind.Rolling,
             null,
             2);
+    }
+
+    private static double? GetRemainingFraction(JsonElement bucket)
+    {
+        var direct = GetDouble(bucket, "remainingFraction");
+        if (direct is not null)
+        {
+            return direct;
+        }
+
+        return bucket.TryGetProperty("remaining", out var remaining) &&
+               remaining.ValueKind == JsonValueKind.Object
+            ? GetDouble(remaining, "remainingFraction")
+            : null;
     }
 
     private static int QuotaSummaryGroupOrder(string groupName) =>
