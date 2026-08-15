@@ -5,7 +5,8 @@
 <h1 align="center">UsageAI</h1>
 
 <p align="center">
-  <b>Every AI coding limit you're burning through — in one tiny tray icon.</b><br />
+  <b>Every AI coding limit you're burning through — in your tray or editor.</b><br />
+  Windows tray app · VS Code and Antigravity extension<br />
   Codex · Claude Code · GitHub Copilot · Google Gemini
 </p>
 
@@ -18,6 +19,7 @@
 
 <p align="center">
   <a href="#-get-it"><b>Download</b></a> ·
+  <a href="#vs-code-and-antigravity-extension">Editor extension</a> ·
   <a href="#-what-youll-see">What you'll see</a> ·
   <a href="#-your-credentials-stay-yours">Privacy</a> ·
   <a href="#-troubleshooting">Troubleshooting</a>
