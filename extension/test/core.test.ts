@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import { access, readFile } from "node:fs/promises";
+import { resolve } from "node:path";
 import test from "node:test";
 import { UsageProviderError } from "../src/errors";
 import {
@@ -25,6 +27,26 @@ const snapshot: UsageSnapshot = {
   providerId: "fixture",
   providerName: "Fixture",
 };
+
+test("marketplace previews resolve from the extension directory", async () => {
+  const packageJson = JSON.parse(
+    await readFile(resolve(__dirname, "../../package.json"), "utf8"),
+  ) as { vsce?: { baseImagesUrl?: string } };
+  assert.equal(
+    packageJson.vsce?.baseImagesUrl,
+    "https://raw.githubusercontent.com/VladiKogan/UsageAI/main/extension",
+  );
+
+  const readme = await readFile(resolve(__dirname, "../../README.md"), "utf8");
+  const previewPaths = [...readme.matchAll(/<img src="(media\/[^"]+-preview\.png)"/g)]
+    .map((match) => match[1]!);
+  assert.deepEqual(previewPaths, [
+    "media/dashboard-preview.png",
+    "media/status-bar-preview.png",
+  ]);
+  await Promise.all(previewPaths.map((previewPath) =>
+    access(resolve(__dirname, "../..", previewPath))));
+});
 
 test("model selects real quota before balance", () => {
   assert.equal(primaryMetric(snapshot)?.name, "Weekly");

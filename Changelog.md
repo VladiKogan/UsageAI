@@ -6,6 +6,11 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Fixed broken editor-extension preview images on Visual Studio Marketplace and Open VSX by resolving
+  packaged README assets from the extension's directory in the monorepo.
+
 ## [0.7.2] - 2026-08-13
 
 ### Added

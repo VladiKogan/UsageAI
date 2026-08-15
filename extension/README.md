@@ -20,9 +20,9 @@ Choose one or more providers for compact Status Bar readings. Hover over a readi
 
 ## Install
 
-The current extension release is **0.1.8**. Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai) or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai).
+The current extension release is **0.1.9**. Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai) or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai).
 
-For a manual installation, download [`usageai-0.1.8.vsix`](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.2/usageai-0.1.8.vsix), then run **Extensions: Install from VSIX...** in VS Code or Antigravity.
+For a manual installation, download [`usageai-0.1.9.vsix`](https://open-vsx.org/api/vladikogan/usageai/0.1.9/file/vladikogan.usageai-0.1.9.vsix), then run **Extensions: Install from VSIX...** in VS Code or Antigravity.
 
 ## Get started
 
@@ -99,8 +99,8 @@ npm.cmd run package:vsix
 The resulting VSIX can be installed manually in both VS Code and Antigravity. Marketplace publication uses the same artifact:
 
 ```powershell
-npm.cmd run publish:vscode -- --packagePath usageai-0.1.8.vsix
-npm.cmd run publish:openvsx -- usageai-0.1.8.vsix
+npm.cmd run publish:vscode -- --packagePath usageai-0.1.9.vsix
+npm.cmd run publish:openvsx -- usageai-0.1.9.vsix
 ```
 
 Publishing requires separate publisher identities and credentials for Visual Studio Marketplace and Open VSX.

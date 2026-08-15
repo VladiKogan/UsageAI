@@ -2,7 +2,7 @@
   "name": "usageai",
   "displayName": "UsageAI",
   "description": "Keep Codex, Claude Code, GitHub Copilot, and Gemini usage visible while you code.",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "publisher": "vladikogan",
   "license": "MIT",
   "engines": {
@@ -27,6 +27,10 @@
   "repository": {
     "type": "git",
     "url": "https://github.com/VladiKogan/UsageAI"
+  },
+  "vsce": {
+    "baseContentUrl": "https://github.com/VladiKogan/UsageAI/blob/main/extension",
+    "baseImagesUrl": "https://raw.githubusercontent.com/VladiKogan/UsageAI/main/extension"
   },
   "bugs": {
     "url": "https://github.com/VladiKogan/UsageAI/issues"

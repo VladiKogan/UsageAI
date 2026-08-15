@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.9
+
+- Fixed the dashboard and Status Bar preview images on Visual Studio Marketplace and Open VSX by
+  resolving packaged README assets from the extension's directory in the monorepo.
+
 ## 0.1.8
 
 - Added a bounded official `agy /usage` fallback for Gemini when no local Antigravity language server
