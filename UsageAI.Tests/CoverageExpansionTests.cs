@@ -3,6 +3,7 @@ using System.Drawing;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Reflection;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
@@ -836,13 +837,35 @@ internal static class CoverageExpansionTests
         {
             Equal(HttpMethod.Get, request.Method);
             True(request.Headers.Contains("X-GitHub-Api-Version"));
-            return Task.FromResult(JsonResponse(HttpStatusCode.OK, """{"tag_name":"v99.0.0"}"""));
+            return Task.FromResult(JsonResponse(
+                HttpStatusCode.OK,
+                """
+                {
+                  "tag_name":"v99.0.0",
+                  "html_url":"https://github.com/VladiKogan/UsageAI/releases/tag/v99.0.0",
+                  "assets":[
+                    {
+                      "name":"UsageAI-99.0.0-Setup.exe",
+                      "size":123,
+                      "browser_download_url":"https://github.com/VladiKogan/UsageAI/releases/download/v99.0.0/UsageAI-99.0.0-Setup.exe"
+                    },
+                    {
+                      "name":"UsageAI-99.0.0-Setup.exe.sha256",
+                      "size":100,
+                      "browser_download_url":"https://github.com/VladiKogan/UsageAI/releases/download/v99.0.0/UsageAI-99.0.0-Setup.exe.sha256"
+                    }
+                  ]
+                }
+                """));
         });
         using (var http = new HttpClient(successHandler))
         {
-            Equal(
-                "v99.0.0",
-                await UpdateChecker.FindNewerReleaseAsync(http, CancellationToken.None));
+            var release = await UpdateChecker.FindNewerReleaseAsync(http, CancellationToken.None);
+            NotNull(release);
+            Equal("v99.0.0", release!.Tag);
+            Equal("99.0.0", release.Version);
+            Equal("UsageAI-99.0.0-Setup.exe", release.Installer!.Name);
+            Equal("UsageAI-99.0.0-Setup.exe.sha256", release.Checksum!.Name);
         }
 
         using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
@@ -877,6 +900,80 @@ internal static class CoverageExpansionTests
 
         True(UpdateChecker.IsNewer("6-beta.1", "5.9.0"));
         False(UpdateChecker.IsNewer("5+build", "5.0"));
+        var now = DateTimeOffset.UtcNow;
+        True(UpdateChecker.IsCheckDue(null, now));
+        False(UpdateChecker.IsCheckDue(now.AddHours(-23), now));
+        True(UpdateChecker.IsCheckDue(now.AddHours(-24), now));
+    }
+
+    public static async Task TestUpdateInstallerAsync()
+    {
+        var installerName = "UsageAI-99.0.0-Setup.exe";
+        var installerBytes = Encoding.UTF8.GetBytes("synthetic verified installer");
+        var checksumText =
+            $"{Convert.ToHexString(SHA256.HashData(installerBytes)).ToLowerInvariant()}  {installerName}";
+        var checksumBytes = Encoding.ASCII.GetBytes(checksumText);
+        var release = new UpdateRelease(
+            "v99.0.0",
+            "99.0.0",
+            new Uri("https://github.com/VladiKogan/UsageAI/releases/tag/v99.0.0"),
+            new UpdateAsset(
+                installerName,
+                new Uri($"https://github.com/VladiKogan/UsageAI/releases/download/v99.0.0/{installerName}"),
+                installerBytes.Length),
+            new UpdateAsset(
+                $"{installerName}.sha256",
+                new Uri($"https://github.com/VladiKogan/UsageAI/releases/download/v99.0.0/{installerName}.sha256"),
+                checksumBytes.Length));
+
+        var handler = new StubHttpHandler((request, call, _) => call switch
+        {
+            1 => Task.FromResult(RedirectResponse(
+                "https://release-assets.githubusercontent.com/usageai/checksum")),
+            2 => Task.FromResult(BinaryResponse(checksumBytes)),
+            3 => Task.FromResult(RedirectResponse(
+                "https://release-assets.githubusercontent.com/usageai/installer")),
+            4 => Task.FromResult(BinaryResponse(installerBytes)),
+            _ => throw new InvalidOperationException($"Unexpected update request: {request.RequestUri}"),
+        });
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "UsageAI.UpdateTests",
+            Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var http = new HttpClient(handler);
+            var installerPath = await UpdateInstaller.DownloadAndVerifyAsync(
+                release,
+                http,
+                directory,
+                CancellationToken.None);
+            True(File.Exists(installerPath));
+            True(File.ReadAllBytes(installerPath).SequenceEqual(installerBytes));
+            Equal(4, handler.CallCount);
+
+            var badChecksum = Encoding.ASCII.GetBytes($"{new string('0', 64)}  {installerName}");
+            using var badHttp = new HttpClient(new StubHttpHandler((_, call, _) =>
+                Task.FromResult(call == 1
+                    ? BinaryResponse(badChecksum)
+                    : BinaryResponse(installerBytes))));
+            var badRelease = release with
+            {
+                Checksum = release.Checksum! with { Size = badChecksum.Length },
+            };
+            await ThrowsAsync<UpdateInstallException>(() => UpdateInstaller.DownloadAndVerifyAsync(
+                badRelease,
+                badHttp,
+                directory,
+                CancellationToken.None));
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
     }
 
     public static Task TestProviderParserEdgesAsync()
@@ -1529,7 +1626,6 @@ internal static class CoverageExpansionTests
             GlobalHotkeyEnabled = false,
             HistoryEnabled = false,
             NotificationsEnabled = false,
-            UpdateCheckEnabled = false,
             SlowRefreshWhenHidden = false,
         };
 
@@ -2969,6 +3065,19 @@ internal static class CoverageExpansionTests
         {
             Content = new StringContent(json, Encoding.UTF8, mediaType),
         };
+
+    private static HttpResponseMessage BinaryResponse(byte[] contents) =>
+        new(HttpStatusCode.OK)
+        {
+            Content = new ByteArrayContent(contents),
+        };
+
+    private static HttpResponseMessage RedirectResponse(string location)
+    {
+        var response = new HttpResponseMessage(HttpStatusCode.Found);
+        response.Headers.Location = new Uri(location);
+        return response;
+    }
 
     private static Dictionary<string, string?> SaveEnvironment(params string[] names) =>
         names.ToDictionary(name => name, Environment.GetEnvironmentVariable, StringComparer.Ordinal);

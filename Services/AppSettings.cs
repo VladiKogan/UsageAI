@@ -25,6 +25,8 @@ internal static class AppPaths
 
     public static string SnapshotCacheFile => Path.Combine(DataDirectory, "last-snapshot.json");
 
+    public static string UpdateDirectory => Path.Combine(DataDirectory, "updates");
+
     public static void EnsureDirectory() => Directory.CreateDirectory(DataDirectory);
 
     private static string ResolveDataDirectory()
@@ -104,8 +106,8 @@ internal sealed class AppSettings
 
     public bool GlobalHotkeyEnabled { get; set; } = true;
 
-    /// <summary>Opt-in only: UsageAI contacts GitHub for release information when enabled.</summary>
-    public bool UpdateCheckEnabled { get; set; }
+    /// <summary>Last GitHub release check, used to keep the automatic request to once per day.</summary>
+    public DateTimeOffset? LastUpdateCheckUtc { get; set; }
 
     public string[] HiddenProviders { get; set; } = Array.Empty<string>();
 
@@ -221,6 +223,14 @@ internal sealed class AppSettings
         HiddenProviders = NormalizeIds(HiddenProviders);
         ProviderOrder = NormalizeIds(ProviderOrder);
         TrayProviderId = NormalizeId(TrayProviderId);
+        if (LastUpdateCheckUtc is { } lastUpdateCheck)
+        {
+            var utc = lastUpdateCheck.ToUniversalTime();
+            LastUpdateCheckUtc = utc > DateTimeOffset.UtcNow.AddMinutes(5)
+                ? null
+                : utc;
+        }
+
         if (DashboardBounds is { Length: not 4 })
         {
             DashboardBounds = null;

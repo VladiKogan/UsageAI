@@ -32,19 +32,19 @@ You're mid-refactor and the model stops. Weekly limit. Nobody told you it was cl
 **UsageAI** is a tiny Windows tray app that keeps every AI coding limit you have in one glance — how much you've used, how fast you're burning it, and exactly when it resets. No dashboards to open, no logins to repeat, no surprises at 2 a.m.
 
 <p align="center">
-  <img src="usageai-preview.png?v=0.7.3" alt="UsageAI 0.7.3 compact tray popup with centered provider icons" width="420" />
+  <img src="usageai-preview.png?v=0.8.0" alt="UsageAI 0.8.0 compact tray popup with centered provider icons" width="420" />
 </p>
 
 ## ⚡ Get it
 
-Current release: **UsageAI for Windows 0.7.3** and **UsageAI editor extension 0.1.10**.
+Current release: **UsageAI for Windows 0.8.0** and **UsageAI editor extension 0.1.10**.
 You can also browse the complete **[Releases page](https://github.com/VladiKogan/UsageAI/releases)**.
 
 | | |
 | --- | --- |
-| 🚀 **[UsageAI-0.7.3-Setup.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.3/UsageAI-0.7.3-Setup.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.3/UsageAI-0.7.3-Setup.exe.sha256)) | The easy one. Start Menu shortcut, clean uninstall, and it installs the .NET 10 Desktop Runtime for you if you don't have it. |
-| 🎒 **[UsageAI-0.7.3-portable.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.3/UsageAI-0.7.3-portable.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.3/UsageAI-0.7.3-portable.exe.sha256)) | One file. No install. Drop it anywhere and double-click — it uses the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) if you already have it. |
-| 🧩 **[usageai-0.1.10.vsix](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.3/usageai-0.1.10.vsix)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.7.3/usageai-0.1.10.vsix.sha256)) | The VS Code and Antigravity extension. Install it from the editor's **Extensions: Install from VSIX...** command. |
+| 🚀 **[UsageAI-0.8.0-Setup.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.8.0/UsageAI-0.8.0-Setup.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.8.0/UsageAI-0.8.0-Setup.exe.sha256)) | The easy one. Start Menu shortcut, clean uninstall, and it installs the .NET 10 Desktop Runtime for you if you don't have it. |
+| 🎒 **[UsageAI-0.8.0-portable.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.8.0/UsageAI-0.8.0-portable.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.8.0/UsageAI-0.8.0-portable.exe.sha256)) | One file. No install. Drop it anywhere and double-click — it uses the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) if you already have it. |
+| 🧩 **[usageai-0.1.10.vsix](https://github.com/VladiKogan/UsageAI/releases/download/v0.8.0/usageai-0.1.10.vsix)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.8.0/usageai-0.1.10.vsix.sha256)) | The VS Code and Antigravity extension. Install it from the editor's **Extensions: Install from VSIX...** command. |
 
 Windows 10 or 11 (x64), plus at least one AI tool you're already signed in to. That's the whole setup — UsageAI reuses the login you already have, so there's nothing new to create, paste, or remember.
 
@@ -87,7 +87,7 @@ npm.cmd run package:vsix
 **One glance or the full picture.** Left-click for a compact popup; open the dashboard for a responsive multi-column view that reflows as you resize it and fills the space you give it.
 
 <p align="center">
-  <img src="usageai-dashboard-preview.png?v=0.7.3" alt="UsageAI 0.7.3 dashboard with centered provider icons" width="750" />
+  <img src="usageai-dashboard-preview.png?v=0.8.0" alt="UsageAI 0.8.0 dashboard with centered provider icons" width="750" />
 </p>
 
 **It never goes blank.** If a refresh fails, UsageAI keeps the last good reading and marks it **stale**, with the provider's own error message attached — then backs off before retrying instead of hammering a rate-limited API.
@@ -128,7 +128,8 @@ UsageAI reads the login your tools already made, and nothing else:
   `.credentials.json`. When Claude's short-lived access token expires, UsageAI briefly runs the
   official `claude auth status --json` command; Claude Code may refresh its own login, after which
   UsageAI rereads the access token.
-- 🏠 **Nothing leaves your machine** except the usage request to the provider itself.
+- 🏠 **No telemetry or tracking.** Network access is limited to provider usage requests and
+  one GitHub release check per day while UsageAI is running.
 - 🗑️ **Your history is yours to delete** — one button in Settings.
 
 For Gemini, UsageAI first reuses a running Antigravity language server. If none is available, it
@@ -171,7 +172,11 @@ The key is kept in memory, is never forwarded to provider CLI child processes, a
 - Whether history is recorded, and whether the trend and forecast are shown
 - Which provider drives the tray icon (or let it follow whichever is running hottest), which providers appear, and in what order
 - The global hotkey
-- An opt-in check for newer releases
+
+UsageAI checks GitHub for a newer release once per day while it is running. When one exists, it asks
+before downloading or installing anything; choosing **No** leaves the current version untouched.
+Installed builds can download the matching Setup.exe, verify its published SHA-256, and ask Windows
+to install it.
 
 ## 🩹 Troubleshooting
 

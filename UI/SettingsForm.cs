@@ -26,7 +26,6 @@ internal sealed class SettingsForm : Form
     private readonly CheckBox _historyEnabled;
     private readonly CheckBox _forecastEnabled;
     private readonly CheckBox _hotkeyEnabled;
-    private readonly CheckBox _updateCheckEnabled;
     private readonly CheckedListBox _providers;
 
     public SettingsForm(AppSettings settings, IReadOnlyList<(string Id, string DisplayName)> providers)
@@ -92,7 +91,6 @@ internal sealed class SettingsForm : Form
         _historyEnabled = CreateCheckBox("Record usage history on this machine");
         _forecastEnabled = CreateCheckBox("Show trend and burn-rate forecast");
         _hotkeyEnabled = CreateCheckBox("Global hotkey (Win+Alt+U)");
-        _updateCheckEnabled = CreateCheckBox("Check GitHub for new releases");
         _theme = new ComboBox
         {
             BackColor = Theme.SurfaceRaised,
@@ -183,7 +181,6 @@ internal sealed class SettingsForm : Form
 
         AddSection("System");
         AddSpan(_hotkeyEnabled);
-        AddSpan(_updateCheckEnabled);
 
         var buttons = new FlowLayoutPanel
         {
@@ -222,7 +219,6 @@ internal sealed class SettingsForm : Form
         _historyEnabled.Checked = _settings.HistoryEnabled;
         _forecastEnabled.Checked = _settings.ForecastEnabled;
         _hotkeyEnabled.Checked = _settings.GlobalHotkeyEnabled;
-        _updateCheckEnabled.Checked = _settings.UpdateCheckEnabled;
         _trayProvider.SelectedIndex = 0;
         if (_settings.TrayProviderId is { } trayProviderId)
         {
@@ -256,7 +252,6 @@ internal sealed class SettingsForm : Form
         _settings.HistoryEnabled = _historyEnabled.Checked;
         _settings.ForecastEnabled = _forecastEnabled.Checked;
         _settings.GlobalHotkeyEnabled = _hotkeyEnabled.Checked;
-        _settings.UpdateCheckEnabled = _updateCheckEnabled.Checked;
         _settings.TrayProviderId = _trayProvider.SelectedItem is ProviderEntry { Id.Length: > 0 } trayProvider
             ? trayProvider.Id
             : null;

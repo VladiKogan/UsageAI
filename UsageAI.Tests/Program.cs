@@ -58,6 +58,7 @@ internal static class Program
         ("Codex app-server protocol and errors", CoverageExpansionTests.TestCodexProtocolAsync),
         ("Claude web fallback HTTP flows", CoverageExpansionTests.TestClaudeWebHttpAsync),
         ("release update HTTP handling", CoverageExpansionTests.TestUpdateCheckerHttpAsync),
+        ("verified update installer download", CoverageExpansionTests.TestUpdateInstallerAsync),
         ("provider parser edge cases", CoverageExpansionTests.TestProviderParserEdgesAsync),
         ("corrupt local state recovery", CoverageExpansionTests.TestCorruptLocalStateAsync),
         ("security utility edge cases", CoverageExpansionTests.TestSecurityUtilityEdgesAsync),
@@ -793,6 +794,7 @@ internal static class Program
 
     private static Task TestSettingsAsync()
     {
+        var lastUpdateCheck = DateTimeOffset.UtcNow.AddHours(-2);
         var settings = new AppSettings
         {
             RefreshIntervalMinutes = 999,
@@ -800,6 +802,7 @@ internal static class Program
             CriticalPercent = 10,
             NotifyAtPercent = new[] { 150, 80, 80, 20 },
             TrayProviderId = " claude ",
+            LastUpdateCheckUtc = lastUpdateCheck,
         };
         settings.Save();
 
@@ -815,6 +818,7 @@ internal static class Program
         Equal(96, reloaded.CriticalPercent);
         Equal(2, reloaded.NotifyAtPercent.Length);
         Equal("claude", reloaded.TrayProviderId);
+        Equal(lastUpdateCheck, reloaded.LastUpdateCheckUtc);
 
         File.Delete(AppPaths.SettingsFile);
         return Task.CompletedTask;

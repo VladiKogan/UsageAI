@@ -1,4 +1,5 @@
 using Microsoft.Win32;
+using System.Diagnostics;
 using UsageAI.Models;
 using UsageAI.Services;
 
@@ -20,22 +21,26 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private readonly MessageWindow _messageWindow;
     private readonly System.Windows.Forms.Timer _tickTimer;
     private readonly ToolStripMenuItem _startupItem;
+    private readonly bool _automaticUpdateChecksEnabled;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly SynchronizationContext _syncContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
     private Icon? _currentIcon;
     private bool _isExiting;
+    private bool _updateCheckRunning;
 
     public UsageApplicationContext(IEnumerable<IUsageClient> clients, AppSettings settings)
-        : this(clients, settings, showTrayIcon: true)
+        : this(clients, settings, showTrayIcon: true, enableAutomaticUpdateChecks: true)
     {
     }
 
     internal UsageApplicationContext(
         IEnumerable<IUsageClient> clients,
         AppSettings settings,
-        bool showTrayIcon)
+        bool showTrayIcon,
+        bool enableAutomaticUpdateChecks = false)
     {
         _settings = settings;
+        _automaticUpdateChecksEnabled = enableAutomaticUpdateChecks;
         _clients = clients.ToArray();
         Theme.Apply(_settings.Theme, _settings.WarningPercent, _settings.CriticalPercent);
 
@@ -95,7 +100,11 @@ internal sealed class UsageApplicationContext : ApplicationContext
         {
             Interval = (int)TickInterval.TotalMilliseconds,
         };
-        _tickTimer.Tick += async (_, _) => await RefreshIfDueAsync();
+        _tickTimer.Tick += async (_, _) =>
+        {
+            await RefreshIfDueAsync();
+            await CheckForUpdatesIfDueAsync();
+        };
         _tickTimer.Start();
 
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
@@ -109,10 +118,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
     {
         Application.Idle -= RefreshOnFirstIdle;
         _ = RefreshAsync(force: true);
-        if (_settings.UpdateCheckEnabled)
-        {
-            _ = CheckForUpdatesAsync();
-        }
+        _ = CheckForUpdatesIfDueAsync();
     }
 
     private async Task RefreshIfDueAsync()
@@ -250,6 +256,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         PushStateToPopup();
         UpdateTray();
         _ = RefreshAsync(force: false);
+        _ = CheckForUpdatesIfDueAsync();
     }
 
     private void ApplyHotkeySetting()
@@ -264,19 +271,110 @@ internal sealed class UsageApplicationContext : ApplicationContext
         }
     }
 
-    private async Task CheckForUpdatesAsync()
+    private async Task CheckForUpdatesIfDueAsync()
     {
-        var release = await UpdateChecker.FindNewerReleaseAsync(_shutdown.Token);
-        if (release is null || _isExiting)
+        var checkedAt = DateTimeOffset.UtcNow;
+        if (_isExiting ||
+            _updateCheckRunning ||
+            !_automaticUpdateChecksEnabled ||
+            !UpdateChecker.IsCheckDue(_settings.LastUpdateCheckUtc, checkedAt))
         {
             return;
         }
 
-        RunOnUi(() => _trayIcon.ShowBalloonTip(
-            8_000,
+        _updateCheckRunning = true;
+        try
+        {
+            var release = await UpdateChecker.FindNewerReleaseAsync(_shutdown.Token);
+            _settings.LastUpdateCheckUtc = checkedAt;
+            _settings.Save();
+            if (release is not null && !_isExiting)
+            {
+                await PromptForUpdateAsync(release);
+            }
+        }
+        finally
+        {
+            _updateCheckRunning = false;
+        }
+    }
+
+    private async Task PromptForUpdateAsync(UpdateRelease release)
+    {
+        var canInstall = release.Installer is not null && release.Checksum is not null;
+        var choice = MessageBox.Show(
+            canInstall
+                ? $"UsageAI {release.Version} is available. You are running {AppIdentity.Version}.\n\n" +
+                  "Download the verified installer and install it now?"
+                : $"UsageAI {release.Version} is available. You are running {AppIdentity.Version}.\n\n" +
+                  "The automatic installer is unavailable. Open the release page?",
             "UsageAI update available",
-            $"{release} has been published. The current build is {AppIdentity.Version}.",
-            ToolTipIcon.Info));
+            MessageBoxButtons.YesNo,
+            MessageBoxIcon.Information,
+            MessageBoxDefaultButton.Button1);
+        if (choice != DialogResult.Yes || _isExiting)
+        {
+            return;
+        }
+
+        if (!canInstall)
+        {
+            OpenReleasePage(release.ReleasePageUrl);
+            return;
+        }
+
+        _trayIcon.ShowBalloonTip(
+            5_000,
+            "Downloading UsageAI update",
+            $"Downloading and verifying UsageAI {release.Version}...",
+            ToolTipIcon.Info);
+
+        try
+        {
+            var installerPath = await UpdateInstaller.DownloadAndVerifyAsync(release, _shutdown.Token);
+            if (!_isExiting)
+            {
+                UpdateInstaller.Launch(installerPath);
+            }
+        }
+        catch (UpdateInstallException exception)
+        {
+            if (_isExiting)
+            {
+                return;
+            }
+
+            var openPage = MessageBox.Show(
+                $"{exception.Message}\n\nOpen the GitHub release page instead?",
+                "UsageAI update",
+                MessageBoxButtons.YesNo,
+                MessageBoxIcon.Warning,
+                MessageBoxDefaultButton.Button1);
+            if (openPage == DialogResult.Yes)
+            {
+                OpenReleasePage(release.ReleasePageUrl);
+            }
+        }
+    }
+
+    private static void OpenReleasePage(Uri releasePageUrl)
+    {
+        try
+        {
+            using var process = Process.Start(new ProcessStartInfo(releasePageUrl.AbsoluteUri)
+            {
+                UseShellExecute = true,
+            });
+        }
+        catch (Exception exception) when (exception is InvalidOperationException
+                                              or System.ComponentModel.Win32Exception)
+        {
+            MessageBox.Show(
+                "Windows could not open the UsageAI release page.",
+                "UsageAI update",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
     }
 
     private void OnPowerModeChanged(object sender, PowerModeChangedEventArgs eventArgs)

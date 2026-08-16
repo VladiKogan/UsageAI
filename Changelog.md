@@ -6,6 +6,25 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.0] - 2026-08-16
+
+### Added
+
+- Added automatic daily GitHub release checks while the desktop app is running. When a newer
+  release exists, UsageAI presents an explicit **Yes/No** installation prompt; declining leaves the
+  current version untouched and postpones the next prompt for 24 hours.
+- Added in-app installer download and launch for installed Windows builds. UsageAI selects the exact
+  versioned Setup.exe and checksum assets from the pinned repository and falls back to the release
+  page if either asset is unavailable.
+
+### Security
+
+- Update downloads follow only approved GitHub release-asset hosts, enforce advertised and maximum
+  sizes plus a five-minute deadline, and must match the published SHA-256 before Windows is allowed
+  to execute the installer.
+- The updater continues to require explicit user approval before downloading or installing, and
+  Windows retains its normal UAC confirmation for the Program Files upgrade.
+
 ## [0.7.3] - 2026-08-16
 
 ### Fixed
