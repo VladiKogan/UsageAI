@@ -41,6 +41,8 @@ internal sealed class UsagePopupForm : Form
     private bool _dashboardWasShown;
     private bool _updatingCardWidths;
     private readonly System.Windows.Forms.Timer _uiTickTimer;
+    private readonly System.Windows.Forms.Timer _refreshAnimationTimer;
+    private float _refreshAnimationAngle;
 
     public UsagePopupForm(AppSettings settings)
     {
@@ -165,6 +167,8 @@ internal sealed class UsagePopupForm : Form
         _settingsButton.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
         _refreshButton = CreateButton("Refresh", scale, primary: true);
         _refreshButton.Click += (_, _) => RefreshRequested?.Invoke(this, EventArgs.Empty);
+        _refreshButton.ImageAlign = ContentAlignment.MiddleLeft;
+        _refreshButton.TextImageRelation = TextImageRelation.ImageBeforeText;
 
         _footer = new TableLayoutPanel
         {
@@ -214,6 +218,13 @@ internal sealed class UsagePopupForm : Form
                 UpdateStatus();
                 _content.Invalidate(invalidateChildren: true);
             }
+        };
+
+        _refreshAnimationTimer = new System.Windows.Forms.Timer { Interval = 90 };
+        _refreshAnimationTimer.Tick += (_, _) =>
+        {
+            _refreshAnimationAngle = (_refreshAnimationAngle + 24F) % 360F;
+            UpdateRefreshButtonImage();
         };
     }
 
@@ -362,6 +373,7 @@ internal sealed class UsagePopupForm : Form
         else
         {
             _uiTickTimer.Stop();
+            StopRefreshAnimation();
         }
     }
 
@@ -369,6 +381,8 @@ internal sealed class UsagePopupForm : Form
     {
         if (disposing)
         {
+            StopRefreshAnimation();
+            _refreshAnimationTimer.Dispose();
             _uiTickTimer.Dispose();
             Theme.Changed -= OnThemeChanged;
         }
@@ -560,6 +574,7 @@ internal sealed class UsagePopupForm : Form
         var connected = _states.Where(state => state.IsConnected).ToArray();
         _refreshButton.Enabled = !_isRefreshing;
         _refreshButton.Text = _isRefreshing ? "Reading" : "Refresh";
+        UpdateRefreshAnimationState();
 
         // The provider with the busiest primary session earns the header slot.
         var headlineStatus = SelectHeadlineStatus(connected);
@@ -599,6 +614,60 @@ internal sealed class UsagePopupForm : Form
                 : stale > 0
                     ? $"Updated {UsageFormatting.Age(displayTime.Value, DateTimeOffset.Now)}, {stale} stale"
                     : $"Updated {UsageFormatting.Age(displayTime.Value, DateTimeOffset.Now)}";
+    }
+
+    private void UpdateRefreshAnimationState()
+    {
+        if (!_isRefreshing || !Visible || IsDisposed || Disposing)
+        {
+            StopRefreshAnimation();
+            return;
+        }
+
+        if (!_refreshAnimationTimer.Enabled)
+        {
+            _refreshAnimationAngle = 0F;
+            UpdateRefreshButtonImage();
+            _refreshAnimationTimer.Start();
+        }
+    }
+
+    private void UpdateRefreshButtonImage()
+    {
+        if (!_isRefreshing || !Visible || IsDisposed || Disposing)
+        {
+            return;
+        }
+
+        var scale = new LayoutScale(_refreshButton);
+        var pixels = Math.Max(scale[13], 8);
+        var bitmap = new Bitmap(pixels, pixels);
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.Clear(Color.Transparent);
+            var stroke = Math.Max(scale.Exact(1.6F), 1.4F);
+            var inset = stroke / 2F + scale.Exact(0.7F);
+            var bounds = new RectangleF(inset, inset, pixels - inset * 2F, pixels - inset * 2F);
+            using var pen = new Pen(Theme.OnAccent, stroke)
+            {
+                StartCap = LineCap.Round,
+                EndCap = LineCap.Round,
+            };
+            graphics.DrawArc(pen, bounds, _refreshAnimationAngle, 270F);
+        }
+
+        var previous = _refreshButton.Image;
+        _refreshButton.Image = bitmap;
+        previous?.Dispose();
+    }
+
+    private void StopRefreshAnimation()
+    {
+        _refreshAnimationTimer.Stop();
+        var previous = _refreshButton.Image;
+        _refreshButton.Image = null;
+        previous?.Dispose();
     }
 
     internal static ProviderStatus? SelectHeadlineStatus(IReadOnlyList<ProviderStatus> states) =>

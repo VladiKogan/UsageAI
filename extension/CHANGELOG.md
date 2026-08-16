@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+- Added rotating refresh indicators to dashboard cards, the dashboard header, and Status Bar
+  readings while retaining the last visible percentages. Dashboard actions, the view-title button,
+  the Status Bar hover action, and **UsageAI: Refresh** now share VS Code's native window progress
+  indicator, including when the dashboard is closed or UsageAI Status Bar items are disabled.
+
 ## 0.1.10
 
 - Restored automatic Claude usage recovery after access-token expiry through a bounded official

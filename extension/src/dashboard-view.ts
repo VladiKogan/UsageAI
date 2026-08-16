@@ -61,7 +61,7 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
       return;
     }
     if (message.type === "refresh") {
-      await this.refreshService.refresh(true);
+      await vscode.commands.executeCommand("usageai.refresh");
       return;
     }
     if (message.type === "ready") {
@@ -116,7 +116,7 @@ function dashboardHtml(webview: vscode.Webview): string {
       padding: 2px 2px 10px;
     }
     .masthead h1 { margin: 0; font-size: 12px; font-weight: 700; letter-spacing: .08em; text-transform: uppercase; }
-    .masthead span { color: var(--vscode-descriptionForeground); font-size: 11px; }
+    .stamp { display: inline-flex; align-items: center; gap: 5px; color: var(--vscode-descriptionForeground); font-size: 11px; }
     .providers { display: grid; gap: 9px; }
     .card {
       position: relative;
@@ -140,7 +140,20 @@ function dashboardHtml(webview: vscode.Webview): string {
     .provider { min-width: 0; }
     .provider-name { display: block; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .plan { color: var(--vscode-descriptionForeground); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-    .headline { font-family: var(--vscode-editor-font-family); font-size: 18px; font-weight: 650; letter-spacing: -.04em; white-space: nowrap; }
+    .headline { display: inline-flex; min-height: 25px; align-items: center; gap: 6px; font-family: var(--vscode-editor-font-family); font-size: 18px; font-weight: 650; letter-spacing: -.04em; white-space: nowrap; }
+    .spinner {
+      display: inline-block;
+      width: 13px;
+      height: 13px;
+      flex: 0 0 auto;
+      border: 2px solid color-mix(in srgb, var(--vscode-progressBar-background) 26%, transparent);
+      border-top-color: var(--vscode-progressBar-background);
+      border-radius: 50%;
+      animation: refresh-spin .8s linear infinite;
+    }
+    .stamp .spinner { width: 10px; height: 10px; border-width: 1.5px; }
+    @keyframes refresh-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) { .spinner { animation: none; border-style: dotted; } }
     .metrics { display: grid; gap: 9px; padding: 0 10px 10px 12px; }
     .metric-head, .metric-foot { display: flex; justify-content: space-between; gap: 8px; }
     .metric-head { margin-bottom: 4px; font-size: 11px; }
@@ -172,7 +185,7 @@ function dashboardHtml(webview: vscode.Webview): string {
   </style>
 </head>
 <body>
-  <header class="masthead"><h1>Quota instruments</h1><span id="stamp">Waiting for first reading</span></header>
+  <header class="masthead"><h1>Quota instruments</h1><span id="stamp" class="stamp">Waiting for first reading</span></header>
   <main id="providers" class="providers" aria-live="polite"></main>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
@@ -232,7 +245,15 @@ function dashboardHtml(webview: vscode.Webview): string {
         const head = el('div', 'card-head');
         const provider = el('div', 'provider');
         provider.append(el('span', 'provider-name', state.displayName), el('span', 'plan', state.snapshot ? [state.snapshot.plan, state.snapshot.accountName].filter(Boolean).join(' · ') : 'Not connected'));
-        const headline = el('div', 'headline', state.refreshing ? '•••' : state.snapshot ? highest + '%' : '—');
+        const headline = el('div', 'headline');
+        if (state.refreshing) {
+          const spinner = el('span', 'spinner');
+          spinner.setAttribute('aria-hidden', 'true');
+          headline.append(spinner);
+          headline.setAttribute('aria-label', 'Refreshing ' + state.displayName + ' usage');
+        }
+        if (state.snapshot) headline.append(el('span', '', highest + '%'));
+        else if (!state.refreshing) headline.append(el('span', '', '—'));
         head.append(provider, headline);
         card.append(head);
         if (state.snapshot) {
@@ -255,7 +276,15 @@ function dashboardHtml(webview: vscode.Webview): string {
         }
         providers.append(card);
       }
-      stamp.textContent = newest ? 'Updated ' + new Date(newest).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Waiting for first reading';
+      const refreshing = payload.states.some(state => state.refreshing);
+      stamp.replaceChildren();
+      if (refreshing) {
+        const spinner = el('span', 'spinner');
+        spinner.setAttribute('aria-hidden', 'true');
+        stamp.append(spinner, el('span', '', 'Refreshing…'));
+      } else {
+        stamp.textContent = newest ? 'Updated ' + new Date(newest).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Waiting for first reading';
+      }
     };
     window.addEventListener('message', (event) => {
       if (event.data?.type === 'states') render(event.data);

@@ -6,6 +6,14 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added animated refresh-progress indicators across the desktop app and editor extension. The
+  Windows tray gauge rotates for manual and automatic refreshes, while the shared compact/full
+  dashboard button shows an animated reading indicator. Editor dashboard cards, the dashboard
+  header, and Status Bar readings now animate without hiding their previous percentages; every
+  manual editor entry point also uses VS Code's native window progress indicator.
+
 ## [0.8.0] - 2026-08-16
 
 ### Added

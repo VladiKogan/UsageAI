@@ -969,6 +969,23 @@ internal static class Program
         }
 
         True(strongPixels >= 24);
+        using var refreshingIcon = TrayIconFactory.CreateRefreshing(90F, size: 16);
+        using var refreshingBitmap = refreshingIcon.ToBitmap();
+        True(refreshingBitmap.Width == 16 && refreshingBitmap.Height == 16);
+        var hasVisibleRefreshPixel = false;
+        for (var y = 0; y < refreshingBitmap.Height && !hasVisibleRefreshPixel; y++)
+        {
+            for (var x = 0; x < refreshingBitmap.Width; x++)
+            {
+                if (refreshingBitmap.GetPixel(x, y).A > 0)
+                {
+                    hasVisibleRefreshPixel = true;
+                    break;
+                }
+            }
+        }
+
+        True(hasVisibleRefreshPixel);
         return Task.CompletedTask;
     }
 

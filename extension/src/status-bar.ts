@@ -71,7 +71,12 @@ export class StatusBarController implements vscode.Disposable {
         (left, right) => highestUsedPercent(right.snapshot) - highestUsedPercent(left.snapshot),
       )[0];
       if (hottest) {
-        renderSnapshot(item, hottest, shortProviderName(hottest));
+        renderSnapshot(
+          item,
+          hottest,
+          shortProviderName(hottest),
+          states.some((state) => state.refreshing),
+        );
         return;
       }
 
@@ -104,26 +109,33 @@ function renderSnapshot(
   item: vscode.StatusBarItem,
   state: ProviderState & { snapshot: UsageSnapshot },
   label: string,
+  refreshing = state.refreshing,
 ): void {
   const staleLabel = state.stale ? " (stale)" : "";
   const metrics = statusBarMetrics(state.snapshot);
   const readings = metrics.length > 0
     ? metrics.map((metric) => `${metric.usedPercent ?? 0}%`).join(" | ")
     : `${highestUsedPercent(state.snapshot)}%`;
-  item.text = `${providerIcon(state.id)} ${label} ${readings}`;
-  item.tooltip = snapshotTooltip(state, metrics, staleLabel);
+  const icon = refreshing ? "$(sync~spin)" : providerIcon(state.id);
+  item.text = `${icon} ${label} ${readings}`;
+  item.tooltip = snapshotTooltip(state, metrics, staleLabel, refreshing);
 }
 
 function snapshotTooltip(
   state: ProviderState & { snapshot: UsageSnapshot },
   metrics: readonly UsageMetric[],
   staleLabel: string,
+  refreshing: boolean,
 ): vscode.MarkdownString {
   const tooltip = new vscode.MarkdownString(undefined, true);
   tooltip.appendMarkdown(`${providerIcon(state.id)} **`);
   tooltip.appendText(state.displayName);
   tooltip.appendMarkdown("**");
   tooltip.appendText(` · ${state.snapshot.plan}${staleLabel}`);
+
+  if (refreshing) {
+    tooltip.appendMarkdown("\n\n$(sync~spin) *Refreshing usage…*");
+  }
 
   if (metrics.length > 0) {
     tooltip.appendMarkdown("\n\n");

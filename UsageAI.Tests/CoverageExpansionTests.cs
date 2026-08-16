@@ -1574,6 +1574,11 @@ internal static class CoverageExpansionTests
             Application.DoEvents();
             DrawControl(popup);
 
+            var readingButton = Descendants(popup)
+                .OfType<Button>()
+                .Single(button => button.Text == "Reading");
+            NotNull(readingButton.Image);
+
             foreach (var button in Descendants(popup).OfType<Button>())
             {
                 if (button.Text is "Refresh" or "Reading")
@@ -1593,6 +1598,7 @@ internal static class CoverageExpansionTests
             }
             popup.SetMode(DashboardMode.Compact);
             popup.SetStates(Array.Empty<ProviderStatus>(), false, null, Array.Empty<UsageSample>());
+            Null(readingButton.Image);
             Application.DoEvents();
             DrawControl(popup);
             popup.CloseForExit();

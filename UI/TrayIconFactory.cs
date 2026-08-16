@@ -124,6 +124,46 @@ internal static class TrayIconFactory
         }
     }
 
+    public static Icon CreateRefreshing(float angleDegrees, int size = 0)
+    {
+        var pixels = Math.Clamp(size <= 0 ? PreferredSize : size, 16, 64);
+        using var bitmap = new Bitmap(pixels, pixels, PixelFormat.Format32bppArgb);
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.Clear(Color.Transparent);
+
+            var ringWidth = Math.Max(2F, pixels * 0.14F);
+            var inset = ringWidth / 2F + pixels * 0.06F;
+            var circle = new RectangleF(inset, inset, pixels - inset * 2F, pixels - inset * 2F);
+            using (var outline = new Pen(
+                       Color.FromArgb(210, 24, 30, 40),
+                       ringWidth + Math.Max(1.5F, pixels * 0.08F)))
+            using (var track = new Pen(Color.FromArgb(180, 205, 214, 226), ringWidth))
+            using (var arc = new Pen(Theme.Signal, ringWidth)
+                   {
+                       StartCap = LineCap.Round,
+                       EndCap = LineCap.Round,
+                   })
+            {
+                graphics.DrawEllipse(outline, circle);
+                graphics.DrawEllipse(track, circle);
+                graphics.DrawArc(arc, circle, angleDegrees, 250F);
+            }
+        }
+
+        var handle = bitmap.GetHicon();
+        try
+        {
+            using var icon = Icon.FromHandle(handle);
+            return (Icon)icon.Clone();
+        }
+        finally
+        {
+            DestroyIcon(handle);
+        }
+    }
+
     [DllImport("user32.dll", SetLastError = true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
     private static extern bool DestroyIcon(IntPtr handle);

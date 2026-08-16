@@ -20,11 +20,13 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private readonly UsagePopupForm _popup;
     private readonly MessageWindow _messageWindow;
     private readonly System.Windows.Forms.Timer _tickTimer;
+    private readonly System.Windows.Forms.Timer _refreshAnimationTimer;
     private readonly ToolStripMenuItem _startupItem;
     private readonly bool _automaticUpdateChecksEnabled;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly SynchronizationContext _syncContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
     private Icon? _currentIcon;
+    private float _refreshAnimationAngle;
     private bool _isExiting;
     private bool _updateCheckRunning;
 
@@ -107,6 +109,19 @@ internal sealed class UsageApplicationContext : ApplicationContext
         };
         _tickTimer.Start();
 
+        _refreshAnimationTimer = new System.Windows.Forms.Timer { Interval = 110 };
+        _refreshAnimationTimer.Tick += (_, _) =>
+        {
+            if (_isExiting || !_service.IsRefreshing)
+            {
+                _refreshAnimationTimer.Stop();
+                return;
+            }
+
+            _refreshAnimationAngle = (_refreshAnimationAngle + 28F) % 360F;
+            UpdateRefreshingTrayIcon();
+        };
+
         SystemEvents.PowerModeChanged += OnPowerModeChanged;
         SystemEvents.SessionSwitch += OnSessionSwitch;
         SystemEvents.UserPreferenceChanged += OnUserPreferenceChanged;
@@ -180,6 +195,19 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     private void UpdateTray()
     {
+        if (_service.IsRefreshing)
+        {
+            if (!_refreshAnimationTimer.Enabled)
+            {
+                _refreshAnimationAngle = 0F;
+                _refreshAnimationTimer.Start();
+            }
+
+            UpdateRefreshingTrayIcon();
+            return;
+        }
+
+        _refreshAnimationTimer.Stop();
         var statuses = _service.Statuses;
         var connected = statuses.Where(status => status.Snapshot is not null).ToArray();
         if (connected.Length == 0)
@@ -196,6 +224,12 @@ internal sealed class UsageApplicationContext : ApplicationContext
             ProviderGlyph(trayStatus.ProviderId),
             identityColor: Theme.ForProvider(trayStatus.ProviderId)));
         _trayIcon.Text = TrayTooltip(trayStatus);
+    }
+
+    private void UpdateRefreshingTrayIcon()
+    {
+        ReplaceIcon(TrayIconFactory.CreateRefreshing(_refreshAnimationAngle));
+        _trayIcon.Text = "UsageAI - refreshing connected providers";
     }
 
     private void ReplaceIcon(Icon icon)
@@ -448,6 +482,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         Application.Idle -= RefreshOnFirstIdle;
         _shutdown.Cancel();
         _tickTimer.Stop();
+        _refreshAnimationTimer.Stop();
         _trayIcon.Visible = false;
         _popup.CloseForExit();
         ExitThread();
@@ -464,6 +499,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
             _service.Updated -= OnServiceUpdated;
             _service.AlertsRaised -= OnAlertsRaised;
             _shutdown.Cancel();
+            _refreshAnimationTimer.Dispose();
             _tickTimer.Dispose();
             _messageWindow.Dispose();
             _trayIcon.Dispose();

@@ -41,6 +41,13 @@ export function activate(context: vscode.ExtensionContext): void {
     () => clampMinutes(configuration().get("criticalPercent", 90), 1, 100),
   );
   const statusBars = new StatusBarController();
+  const refreshManually = () => vscode.window.withProgress(
+    {
+      location: vscode.ProgressLocation.Window,
+      title: "Refreshing UsageAI",
+    },
+    () => refreshService.refresh(true),
+  );
 
   const updateUi = (states: readonly ProviderState[]) => {
     statusBars.update(states, getStatusBarProviderSelection(configuration(), enabledProviderIds()));
@@ -63,7 +70,7 @@ export function activate(context: vscode.ExtensionContext): void {
       await vscode.commands.executeCommand("workbench.view.extension.usageai");
       await vscode.commands.executeCommand("usageai.dashboard.focus");
     }),
-    vscode.commands.registerCommand("usageai.refresh", () => refreshService.refresh(true)),
+    vscode.commands.registerCommand("usageai.refresh", refreshManually),
     vscode.commands.registerCommand("usageai.openSettings", () =>
       vscode.commands.executeCommand("workbench.action.openSettings", "@ext:vladikogan.usageai")),
     vscode.workspace.onDidChangeConfiguration((event) => {
