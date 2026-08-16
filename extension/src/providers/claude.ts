@@ -1,17 +1,36 @@
+import { access } from "node:fs/promises";
 import * as path from "node:path";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
-import { normalizeToken, parseRetryAfter, readBoundedText, requestJson, userHome } from "../security";
+import {
+  collectProcessOutput,
+  findExecutable,
+  normalizeToken,
+  parseRetryAfter,
+  readBoundedText,
+  requestJson,
+  spawnSecure,
+  userHome,
+} from "../security";
 import { getArray, getBoolean, getNumber, getObject, getString, isObject, parseDate } from "./json";
 
 const usageEndpoint = "https://api.anthropic.com/api/oauth/usage";
 const oauthBeta = "oauth-2025-04-20";
+const authProbeTimeoutMs = 12_000;
+const credentialObservationMs = 5_000;
 
-interface ClaudeCredentials {
+export interface ClaudeCredentials {
   readonly accessToken: string;
   readonly expiresAt?: number;
   readonly scopes: readonly string[];
   readonly plan: string;
+}
+
+export type ClaudeAuthProbe = (signal?: AbortSignal) => Promise<boolean>;
+
+interface ClaudeLaunch {
+  readonly executable: string;
+  readonly argsPrefix: readonly string[];
 }
 
 export class ClaudeUsageClient implements UsageClient {
@@ -19,6 +38,8 @@ export class ClaudeUsageClient implements UsageClient {
   public readonly displayName = "Claude Code";
   public readonly signInCommand = "claude";
   public readonly accountUrl = "https://claude.ai/settings/usage";
+
+  public constructor(private readonly claudeAuthProbe: ClaudeAuthProbe = runClaudeAuthStatus) {}
 
   public async getUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
     if (getClaudeSessionKey()) {
@@ -29,7 +50,13 @@ export class ClaudeUsageClient implements UsageClient {
       }
     }
 
-    const credentials = await this.loadCredentials();
+    let credentials = await this.loadCredentials();
+    credentials = await refreshExpiredClaudeCredentials(
+      credentials,
+      () => this.loadCredentials(),
+      this.claudeAuthProbe,
+      signal,
+    );
     assertClaudeCredentialsUsable(credentials);
     if (credentials.scopes.length > 0 && !credentials.scopes.includes("user:profile")) {
       throw new UsageProviderError(
@@ -106,10 +133,183 @@ export class ClaudeUsageClient implements UsageClient {
 
 }
 
+export async function refreshExpiredClaudeCredentials(
+  credentials: ClaudeCredentials,
+  reloadCredentials: () => Promise<ClaudeCredentials>,
+  authProbe: ClaudeAuthProbe,
+  signal?: AbortSignal,
+): Promise<ClaudeCredentials> {
+  if (credentials.expiresAt === undefined || credentials.expiresAt > Date.now()) {
+    return credentials;
+  }
+
+  let claudeOwnsFreshLogin = false;
+  try {
+    claudeOwnsFreshLogin = await authProbe(signal);
+  } catch (error) {
+    if (signal?.aborted) {
+      throw error;
+    }
+    return credentials;
+  }
+  if (!claudeOwnsFreshLogin) {
+    return credentials;
+  }
+
+  const deadline = Date.now() + credentialObservationMs;
+  do {
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new Error("Operation cancelled.");
+    }
+    try {
+      const refreshed = await reloadCredentials();
+      if (refreshed.expiresAt === undefined || refreshed.expiresAt > Date.now()) {
+        return refreshed;
+      }
+    } catch {
+      // Claude may be replacing its credential store; retry only inside the bounded window.
+    }
+    await abortableDelay(100, signal);
+  } while (Date.now() < deadline);
+
+  return credentials;
+}
+
+export async function runClaudeAuthStatus(signal?: AbortSignal): Promise<boolean> {
+  const launch = await findClaudeLaunch();
+  if (!launch) {
+    return false;
+  }
+
+  const child = spawnSecure(
+    launch.executable,
+    [...launch.argsPrefix, "auth", "status", "--json"],
+    [
+      "CLAUDE_CONFIG_DIR",
+      "CLAUDE_CODE_GIT_BASH_PATH",
+      "NODE_EXTRA_CA_CERTS",
+      "SSL_CERT_DIR",
+      "SSL_CERT_FILE",
+    ],
+    { DISABLE_AUTOUPDATER: "1" },
+  );
+  child.stdin.end();
+  const abort = () => child.kill();
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    const result = await collectProcessOutput(child, authProbeTimeoutMs, 16_384);
+    if (signal?.aborted) {
+      throw signal.reason instanceof Error ? signal.reason : new Error("Operation cancelled.");
+    }
+    if (result.exitCode !== 0) {
+      return false;
+    }
+    const status = JSON.parse(result.stdout) as unknown;
+    return getBoolean(status, "loggedIn");
+  } catch (error) {
+    if (signal?.aborted) {
+      throw error;
+    }
+    return false;
+  } finally {
+    signal?.removeEventListener("abort", abort);
+    if (child.exitCode === null) {
+      child.kill();
+    }
+  }
+}
+
+async function findClaudeLaunch(): Promise<ClaudeLaunch | undefined> {
+  const configured = process.env.CLAUDE_PATH?.trim().replace(/^"|"$/g, "");
+  const candidates: string[] = [];
+  if (configured && path.isAbsolute(configured)) {
+    candidates.push(path.resolve(configured));
+  }
+
+  const fromPath = await findExecutable(
+    process.platform === "win32" ? ["claude.exe", "claude.cmd"] : ["claude"],
+  );
+  if (fromPath) {
+    candidates.push(fromPath);
+  }
+
+  if (process.platform === "win32") {
+    candidates.push(
+      path.join(userHome(), ".local", "bin", "claude.exe"),
+      path.join(process.env.APPDATA ?? "", "npm", "claude.cmd"),
+      path.join(process.env.LOCALAPPDATA ?? "", "Programs", "claude", "claude.exe"),
+    );
+  } else {
+    candidates.push(
+      path.join(userHome(), ".local", "bin", "claude"),
+      "/opt/homebrew/bin/claude",
+      "/usr/local/bin/claude",
+    );
+  }
+
+  for (const candidate of [...new Set(candidates)]) {
+    if (!candidate || !path.isAbsolute(candidate)) {
+      continue;
+    }
+    try {
+      await access(candidate);
+    } catch {
+      continue;
+    }
+    const launch = await createClaudeLaunch(candidate);
+    if (launch) {
+      return launch;
+    }
+  }
+  return undefined;
+}
+
+async function createClaudeLaunch(command: string): Promise<ClaudeLaunch | undefined> {
+  if (process.platform !== "win32" || path.extname(command).toLowerCase() !== ".cmd") {
+    return { executable: command, argsPrefix: [] };
+  }
+
+  const npmDirectory = path.dirname(command);
+  const script = path.join(npmDirectory, "node_modules", "@anthropic-ai", "claude-code", "cli.js");
+  try {
+    await access(script);
+  } catch {
+    return undefined;
+  }
+  const localNode = path.join(npmDirectory, "node.exe");
+  let node: string | undefined;
+  try {
+    await access(localNode);
+    node = localNode;
+  } catch {
+    node = await findExecutable(["node.exe"]);
+  }
+  return node ? { executable: node, argsPrefix: [script] } : undefined;
+}
+
+function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(signal.reason instanceof Error ? signal.reason : new Error("Operation cancelled."));
+      return;
+    }
+    const abort = () => {
+      clearTimeout(timer);
+      reject(signal?.reason instanceof Error ? signal.reason : new Error("Operation cancelled."));
+    };
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", abort);
+      resolve();
+    }, milliseconds);
+    timer.unref();
+    signal?.addEventListener("abort", abort, { once: true });
+  });
+}
+
 export function assertClaudeCredentialsUsable(credentials: { readonly expiresAt?: number }): void {
   if (credentials.expiresAt !== undefined && credentials.expiresAt <= Date.now()) {
     throw new UsageProviderError(
-      "Claude Code's login has expired. Open `claude` so Claude Code can refresh it, then refresh UsageAI.",
+      "Claude Code's access token expired and its CLI could not refresh the login. Open `claude`, then refresh UsageAI.",
     );
   }
 }

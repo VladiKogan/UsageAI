@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+## 0.1.10
+
+- Restored automatic Claude usage recovery after access-token expiry through a bounded official
+  `claude auth status --json` probe. Claude Code remains the only process that refreshes or writes its
+  credentials; UsageAI rereads the result without accessing the shared refresh token.
+
 ## 0.1.9
 
 - Fixed the dashboard and Status Bar preview images on Visual Studio Marketplace and Open VSX by

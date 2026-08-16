@@ -20,9 +20,9 @@ Choose one or more providers for compact Status Bar readings. Hover over a readi
 
 ## Install
 
-The current extension release is **0.1.9**. Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai) or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai).
+The current extension release is **0.1.10**. Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai) or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai).
 
-For a manual installation, download [`usageai-0.1.9.vsix`](https://open-vsx.org/api/vladikogan/usageai/0.1.9/file/vladikogan.usageai-0.1.9.vsix), then run **Extensions: Install from VSIX...** in VS Code or Antigravity.
+For a manual installation, download [`usageai-0.1.10.vsix`](https://open-vsx.org/api/vladikogan/usageai/0.1.10/file/vladikogan.usageai-0.1.10.vsix), then run **Extensions: Install from VSIX...** in VS Code or Antigravity.
 
 ## Get started
 
@@ -71,7 +71,7 @@ If a provider says it is not connected, sign in with that provider's CLI or IDE 
 
 Your provider credentials stay in the extension host. UsageAI does not scan browser storage, send credentials to the dashboard webview, or include credentials in its cached usage snapshots.
 
-Additional protections include allowlisted provider endpoints, blocked redirects, size-limited responses, read-only Claude OAuth credentials, in-memory-only refresh caching for other providers, and ownership checks before using a local Antigravity connection. The optional Claude web session key remains an environment variable and is never saved by UsageAI.
+Additional protections include allowlisted provider endpoints, blocked redirects, size-limited responses, read-only Claude OAuth credentials, in-memory-only refresh caching for other providers, and ownership checks before using a local Antigravity connection. When Claude's short-lived access token expires, the extension briefly invokes the official `claude auth status --json` command with bounded runtime and output, then rereads the credentials. Claude Code remains the only process that can exchange the shared refresh token or update its credential store. The optional Claude web session key remains an environment variable and is never saved by UsageAI.
 
 When no Antigravity language server is already available, the extension may briefly invoke Google's
 official `agy` CLI in read-only `/usage` mode. Stdin is closed, output and runtime are bounded, failed
@@ -99,8 +99,8 @@ npm.cmd run package:vsix
 The resulting VSIX can be installed manually in both VS Code and Antigravity. Marketplace publication uses the same artifact:
 
 ```powershell
-npm.cmd run publish:vscode -- --packagePath usageai-0.1.9.vsix
-npm.cmd run publish:openvsx -- usageai-0.1.9.vsix
+npm.cmd run publish:vscode -- --packagePath usageai-0.1.10.vsix
+npm.cmd run publish:openvsx -- usageai-0.1.10.vsix
 ```
 
 Publishing requires separate publisher identities and credentials for Visual Studio Marketplace and Open VSX.

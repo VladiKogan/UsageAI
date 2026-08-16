@@ -4,6 +4,7 @@ import {
   assertClaudeCredentialsUsable,
   parseClaudeCredentials,
   parseClaudeSnapshot,
+  refreshExpiredClaudeCredentials,
 } from "../src/providers/claude";
 import { parseCodexSnapshot } from "../src/providers/codex";
 import { parseCopilotSnapshot } from "../src/providers/copilot";
@@ -56,7 +57,7 @@ test("Claude parses OAuth credentials and every reported limit", () => {
   assert.equal(snapshot.metrics[3]?.remainingText, "$4.10 / $50.00");
 });
 
-test("Claude credentials remain read only after access-token expiry", () => {
+test("Claude credential parsing never exposes the shared refresh token", () => {
   const credentials = parseClaudeCredentials(JSON.stringify({
     claudeAiOauth: {
       accessToken: "expired-access-token",
@@ -69,8 +70,43 @@ test("Claude credentials remain read only after access-token expiry", () => {
   assert.equal("refreshToken" in credentials, false);
   assert.throws(
     () => assertClaudeCredentialsUsable(credentials),
-    /expired.*Claude Code can refresh/i,
+    /expired.*CLI could not refresh/i,
   );
+});
+
+test("Claude delegates expired access-token recovery to the official CLI", async () => {
+  const expired = parseClaudeCredentials(JSON.stringify({
+    claudeAiOauth: {
+      accessToken: "expired-access-token",
+      refreshToken: "shared-refresh-token",
+      expiresAt: Date.now() - 1,
+      scopes: ["user:profile"],
+    },
+  }));
+  const refreshed = {
+    ...expired,
+    accessToken: "owner-refreshed-access-token",
+    expiresAt: Date.now() + 60_000,
+  };
+  let probeCalls = 0;
+  let reloadCalls = 0;
+
+  const recovered = await refreshExpiredClaudeCredentials(
+    expired,
+    async () => {
+      reloadCalls++;
+      return refreshed;
+    },
+    async () => {
+      probeCalls++;
+      return true;
+    },
+  );
+
+  assert.equal(probeCalls, 1);
+  assert.equal(reloadCalls, 1);
+  assert.equal(recovered.accessToken, "owner-refreshed-access-token");
+  assert.equal("refreshToken" in recovered, false);
 });
 
 test("Copilot retains metered and unlimited quotas", () => {

@@ -47,7 +47,7 @@ export async function requestJson<T = unknown>(
   const body = options.body;
   const headers: Record<string, string> = {
     Accept: "application/json",
-    "User-Agent": "UsageAI-VSCode/0.1.9",
+    "User-Agent": "UsageAI-VSCode/0.1.10",
     ...options.headers,
   };
   if (body !== undefined) {
@@ -198,13 +198,14 @@ export function spawnSecure(
   executable: string,
   args: readonly string[],
   additionalEnvironmentNames: readonly string[] = [],
+  environmentOverrides: NodeJS.ProcessEnv = {},
 ): ChildProcessWithoutNullStreams {
   if (!path.isAbsolute(executable)) {
     throw new Error("Child process paths must be absolute.");
   }
   return spawn(executable, args, {
     cwd: userHome(),
-    env: minimalEnvironment(...additionalEnvironmentNames),
+    env: { ...minimalEnvironment(...additionalEnvironmentNames), ...environmentOverrides },
     shell: false,
     windowsHide: true,
     stdio: "pipe",
