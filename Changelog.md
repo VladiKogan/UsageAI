@@ -6,10 +6,16 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.7.3] - 2026-08-16
+
 ### Fixed
 
 - Fixed broken editor-extension preview images on Visual Studio Marketplace and Open VSX by resolving
   packaged README assets from the extension's directory in the monorepo.
+- Restored automatic Claude usage recovery after its short-lived access token expires. UsageAI now
+  invokes the official `claude auth status --json` command with bounded runtime and output, waits for
+  Claude Code to refresh its own login, then rereads the credentials; UsageAI still never submits the
+  shared refresh token or writes `.credentials.json` itself.
 
 ## [0.7.2] - 2026-08-13
 

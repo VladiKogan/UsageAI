@@ -52,7 +52,7 @@ internal static class Program
         ("refresh orchestration, alerts, history, and backoff", CoverageExpansionTests.TestRefreshOrchestrationAsync),
         ("refresh concurrency and shutdown cancellation", CoverageExpansionTests.TestRefreshConcurrencyAsync),
         ("Claude HTTP success and error handling", CoverageExpansionTests.TestClaudeHttpAsync),
-        ("Claude credentials are read only", CoverageExpansionTests.TestClaudeCredentialsAreReadOnlyAsync),
+        ("Claude delegates refresh ownership to its CLI", CoverageExpansionTests.TestClaudeCredentialsAreReadOnlyAsync),
         ("Copilot HTTP success and error handling", CoverageExpansionTests.TestCopilotHttpAsync),
         ("Gemini OAuth HTTP success and error handling", CoverageExpansionTests.TestGeminiHttpAsync),
         ("Codex app-server protocol and errors", CoverageExpansionTests.TestCodexProtocolAsync),
@@ -75,6 +75,34 @@ internal static class Program
         if (args.FirstOrDefault() == "app-server")
         {
             return await RunFakeCodexAppServerAsync();
+        }
+
+        if (args.Length >= 2 &&
+            args[0] == "auth" &&
+            args[1] == "status")
+        {
+            var configDirectory = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
+            if (string.IsNullOrWhiteSpace(configDirectory) || !Path.IsPathFullyQualified(configDirectory))
+            {
+                await Console.Out.WriteLineAsync("{\"loggedIn\":false}");
+                return 1;
+            }
+
+            var credentialPath = Path.Combine(configDirectory, ".credentials.json");
+            var refreshed = $$"""
+                {
+                  "claudeAiOauth":{
+                    "accessToken":"owner-refreshed-access",
+                    "refreshToken":"owner-refreshed-token",
+                    "expiresAt":{{DateTimeOffset.UtcNow.AddHours(8).ToUnixTimeMilliseconds()}},
+                    "scopes":["user:profile"],
+                    "subscriptionType":"pro"
+                  }
+                }
+                """;
+            await File.WriteAllTextAsync(credentialPath, refreshed);
+            await Console.Out.WriteLineAsync("{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}");
+            return 0;
         }
 
         if (args.Length >= 2 &&

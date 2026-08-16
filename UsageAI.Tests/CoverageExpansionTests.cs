@@ -330,7 +330,8 @@ internal static class CoverageExpansionTests
             "USAGEAI_CLAUDE_SESSION_KEY",
             "CLAUDE_AI_SESSION_KEY",
             "CLAUDE_WEB_SESSION_KEY",
-            "CLAUDE_CONFIG_DIR");
+            "CLAUDE_CONFIG_DIR",
+            "CLAUDE_PATH");
         var directory = Path.Combine(AppPaths.DataDirectory, $"claude-read-only-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
         try
@@ -340,6 +341,9 @@ internal static class CoverageExpansionTests
             Environment.SetEnvironmentVariable("CLAUDE_AI_SESSION_KEY", null);
             Environment.SetEnvironmentVariable("CLAUDE_WEB_SESSION_KEY", null);
             Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", directory);
+            Environment.SetEnvironmentVariable(
+                "CLAUDE_PATH",
+                Environment.ProcessPath ?? throw new InvalidOperationException("The test executable path is unavailable."));
 
             var credentialPath = Path.Combine(directory, ".credentials.json");
             var original = $$"""
@@ -359,18 +363,30 @@ internal static class CoverageExpansionTests
             using var http = new HttpClient(new StubHttpHandler((request, _, _) =>
             {
                 requests++;
-                return Task.FromResult(request.RequestUri!.AbsolutePath.Contains("oauth/token", StringComparison.Ordinal)
-                    ? JsonResponse(
-                        HttpStatusCode.OK,
-                        """{"access_token":"replacement-access","refresh_token":"replacement-refresh","expires_in":3600}""")
-                    : JsonResponse(HttpStatusCode.OK, """{"five_hour":{"utilization":12}}"""));
+                False(request.RequestUri!.AbsolutePath.Contains("oauth/token", StringComparison.Ordinal));
+                return Task.FromResult(JsonResponse(HttpStatusCode.OK, """{"five_hour":{"utilization":12}}"""));
             }));
 
             var exception = await ThrowsAsync<ClaudeCodeUsageException>(
-                () => new ClaudeCodeUsageClient(http, () => Array.Empty<string>()).GetUsageAsync());
+                () => new ClaudeCodeUsageClient(
+                    http,
+                    () => Array.Empty<string>(),
+                    _ => Task.FromResult(false)).GetUsageAsync());
             True(exception.Message.Contains("expired", StringComparison.OrdinalIgnoreCase));
             Equal(0, requests);
             Equal(original, File.ReadAllText(credentialPath));
+
+            var snapshot = await new ClaudeCodeUsageClient(
+                http,
+                () => Array.Empty<string>(),
+                ClaudeCodeUsageClient.RunClaudeAuthStatusAsync).GetUsageAsync();
+            Equal(12, snapshot.Primary!.UsedPercent);
+            Equal(1, requests);
+
+            using var refreshedDocument = JsonDocument.Parse(File.ReadAllText(credentialPath));
+            var refreshedOauth = refreshedDocument.RootElement.GetProperty("claudeAiOauth");
+            Equal("owner-refreshed-access", refreshedOauth.GetProperty("accessToken").GetString());
+            Equal("owner-refreshed-token", refreshedOauth.GetProperty("refreshToken").GetString());
         }
         finally
         {

@@ -15,7 +15,11 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
 ## Credential-handling design
 
 - Provider secrets originate only from explicit environment variables or the provider's existing local credential location.
-- Claude Code credentials are strictly read-only: UsageAI never submits Claude's shared refresh token or writes its credential file. An expired access token stays stale until Claude Code refreshes its own login.
+- Claude Code credentials are read-only to UsageAI: it never submits Claude's shared refresh token or
+  writes the credential file. When the access token expires, UsageAI may invoke the official
+  `claude auth status --json` command with bounded runtime and output. Claude Code remains the sole
+  owner of any resulting token exchange and credential update; UsageAI waits briefly and rereads the
+  access token afterward.
 - Browser storage is never scanned.
 - Claude web sessions are opt-in, memory-only, and never persisted by UsageAI.
 - Secrets are not forwarded to provider CLI child processes or included in diagnostic output.
@@ -26,8 +30,9 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
   Antigravity keyring or credential files.
 
 The VS Code/Antigravity extension follows the same contract. Provider credentials stay in the local
-Node extension host and are never sent to its webview. Claude credentials remain read-only; other
-provider-refreshed access tokens are cached only in memory for the editor process. Its persisted
+Node extension host and are never sent to its webview. Claude credentials remain read-only to the
+extension, which uses the same bounded official-CLI recovery path; other provider-refreshed access
+tokens are cached only in memory for the editor process. Its persisted
 snapshot cache contains usage metadata, never credentials. Local Antigravity CSRF tokens are bound to
 ports owned by the process that supplied them and ownership is checked again immediately before use.
 The extension applies the same bounded official-`agy` fallback and never sends its output to the

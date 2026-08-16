@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
@@ -10,24 +11,30 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 {
     private const string CredentialManagerService = "Claude Code-credentials";
     private const string OAuthBeta = "oauth-2025-04-20";
+    private const int MaxAuthProbeOutputCharacters = 16_384;
     private static readonly Uri UsageEndpoint = new("https://api.anthropic.com/api/oauth/usage");
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
+    private static readonly TimeSpan AuthProbeTimeout = TimeSpan.FromSeconds(12);
+    private static readonly TimeSpan CredentialObservationWindow = TimeSpan.FromSeconds(5);
     private static readonly HttpClient SharedClient = SecureHttp.CreateClient(RequestTimeout);
     private readonly HttpClient _client;
     private readonly Func<IReadOnlyList<string>> _keyringPasswords;
+    private readonly Func<CancellationToken, Task<bool>> _claudeAuthProbe;
 
     public ClaudeCodeUsageClient()
-        : this(SharedClient, null)
+        : this(SharedClient, null, RunClaudeAuthStatusAsync)
     {
     }
 
     internal ClaudeCodeUsageClient(
         HttpClient client,
-        Func<IReadOnlyList<string>>? keyringPasswords = null)
+        Func<IReadOnlyList<string>>? keyringPasswords = null,
+        Func<CancellationToken, Task<bool>>? claudeAuthProbe = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _keyringPasswords = keyringPasswords ??
             (() => WindowsCredentialReader.FindKeyringPasswords(CredentialManagerService));
+        _claudeAuthProbe = claudeAuthProbe ?? (_ => Task.FromResult(false));
     }
 
     public string Id => "claude";
@@ -52,11 +59,13 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             }
         }
 
-        var credentials = LoadCredentials();
+        var credentials = await RefreshExpiredCredentialsThroughClaudeAsync(
+            LoadCredentials(),
+            cancellationToken);
         if (credentials.IsExpired)
         {
             throw new ClaudeCodeUsageException(
-                "Claude Code's login has expired. Open `claude` so Claude Code can refresh it, then refresh UsageAI.");
+                "Claude Code's access token expired and its CLI could not refresh the login. Open `claude`, then refresh UsageAI.");
         }
 
         if (credentials.Scopes.Count > 0 &&
@@ -224,6 +233,237 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 
         throw new ClaudeCodeUsageException(
             "Claude Code is not signed in. Run `claude` to sign in, then refresh.");
+    }
+
+    private async Task<ClaudeCredentials> RefreshExpiredCredentialsThroughClaudeAsync(
+        ClaudeCredentials credentials,
+        CancellationToken cancellationToken)
+    {
+        if (!credentials.IsExpired)
+        {
+            return credentials;
+        }
+
+        bool claudeOwnsFreshLogin;
+        try
+        {
+            claudeOwnsFreshLogin = await _claudeAuthProbe(cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return credentials;
+        }
+
+        if (!claudeOwnsFreshLogin)
+        {
+            return credentials;
+        }
+
+        var startedAt = Stopwatch.GetTimestamp();
+        do
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            try
+            {
+                var refreshed = LoadCredentials();
+                if (!refreshed.IsExpired)
+                {
+                    return refreshed;
+                }
+            }
+            catch (ClaudeCodeUsageException)
+            {
+                // Claude may be replacing its credential store; retry only inside the bounded window.
+            }
+
+            await Task.Delay(TimeSpan.FromMilliseconds(100), cancellationToken);
+        }
+        while (Stopwatch.GetElapsedTime(startedAt) < CredentialObservationWindow);
+
+        return credentials;
+    }
+
+    internal static async Task<bool> RunClaudeAuthStatusAsync(CancellationToken cancellationToken)
+    {
+        var launch = FindClaudeLaunch();
+        if (launch is null)
+        {
+            return false;
+        }
+
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(AuthProbeTimeout);
+        using var process = StartClaudeAuthProbe(launch);
+        var stdoutTask = ProcessSecurity.DrainTextAsync(
+            process.StandardOutput,
+            MaxAuthProbeOutputCharacters,
+            timeout.Token);
+        var stderrTask = ProcessSecurity.DrainTextAsync(
+            process.StandardError,
+            MaxAuthProbeOutputCharacters,
+            timeout.Token);
+
+        try
+        {
+            process.StandardInput.Close();
+            await process.WaitForExitAsync(timeout.Token);
+            var stdout = await stdoutTask;
+            await TryDrainProbeErrorAsync(stderrTask);
+            if (process.ExitCode != 0)
+            {
+                return false;
+            }
+
+            using var document = JsonDocument.Parse(stdout, new JsonDocumentOptions { MaxDepth = 16 });
+            return document.RootElement.TryGetProperty("loggedIn", out var loggedIn) &&
+                   loggedIn.ValueKind == JsonValueKind.True;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            await TryDrainProbeErrorAsync(stderrTask);
+            return false;
+        }
+        finally
+        {
+            ProcessSecurity.TryKill(process);
+        }
+    }
+
+    private static Process StartClaudeAuthProbe(ClaudeLaunch launch)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = launch.Executable,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        };
+        ProcessSecurity.ApplyMinimalEnvironment(
+            startInfo,
+            "CLAUDE_CONFIG_DIR",
+            "CLAUDE_CODE_GIT_BASH_PATH",
+            "NODE_EXTRA_CA_CERTS",
+            "SSL_CERT_DIR",
+            "SSL_CERT_FILE");
+        startInfo.Environment["DISABLE_AUTOUPDATER"] = "1";
+        if (launch.Script is not null)
+        {
+            startInfo.ArgumentList.Add(launch.Script);
+        }
+
+        startInfo.ArgumentList.Add("auth");
+        startInfo.ArgumentList.Add("status");
+        startInfo.ArgumentList.Add("--json");
+        return Process.Start(startInfo)
+            ?? throw new ClaudeCodeUsageException("Windows could not start the Claude CLI.");
+    }
+
+    private static ClaudeLaunch? FindClaudeLaunch()
+    {
+        var configured = Environment.GetEnvironmentVariable("CLAUDE_PATH");
+        if (IsUsableClaudeCommand(configured))
+        {
+            return CreateClaudeLaunch(Path.GetFullPath(configured!));
+        }
+
+        var candidates = new List<string>();
+        var pathValue = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        foreach (var directory in pathValue.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries))
+        {
+            var cleanDirectory = directory.Trim().Trim('"');
+            if (!Path.IsPathFullyQualified(cleanDirectory))
+            {
+                continue;
+            }
+
+            candidates.Add(Path.GetFullPath(Path.Combine(cleanDirectory, "claude.exe")));
+            candidates.Add(Path.GetFullPath(Path.Combine(cleanDirectory, "claude.cmd")));
+        }
+
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        candidates.Add(Path.Combine(userProfile, ".local", "bin", "claude.exe"));
+        candidates.Add(Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.ApplicationData),
+            "npm",
+            "claude.cmd"));
+        candidates.Add(Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData),
+            "Programs",
+            "claude",
+            "claude.exe"));
+
+        foreach (var command in candidates.Where(File.Exists).Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var launch = CreateClaudeLaunch(command);
+            if (launch is not null)
+            {
+                return launch;
+            }
+        }
+
+        return null;
+    }
+
+    private static ClaudeLaunch? CreateClaudeLaunch(string command)
+    {
+        if (!command.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase))
+        {
+            return new ClaudeLaunch(command, null);
+        }
+
+        var npmDirectory = Path.GetDirectoryName(command);
+        if (npmDirectory is null)
+        {
+            return null;
+        }
+
+        var script = Path.Combine(
+            npmDirectory,
+            "node_modules",
+            "@anthropic-ai",
+            "claude-code",
+            "cli.js");
+        if (!File.Exists(script))
+        {
+            return null;
+        }
+
+        var localNode = Path.Combine(npmDirectory, "node.exe");
+        var node = File.Exists(localNode)
+            ? localNode
+            : ProcessSecurity.FindAbsoluteExecutableOnPath("node.exe");
+        return node is null ? null : new ClaudeLaunch(Path.GetFullPath(node), Path.GetFullPath(script));
+    }
+
+    private static bool IsUsableClaudeCommand(string? path) =>
+        !string.IsNullOrWhiteSpace(path) &&
+        !path.Contains('"') &&
+        Path.IsPathFullyQualified(path) &&
+        (path.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) ||
+         path.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase)) &&
+        File.Exists(path);
+
+    private static async Task TryDrainProbeErrorAsync(Task<string> stderrTask)
+    {
+        try
+        {
+            await stderrTask.WaitAsync(TimeSpan.FromMilliseconds(250));
+        }
+        catch
+        {
+            // Probe diagnostics are intentionally discarded and never shown to the user.
+        }
     }
 
     private static ClaudeCredentials ParseCredentials(string json)
@@ -527,6 +767,8 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
     {
         public bool IsExpired => ExpiresAt is { } expiresAt && expiresAt <= DateTimeOffset.UtcNow;
     }
+
+    private sealed record ClaudeLaunch(string Executable, string? Script);
 }
 
 internal sealed class ClaudeCodeUsageException : Exception, IThrottledUsageException
