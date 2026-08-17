@@ -13,6 +13,24 @@ The project follows [Semantic Versioning](https://semver.org/).
   dashboard button shows an animated reading indicator. Editor dashboard cards, the dashboard
   header, and Status Bar readings now animate without hiding their previous percentages; every
   manual editor entry point also uses VS Code's native window progress indicator.
+- Added enforced CI coverage gates for both applications, focused desktop-test filtering, and safe
+  Windows integration checks for startup registration, single-instance messaging, Credential
+  Manager reads, and the installer elevation contract. The expanded suites now cover 60 desktop
+  checks and 30 editor-extension tests without modifying real startup settings or credentials.
+
+### Fixed
+
+- Fixed stale-provider retry scheduling across the desktop app and editor extension. Failed
+  providers now wake the scheduler when their individual backoff or `Retry-After` expires, without
+  waiting for the regular polling interval, refreshing healthy providers unnecessarily, or
+  postponing the next regular refresh.
+- Replaced contradictory or ambiguous stale timestamps across the desktop dashboard, editor
+  dashboard, and editor Status Bar. Stale views now distinguish the last successful reading from
+  the later failed check and show when the next automatic retry is due.
+- Fixed the editor scheduler waking every second for a failed provider after that provider was
+  disabled. Retry timers now consider only currently enabled providers.
+- Hardened editor startup against malformed cached snapshots and invalid cached reset timestamps,
+  discarding unusable state instead of allowing it to break dashboard or Status Bar rendering.
 
 ## [0.8.0] - 2026-08-16
 

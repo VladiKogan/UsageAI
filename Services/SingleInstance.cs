@@ -17,11 +17,16 @@ internal static class SingleInstance
 
     public static void BroadcastShow()
     {
-        if (ShowMessage != 0)
-        {
-            PostMessage(BroadcastWindow, ShowMessage, IntPtr.Zero, IntPtr.Zero);
-        }
+        _ = PostShow(BroadcastWindow);
     }
+
+    internal static bool PostShow(IntPtr windowHandle) =>
+        PostShow(windowHandle, PostMessage);
+
+    internal static bool PostShow(
+        IntPtr windowHandle,
+        Func<IntPtr, int, IntPtr, IntPtr, bool> postMessage) =>
+        ShowMessage != 0 && postMessage(windowHandle, ShowMessage, IntPtr.Zero, IntPtr.Zero);
 
     [DllImport("user32.dll", EntryPoint = "RegisterWindowMessageW", CharSet = CharSet.Unicode, SetLastError = true)]
     [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]

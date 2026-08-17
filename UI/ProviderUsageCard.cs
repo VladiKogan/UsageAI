@@ -319,9 +319,10 @@ internal sealed class ProviderUsageCard : Control
 
         if (_status.LastUpdated is { } updated)
         {
+            var age = UsageFormatting.Age(updated, DateTimeOffset.Now);
             DrawingHelpers.DrawText(
                 graphics,
-                UsageFormatting.Age(updated, DateTimeOffset.Now),
+                _status.IsStale ? $"Last good {age}" : age,
                 _smallFont,
                 Theme.Muted,
                 new Rectangle(Width - scale[Gutter] - scale[120], scale[32], scale[120], scale[16]),
@@ -571,8 +572,13 @@ internal sealed class ProviderUsageCard : Control
     {
         if (_status.IsStale)
         {
+            if (_status.NextRetryAt is { } retryAt)
+            {
+                return UsageFormatting.RetryCountdown(retryAt, DateTimeOffset.Now);
+            }
+
             return _status.LastUpdated is { } updated
-                ? $"stale, {UsageFormatting.Age(updated, DateTimeOffset.Now)}"
+                ? $"last good {UsageFormatting.Age(updated, DateTimeOffset.Now)}"
                 : "stale";
         }
 
@@ -693,6 +699,16 @@ internal sealed class ProviderUsageCard : Control
         if (!string.IsNullOrWhiteSpace(_status.Error))
         {
             parts.Add(_status.Error);
+        }
+
+        if (_status.IsStale && _status.LastUpdated is { } lastUpdated)
+        {
+            parts.Add($"Last successful update {UsageFormatting.Age(lastUpdated, DateTimeOffset.Now)}");
+        }
+
+        if (_status.NextRetryAt is { } retryAt)
+        {
+            parts.Add(UsageFormatting.RetryCountdown(retryAt, DateTimeOffset.Now));
         }
 
         AccessibleDescription = string.Join(". ", parts);

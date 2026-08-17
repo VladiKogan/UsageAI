@@ -26,10 +26,22 @@ interface GeminiCredentials {
   readonly sourcePath: string;
 }
 
-interface AntigravityProcess {
+interface GeminiUsageDependencies {
+  readonly fetchAntigravity: (signal?: AbortSignal) => Promise<UsageSnapshot | undefined>;
+  readonly fetchAgy: (signal?: AbortSignal) => Promise<UsageSnapshot | undefined>;
+  readonly loadCredentials: () => Promise<GeminiCredentials>;
+}
+
+export interface AntigravityProcess {
   readonly pid: number;
   readonly tokens: readonly string[];
   readonly hintedPort?: number;
+}
+
+export interface AntigravityProbeDependencies {
+  readonly detectProcesses: () => Promise<readonly AntigravityProcess[]>;
+  readonly listeningPorts: (pid: number) => Promise<readonly number[]>;
+  readonly query: (port: number, token: string, signal?: AbortSignal) => Promise<UsageSnapshot | undefined>;
 }
 
 export class GeminiUsageClient implements UsageClient {
@@ -40,14 +52,20 @@ export class GeminiUsageClient implements UsageClient {
   private refreshedCredentials: GeminiCredentials | undefined;
   private agyRetryAfter = 0;
 
+  public constructor(private readonly dependencies: GeminiUsageDependencies = {
+    fetchAntigravity: tryFetchAntigravitySnapshot,
+    fetchAgy: tryFetchAgySnapshot,
+    loadCredentials,
+  }) {}
+
   public async getUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
-    const antigravity = await tryFetchAntigravitySnapshot(signal);
+    const antigravity = await this.dependencies.fetchAntigravity(signal);
     if (antigravity) {
       return antigravity;
     }
 
     if (Date.now() >= this.agyRetryAfter) {
-      const agy = await tryFetchAgySnapshot(signal);
+      const agy = await this.dependencies.fetchAgy(signal);
       if (agy) {
         return agy;
       }
@@ -56,7 +74,7 @@ export class GeminiUsageClient implements UsageClient {
 
     let credentials: GeminiCredentials;
     try {
-      credentials = await loadCredentials();
+      credentials = await this.dependencies.loadCredentials();
     } catch (error) {
       // Let a disconnected user's next manual refresh observe a newly completed agy sign-in.
       this.agyRetryAfter = 0;
@@ -273,19 +291,26 @@ export function parseAntigravityUserStatus(root: unknown): UsageSnapshot | undef
   };
 }
 
-async function tryFetchAntigravitySnapshot(signal?: AbortSignal): Promise<UsageSnapshot | undefined> {
+export async function tryFetchAntigravitySnapshot(
+  signal?: AbortSignal,
+  dependencies: AntigravityProbeDependencies = {
+    detectProcesses: detectAntigravityProcesses,
+    listeningPorts,
+    query: queryAntigravity,
+  },
+): Promise<UsageSnapshot | undefined> {
   try {
-    for (const processInfo of await detectAntigravityProcesses()) {
-      const ownedPorts = await listeningPorts(processInfo.pid);
+    for (const processInfo of await dependencies.detectProcesses()) {
+      const ownedPorts = await dependencies.listeningPorts(processInfo.pid);
       const ports = processInfo.hintedPort && ownedPorts.includes(processInfo.hintedPort)
         ? [processInfo.hintedPort, ...ownedPorts.filter((port) => port !== processInfo.hintedPort)]
         : ownedPorts;
       for (const port of ports.slice(0, 32)) {
-        if (!(await listeningPorts(processInfo.pid)).includes(port)) {
+        if (!(await dependencies.listeningPorts(processInfo.pid)).includes(port)) {
           continue;
         }
         for (const token of processInfo.tokens) {
-          const snapshot = await queryAntigravity(port, token, signal);
+          const snapshot = await dependencies.query(port, token, signal);
           if (snapshot) {
             return snapshot;
           }
@@ -798,7 +823,7 @@ async function detectAntigravityProcesses(): Promise<AntigravityProcess[]> {
     }
     const script = "Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*language_server_windows*' -or $_.Name -like 'language_server.exe' } | ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }";
     const result = await collectProcessOutput(spawnSecure(powershell, ["-NoProfile", "-Command", script]), 3_000, 262_144);
-    return parseProcessLines(result.stdout);
+    return parseAntigravityProcessLines(result.stdout);
   }
 
   const ps = await findExecutable(["ps"]);
@@ -806,10 +831,10 @@ async function detectAntigravityProcesses(): Promise<AntigravityProcess[]> {
     return [];
   }
   const result = await collectProcessOutput(spawnSecure(ps, ["-ax", "-ww", "-o", "pid=,command="]), 3_000, 262_144);
-  return parseProcessLines(result.stdout);
+  return parseAntigravityProcessLines(result.stdout);
 }
 
-function parseProcessLines(stdout: string): AntigravityProcess[] {
+export function parseAntigravityProcessLines(stdout: string): AntigravityProcess[] {
   const results: AntigravityProcess[] = [];
   for (const line of stdout.split(/\r?\n/)) {
     if (!/language_server/i.test(line) || !line.includes("--csrf_token")) {

@@ -27,7 +27,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const enabledProviderIds = () => sanitizeProviderIds(
     configuration().get<readonly string[]>("providers", clients.map((client) => client.id)),
   );
-  const cached = context.globalState.get<Record<string, UsageSnapshot>>(cacheKey, {});
+  const cached = sanitizeCachedSnapshots(context.globalState.get<unknown>(cacheKey, {}));
   const refreshService = new UsageRefreshService({
     clients,
     enabledProviderIds,
@@ -87,7 +87,7 @@ export function deactivate(): void {
   // VS Code disposes the subscriptions registered by activate.
 }
 
-function sanitizeProviderIds(values: readonly string[]): UsageProviderId[] {
+export function sanitizeProviderIds(values: readonly string[]): UsageProviderId[] {
   const allowed = new Set<UsageProviderId>(["codex", "claude", "copilot", "gemini"]);
   return [...new Set(values.filter((value): value is UsageProviderId => allowed.has(value as UsageProviderId)))];
 }
@@ -100,7 +100,7 @@ const statusBarCheckboxKeys = [
   "statusBarProviders.gemini",
 ] as const;
 
-function getStatusBarProviderSelection(
+export function getStatusBarProviderSelection(
   configuration: vscode.WorkspaceConfiguration,
   providerOrder: readonly UsageProviderId[],
 ): unknown {
@@ -127,6 +127,48 @@ function isExplicitlyConfigured(configuration: vscode.WorkspaceConfiguration, ke
   ));
 }
 
-function clampMinutes(value: number, minimum: number, maximum: number): number {
+export function clampMinutes(value: number, minimum: number, maximum: number): number {
   return Math.max(minimum, Math.min(maximum, Number.isFinite(value) ? value : minimum));
+}
+
+export function sanitizeCachedSnapshots(value: unknown): Record<string, UsageSnapshot> {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return {};
+  }
+
+  const snapshots: Record<string, UsageSnapshot> = {};
+  for (const [providerId, candidate] of Object.entries(value)) {
+    if (isCachedSnapshot(candidate, providerId)) {
+      snapshots[providerId] = candidate;
+    }
+  }
+  return snapshots;
+}
+
+function isCachedSnapshot(value: unknown, providerId: string): value is UsageSnapshot {
+  if (typeof value !== "object" || value === null || Array.isArray(value)) {
+    return false;
+  }
+  const snapshot = value as Partial<UsageSnapshot>;
+  return snapshot.providerId === providerId
+    && ["codex", "claude", "copilot", "gemini"].includes(providerId)
+    && typeof snapshot.providerName === "string"
+    && typeof snapshot.plan === "string"
+    && typeof snapshot.fetchedAt === "string"
+    && Number.isFinite(Date.parse(snapshot.fetchedAt))
+    && Array.isArray(snapshot.metrics)
+    && snapshot.metrics.every((metric) => {
+      if (typeof metric !== "object" || metric === null || Array.isArray(metric)) {
+        return false;
+      }
+      const candidate = metric as Partial<UsageSnapshot["metrics"][number]>;
+      return typeof candidate.name === "string"
+        && ["session", "rolling", "monthly", "balance"].includes(candidate.kind ?? "")
+        && (candidate.usedPercent === null || (
+          typeof candidate.usedPercent === "number"
+          && Number.isFinite(candidate.usedPercent)
+          && candidate.usedPercent >= 0
+          && candidate.usedPercent <= 100
+        ));
+    });
 }

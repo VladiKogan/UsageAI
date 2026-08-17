@@ -50,6 +50,8 @@ internal static class Program
         ("Theme usage fill colors and tray pie icon", TestThemeUsageColorsAsync),
         ("model formatting and provider status states", CoverageExpansionTests.TestModelFormattingAsync),
         ("refresh orchestration, alerts, history, and backoff", CoverageExpansionTests.TestRefreshOrchestrationAsync),
+        ("scheduled stale-provider recovery", CoverageExpansionTests.TestScheduledStaleRecoveryAsync),
+        ("scheduler advances with no visible providers", CoverageExpansionTests.TestNoVisibleProviderScheduleAsync),
         ("refresh concurrency and shutdown cancellation", CoverageExpansionTests.TestRefreshConcurrencyAsync),
         ("Claude HTTP success and error handling", CoverageExpansionTests.TestClaudeHttpAsync),
         ("Claude delegates refresh ownership to its CLI", CoverageExpansionTests.TestClaudeCredentialsAreReadOnlyAsync),
@@ -59,6 +61,7 @@ internal static class Program
         ("Claude web fallback HTTP flows", CoverageExpansionTests.TestClaudeWebHttpAsync),
         ("release update HTTP handling", CoverageExpansionTests.TestUpdateCheckerHttpAsync),
         ("verified update installer download", CoverageExpansionTests.TestUpdateInstallerAsync),
+        ("update installer rejects unsafe and malformed assets", CoverageExpansionTests.TestUpdateInstallerFailuresAsync),
         ("provider parser edge cases", CoverageExpansionTests.TestProviderParserEdgesAsync),
         ("corrupt local state recovery", CoverageExpansionTests.TestCorruptLocalStateAsync),
         ("security utility edge cases", CoverageExpansionTests.TestSecurityUtilityEdgesAsync),
@@ -68,7 +71,14 @@ internal static class Program
         ("provider credential refresh and discovery branches", CoverageExpansionTests.TestProviderCredentialBranchesAsync),
         ("Gemini local probe and fallback branches", CoverageExpansionTests.TestGeminiDeepBranchesAsync),
         ("remaining UI interaction branches", CoverageExpansionTests.TestRemainingUiBranchesAsync),
-        ("low-level stream, credential, and process branches", CoverageExpansionTests.TestLowLevelBranchesAsync),
+        ("stale and retry presentation edge cases", CoverageExpansionTests.TestStalePresentationEdgesAsync),
+        ("bounded stream branches", CoverageExpansionTests.TestLimitedReadStreamBranchesAsync),
+        ("credential file and decoding branches", CoverageExpansionTests.TestCredentialFileBranchesAsync),
+        ("process and message-window branches", CoverageExpansionTests.TestProcessAndMessageBranchesAsync),
+        ("startup registration integration", WindowsIntegrationTests.TestStartupRegistrationAsync),
+        ("single-instance window-message contract", WindowsIntegrationTests.TestSingleInstanceMessageAsync),
+        ("Windows Credential Manager integration", WindowsIntegrationTests.TestCredentialManagerAsync),
+        ("installer elevation launch contract", WindowsIntegrationTests.TestInstallerLaunchAsync),
     };
 
     private static async Task<int> Main(string[] args)
@@ -126,8 +136,30 @@ internal static class Program
             "USAGEAI_DATA_DIR",
             Path.Combine(Path.GetTempPath(), "UsageAI.SecurityTests", $"data-{Guid.NewGuid():N}"));
 
+        var selectedTests = Tests.AsEnumerable();
+        var filterIndex = Array.IndexOf(args, "--filter");
+        if (filterIndex >= 0)
+        {
+            if (filterIndex + 1 >= args.Length || string.IsNullOrWhiteSpace(args[filterIndex + 1]))
+            {
+                Console.Error.WriteLine("--filter requires part of a registered check name.");
+                return 2;
+            }
+
+            var filter = args[filterIndex + 1];
+            selectedTests = selectedTests.Where(test =>
+                test.Name.Contains(filter, StringComparison.OrdinalIgnoreCase));
+        }
+
+        var testsToRun = selectedTests.ToArray();
+        if (testsToRun.Length == 0)
+        {
+            Console.Error.WriteLine("No registered checks matched the requested filter.");
+            return 2;
+        }
+
         var failures = 0;
-        foreach (var (name, run) in Tests)
+        foreach (var (name, run) in testsToRun)
         {
             try
             {
@@ -142,7 +174,7 @@ internal static class Program
         }
 
         TryRemoveDataDirectory();
-        Console.WriteLine($"{Tests.Length - failures}/{Tests.Length} checks passed.");
+        Console.WriteLine($"{testsToRun.Length - failures}/{testsToRun.Length} checks passed.");
         return failures == 0 ? 0 : 1;
     }
 

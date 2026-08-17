@@ -13,7 +13,9 @@ internal sealed record ProviderStatus(
     bool IsLoading,
     DateTimeOffset? LastUpdated = null,
     string? SignInCommand = null,
-    Uri? AccountUrl = null)
+    Uri? AccountUrl = null,
+    DateTimeOffset? LastAttemptedAt = null,
+    DateTimeOffset? NextRetryAt = null)
 {
     public bool IsConnected => Snapshot is not null;
 

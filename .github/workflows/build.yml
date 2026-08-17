@@ -33,10 +33,13 @@ jobs:
       - name: Test
         run: dotnet run --project UsageAI.Tests/UsageAI.Tests.csproj -c Release --no-build
 
+      - name: Check desktop coverage
+        run: .\scripts\verify-coverage.ps1
+
       - name: Restore extension tools
         working-directory: extension
         run: npm ci
 
       - name: Build and test extension
         working-directory: extension
-        run: npm test
+        run: npm run test:coverage

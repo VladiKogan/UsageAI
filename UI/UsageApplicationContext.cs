@@ -143,7 +143,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
             return;
         }
 
-        await RefreshAsync(force: false);
+        await _service.RefreshDueAsync(_popup.Visible);
     }
 
     private async Task RefreshAsync(bool force)

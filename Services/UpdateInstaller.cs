@@ -106,7 +106,11 @@ internal static class UpdateInstaller
         }
     }
 
-    public static void Launch(string installerPath)
+    public static void Launch(string installerPath) => Launch(installerPath, Process.Start);
+
+    internal static void Launch(
+        string installerPath,
+        Func<ProcessStartInfo, Process?> startProcess)
     {
         var fullPath = Path.GetFullPath(installerPath);
         if (!Path.IsPathFullyQualified(fullPath) ||
@@ -118,7 +122,7 @@ internal static class UpdateInstaller
 
         try
         {
-            using var process = Process.Start(new ProcessStartInfo
+            using var process = startProcess(new ProcessStartInfo
             {
                 FileName = fullPath,
                 Arguments = "/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS",

@@ -6,6 +6,19 @@
   readings while retaining the last visible percentages. Dashboard actions, the view-title button,
   the Status Bar hover action, and **UsageAI: Refresh** now share VS Code's native window progress
   indicator, including when the dashboard is closed or UsageAI Status Bar items are disabled.
+- Fixed retry-only refreshes polling healthy providers and postponing the normal refresh schedule.
+  Failed providers now retry independently as soon as their backoff or provider-supplied wait time
+  expires, and a successful automatic retry clears their stale state without manual intervention.
+- Clarified stale timestamps in the dashboard and Status Bar. Stale views now distinguish the last
+  successful reading from the later failed check and show when the next automatic retry is due.
+- Fixed disabled providers retaining expired backoff timers and waking the extension scheduler once
+  per second. Only enabled providers can now influence the next retry wake-up.
+- Ignored malformed cached snapshots and invalid reset timestamps during activation so corrupt or
+  obsolete global state cannot break dashboard or Status Bar rendering.
+- Expanded automated coverage from parser-focused fixtures to live provider request flows, bounded
+  HTTP/file/process handling, OAuth refresh reuse, PID-bound Antigravity port revalidation,
+  activation, dashboard messaging, and Status Bar lifecycle behavior. CI now enforces line, branch,
+  and function coverage thresholds.
 
 ## 0.1.10
 

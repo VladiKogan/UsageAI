@@ -28,7 +28,7 @@ internal sealed class UsageRefreshService : IDisposable
     private readonly List<UsageSample> _history = new();
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private readonly CancellationTokenSource _shutdown = new();
-    private DateTimeOffset _nextDue = DateTimeOffset.MinValue;
+    private DateTimeOffset _nextRegularRefresh = DateTimeOffset.MinValue;
     private DateTimeOffset? _lastRefreshed;
     private bool _isRefreshing;
 
@@ -92,13 +92,27 @@ internal sealed class UsageRefreshService : IDisposable
 
     public IReadOnlyList<UsageSample> History => _history;
 
-    public bool IsDue(DateTimeOffset now) => now >= _nextDue;
+    public bool IsDue(DateTimeOffset now) =>
+        now >= _nextRegularRefresh ||
+        _clients
+            .Where(client => _settings.IsProviderVisible(client.Id))
+            .Any(client => _nextAttempt.TryGetValue(client.Id, out var retryAt) && now >= retryAt);
 
     /// <summary>
-    /// Refreshes every provider that is due. A coarse caller-side tick plus this due check
-    /// keeps the schedule correct across sleep and hibernation without extra plumbing.
+    /// Refreshes visible providers now, respecting provider backoff unless force is set.
+    /// Explicit events such as session unlock use this path independently of the scheduler.
     /// </summary>
-    public async Task RefreshAsync(bool force, bool anyWindowVisible)
+    public Task RefreshAsync(bool force, bool anyWindowVisible) =>
+        RefreshCoreAsync(force, anyWindowVisible, scheduled: false);
+
+    /// <summary>
+    /// Runs work selected by the scheduler. A retry-only wake-up fetches only failed providers
+    /// whose backoff expired and does not move the independent regular-refresh deadline.
+    /// </summary>
+    public Task RefreshDueAsync(bool anyWindowVisible) =>
+        RefreshCoreAsync(force: false, anyWindowVisible, scheduled: true);
+
+    private async Task RefreshCoreAsync(bool force, bool anyWindowVisible, bool scheduled)
     {
         var entered = await _refreshLock.WaitAsync(0);
         if (!entered)
@@ -114,15 +128,18 @@ internal sealed class UsageRefreshService : IDisposable
             }
 
             var now = DateTimeOffset.Now;
+            var regularRefresh = !scheduled || force || now >= _nextRegularRefresh;
             var due = _clients
                 .Where(client => _settings.IsProviderVisible(client.Id))
-                .Where(client => force ||
-                                 !_nextAttempt.TryGetValue(client.Id, out var nextAttempt) ||
-                                 now >= nextAttempt)
+                .Where(client => IsProviderDue(client.Id, force, regularRefresh, now))
                 .ToArray();
             if (due.Length == 0)
             {
-                ScheduleNext(now, anyWindowVisible);
+                if (regularRefresh)
+                {
+                    ScheduleRegularRefresh(now, anyWindowVisible);
+                }
+
                 return;
             }
 
@@ -134,7 +151,7 @@ internal sealed class UsageRefreshService : IDisposable
 
             Updated?.Invoke(this, EventArgs.Empty);
 
-            var results = await Task.WhenAll(due.Select(FetchAsync));
+            var results = await Task.WhenAll(due.Select(client => FetchAsync(client, now)));
             if (_shutdown.IsCancellationRequested)
             {
                 return;
@@ -145,12 +162,12 @@ internal sealed class UsageRefreshService : IDisposable
             foreach (var result in results)
             {
                 var providerId = result.Status.ProviderId;
-                _statuses[providerId] = result.Status;
 
                 if (result.IsFresh && result.Status.Snapshot is { } snapshot)
                 {
                     _failures.Remove(providerId);
                     _nextAttempt.Remove(providerId);
+                    _statuses[providerId] = result.Status;
                     alerts.AddRange(_notifications.Evaluate(snapshot, _settings, now));
                     if (_settings.HistoryEnabled)
                     {
@@ -161,7 +178,13 @@ internal sealed class UsageRefreshService : IDisposable
                 {
                     var failures = _failures.TryGetValue(providerId, out var count) ? count + 1 : 1;
                     _failures[providerId] = failures;
-                    _nextAttempt[providerId] = now + (result.ThrottleHint ?? BackoffFor(failures));
+                    var retryAt = now + (result.ThrottleHint ?? BackoffFor(failures));
+                    _nextAttempt[providerId] = retryAt;
+                    _statuses[providerId] = result.Status with { NextRetryAt = retryAt };
+                }
+                else
+                {
+                    _statuses[providerId] = result.Status;
                 }
             }
 
@@ -181,7 +204,11 @@ internal sealed class UsageRefreshService : IDisposable
             }
 
             _lastRefreshed = now;
-            ScheduleNext(now, anyWindowVisible);
+            if (regularRefresh)
+            {
+                ScheduleRegularRefresh(now, anyWindowVisible);
+            }
+
             _isRefreshing = false;
             Updated?.Invoke(this, EventArgs.Empty);
 
@@ -205,7 +232,7 @@ internal sealed class UsageRefreshService : IDisposable
             _notifications.Forget(client.Id);
         }
 
-        _nextDue = DateTimeOffset.MinValue;
+        _nextRegularRefresh = DateTimeOffset.MinValue;
     }
 
     public void Dispose()
@@ -215,8 +242,24 @@ internal sealed class UsageRefreshService : IDisposable
         _shutdown.Cancel();
     }
 
-    private void ScheduleNext(DateTimeOffset now, bool anyWindowVisible) =>
-        _nextDue = now + _settings.EffectiveRefreshInterval(anyWindowVisible);
+    private bool IsProviderDue(
+        string providerId,
+        bool force,
+        bool regularRefresh,
+        DateTimeOffset now)
+    {
+        if (force)
+        {
+            return true;
+        }
+
+        return _nextAttempt.TryGetValue(providerId, out var retryAt)
+            ? now >= retryAt
+            : regularRefresh;
+    }
+
+    private void ScheduleRegularRefresh(DateTimeOffset now, bool anyWindowVisible) =>
+        _nextRegularRefresh = now + _settings.EffectiveRefreshInterval(anyWindowVisible);
 
     private void RecordHistory(IReadOnlyList<UsageSample> samples, DateTimeOffset now)
     {
@@ -235,7 +278,7 @@ internal sealed class UsageRefreshService : IDisposable
     /// Never mutates shared state: the caller applies failures serially so concurrent
     /// provider fetches cannot race the backoff bookkeeping.
     /// </summary>
-    private async Task<FetchResult> FetchAsync(IUsageClient client)
+    private async Task<FetchResult> FetchAsync(IUsageClient client, DateTimeOffset attemptedAt)
     {
         var previous = _statuses[client.Id];
         try
@@ -250,7 +293,9 @@ internal sealed class UsageRefreshService : IDisposable
                     IsLoading: false,
                     snapshot.FetchedAt,
                     client.SignInCommand,
-                    client.AccountUrl),
+                    client.AccountUrl,
+                    attemptedAt,
+                    NextRetryAt: null),
                 IsFresh: true,
                 Failed: false,
                 ThrottleHint: null);
@@ -275,7 +320,12 @@ internal sealed class UsageRefreshService : IDisposable
             // The previous snapshot is kept so one failed poll marks the card stale
             // instead of erasing everything the user was looking at.
             return new FetchResult(
-                previous with { Error = message, IsLoading = false },
+                previous with
+                {
+                    Error = message,
+                    IsLoading = false,
+                    LastAttemptedAt = attemptedAt,
+                },
                 IsFresh: false,
                 Failed: true,
                 throttleHint);

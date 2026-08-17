@@ -23,6 +23,7 @@ export class UsageRefreshService {
   private activeRefresh: Promise<void> | undefined;
   private visible = false;
   private disposed = false;
+  private nextRegularRefreshAt = 0;
 
   public constructor(private readonly options: RefreshServiceOptions) {
     for (const client of options.clients) {
@@ -56,11 +57,13 @@ export class UsageRefreshService {
 
   public setVisible(visible: boolean): void {
     this.visible = visible;
+    this.nextRegularRefreshAt = Date.now() + this.regularIntervalMs();
     this.scheduleNext();
   }
 
   public configurationChanged(): void {
     this.emit();
+    this.nextRegularRefreshAt = Date.now() + this.regularIntervalMs();
     this.scheduleNext();
   }
 
@@ -94,12 +97,17 @@ export class UsageRefreshService {
     }
     const enabled = new Set(this.options.enabledProviderIds());
     const now = Date.now();
+    const attemptedAt = new Date(now).toISOString();
+    const regularRefresh = manual || now >= this.nextRegularRefreshAt;
     const clients = this.options.clients.filter((client) => {
       if (!enabled.has(client.id)) {
         return false;
       }
-      const retryAt = this.backoff.get(client.id)?.retryAt ?? 0;
-      return manual || retryAt <= now;
+      if (manual) {
+        return true;
+      }
+      const backoff = this.backoff.get(client.id);
+      return backoff ? backoff.retryAt <= now : regularRefresh;
     });
     for (const client of clients) {
       const current = this.states.get(client.id);
@@ -130,6 +138,7 @@ export class UsageRefreshService {
           snapshot: result.snapshot,
           stale: false,
           refreshing: false,
+          lastAttemptedAt: attemptedAt,
         });
       } else {
         const previous = this.backoff.get(result.client.id)?.failures ?? 0;
@@ -143,9 +152,13 @@ export class UsageRefreshService {
           stale: Boolean(current.snapshot),
           refreshing: false,
           error: safeErrorMessage(result.error),
+          lastAttemptedAt: attemptedAt,
           nextRefreshAt: new Date(retryAt).toISOString(),
         });
       }
+    }
+    if (regularRefresh) {
+      this.nextRegularRefreshAt = Date.now() + this.regularIntervalMs();
     }
     this.emit();
   }
@@ -161,15 +174,24 @@ export class UsageRefreshService {
     if (this.timer) {
       clearTimeout(this.timer);
     }
-    const interval = this.visible
-      ? this.options.visibleIntervalMs()
-      : this.options.backgroundIntervalMs();
-    const nextBackoff = [...this.backoff.values()]
-      .map((entry) => entry.retryAt - Date.now())
-      .filter((delay) => delay > 0)
+    const now = Date.now();
+    const interval = this.regularIntervalMs();
+    const regularDelay = this.nextRegularRefreshAt > 0
+      ? Math.max(0, this.nextRegularRefreshAt - now)
+      : interval;
+    const enabled = new Set(this.options.enabledProviderIds());
+    const nextBackoff = [...this.backoff.entries()]
+      .filter(([providerId]) => enabled.has(providerId))
+      .map(([, entry]) => Math.max(0, entry.retryAt - now))
       .sort((left, right) => left - right)[0];
-    const delay = Math.max(1_000, Math.min(interval, nextBackoff ?? interval));
+    const delay = Math.max(1_000, Math.min(regularDelay, nextBackoff ?? regularDelay));
     this.timer = setTimeout(() => void this.refresh(false), delay);
     this.timer.unref();
+  }
+
+  private regularIntervalMs(): number {
+    return this.visible
+      ? this.options.visibleIntervalMs()
+      : this.options.backgroundIntervalMs();
   }
 }

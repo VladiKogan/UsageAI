@@ -63,7 +63,7 @@ For GitHub Copilot, **Enable GitHub CLI Fallback** lets UsageAI run `gh auth tok
 - Percentages and meter fill show how much quota has been **used**.
 - The text under each meter shows what remains and when that limit resets.
 - Providers can report more than one limit, such as a session window and a weekly window; UsageAI shows each one separately.
-- If a refresh fails, the last successful reading stays visible and is marked as stale instead of disappearing.
+- If a refresh fails, the last successful reading stays visible and is marked as stale instead of disappearing. The dashboard and Status Bar distinguish that last good reading from the failed check and show the next automatic retry; retry-only checks do not disturb healthy providers or regular polling.
 
 If a provider says it is not connected, sign in with that provider's CLI or IDE integration and run **UsageAI: Refresh**. You can use the provider card's sign-in action when one is available.
 
@@ -86,6 +86,7 @@ Cached snapshots may contain usage information, reset times, plan names, and acc
 cd extension
 npm.cmd install
 npm.cmd test
+npm.cmd run test:coverage
 ```
 
 Open the `extension` folder in VS Code and press `F5` to launch an Extension Development Host.

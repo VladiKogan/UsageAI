@@ -29,6 +29,7 @@ export interface ProviderState {
   readonly error?: string;
   readonly stale: boolean;
   readonly refreshing: boolean;
+  readonly lastAttemptedAt?: string;
   readonly nextRefreshAt?: string;
 }
 
@@ -130,7 +131,12 @@ export function formatResetCountdown(iso: string | undefined, now = Date.now()):
     return "Reset not reported";
   }
 
-  const milliseconds = new Date(iso).getTime() - now;
+  const resetAt = new Date(iso).getTime();
+  if (!Number.isFinite(resetAt)) {
+    return "Reset not reported";
+  }
+
+  const milliseconds = resetAt - now;
   if (milliseconds <= 0) {
     return "Reset due";
   }

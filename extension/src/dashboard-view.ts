@@ -160,6 +160,7 @@ function dashboardHtml(webview: vscode.Webview): string {
     .metric-name { font-weight: 600; }
     .metric-value, .metric-foot { color: var(--vscode-descriptionForeground); }
     .metric-foot { margin-top: 4px; font-size: 10px; }
+    .state-meta { margin: 0 10px 9px 12px; color: var(--vscode-descriptionForeground); font-size: 10px; }
     .rail { appearance: none; display: block; width: 100%; height: 5px; overflow: hidden; border: 0; border-radius: 999px; background: transparent; }
     .rail::-webkit-progress-bar { border-radius: inherit; background: color-mix(in srgb, var(--vscode-progressBar-background) 26%, transparent); }
     .rail::-webkit-progress-value { border-radius: inherit; background: var(--vscode-progressBar-background); }
@@ -203,6 +204,11 @@ function dashboardHtml(webview: vscode.Webview): string {
       node.addEventListener('click', () => vscode.postMessage({ type, providerId }));
       return node;
     };
+    const localTime = (value) => {
+      if (!value) return '';
+      const date = new Date(value);
+      return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    };
     const level = (used, warning, critical) => used >= critical ? 'critical' : used >= warning ? 'warning' : 'normal';
     const countdown = ${formatResetCountdown.toString()};
     const renderMetric = (metric, warning, critical) => {
@@ -244,7 +250,9 @@ function dashboardHtml(webview: vscode.Webview): string {
         card.dataset.level = level(highest, warning, critical);
         const head = el('div', 'card-head');
         const provider = el('div', 'provider');
-        provider.append(el('span', 'provider-name', state.displayName), el('span', 'plan', state.snapshot ? [state.snapshot.plan, state.snapshot.accountName].filter(Boolean).join(' · ') : 'Not connected'));
+        const planParts = state.snapshot ? [state.snapshot.plan, state.snapshot.accountName] : ['Not connected'];
+        if (state.stale) planParts.push('Stale');
+        provider.append(el('span', 'provider-name', state.displayName), el('span', 'plan', planParts.filter(Boolean).join(' · ')));
         const headline = el('div', 'headline');
         if (state.refreshing) {
           const spinner = el('span', 'spinner');
@@ -261,6 +269,16 @@ function dashboardHtml(webview: vscode.Webview): string {
           const metrics = el('div', 'metrics');
           for (const metric of state.snapshot.metrics) metrics.append(renderMetric(metric, warning, critical));
           card.append(metrics);
+          if (state.stale) {
+            const details = [];
+            const fetchedAt = localTime(state.snapshot.fetchedAt);
+            const checkedAt = localTime(state.lastAttemptedAt);
+            const retryAt = localTime(state.nextRefreshAt);
+            if (fetchedAt) details.push('Last good ' + fetchedAt);
+            if (checkedAt) details.push('Checked ' + checkedAt);
+            if (retryAt) details.push('Retry at ' + retryAt);
+            if (details.length) card.append(el('div', 'state-meta', details.join(' · ')));
+          }
         }
         if (state.error) {
           const error = el('div', 'error');
@@ -277,11 +295,16 @@ function dashboardHtml(webview: vscode.Webview): string {
         providers.append(card);
       }
       const refreshing = payload.states.some(state => state.refreshing);
+      const staleStates = payload.states.filter(state => state.stale);
       stamp.replaceChildren();
       if (refreshing) {
         const spinner = el('span', 'spinner');
         spinner.setAttribute('aria-hidden', 'true');
         stamp.append(spinner, el('span', '', 'Refreshing…'));
+      } else if (staleStates.length) {
+        const noun = staleStates.length === 1 ? 'provider' : 'providers';
+        const latestCheck = Math.max(0, ...staleStates.map(state => new Date(state.lastAttemptedAt || '').getTime()).filter(Number.isFinite));
+        stamp.textContent = staleStates.length + ' ' + noun + ' stale' + (latestCheck ? ' · checked ' + localTime(latestCheck) : '');
       } else {
         stamp.textContent = newest ? 'Updated ' + new Date(newest).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : 'Waiting for first reading';
       }

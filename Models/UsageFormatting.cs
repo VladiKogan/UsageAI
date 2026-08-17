@@ -66,4 +66,25 @@ internal static class UsageFormatting
             ? $"{(int)elapsed.TotalHours}h ago"
             : $"{(int)elapsed.TotalDays}d ago";
     }
+
+    public static string RetryCountdown(DateTimeOffset retryAt, DateTimeOffset now)
+    {
+        var remaining = retryAt - now;
+        if (remaining <= TimeSpan.Zero)
+        {
+            return "retry due";
+        }
+
+        if (remaining.TotalDays >= 1)
+        {
+            return $"retry in {(int)remaining.TotalDays}d";
+        }
+
+        if (remaining.TotalHours >= 1)
+        {
+            return $"retry in {(int)remaining.TotalHours}h";
+        }
+
+        return $"retry in {Math.Max(1, (int)Math.Ceiling(remaining.TotalMinutes))}m";
+    }
 }

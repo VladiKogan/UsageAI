@@ -90,7 +90,7 @@ npm.cmd run package:vsix
   <img src="usageai-dashboard-preview.png?v=0.8.0" alt="UsageAI 0.8.0 dashboard with centered provider icons" width="750" />
 </p>
 
-**It never goes blank.** If a refresh fails, UsageAI keeps the last good reading and marks it **stale**, with the provider's own error message attached — then backs off before retrying instead of hammering a rate-limited API.
+**It never goes blank.** If a refresh fails, UsageAI keeps the last good reading and marks it **stale**, with the provider's own error message attached. The card labels when that good reading was captured and when the next automatic retry is due. Each failed provider wakes independently after its backoff, instead of waiting for the regular polling interval or hammering a rate-limited API.
 
 **It looks like it belongs on your desktop.** Native Windows dark title bars and scrollbars, light/dark/follow-Windows themes, your Windows accent colour, and window size and position remembered between runs.
 
@@ -187,7 +187,7 @@ to install it.
 - **"Codex is not signed in"** — run `codex login` in a terminal, then hit **Refresh**.
 - **"Claude Code is not signed in"** — run `claude` and finish signing in, or use the session-key method above, then hit **Refresh**.
 - **"Copilot is not signed in"** — sign in through a Copilot IDE extension or Copilot CLI, then hit **Refresh**.
-- **A card says "stale"** — the last refresh failed, so you're looking at the previous good reading. The card shows the provider's own error message, and UsageAI backs off before retrying instead of hammering a failing or rate-limited provider.
+- **A card says "stale"** — the provider's latest check failed, so you're looking at its previous good reading. The card shows when that reading succeeded, the provider's error, and when UsageAI will retry automatically. The retry runs independently as soon as its backoff or provider-supplied wait time expires; **Refresh** remains available for an immediate manual check.
 - **The hotkey does nothing** — another app already owns Win+Alt+U. Turn it off in **Settings...** to release it.
 - **No tray icon** — open the Windows tray overflow menu and pin UsageAI.
 
@@ -222,9 +222,10 @@ dotnet run --project .\UsageAI.csproj
 ```powershell
 dotnet build .\UsageAI.sln -c Release
 dotnet run --project .\UsageAI.Tests\UsageAI.Tests.csproj
+.\scripts\verify-coverage.ps1
 ```
 
-The test project is a dependency-free console harness covering credential handling, bounded I/O, provider response parsing, settings validation, history, forecasting and alert behaviour. It runs with `dotnet run`, not `dotnet test`.
+The test project is a dependency-free console harness covering credential handling, bounded I/O, provider response parsing, settings validation, history, forecasting and alert behaviour. It runs with `dotnet run`, not `dotnet test`. Run one registered check with `-- --filter "part of check name"`.
 
 **Check one provider without the UI:**
 

@@ -104,6 +104,24 @@ internal static class CoverageExpansionTests
         var stale = connected with { Error = "temporary failure" };
         Equal("Stale", stale.StatusText);
         True(stale.IsStale);
+        var attemptedAt = now.AddMinutes(-2);
+        stale = stale with { LastAttemptedAt = attemptedAt };
+        Equal(
+            "1 provider stale · checked 2 min ago",
+            UsagePopupForm.RefreshSummary(
+                new[] { connected, stale },
+                isRefreshing: false,
+                lastRefreshed: now,
+                now));
+        Equal(
+            "Updated just now",
+            UsagePopupForm.RefreshSummary(
+                new[] { connected },
+                isRefreshing: false,
+                lastRefreshed: now,
+                now));
+        Equal("retry due", UsageFormatting.RetryCountdown(now, now));
+        Equal("retry in 2m", UsageFormatting.RetryCountdown(now.AddSeconds(90), now));
         return Task.CompletedTask;
     }
 
@@ -164,6 +182,8 @@ internal static class CoverageExpansionTests
         False(service.IsDue(DateTimeOffset.Now));
         Equal(1, service.History.Count);
         Equal("Beta asked us to wait.", service.Statuses[0].Error);
+        NotNull(service.Statuses[0].LastAttemptedAt);
+        NotNull(service.Statuses[0].NextRetryAt);
         Equal(70, service.Statuses[1].Snapshot!.Primary!.UsedPercent);
 
         // Successful providers remain eligible, while a throttled provider is skipped.
@@ -185,6 +205,7 @@ internal static class CoverageExpansionTests
 
         Equal(3, alpha.CallCount);
         Equal(2, beta.CallCount);
+        Null(service.Statuses[0].NextRetryAt);
         Equal(1, alerts.Count);
         Equal(4, service.History.Count);
         True(updates >= 6);
@@ -192,6 +213,94 @@ internal static class CoverageExpansionTests
 
         UsageHistoryStore.Clear();
         SnapshotCache.Clear();
+    }
+
+    public static async Task TestScheduledStaleRecoveryAsync()
+    {
+        UsageHistoryStore.Clear();
+        SnapshotCache.Clear();
+        try
+        {
+            var now = DateTimeOffset.Now;
+            var healthy = new QueueUsageClient("healthy", "Healthy");
+            healthy.Enqueue(Snapshot("healthy", "Healthy", 10, now));
+            healthy.Enqueue(Snapshot("healthy", "Healthy", 11, now.AddMinutes(1)));
+
+            var recovering = new QueueUsageClient("recovering", "Recovering");
+            recovering.Enqueue(Snapshot("recovering", "Recovering", 20, now));
+            recovering.Enqueue(new InvalidOperationException("temporary failure"));
+            recovering.Enqueue(Snapshot("recovering", "Recovering", 21, now.AddMinutes(2)));
+
+            var settings = new AppSettings
+            {
+                RefreshIntervalMinutes = AppSettings.MaximumRefreshMinutes,
+                SlowRefreshWhenHidden = false,
+                HistoryEnabled = false,
+                NotificationsEnabled = false,
+            };
+            using var service = new UsageRefreshService(
+                new IUsageClient[] { healthy, recovering },
+                settings);
+
+            await service.RefreshAsync(force: true, anyWindowVisible: false);
+            await service.RefreshAsync(force: false, anyWindowVisible: false);
+
+            var stale = service.Statuses.Single(status => status.ProviderId == "recovering");
+            True(stale.IsStale);
+            NotNull(stale.LastAttemptedAt);
+            NotNull(stale.NextRetryAt);
+            Equal(2, healthy.CallCount);
+            Equal(2, recovering.CallCount);
+
+            var regularRefreshBeforeRetry = GetPrivateFieldValue<DateTimeOffset>(
+                service,
+                "_nextRegularRefresh");
+            var retrySchedule = GetPrivateField<Dictionary<string, DateTimeOffset>>(
+                service,
+                "_nextAttempt");
+            retrySchedule["recovering"] = DateTimeOffset.Now.AddSeconds(-1);
+
+            True(service.IsDue(DateTimeOffset.Now));
+            await service.RefreshDueAsync(anyWindowVisible: false);
+
+            Equal(2, healthy.CallCount);
+            Equal(3, recovering.CallCount);
+            var recovered = service.Statuses.Single(status => status.ProviderId == "recovering");
+            False(recovered.IsStale);
+            Null(recovered.Error);
+            Null(recovered.NextRetryAt);
+            Equal(
+                regularRefreshBeforeRetry,
+                GetPrivateFieldValue<DateTimeOffset>(service, "_nextRegularRefresh"));
+            False(service.IsDue(DateTimeOffset.Now));
+        }
+        finally
+        {
+            UsageHistoryStore.Clear();
+            SnapshotCache.Clear();
+        }
+    }
+
+    public static async Task TestNoVisibleProviderScheduleAsync()
+    {
+        var hidden = new QueueUsageClient("hidden", "Hidden");
+        hidden.Enqueue(Snapshot("hidden", "Hidden", 25, DateTimeOffset.Now));
+        var settings = new AppSettings
+        {
+            HiddenProviders = new[] { "hidden" },
+            RefreshIntervalMinutes = 5,
+            SlowRefreshWhenHidden = false,
+            HistoryEnabled = false,
+            NotificationsEnabled = false,
+        };
+        using var service = new UsageRefreshService(new[] { hidden }, settings);
+
+        True(service.IsDue(DateTimeOffset.Now));
+        await service.RefreshDueAsync(anyWindowVisible: false);
+
+        Equal(0, hidden.CallCount);
+        False(service.IsDue(DateTimeOffset.Now));
+        False(service.IsRefreshing);
     }
 
     public static async Task TestRefreshConcurrencyAsync()
@@ -976,6 +1085,111 @@ internal static class CoverageExpansionTests
         }
     }
 
+    public static async Task TestUpdateInstallerFailuresAsync()
+    {
+        var installerName = "UsageAI-99.0.1-Setup.exe";
+        var installerBytes = Encoding.UTF8.GetBytes("synthetic installer");
+        var checksumBytes = Encoding.ASCII.GetBytes(
+            $"{Convert.ToHexString(SHA256.HashData(installerBytes)).ToLowerInvariant()}  {installerName}");
+        var release = new UpdateRelease(
+            "v99.0.1",
+            "99.0.1",
+            new Uri("https://github.com/VladiKogan/UsageAI/releases/tag/v99.0.1"),
+            new UpdateAsset(
+                installerName,
+                new Uri($"https://github.com/VladiKogan/UsageAI/releases/download/v99.0.1/{installerName}"),
+                installerBytes.Length),
+            new UpdateAsset(
+                $"{installerName}.sha256",
+                new Uri($"https://github.com/VladiKogan/UsageAI/releases/download/v99.0.1/{installerName}.sha256"),
+                checksumBytes.Length));
+        var directory = Path.Combine(
+            Path.GetTempPath(),
+            "UsageAI.UpdateFailureTests",
+            Guid.NewGuid().ToString("N"));
+        try
+        {
+            using var unusedHttp = new HttpClient(new StubHttpHandler((_, _, _) =>
+                throw new InvalidOperationException("No HTTP request was expected.")));
+            var missing = await ThrowsAsync<UpdateInstallException>(() =>
+                UpdateInstaller.DownloadAndVerifyAsync(
+                    release with { Checksum = null },
+                    unusedHttp,
+                    directory,
+                    CancellationToken.None));
+            Equal("This release does not include a verifiable Windows installer.", missing.Message);
+
+            var invalidSize = await ThrowsAsync<UpdateInstallException>(() =>
+                UpdateInstaller.DownloadAndVerifyAsync(
+                    release with { Installer = release.Installer! with { Size = 0 } },
+                    unusedHttp,
+                    directory,
+                    CancellationToken.None));
+            Equal("The published update has an unexpected size.", invalidSize.Message);
+
+            var unsafeHandler = new StubHttpHandler((_, _, _) => Task.FromResult(
+                RedirectResponse("https://downloads.example.com/installer")));
+            using (var unsafeHttp = new HttpClient(unsafeHandler))
+            {
+                var unsafeRedirect = await ThrowsAsync<UpdateInstallException>(() =>
+                    UpdateInstaller.DownloadAndVerifyAsync(
+                        release,
+                        unsafeHttp,
+                        directory,
+                        CancellationToken.None));
+                Equal("GitHub returned an unsafe update download address.", unsafeRedirect.Message);
+                Equal(1, unsafeHandler.CallCount);
+            }
+
+            var wrongNameBytes = Encoding.ASCII.GetBytes(
+                $"{Convert.ToHexString(SHA256.HashData(installerBytes)).ToLowerInvariant()}  another.exe");
+            var wrongNameRelease = release with
+            {
+                Checksum = release.Checksum! with { Size = wrongNameBytes.Length },
+            };
+            var wrongNameHandler = new StubHttpHandler((_, _, _) =>
+                Task.FromResult(BinaryResponse(wrongNameBytes)));
+            using (var wrongNameHttp = new HttpClient(wrongNameHandler))
+            {
+                var malformed = await ThrowsAsync<UpdateInstallException>(() =>
+                    UpdateInstaller.DownloadAndVerifyAsync(
+                        wrongNameRelease,
+                        wrongNameHttp,
+                        directory,
+                        CancellationToken.None));
+                Equal("The published checksum is invalid.", malformed.Message);
+                Equal(1, wrongNameHandler.CallCount);
+            }
+
+            using (var failedHttp = new HttpClient(new StubHttpHandler((_, _, _) =>
+                       Task.FromResult(new HttpResponseMessage(HttpStatusCode.NotFound)))))
+            {
+                var notFound = await ThrowsAsync<UpdateInstallException>(() =>
+                    UpdateInstaller.DownloadAndVerifyAsync(
+                        release,
+                        failedHttp,
+                        directory,
+                        CancellationToken.None));
+                Equal("GitHub did not return the requested update file.", notFound.Message);
+            }
+
+            var unverifiedPath = Path.Combine(directory, "not-an-installer.txt");
+            Directory.CreateDirectory(directory);
+            File.WriteAllText(unverifiedPath, "not executable");
+            Throws<UpdateInstallException>(() => UpdateInstaller.Launch(unverifiedPath));
+            Throws<UpdateInstallException>(() => UpdateInstaller.Launch(
+                Path.Combine(directory, "missing.exe")));
+            Equal(0, Directory.EnumerateFiles(directory, "*.partial").Count());
+        }
+        finally
+        {
+            if (Directory.Exists(directory))
+            {
+                Directory.Delete(directory, recursive: true);
+            }
+        }
+    }
+
     public static Task TestProviderParserEdgesAsync()
     {
         using (var document = JsonDocument.Parse(
@@ -1719,7 +1933,7 @@ internal static class CoverageExpansionTests
                 Microsoft.Win32.SessionSwitchReason.SessionUnlock));
         await WaitForConditionAsync(() => client.CallCount >= 5);
         Equal(64, service.Statuses[0].Snapshot!.Primary!.UsedPercent);
-        SetPrivateField(service, "_nextDue", DateTimeOffset.MinValue);
+        SetPrivateField(service, "_nextRegularRefresh", DateTimeOffset.MinValue);
         await InvokePrivateTaskAsync(context, "RefreshIfDueAsync");
         Equal(6, client.CallCount);
         Equal(67, service.Statuses[0].Snapshot!.Primary!.UsedPercent);
@@ -2879,7 +3093,59 @@ internal static class CoverageExpansionTests
         return Task.CompletedTask;
     }
 
-    public static async Task TestLowLevelBranchesAsync()
+    public static Task TestStalePresentationEdgesAsync()
+    {
+        var now = new DateTimeOffset(2026, 8, 17, 12, 0, 0, TimeSpan.Zero);
+        var snapshot = Snapshot("fixture", "Fixture", 64, now.AddHours(-3));
+        var staleOne = new ProviderStatus(
+            "fixture-one",
+            "Fixture One",
+            snapshot,
+            "Temporary failure.",
+            IsLoading: false,
+            LastUpdated: now.AddHours(-3),
+            SignInCommand: "fixture login",
+            AccountUrl: new Uri("https://example.com/fixture-one"),
+            LastAttemptedAt: now.AddMinutes(-5),
+            NextRetryAt: now.AddHours(2));
+        var staleTwo = staleOne with
+        {
+            ProviderId = "fixture-two",
+            ProviderName = "Fixture Two",
+            LastAttemptedAt = now.AddMinutes(-2),
+        };
+
+        Equal(
+            "Checking all providers...",
+            UsagePopupForm.RefreshSummary(new[] { staleOne }, true, now, now));
+        Equal(
+            "2 providers stale · checked 2 min ago",
+            UsagePopupForm.RefreshSummary(new[] { staleOne, staleTwo }, false, now, now));
+        Equal(
+            "1 provider stale",
+            UsagePopupForm.RefreshSummary(
+                new[] { staleOne with { LastAttemptedAt = null } },
+                false,
+                now,
+                now));
+        Equal(
+            "Checked 3 min ago",
+            UsagePopupForm.RefreshSummary(Array.Empty<ProviderStatus>(), false, now.AddMinutes(-3), now));
+        Equal(
+            "Waiting for first refresh",
+            UsagePopupForm.RefreshSummary(Array.Empty<ProviderStatus>(), false, null, now));
+        Equal("retry in 1d", UsageFormatting.RetryCountdown(now.AddHours(25), now));
+        Equal("retry in 2h", UsageFormatting.RetryCountdown(now.AddHours(2.5), now));
+
+        using var card = new ProviderUsageCard(staleOne, expanded: true, Array.Empty<UsageSample>(), showTrend: false);
+        var detail = InvokePrivate<string>(card, "DetailRight", snapshot.Primary);
+        True(detail.StartsWith("retry in ", StringComparison.Ordinal));
+        True(card.AccessibleDescription?.Contains("Last successful update", StringComparison.Ordinal) == true);
+        True(card.AccessibleDescription?.Contains("retry in ", StringComparison.Ordinal) == true);
+        return Task.CompletedTask;
+    }
+
+    public static Task TestLimitedReadStreamBranchesAsync()
     {
         var limitedType = typeof(SecureHttp).GetNestedType(
             "LimitedReadStream",
@@ -2922,6 +3188,11 @@ internal static class CoverageExpansionTests
             Throws<InvalidDataException>(() => limited.ReadExactly(bytes));
         }
 
+        return Task.CompletedTask;
+    }
+
+    public static Task TestCredentialFileBranchesAsync()
+    {
         var directory = Path.Combine(AppPaths.DataDirectory, $"low-level-{Guid.NewGuid():N}");
         Directory.CreateDirectory(directory);
         try
@@ -2958,6 +3229,11 @@ internal static class CoverageExpansionTests
             Directory.Delete(directory, recursive: true);
         }
 
+        return Task.CompletedTask;
+    }
+
+    public static async Task TestProcessAndMessageBranchesAsync()
+    {
         var commandProcessor = Environment.GetEnvironmentVariable("COMSPEC")
             ?? Path.Combine(Environment.SystemDirectory, "cmd.exe");
         using (var active = Process.Start(new ProcessStartInfo
@@ -2985,9 +3261,6 @@ internal static class CoverageExpansionTests
             Equal(1, showCount);
             Equal(1, hotkeyCount);
         }
-
-        _ = StartupManager.IsEnabled;
-        True(SingleInstance.ShowMessage != 0);
     }
 
     private static UsageSample[] ForecastSamples(

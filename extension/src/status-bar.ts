@@ -111,27 +111,25 @@ function renderSnapshot(
   label: string,
   refreshing = state.refreshing,
 ): void {
-  const staleLabel = state.stale ? " (stale)" : "";
   const metrics = statusBarMetrics(state.snapshot);
   const readings = metrics.length > 0
     ? metrics.map((metric) => `${metric.usedPercent ?? 0}%`).join(" | ")
     : `${highestUsedPercent(state.snapshot)}%`;
   const icon = refreshing ? "$(sync~spin)" : providerIcon(state.id);
   item.text = `${icon} ${label} ${readings}`;
-  item.tooltip = snapshotTooltip(state, metrics, staleLabel, refreshing);
+  item.tooltip = snapshotTooltip(state, metrics, refreshing);
 }
 
 function snapshotTooltip(
   state: ProviderState & { snapshot: UsageSnapshot },
   metrics: readonly UsageMetric[],
-  staleLabel: string,
   refreshing: boolean,
 ): vscode.MarkdownString {
   const tooltip = new vscode.MarkdownString(undefined, true);
   tooltip.appendMarkdown(`${providerIcon(state.id)} **`);
   tooltip.appendText(state.displayName);
   tooltip.appendMarkdown("**");
-  tooltip.appendText(` · ${state.snapshot.plan}${staleLabel}`);
+  tooltip.appendText(` · ${state.snapshot.plan}${state.stale ? " (stale)" : ""}`);
 
   if (refreshing) {
     tooltip.appendMarkdown("\n\n$(sync~spin) *Refreshing usage…*");
@@ -144,13 +142,30 @@ function snapshotTooltip(
 
   const fetchedAt = new Date(state.snapshot.fetchedAt);
   if (!Number.isNaN(fetchedAt.getTime())) {
-    tooltip.appendMarkdown("\n\n*Last updated:* ");
+    tooltip.appendMarkdown(state.stale ? "\n\n*Last successful update:* " : "\n\n*Last updated:* ");
     tooltip.appendText(fetchedAt.toLocaleTimeString());
+  }
+
+  if (state.stale) {
+    appendTimestamp(tooltip, "Last check", state.lastAttemptedAt);
+    appendTimestamp(tooltip, "Automatic retry", state.nextRefreshAt);
   }
 
   tooltip.appendMarkdown("\n\n[Open UsageAI](command:usageai.show) · [Refresh](command:usageai.refresh)");
   tooltip.isTrusted = { enabledCommands: ["usageai.show", "usageai.refresh"] };
   return tooltip;
+}
+
+function appendTimestamp(tooltip: vscode.MarkdownString, label: string, value: string | undefined): void {
+  if (!value) {
+    return;
+  }
+  const timestamp = new Date(value);
+  if (Number.isNaN(timestamp.getTime())) {
+    return;
+  }
+  tooltip.appendMarkdown(`\n\n*${label}:* `);
+  tooltip.appendText(timestamp.toLocaleTimeString());
 }
 
 function formatMeterRows(metrics: readonly UsageMetric[]): string {

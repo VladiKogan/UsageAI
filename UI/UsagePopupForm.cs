@@ -597,23 +597,54 @@ internal sealed class UsagePopupForm : Form
             _summaryLabel.Text = "NOT CONNECTED";
         }
 
-        var latestUpdated = _states
+        _updatedLabel.Text = RefreshSummary(
+            _states,
+            _isRefreshing,
+            _lastRefreshed,
+            DateTimeOffset.Now);
+    }
+
+    internal static string RefreshSummary(
+        IReadOnlyList<ProviderStatus> states,
+        bool isRefreshing,
+        DateTimeOffset? lastRefreshed,
+        DateTimeOffset now)
+    {
+        if (isRefreshing)
+        {
+            return "Checking all providers...";
+        }
+
+        var staleStates = states.Where(state => state.IsStale).ToArray();
+        if (staleStates.Length > 0)
+        {
+            var noun = staleStates.Length == 1 ? "provider" : "providers";
+            var prefix = $"{staleStates.Length} {noun} stale";
+            var lastStaleAttempt = staleStates
+                .Select(state => state.LastAttemptedAt)
+                .Where(attempted => attempted.HasValue)
+                .Select(attempted => attempted!.Value)
+                .DefaultIfEmpty()
+                .Max();
+            return lastStaleAttempt == default
+                ? prefix
+                : $"{prefix} · checked {UsageFormatting.Age(lastStaleAttempt, now)}";
+        }
+
+        var latestUpdated = states
             .Select(state => state.LastUpdated ?? state.Snapshot?.FetchedAt)
             .Where(updated => updated.HasValue)
             .Select(updated => updated!.Value)
             .DefaultIfEmpty()
             .Max();
+        if (latestUpdated != default)
+        {
+            return $"Updated {UsageFormatting.Age(latestUpdated, now)}";
+        }
 
-        var displayTime = latestUpdated != default ? (DateTimeOffset?)latestUpdated : _lastRefreshed;
-        var stale = _states.Count(state => state.IsStale);
-
-        _updatedLabel.Text = _isRefreshing
-            ? "Checking all providers..."
-            : displayTime is null
-                ? "Waiting for first refresh"
-                : stale > 0
-                    ? $"Updated {UsageFormatting.Age(displayTime.Value, DateTimeOffset.Now)}, {stale} stale"
-                    : $"Updated {UsageFormatting.Age(displayTime.Value, DateTimeOffset.Now)}";
+        return lastRefreshed is { } checkedAt
+            ? $"Checked {UsageFormatting.Age(checkedAt, now)}"
+            : "Waiting for first refresh";
     }
 
     private void UpdateRefreshAnimationState()
