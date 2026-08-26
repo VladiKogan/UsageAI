@@ -555,7 +555,7 @@ internal sealed class GeminiUsageClient : IUsageClient
                 continue;
             }
 
-            var groupName = GetString(group, "displayName");
+            var groupName = GetString(group, "displayName") ?? GetString(group, "name");
             if (string.IsNullOrWhiteSpace(groupName) ||
                 !group.TryGetProperty("buckets", out var buckets) ||
                 buckets.ValueKind != JsonValueKind.Array)
@@ -579,7 +579,8 @@ internal sealed class GeminiUsageClient : IUsageClient
                     (int)Math.Round((1.0 - remainingFraction) * 100.0, MidpointRounding.AwayFromZero),
                     0,
                     100);
-                var resetTime = ParseIsoDate(GetString(bucket, "resetTime"));
+                var resetTime = ParseIsoDate(
+                    GetString(bucket, "resetTime") ?? GetString(bucket, "reset_time"));
                 var window = ClassifyQuotaSummaryWindow(bucket);
 
                 parsed.Add((
@@ -696,10 +697,10 @@ internal sealed class GeminiUsageClient : IUsageClient
 
     private static QuotaSummaryWindow ClassifyQuotaSummaryWindow(JsonElement bucket)
     {
-        var displayName = GetString(bucket, "displayName");
+        var displayName = GetString(bucket, "displayName") ?? GetString(bucket, "name");
         var descriptor = string.Join(
             " ",
-            GetString(bucket, "bucketId"),
+            GetString(bucket, "bucketId") ?? GetString(bucket, "id"),
             displayName,
             GetString(bucket, "window")).ToLowerInvariant();
 
@@ -729,7 +730,7 @@ internal sealed class GeminiUsageClient : IUsageClient
 
     private static double? GetRemainingFraction(JsonElement bucket)
     {
-        var direct = GetDouble(bucket, "remainingFraction");
+        var direct = GetDouble(bucket, "remainingFraction") ?? GetDouble(bucket, "remaining_fraction");
         if (direct is not null)
         {
             return direct;
@@ -737,7 +738,7 @@ internal sealed class GeminiUsageClient : IUsageClient
 
         return bucket.TryGetProperty("remaining", out var remaining) &&
                remaining.ValueKind == JsonValueKind.Object
-            ? GetDouble(remaining, "remainingFraction")
+            ? GetDouble(remaining, "remainingFraction") ?? GetDouble(remaining, "remaining_fraction")
             : null;
     }
 

@@ -3095,7 +3095,7 @@ internal static class CoverageExpansionTests
 
     public static Task TestStalePresentationEdgesAsync()
     {
-        var now = new DateTimeOffset(2026, 8, 17, 12, 0, 0, TimeSpan.Zero);
+        var now = DateTimeOffset.Now;
         var snapshot = Snapshot("fixture", "Fixture", 64, now.AddHours(-3));
         var staleOne = new ProviderStatus(
             "fixture-one",

@@ -767,6 +767,73 @@ internal static class Program
         Equal(56, parsed.Metrics[1].UsedPercent);
         Null(AgyUsageProbe.ParseOutput("not JSON"));
 
+        var currentOutput =
+            """
+            {
+              "status": "SUCCESS",
+              "response": "Gemini Models: 81% remaining",
+              "command": {
+                "name": "usage",
+                "data": {
+                  "groups": [
+                    {
+                      "name": "Gemini Models",
+                      "buckets": [
+                        {
+                          "id": "gemini_5h",
+                          "name": "5-hour limit",
+                          "window": "5h",
+                          "remaining_fraction": 0.81,
+                          "reset_time": "2026-08-26T14:00:00Z"
+                        },
+                        {
+                          "id": "gemini_weekly",
+                          "name": "Weekly limit",
+                          "window": "7d",
+                          "remaining_fraction": 0.62,
+                          "reset_time": "2026-09-01T00:00:00Z"
+                        }
+                      ]
+                    },
+                    {
+                      "name": "Claude and GPT models",
+                      "buckets": [
+                        {
+                          "id": "other_5h",
+                          "window": "5h",
+                          "remaining_fraction": 1.2
+                        },
+                        {
+                          "id": "other_weekly",
+                          "window": "weekly",
+                          "remaining_fraction": -0.2
+                        }
+                      ]
+                    }
+                  ]
+                }
+              }
+            }
+            """;
+        var current = AgyUsageProbe.ParseOutput(currentOutput);
+        NotNull(current);
+        Equal("Antigravity", current!.Plan);
+        Equal(4, current.Metrics.Count);
+        Equal("Gemini Models (5-hour)", current.Metrics[0].Name);
+        Equal(19, current.Metrics[0].UsedPercent);
+        Equal(UsageMetricKind.Session, current.Metrics[0].Kind);
+        Equal("Gemini Models (Weekly)", current.Metrics[1].Name);
+        Equal(38, current.Metrics[1].UsedPercent);
+        NotNull(current.Metrics[1].ResetsAt);
+        Equal(0, current.Metrics[2].UsedPercent);
+        Equal(100, current.Metrics[3].UsedPercent);
+
+        var executablePaths = AgyUsageProbe.GetWellKnownExecutablePaths(
+            Path.Combine("C:\\", "Users", "example"),
+            Path.Combine("C:\\", "Users", "example", "AppData", "Local"));
+        Equal(Path.Combine("C:\\", "Users", "example", ".gemini", "bin", "agy.exe"), executablePaths[0]);
+        Equal(Path.Combine("C:\\", "Users", "example", "AppData", "Local", "agy", "bin", "agy.exe"), executablePaths[1]);
+
         var expected = new UsageSnapshot(
             "Antigravity",
             new[] { new UsageMetric("Gemini Models", UsageMetricKind.Rolling, 17) },

@@ -13,7 +13,7 @@ namespace UsageAI.Services;
 /// </summary>
 internal static class AgyUsageProbe
 {
-    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(8);
+    private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan ProcessDiscoveryTimeout = TimeSpan.FromSeconds(3);
     private const int MaxOutputCharacters = 262_144;
     private const int MaxErrorCharacters = 16_384;
@@ -201,10 +201,20 @@ internal static class AgyUsageProbe
             return fromPath;
         }
 
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
         var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        var wellKnown = Path.Combine(localAppData, "agy", "bin", "agy.exe");
-        return File.Exists(wellKnown) ? wellKnown : null;
+        return GetWellKnownExecutablePaths(userProfile, localAppData)
+            .FirstOrDefault(path => Path.IsPathFullyQualified(path) && File.Exists(path));
     }
+
+    internal static IReadOnlyList<string> GetWellKnownExecutablePaths(
+        string userProfile,
+        string localAppData) =>
+        new[]
+        {
+            Path.Combine(userProfile, ".gemini", "bin", "agy.exe"),
+            Path.Combine(localAppData, "agy", "bin", "agy.exe"),
+        };
 
     private static async Task<IReadOnlyList<OwnedPort>> DiscoverOwnedPortsAsync(
         int rootPid,
