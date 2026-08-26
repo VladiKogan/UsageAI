@@ -6,6 +6,20 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.9.0] - 2026-08-26
+
+### Changed
+
+- Google Gemini now reads quota from one long-lived Antigravity CLI `--hub` server instead of starting
+  `agy -p /usage` on every refresh. A running app no longer spawns a child process per poll, and the CLI
+  starts any configured MCP servers once per session rather than on every poll, which is what produced
+  transient console windows on Windows.
+
+### Removed
+
+- Dropped the Antigravity CLI port-discovery probe and its PowerShell helper. The service rejects the
+  request bodies it sent, so the HTTP query never produced a snapshot.
+
 ## [0.8.2] - 2026-08-26
 
 ### Fixed

@@ -838,6 +838,14 @@ internal static class Program
         True(startInfo.RedirectStandardInput);
         Equal("1", startInfo.Environment["CI"]);
         True(startInfo.ArgumentList.Contains("--print-timeout=12s"));
+
+        var hubStartInfo = AgyUsageProbe.CreateHubStartInfo(executablePaths[0], 51234, "TOKEN");
+        True(hubStartInfo.CreateNoWindow);
+        True(hubStartInfo.ArgumentList.Contains("--hub"));
+        True(hubStartInfo.ArgumentList.Contains("--hub-port=51234"));
+        // The sign-in lives in the CLI's default data directory, so the hub must not be redirected.
+        False(hubStartInfo.ArgumentList.Any(argument => argument.StartsWith("--app_data_dir", StringComparison.Ordinal)));
+        Equal("TOKEN", hubStartInfo.Environment["ANTIGRAVITY_CSRF_TOKEN"]);
         True(AgyUsageProbe.IsOwnedProcessName("agy"));
         True(AgyUsageProbe.IsOwnedProcessName("language_server_windows_x64"));
         False(AgyUsageProbe.IsOwnedProcessName("powershell"));

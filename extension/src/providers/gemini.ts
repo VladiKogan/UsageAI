@@ -1,4 +1,7 @@
+import type { ChildProcessWithoutNullStreams } from "node:child_process";
+import { randomUUID } from "node:crypto";
 import { access, readdir } from "node:fs/promises";
+import { createServer } from "node:net";
 import * as path from "node:path";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
@@ -31,6 +34,7 @@ interface GeminiCredentials {
 interface GeminiUsageDependencies {
   readonly fetchAntigravity: (signal?: AbortSignal) => Promise<UsageSnapshot | undefined>;
   readonly fetchAgy: (signal?: AbortSignal) => Promise<UsageSnapshot | undefined>;
+  readonly hasAgyHub?: () => boolean;
   readonly loadCredentials: () => Promise<GeminiCredentials>;
 }
 
@@ -57,10 +61,20 @@ export class GeminiUsageClient implements UsageClient {
   public constructor(private readonly dependencies: GeminiUsageDependencies = {
     fetchAntigravity: tryFetchAntigravitySnapshot,
     fetchAgy: tryFetchAgySnapshot,
+    hasAgyHub: hasActiveAgyHub,
     loadCredentials,
   }) {}
 
   public async getUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
+    // Once a hub is serving this session, prefer it: the Antigravity IDE probe costs a PowerShell
+    // child process on every refresh and reports the same quota buckets.
+    if (this.dependencies.hasAgyHub?.() === true) {
+      const hubbed = await this.dependencies.fetchAgy(signal);
+      if (hubbed) {
+        return hubbed;
+      }
+    }
+
     const antigravity = await this.dependencies.fetchAntigravity(signal);
     if (antigravity) {
       return antigravity;
@@ -339,7 +353,169 @@ export async function tryFetchAntigravitySnapshot(
   return undefined;
 }
 
+interface AgyHub {
+  readonly child: ChildProcessWithoutNullStreams;
+  readonly port: number;
+  readonly token: string;
+}
+
+const hubReadyTimeoutMs = 20_000;
+let activeHub: AgyHub | undefined;
+let pendingHub: Promise<AgyHub | undefined> | undefined;
+
+/**
+ * The Antigravity CLI serves the same quota summary from a long-lived `--hub` server. Reusing one hub
+ * for the session keeps refreshes free of child processes, which matters on Windows because `agy -p`
+ * boots every configured MCP server through `cmd.exe`, and those grandchildren can flash a console.
+ */
+async function ensureAgyHub(): Promise<AgyHub | undefined> {
+  if (activeHub && activeHub.child.exitCode === null && !activeHub.child.killed) {
+    return activeHub;
+  }
+  activeHub = undefined;
+  pendingHub ??= startAgyHub().finally(() => {
+    pendingHub = undefined;
+  });
+  return pendingHub;
+}
+
+async function startAgyHub(): Promise<AgyHub | undefined> {
+  const executable = await findAgyExecutable();
+  if (!executable) {
+    return undefined;
+  }
+  const port = await reserveLoopbackPort();
+  if (!port) {
+    return undefined;
+  }
+  // The hub authenticates callers with a token it reads from its own environment, so minting one here
+  // keeps the socket usable by this extension alone. `--app_data_dir` is deliberately omitted: the CLI's
+  // default data directory is the one holding the Antigravity sign-in.
+  const token = randomUUID();
+  const child = spawnSecure(
+    executable,
+    ["--hub", `--hub-port=${port}`],
+    ["ANTIGRAVITY_CLI_PATH", "GOOGLE_CLOUD_PROJECT", "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR", "SSL_CERT_FILE"],
+    { CI: "1", ANTIGRAVITY_CSRF_TOKEN: token },
+  );
+  child.stdin.end();
+  child.stdout.resume();
+  child.stderr.resume();
+  child.on("error", () => undefined);
+  child.once("exit", () => {
+    if (activeHub?.child === child) {
+      activeHub = undefined;
+    }
+  });
+
+  const deadline = Date.now() + hubReadyTimeoutMs;
+  while (Date.now() < deadline) {
+    if (child.exitCode !== null || child.signalCode !== null) {
+      return undefined;
+    }
+    if (await queryHubQuotaSummary(port, token) !== undefined) {
+      activeHub = { child, port, token };
+      return activeHub;
+    }
+    await abortableDelay(400);
+  }
+  try { child.kill(); } catch { /* It already exited. */ }
+  return undefined;
+}
+
+/** True while a hub started by this session is still running. */
+export function hasActiveAgyHub(): boolean {
+  return activeHub !== undefined && activeHub.child.exitCode === null && !activeHub.child.killed;
+}
+
+/** Frees the session's hub. Called from the extension's deactivate hook. */
+export function disposeAgyHub(): void {
+  const hub = activeHub;
+  activeHub = undefined;
+  if (!hub) {
+    return;
+  }
+  try { hub.child.kill(); } catch { /* It already exited. */ }
+}
+
+async function reserveLoopbackPort(): Promise<number | undefined> {
+  return new Promise<number | undefined>((resolve) => {
+    const server = createServer();
+    server.unref();
+    server.once("error", () => resolve(undefined));
+    server.listen(0, "127.0.0.1", () => {
+      const address = server.address();
+      const port = typeof address === "object" && address ? address.port : undefined;
+      server.close(() => resolve(port !== undefined && validPort(port) ? port : undefined));
+    });
+  });
+}
+
+async function requestHub<T = unknown>(
+  port: number,
+  token: string,
+  method: string,
+  signal?: AbortSignal,
+): Promise<T | undefined> {
+  try {
+    const response = await requestJson<T>(
+      `http://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/${method}`,
+      {
+        method: "POST",
+        allowedHosts: ["127.0.0.1"],
+        allowLoopbackPlaintext: true,
+        timeoutMs: 5_000,
+        headers: {
+          "Connect-Protocol-Version": "1",
+          "X-Codeium-Csrf-Token": token,
+          "Content-Type": "application/json",
+        },
+        // This service rejects unknown request fields, and both calls take no arguments.
+        body: "{}",
+        ...(signal ? { signal } : {}),
+      },
+    );
+    return response.status >= 200 && response.status < 300 ? response.data : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+async function queryHubQuotaSummary(
+  port: number,
+  token: string,
+  signal?: AbortSignal,
+): Promise<readonly UsageMetric[] | undefined> {
+  const data = await requestHub(port, token, "RetrieveUserQuotaSummary", signal);
+  if (data === undefined) {
+    return undefined;
+  }
+  const metrics = parseAntigravityQuotaSummary(data);
+  return metrics.length > 0 ? metrics : undefined;
+}
+
 async function tryFetchAgySnapshot(signal?: AbortSignal): Promise<UsageSnapshot | undefined> {
+  const hub = await ensureAgyHub();
+  if (hub) {
+    const metrics = await queryHubQuotaSummary(hub.port, hub.token, signal);
+    if (metrics) {
+      const status = parseAntigravityUserStatus(await requestHub(hub.port, hub.token, "GetUserStatus", signal));
+      return status
+        ? { ...status, metrics: mergeQuotaSummary(status.metrics, metrics) }
+        : {
+          plan: "Antigravity",
+          metrics,
+          fetchedAt: new Date().toISOString(),
+          providerId: "gemini",
+          providerName: "Google Gemini",
+        };
+    }
+  }
+  return tryFetchAgyPrintSnapshot(signal);
+}
+
+/** Fallback for CLI builds without `--hub`: one short-lived `agy -p /usage` read. */
+async function tryFetchAgyPrintSnapshot(signal?: AbortSignal): Promise<UsageSnapshot | undefined> {
   const executable = await findAgyExecutable();
   if (!executable) {
     return undefined;
@@ -352,7 +528,6 @@ async function tryFetchAgySnapshot(signal?: AbortSignal): Promise<UsageSnapshot 
     { CI: "1" },
   );
   child.stdin.end();
-  const ownedPids = new Set<number>([child.pid ?? 0].filter((pid) => pid > 0));
   let stdout = "";
   child.stdout.setEncoding("utf8");
   child.stderr.setEncoding("utf8");
@@ -369,36 +544,18 @@ async function tryFetchAgySnapshot(signal?: AbortSignal): Promise<UsageSnapshot 
     signal?.reason instanceof Error ? signal.reason : new Error("Operation cancelled."),
   );
   signal?.addEventListener("abort", abortFromCaller, { once: true });
-  const deadline = Date.now() + 15_000;
   try {
-    while (Date.now() < deadline && !probeController.signal.aborted) {
-      if (child.pid) {
-        const candidates = await discoverManagedAgyPorts(child.pid);
-        candidates.forEach(({ pid }) => ownedPids.add(pid));
-        for (const port of [...new Set(candidates.map(({ port }) => port).filter(validPort))].slice(0, 32)) {
-          const snapshot = await queryAgyPort(port, probeController.signal);
-          if (snapshot) {
-            return snapshot;
-          }
-          if (probeController.signal.aborted) {
-            break;
-          }
-        }
-      }
-
-      if (child.exitCode !== null) {
-        break;
-      }
-      await abortableDelay(250, probeController.signal);
-    }
-  } catch (error) {
-    if (signal?.aborted) {
-      throw error;
-    }
+    await new Promise<void>((resolve) => {
+      child.once("exit", () => resolve());
+      child.once("error", () => resolve());
+      probeController.signal.addEventListener("abort", () => resolve(), { once: true });
+    });
   } finally {
     clearTimeout(timeout);
     signal?.removeEventListener("abort", abortFromCaller);
-    terminateOwnedAgy(child.pid, ownedPids);
+    if (child.exitCode === null) {
+      try { child.kill(); } catch { /* It already exited. */ }
+    }
   }
 
   return parseAgyUsageOutput(stdout);
@@ -453,139 +610,6 @@ export function agyExecutableCandidates(): readonly string[] {
   return process.platform === "win32"
     ? [extensionBackend, path.join(process.env.LOCALAPPDATA ?? "", "agy", "bin", executable)]
     : [extensionBackend, path.join(userHome(), ".local", "bin", executable), "/opt/homebrew/bin/agy", "/usr/local/bin/agy"];
-}
-
-async function discoverManagedAgyPorts(rootPid: number): Promise<Array<{ readonly pid: number; readonly port: number }>> {
-  if (process.platform === "win32") {
-    const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
-    const powershell = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
-    try {
-      const script = `$root=${rootPid};$all=Get-CimInstance Win32_Process;$ids=[System.Collections.Generic.HashSet[int]]::new();` +
-        "$null=$ids.Add($root);do{$changed=$false;foreach($p in $all){if($ids.Contains([int]$p.ParentProcessId)-and$ids.Add([int]$p.ProcessId)){$changed=$true}}}while($changed);" +
-        "foreach($owner in $ids){\"P`t$owner\";Get-NetTCPConnection -OwningProcess $owner -State Listen -ErrorAction SilentlyContinue|ForEach-Object{\"L`t$owner`t$($_.LocalPort)\"}}";
-      const result = await collectProcessOutput(
-        spawnSecure(powershell, ["-NoProfile", "-NonInteractive", "-Command", script]),
-        3_000,
-        262_144,
-      );
-      return parseOwnedPortLines(result.stdout);
-    } catch {
-      return [];
-    }
-  }
-
-  const ps = await findExecutable(["ps"]);
-  if (!ps) {
-    return [];
-  }
-  try {
-    const result = await collectProcessOutput(
-      spawnSecure(ps, ["-ax", "-ww", "-o", "pid=,ppid=,command="]),
-      3_000,
-      262_144,
-    );
-    const processes = result.stdout.split(/\r?\n/).flatMap((line) => {
-      const match = line.match(/^\s*(\d+)\s+(\d+)\s+(.*)$/);
-      return match?.[1] && match[2] ? [{ pid: Number(match[1]), parentPid: Number(match[2]) }] : [];
-    });
-    const pids = new Set<number>([rootPid]);
-    let changed = true;
-    while (changed) {
-      changed = false;
-      for (const candidate of processes) {
-        if (pids.has(candidate.parentPid) && !pids.has(candidate.pid)) {
-          pids.add(candidate.pid);
-          changed = true;
-        }
-      }
-    }
-    const candidates: Array<{ readonly pid: number; readonly port: number }> = [];
-    for (const pid of [...pids].slice(0, 16)) {
-      for (const port of await listeningPorts(pid)) {
-        candidates.push({ pid, port });
-      }
-      if (!candidates.some((candidate) => candidate.pid === pid)) {
-        candidates.push({ pid, port: 0 });
-      }
-    }
-    return candidates;
-  } catch {
-    return [];
-  }
-}
-
-function parseOwnedPortLines(output: string): Array<{ readonly pid: number; readonly port: number }> {
-  const pids = new Set<number>();
-  const candidates: Array<{ readonly pid: number; readonly port: number }> = [];
-  for (const line of output.split(/\r?\n/)) {
-    const parts = line.trim().split("\t");
-    if (parts[0] === "P" && parts[1]) {
-      const pid = Number(parts[1]);
-      if (Number.isInteger(pid) && pid > 0) pids.add(pid);
-    } else if (parts[0] === "L" && parts[1] && parts[2]) {
-      const pid = Number(parts[1]);
-      const port = Number(parts[2]);
-      if (Number.isInteger(pid) && pid > 0 && validPort(port)) {
-        pids.add(pid);
-        candidates.push({ pid, port });
-      }
-    }
-  }
-  for (const pid of pids) {
-    if (!candidates.some((candidate) => candidate.pid === pid)) {
-      candidates.push({ pid, port: 0 });
-    }
-  }
-  return candidates;
-}
-
-async function queryAgyPort(port: number, signal?: AbortSignal): Promise<UsageSnapshot | undefined> {
-  try {
-    const statusResponse = await requestJson(
-      `https://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/GetUserStatus`,
-      {
-        method: "POST",
-        allowedHosts: ["127.0.0.1"],
-        allowLoopbackSelfSigned: true,
-        timeoutMs: 2_000,
-        headers: { "Connect-Protocol-Version": "1", "Content-Type": "application/json" },
-        body: JSON.stringify({
-          metadata: { ideName: "antigravity", extensionName: "antigravity", ideVersion: "unknown", locale: "en" },
-        }),
-        ...(signal ? { signal } : {}),
-      },
-    ).catch(() => undefined);
-    const status = statusResponse && statusResponse.status >= 200 && statusResponse.status < 300
-      ? parseAntigravityUserStatus(statusResponse.data)
-      : undefined;
-    const summaryResponse = await requestJson(
-      `https://127.0.0.1:${port}/exa.language_server_pb.LanguageServerService/RetrieveUserQuotaSummary`,
-      {
-        method: "POST",
-        allowedHosts: ["127.0.0.1"],
-        allowLoopbackSelfSigned: true,
-        timeoutMs: 2_000,
-        headers: { "Connect-Protocol-Version": "1", "Content-Type": "application/json" },
-        body: JSON.stringify({ request: {}, forceRefresh: false }),
-        ...(signal ? { signal } : {}),
-      },
-    ).catch(() => undefined);
-    const metrics = summaryResponse && summaryResponse.status >= 200 && summaryResponse.status < 300
-      ? parseAntigravityQuotaSummary(summaryResponse.data)
-      : [];
-    if (status) {
-      return metrics.length > 0 ? { ...status, metrics: mergeQuotaSummary(status.metrics, metrics) } : status;
-    }
-    return metrics.length > 0 ? {
-      plan: "Antigravity",
-      metrics,
-      fetchedAt: new Date().toISOString(),
-      providerId: "gemini",
-      providerName: "Google Gemini",
-    } : undefined;
-  } catch {
-    return undefined;
-  }
 }
 
 export function parseAgyUsageOutput(output: string): UsageSnapshot | undefined {
@@ -659,19 +683,6 @@ function findNestedString(value: unknown, names: readonly string[]): string | un
     }
   }
   return undefined;
-}
-
-function terminateOwnedAgy(rootPid: number | undefined, ownedPids: ReadonlySet<number>): void {
-  for (const pid of [...ownedPids].filter((value) => value > 0 && value !== process.pid).reverse()) {
-    try {
-      process.kill(pid);
-    } catch {
-      // It already exited or is no longer accessible.
-    }
-  }
-  if (rootPid && !ownedPids.has(rootPid)) {
-    try { process.kill(rootPid); } catch { /* It already exited. */ }
-  }
 }
 
 function abortableDelay(milliseconds: number, signal?: AbortSignal): Promise<void> {
@@ -859,7 +870,7 @@ async function detectAntigravityProcesses(): Promise<AntigravityProcess[]> {
       powershell = await findExecutable(["powershell.exe"]) ?? preferred;
     }
     const script = "Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*language_server_windows*' -or $_.Name -like 'language_server.exe' } | ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }";
-    const result = await collectProcessOutput(spawnSecure(powershell, ["-NoProfile", "-Command", script]), 3_000, 262_144);
+    const result = await collectProcessOutput(spawnSecure(powershell, ["-NoProfile", "-NonInteractive", "-Command", script]), 3_000, 262_144);
     return parseAntigravityProcessLines(result.stdout);
   }
 
@@ -903,7 +914,7 @@ async function listeningPorts(pid: number): Promise<number[]> {
     const powershell = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
     try {
       const script = `Get-NetTCPConnection -OwningProcess ${pid} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort`;
-      const result = await collectProcessOutput(spawnSecure(powershell, ["-NoProfile", "-Command", script]), 3_000, 32_768);
+      const result = await collectProcessOutput(spawnSecure(powershell, ["-NoProfile", "-NonInteractive", "-Command", script]), 3_000, 32_768);
       return [...new Set(result.stdout.split(/\s+/).map(Number).filter(validPort))];
     } catch {
       return [];

@@ -2,6 +2,19 @@
 
 ## Unreleased
 
+## 0.1.13
+
+- Read Google Gemini quota from one long-lived Antigravity CLI `--hub` server for the session instead of
+  starting `agy -p /usage` on every refresh. Refreshes now spawn no child process, and the CLI starts any
+  configured MCP servers through `cmd.exe` once per session rather than on every refresh, which is what
+  produced transient console windows on Windows.
+- Skipped the Antigravity process probe, and the PowerShell child process it costs, while a hub is
+  serving the session.
+- Removed the Antigravity CLI port-discovery probe: the service rejects the request bodies it sent, so
+  the HTTP query never produced a snapshot.
+- Passed `-NonInteractive` to the remaining PowerShell process and listening-port queries so a prompt can
+  never block a background refresh.
+
 ## 0.1.12
 
 - Prevented background Gemini refreshes from preferring the standalone `agy` on `PATH` or allowing

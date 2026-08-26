@@ -1,5 +1,8 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Net;
+using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using UsageAI.Models;
@@ -8,17 +11,214 @@ namespace UsageAI.Services;
 
 /// <summary>
 /// Reads quota through Google's official Antigravity CLI without owning its credentials.
-/// The CLI is short-lived, stdin is closed, output is bounded, and only processes created
-/// by this probe are eligible for cleanup.
+/// A single long-lived <c>--hub</c> server answers every refresh over loopback, so a running app
+/// spawns no child process per poll; short-lived <c>agy -p /usage</c> reads remain the fallback for
+/// CLI builds without a hub. Output is bounded and only processes created here are cleaned up.
 /// </summary>
 internal static class AgyUsageProbe
 {
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(15);
-    private static readonly TimeSpan ProcessDiscoveryTimeout = TimeSpan.FromSeconds(3);
+    private static readonly TimeSpan HubReadyTimeout = TimeSpan.FromSeconds(20);
     private const int MaxOutputCharacters = 262_144;
     private const int MaxErrorCharacters = 16_384;
 
+    private static readonly SemaphoreSlim HubGate = new(1, 1);
+    private static Process? _hubProcess;
+    private static HttpClient? _hubClient;
+    private static ushort _hubPort;
+    private static string _hubToken = string.Empty;
+
     public static async Task<UsageSnapshot?> TryFetchAsync(CancellationToken cancellationToken)
+    {
+        var snapshot = await TryFetchFromHubAsync(cancellationToken);
+        if (snapshot is not null)
+        {
+            return snapshot;
+        }
+
+        return await TryFetchFromPrintAsync(cancellationToken);
+    }
+
+    /// <summary>Stops the shared hub. Called when the application shuts down.</summary>
+    public static void DisposeHub()
+    {
+        HubGate.Wait();
+        try
+        {
+            ProcessSecurity.TryKill(_hubProcess);
+            _hubProcess?.Dispose();
+            _hubProcess = null;
+            _hubClient?.Dispose();
+            _hubClient = null;
+            _hubPort = 0;
+            _hubToken = string.Empty;
+        }
+        finally
+        {
+            HubGate.Release();
+        }
+    }
+
+    private static async Task<UsageSnapshot?> TryFetchFromHubAsync(CancellationToken cancellationToken)
+    {
+        var client = await EnsureHubAsync(cancellationToken);
+        if (client is null)
+        {
+            return null;
+        }
+
+        // This build of the service rejects unknown request fields, and both calls take no arguments.
+        using var summary = await TryPostAsync(client, "RetrieveUserQuotaSummary", "{}", cancellationToken);
+        if (summary is null)
+        {
+            return null;
+        }
+
+        var metrics = GeminiUsageClient.ParseQuotaSummaryResponse(summary.RootElement);
+        if (metrics.Count == 0)
+        {
+            return null;
+        }
+
+        using var status = await TryPostAsync(client, "GetUserStatus", "{}", cancellationToken);
+        var snapshot = status is null
+            ? null
+            : GeminiUsageClient.ParseAntigravityUserStatus(status.RootElement);
+        return snapshot is null
+            ? CreateSnapshot(metrics, null, null)
+            : snapshot with
+            {
+                Metrics = GeminiUsageClient.MergeAntigravityQuotaSummaryMetrics(snapshot.Metrics, metrics),
+            };
+    }
+
+    private static async Task<HttpClient?> EnsureHubAsync(CancellationToken cancellationToken)
+    {
+        await HubGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_hubClient is not null && _hubProcess is { HasExited: false })
+            {
+                return _hubClient;
+            }
+
+            ProcessSecurity.TryKill(_hubProcess);
+            _hubProcess?.Dispose();
+            _hubProcess = null;
+            _hubClient?.Dispose();
+            _hubClient = null;
+
+            var executable = FindExecutable();
+            if (executable is null || !TryReserveLoopbackPort(out var port))
+            {
+                return null;
+            }
+
+            // The hub authenticates callers with a token read from its own environment, so minting one
+            // here keeps the socket usable by this process alone.
+            var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
+            var process = Process.Start(CreateHubStartInfo(executable, port, token));
+            if (process is null)
+            {
+                return null;
+            }
+
+            process.StandardInput.Close();
+            _ = ProcessSecurity.DrainTextAsync(process.StandardOutput, MaxErrorCharacters, CancellationToken.None);
+            _ = ProcessSecurity.DrainTextAsync(process.StandardError, MaxErrorCharacters, CancellationToken.None);
+
+            var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            _hubPort = port;
+            _hubToken = token;
+            using var ready = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            ready.CancelAfter(HubReadyTimeout);
+            try
+            {
+                while (!ready.IsCancellationRequested && !process.HasExited)
+                {
+                    using var probe = await TryPostAsync(client, "RetrieveUserQuotaSummary", "{}", ready.Token);
+                    if (probe is not null)
+                    {
+                        _hubProcess = process;
+                        _hubClient = client;
+                        return client;
+                    }
+
+                    await Task.Delay(TimeSpan.FromMilliseconds(400), ready.Token);
+                }
+            }
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+            {
+                // Fall through to cleanup: the hub never became ready in time.
+            }
+
+            ProcessSecurity.TryKill(process);
+            process.Dispose();
+            client.Dispose();
+            _hubPort = 0;
+            _hubToken = string.Empty;
+            return null;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return null;
+        }
+        finally
+        {
+            HubGate.Release();
+        }
+    }
+
+    internal static ProcessStartInfo CreateHubStartInfo(string executable, ushort port, string token)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = executable,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        };
+        ProcessSecurity.ApplyMinimalEnvironment(
+            startInfo,
+            "ANTIGRAVITY_CLI_PATH",
+            "GOOGLE_CLOUD_PROJECT",
+            "NODE_EXTRA_CA_CERTS",
+            "SSL_CERT_DIR",
+            "SSL_CERT_FILE");
+        startInfo.Environment["CI"] = "1";
+        startInfo.Environment["ANTIGRAVITY_CSRF_TOKEN"] = token;
+        startInfo.ArgumentList.Add("--hub");
+        // `--app_data_dir` is deliberately omitted: the CLI's default data directory holds the sign-in.
+        startInfo.ArgumentList.Add(
+            string.Create(CultureInfo.InvariantCulture, $"--hub-port={port}"));
+        return startInfo;
+    }
+
+    private static bool TryReserveLoopbackPort(out ushort port)
+    {
+        port = 0;
+        try
+        {
+            var listener = new TcpListener(IPAddress.Loopback, 0);
+            listener.Start();
+            port = (ushort)((IPEndPoint)listener.LocalEndpoint).Port;
+            listener.Stop();
+            return port != 0;
+        }
+        catch (SocketException)
+        {
+            return false;
+        }
+    }
+
+    private static async Task<UsageSnapshot?> TryFetchFromPrintAsync(CancellationToken cancellationToken)
     {
         var executable = FindExecutable();
         if (executable is null)
@@ -49,42 +249,7 @@ internal static class AgyUsageProbe
                 MaxErrorCharacters,
                 CancellationToken.None);
 
-            using var handler = new HttpClientHandler
-            {
-                ServerCertificateCustomValidationCallback = (request, _, _, _) =>
-                    request.RequestUri?.Host is "127.0.0.1" or "localhost",
-            };
-            using var client = new HttpClient(handler) { Timeout = TimeSpan.FromSeconds(2) };
-
-            while (!timeout.IsCancellationRequested)
-            {
-                var candidates = await DiscoverOwnedPortsAsync(
-                    process.Id,
-                    timeout.Token);
-                foreach (var candidate in candidates)
-                {
-                    ownedProcessIds.Add(candidate.Pid);
-                }
-
-                foreach (var port in candidates
-                             .Select(candidate => candidate.Port)
-                             .Distinct()
-                             .Take(32))
-                {
-                    var snapshot = await TryQueryPortAsync(client, port, timeout.Token);
-                    if (snapshot is not null)
-                    {
-                        return snapshot;
-                    }
-                }
-
-                if (process.HasExited)
-                {
-                    break;
-                }
-
-                await Task.Delay(TimeSpan.FromMilliseconds(250), timeout.Token);
-            }
+            await process.WaitForExitAsync(timeout.Token);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
@@ -232,156 +397,23 @@ internal static class AgyUsageProbe
             Path.Combine(localAppData, "agy", "bin", "agy.exe"),
         };
 
-    private static async Task<IReadOnlyList<OwnedPort>> DiscoverOwnedPortsAsync(
-        int rootPid,
-        CancellationToken cancellationToken)
-    {
-        var powershell = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.System),
-            "WindowsPowerShell",
-            "v1.0",
-            "powershell.exe");
-        if (!File.Exists(powershell))
-        {
-            return Array.Empty<OwnedPort>();
-        }
-
-        // rootPid is an integer produced by Process.Start, so interpolating it cannot alter the script.
-        var script =
-            $"$root={rootPid};$all=Get-CimInstance Win32_Process;$ids=[System.Collections.Generic.HashSet[int]]::new();" +
-            "$null=$ids.Add($root);do{$changed=$false;foreach($p in $all){if($ids.Contains([int]$p.ParentProcessId)-and$ids.Add([int]$p.ProcessId)){$changed=$true}}}while($changed);" +
-            "foreach($owner in $ids){\"P`t$owner\";Get-NetTCPConnection -OwningProcess $owner -State Listen -ErrorAction SilentlyContinue|ForEach-Object{\"L`t$owner`t$($_.LocalPort)\"}}";
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = powershell,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-        };
-        ProcessSecurity.ApplyMinimalEnvironment(startInfo);
-        startInfo.ArgumentList.Add("-NoProfile");
-        startInfo.ArgumentList.Add("-NonInteractive");
-        startInfo.ArgumentList.Add("-Command");
-        startInfo.ArgumentList.Add(script);
-
-        using var process = Process.Start(startInfo);
-        if (process is null)
-        {
-            return Array.Empty<OwnedPort>();
-        }
-
-        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        timeout.CancelAfter(ProcessDiscoveryTimeout);
-        var outputTask = ProcessSecurity.DrainTextAsync(
-            process.StandardOutput,
-            MaxOutputCharacters,
-            timeout.Token);
-        var errorTask = ProcessSecurity.DrainTextAsync(
-            process.StandardError,
-            MaxErrorCharacters,
-            timeout.Token);
-        try
-        {
-            await process.WaitForExitAsync(timeout.Token);
-            var output = await outputTask;
-            await errorTask;
-            return ParseOwnedPorts(output);
-        }
-        finally
-        {
-            ProcessSecurity.TryKill(process);
-        }
-    }
-
-    private static List<OwnedPort> ParseOwnedPorts(string output)
-    {
-        var ownedPids = new HashSet<int>();
-        var ports = new List<OwnedPort>();
-        foreach (var line in output.Split('\n'))
-        {
-            var parts = line.Trim().Split('\t');
-            if (parts.Length == 2 && parts[0] == "P" && int.TryParse(parts[1], out var pid))
-            {
-                ownedPids.Add(pid);
-            }
-            else if (parts.Length == 3 && parts[0] == "L" &&
-                     int.TryParse(parts[1], out pid) &&
-                     ushort.TryParse(parts[2], NumberStyles.None, CultureInfo.InvariantCulture, out var port))
-            {
-                ownedPids.Add(pid);
-                ports.Add(new OwnedPort(pid, port));
-            }
-        }
-
-        // Preserve discovered child IDs for cleanup even before they bind a port.
-        ports.AddRange(ownedPids
-            .Where(pid => ports.All(candidate => candidate.Pid != pid))
-            .Select(pid => new OwnedPort(pid, 0)));
-        return ports;
-    }
-
-    private static async Task<UsageSnapshot?> TryQueryPortAsync(
-        HttpClient client,
-        ushort port,
-        CancellationToken cancellationToken)
-    {
-        if (port == 0)
-        {
-            return null;
-        }
-
-        var status = await TryPostAsync(
-            client,
-            port,
-            "GetUserStatus",
-            "{\"metadata\":{\"ideName\":\"antigravity\",\"extensionName\":\"antigravity\",\"ideVersion\":\"unknown\",\"locale\":\"en\"}}",
-            cancellationToken);
-        var snapshot = status is null
-            ? null
-            : GeminiUsageClient.ParseAntigravityUserStatus(status.RootElement);
-
-        var summary = await TryPostAsync(
-            client,
-            port,
-            "RetrieveUserQuotaSummary",
-            "{\"request\":{},\"forceRefresh\":false}",
-            cancellationToken);
-        var metrics = summary is null
-            ? Array.Empty<UsageMetric>()
-            : GeminiUsageClient.ParseQuotaSummaryResponse(summary.RootElement);
-
-        status?.Dispose();
-        summary?.Dispose();
-
-        if (snapshot is not null)
-        {
-            return metrics.Count == 0
-                ? snapshot
-                : snapshot with
-                {
-                    Metrics = GeminiUsageClient.MergeAntigravityQuotaSummaryMetrics(
-                        snapshot.Metrics,
-                        metrics),
-                };
-        }
-
-        return metrics.Count == 0 ? null : CreateSnapshot(metrics, null, null);
-    }
-
     private static async Task<JsonDocument?> TryPostAsync(
         HttpClient client,
-        ushort port,
         string method,
         string body,
         CancellationToken cancellationToken)
     {
         try
         {
+            // The hub listens on loopback without TLS. It is reachable only from this machine and is
+            // gated by the token minted for this process.
             using var request = new HttpRequestMessage(
                 HttpMethod.Post,
-                $"https://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/{method}");
+                string.Create(
+                    CultureInfo.InvariantCulture,
+                    $"http://127.0.0.1:{_hubPort}/exa.language_server_pb.LanguageServerService/{method}"));
             request.Headers.Add("Connect-Protocol-Version", "1");
+            request.Headers.Add("X-Codeium-Csrf-Token", _hubToken);
             request.Content = new StringContent(body, Encoding.UTF8, "application/json");
             using var response = await client.SendAsync(
                 request,

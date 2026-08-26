@@ -341,3 +341,33 @@ test("Antigravity discovery binds tokens to revalidated process-owned ports", as
   });
   assert.equal(unavailable, undefined);
 });
+
+test("Gemini prefers a running agy hub over the Antigravity process probe", async () => {
+  const hubbed = {
+    plan: "Google AI Pro",
+    metrics: [{ name: "Gemini Models (Weekly)", kind: "rolling" as const, usedPercent: 1 }],
+    fetchedAt: new Date().toISOString(),
+    providerId: "gemini",
+    providerName: "Google Gemini",
+  };
+  let antigravityCalls = 0;
+  const withHub = new GeminiUsageClient({
+    fetchAntigravity: async () => { antigravityCalls += 1; return undefined; },
+    fetchAgy: async () => hubbed,
+    hasAgyHub: () => true,
+    loadCredentials: async () => { throw new Error("No Gemini CLI credentials."); },
+  });
+
+  assert.equal(await withHub.getUsage(), hubbed);
+  // The probe costs a PowerShell child process, so a live hub must skip it entirely.
+  assert.equal(antigravityCalls, 0);
+
+  const withoutHub = new GeminiUsageClient({
+    fetchAntigravity: async () => { antigravityCalls += 1; return undefined; },
+    fetchAgy: async () => hubbed,
+    hasAgyHub: () => false,
+    loadCredentials: async () => { throw new Error("No Gemini CLI credentials."); },
+  });
+  assert.equal(await withoutHub.getUsage(), hubbed);
+  assert.equal(antigravityCalls, 1);
+});

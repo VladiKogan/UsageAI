@@ -1285,7 +1285,7 @@ internal sealed class GeminiUsageClient : IUsageClient
                 var startInfo = new ProcessStartInfo
                 {
                     FileName = powershellExe,
-                    Arguments = "-NoProfile -ExecutionPolicy Bypass -Command \"Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*language_server_windows*' -or $_.Name -like 'language_server.exe' } | ForEach-Object { \\\"$($_.ProcessId)`t$($_.CommandLine)\\\" }\"",
+                    Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*language_server_windows*' -or $_.Name -like 'language_server.exe' } | ForEach-Object { \\\"$($_.ProcessId)`t$($_.CommandLine)\\\" }\"",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardOutput = true,
@@ -1414,7 +1414,7 @@ internal sealed class GeminiUsageClient : IUsageClient
                 var startInfo = new ProcessStartInfo
                 {
                     FileName = powershellExe,
-                    Arguments = $"-NoProfile -ExecutionPolicy Bypass -Command \"Get-NetTCPConnection -OwningProcess {pid} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort\"",
+                    Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"Get-NetTCPConnection -OwningProcess {pid} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort\"",
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardOutput = true,

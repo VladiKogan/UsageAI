@@ -82,6 +82,18 @@ test("JSON requests enforce endpoint and response boundaries", async () => {
     requestJson("https://user:secret@api.example.com/usage", { allowedHosts: ["api.example.com"] }),
     /cannot contain credentials/i,
   );
+  // Plain HTTP stays blocked unless the caller opts in, and only for a loopback address.
+  await assert.rejects(
+    requestJson("http://127.0.0.1:1/usage", { allowedHosts: ["127.0.0.1"] }),
+    /unexpected provider endpoint/i,
+  );
+  await assert.rejects(
+    requestJson("http://api.example.com/usage", {
+      allowedHosts: ["api.example.com"],
+      allowLoopbackPlaintext: true,
+    }),
+    /unexpected provider endpoint/i,
+  );
 
   try {
     const fixture = installHttpsFixture({

@@ -30,6 +30,12 @@ export interface JsonRequestOptions {
   readonly signal?: AbortSignal;
   readonly allowedHosts: readonly string[];
   readonly allowLoopbackSelfSigned?: boolean;
+  /**
+   * Permits plain HTTP, and only against a loopback address. The Antigravity CLI hub we spawn
+   * listens on 127.0.0.1 without TLS; loopback TLS was already unverified, so this grants no
+   * reach that `allowLoopbackSelfSigned` did not.
+   */
+  readonly allowLoopbackPlaintext?: boolean;
 }
 
 export async function requestJson<T = unknown>(
@@ -37,7 +43,10 @@ export async function requestJson<T = unknown>(
   options: JsonRequestOptions,
 ): Promise<JsonResponse<T>> {
   const url = rawUrl instanceof URL ? rawUrl : new URL(rawUrl);
-  if (url.protocol !== "https:" || !options.allowedHosts.includes(url.hostname)) {
+  const loopback = url.hostname === "127.0.0.1" || url.hostname === "localhost";
+  const plaintextAllowed = options.allowLoopbackPlaintext === true && loopback;
+  if ((url.protocol !== "https:" && !(plaintextAllowed && url.protocol === "http:")) ||
+      !options.allowedHosts.includes(url.hostname)) {
     throw new Error("Blocked an unexpected provider endpoint.");
   }
   if (url.username || url.password) {
@@ -47,7 +56,7 @@ export async function requestJson<T = unknown>(
   const body = options.body;
   const headers: Record<string, string> = {
     Accept: "application/json",
-    "User-Agent": "UsageAI-VSCode/0.1.12",
+    "User-Agent": "UsageAI-VSCode/0.1.13",
     ...options.headers,
   };
   if (body !== undefined) {
@@ -55,11 +64,11 @@ export async function requestJson<T = unknown>(
   }
 
   return new Promise<JsonResponse<T>>((resolve, reject) => {
-    const isLoopback = url.hostname === "127.0.0.1" || url.hostname === "localhost";
-    const request = https.request(url, {
+    const transport = url.protocol === "http:" ? http : https;
+    const request = transport.request(url, {
       method: options.method ?? "GET",
       headers,
-      agent: options.allowLoopbackSelfSigned && isLoopback
+      agent: options.allowLoopbackSelfSigned && loopback && url.protocol === "https:"
         ? new https.Agent({ rejectUnauthorized: false })
         : undefined,
     }, (response) => {

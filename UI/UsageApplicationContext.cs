@@ -507,6 +507,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
             _popup.Dispose();
             _service.Dispose();
             _currentIcon?.Dispose();
+            AgyUsageProbe.DisposeHub();
         }
 
         base.Dispose(disposing);

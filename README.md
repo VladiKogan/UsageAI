@@ -133,9 +133,11 @@ UsageAI reads the login your tools already made, and nothing else:
 - 🗑️ **Your history is yours to delete** — one button in Settings.
 
 For Gemini, UsageAI first reuses a running Antigravity language server. If none is available, it
-briefly invokes Google's official `agy` CLI in read-only `/usage` mode with closed stdin, bounded
-output, and a fifteen-second deadline. This includes the backend automatically installed by Google's
-official Antigravity VS Code extension, whose unified sign-in keeps working after VS Code closes.
+starts one long-lived `agy --hub` server on a loopback port and reads quota from it for the rest of
+the session, so refreshes launch no child process of their own. This includes the backend
+automatically installed by Google's official Antigravity VS Code extension, whose unified sign-in
+keeps working after VS Code closes. Should that CLI build predate `--hub`, UsageAI falls back to a
+short read-only `agy -p /usage` run with closed stdin, bounded output, and a fifteen-second deadline.
 UsageAI never reads or writes Antigravity's credential store; the official CLI remains the sole owner
 of that login. A failed `agy` cold start is skipped while a healthy Gemini CLI fallback remains
 available. If both paths are stale, the next refresh retries `agy` immediately and keeps the last

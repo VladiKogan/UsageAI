@@ -30,7 +30,16 @@ internal static class Program
 
         if (HasFlag(args, "--diagnose"))
         {
-            RunDiagnosticsAsync(args).GetAwaiter().GetResult();
+            try
+            {
+                RunDiagnosticsAsync(args).GetAwaiter().GetResult();
+            }
+            finally
+            {
+                // A one-shot diagnostic must not leave the shared Antigravity hub running.
+                AgyUsageProbe.DisposeHub();
+            }
+
             return;
         }
 

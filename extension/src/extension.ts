@@ -9,7 +9,7 @@ import {
 import { ClaudeUsageClient } from "./providers/claude";
 import { CodexUsageClient } from "./providers/codex";
 import { CopilotUsageClient } from "./providers/copilot";
-import { GeminiUsageClient } from "./providers/gemini";
+import { disposeAgyHub, GeminiUsageClient } from "./providers/gemini";
 import { UsageRefreshService } from "./refresh-service";
 import { StatusBarController } from "./status-bar";
 
@@ -84,7 +84,9 @@ export function activate(context: vscode.ExtensionContext): void {
 }
 
 export function deactivate(): void {
-  // VS Code disposes the subscriptions registered by activate.
+  // VS Code disposes the subscriptions registered by activate, but the Antigravity CLI hub is a child
+  // process this extension owns for the whole session.
+  disposeAgyHub();
 }
 
 export function sanitizeProviderIds(values: readonly string[]): UsageProviderId[] {
