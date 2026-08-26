@@ -17,6 +17,8 @@ import { getArray, getNumber, getObject, getString, isObject, parseDate } from "
 const quotaEndpoint = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
 const codeAssistEndpoint = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
 const tokenRefreshEndpoint = "https://oauth2.googleapis.com/token";
+const notSignedInMessage = "Google Gemini is not signed in. Run `agy` to sign in, then refresh.";
+const signInAgainMessage = "Google Gemini sign-in has expired. Run `agy` to sign in again, then refresh.";
 
 interface GeminiCredentials {
   readonly accessToken?: string;
@@ -64,7 +66,8 @@ export class GeminiUsageClient implements UsageClient {
       return antigravity;
     }
 
-    if (Date.now() >= this.agyRetryAfter) {
+    const agyWasSkipped = Date.now() < this.agyRetryAfter;
+    if (!agyWasSkipped) {
       const agy = await this.dependencies.fetchAgy(signal);
       if (agy) {
         return agy;
@@ -72,14 +75,27 @@ export class GeminiUsageClient implements UsageClient {
       this.agyRetryAfter = Date.now() + 30 * 60_000;
     }
 
+    try {
+      return await this.getGeminiCliUsage(signal);
+    } catch (error) {
+      this.agyRetryAfter = 0;
+      if (agyWasSkipped) {
+        const recovered = await this.dependencies.fetchAgy(signal);
+        if (recovered) {
+          return recovered;
+        }
+      }
+      throw error;
+    }
+  }
+
+  private async getGeminiCliUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
     let credentials: GeminiCredentials;
     try {
       credentials = await this.dependencies.loadCredentials();
     } catch (error) {
-      // Let a disconnected user's next manual refresh observe a newly completed agy sign-in.
-      this.agyRetryAfter = 0;
       throw new UsageProviderError(
-        "Gemini is not signed in. Run `agy` (recommended) or `gemini` in Terminal, then refresh.",
+        notSignedInMessage,
         0,
         { cause: error },
       );
@@ -108,10 +124,10 @@ export class GeminiUsageClient implements UsageClient {
         ...(signal ? { signal } : {}),
       });
       if (response.status === 401) {
-        throw new UsageProviderError("Gemini login has expired. Run `gemini` in Terminal to sign in again.");
+        throw new UsageProviderError(signInAgainMessage);
       }
       if (response.status === 403) {
-        throw new UsageProviderError("Gemini login cannot access quota details. Sign in with `gemini` again.");
+        throw new UsageProviderError(signInAgainMessage);
       }
       if (response.status === 429) {
         throw new UsageProviderError("Google Cloud API rate-limited the quota request.", parseRetryAfter(response.headers));
@@ -145,7 +161,7 @@ export class GeminiUsageClient implements UsageClient {
       return credentials;
     }
     if (!credentials.refreshToken) {
-      throw new UsageProviderError("Gemini login has expired. Run `gemini` in Terminal to sign in again.");
+      throw new UsageProviderError(signInAgainMessage);
     }
     const client = await resolveOAuthClientCredentials();
     const body = new URLSearchParams({
@@ -163,7 +179,7 @@ export class GeminiUsageClient implements UsageClient {
         ...(signal ? { signal } : {}),
       });
       if (response.status < 200 || response.status >= 300) {
-        throw new UsageProviderError("Gemini login refresh was rejected by Google. Run `gemini` to sign in again.");
+        throw new UsageProviderError(signInAgainMessage);
       }
       const accessToken = normalizeToken(getString(response.data, "access_token"));
       if (!accessToken) {
@@ -183,7 +199,7 @@ export class GeminiUsageClient implements UsageClient {
       if (error instanceof UsageProviderError) {
         throw error;
       }
-      throw new UsageProviderError("Gemini login could not be refreshed. Run `gemini` to sign in again.", 0, { cause: error });
+      throw new UsageProviderError(signInAgainMessage, 0, { cause: error });
     }
   }
 }
@@ -331,8 +347,9 @@ async function tryFetchAgySnapshot(signal?: AbortSignal): Promise<UsageSnapshot 
 
   const child = spawnSecure(
     executable,
-    ["-p", "/usage", "--output-format", "json"],
+    ["-p", "/usage", "--output-format", "json", "--print-timeout=12s"],
     ["ANTIGRAVITY_CLI_PATH", "GOOGLE_CLOUD_PROJECT", "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR", "SSL_CERT_FILE"],
+    { CI: "1" },
   );
   child.stdin.end();
   const ownedPids = new Set<number>([child.pid ?? 0].filter((pid) => pid > 0));
@@ -398,12 +415,25 @@ async function findAgyExecutable(): Promise<string | undefined> {
     }
   }
 
+  const candidates = agyExecutableCandidates();
+  for (const candidate of candidates.slice(0, 1)) {
+    if (!candidate || !path.isAbsolute(candidate)) {
+      continue;
+    }
+    try {
+      await access(candidate);
+      return candidate;
+    } catch {
+      // Try the next well-known location.
+    }
+  }
+
   const fromPath = await findExecutable(process.platform === "win32" ? ["agy.exe"] : ["agy"]);
   if (fromPath) {
     return fromPath;
   }
 
-  for (const candidate of agyExecutableCandidates()) {
+  for (const candidate of candidates.slice(1)) {
     if (!candidate || !path.isAbsolute(candidate)) {
       continue;
     }

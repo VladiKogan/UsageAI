@@ -268,6 +268,36 @@ test("Gemini refreshes expired OAuth once and reuses the in-memory token", async
   }
 });
 
+test("Gemini retries agy when a cached cold-start failure and CLI fallback are both stale", async () => {
+  const recovered = {
+    plan: "Antigravity",
+    metrics: [{ name: "Gemini Models", kind: "session" as const, usedPercent: 23 }],
+    fetchedAt: new Date().toISOString(),
+    providerId: "gemini",
+    providerName: "Google Gemini",
+  };
+  let agyCalls = 0;
+  const client = new GeminiUsageClient({
+    fetchAntigravity: async () => undefined,
+    fetchAgy: async () => ++agyCalls === 1 ? recovered : undefined,
+    loadCredentials: async () => { throw new Error("No Gemini CLI credentials."); },
+  });
+  (client as unknown as { agyRetryAfter: number }).agyRetryAfter = Date.now() + 20 * 60_000;
+
+  assert.equal(await client.getUsage(), recovered);
+  assert.equal(agyCalls, 1);
+
+  const disconnected = new GeminiUsageClient({
+    fetchAntigravity: async () => undefined,
+    fetchAgy: async () => undefined,
+    loadCredentials: async () => { throw new Error("No Gemini CLI credentials."); },
+  });
+  await assert.rejects(
+    disconnected.getUsage(),
+    (error: unknown) => error instanceof Error && /`agy`/.test(error.message) && !/`gemini`/.test(error.message),
+  );
+});
+
 test("Antigravity discovery binds tokens to revalidated process-owned ports", async () => {
   const processLines = [
     "not relevant",

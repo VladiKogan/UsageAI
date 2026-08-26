@@ -6,6 +6,14 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Prevented background Gemini refreshes from preferring the standalone `agy.exe` on `PATH`, forcing
+  an interactive terminal, or leaving an owned Antigravity language-server child behind.
+- Made a stale Gemini card recover from sleep in one refresh even when an earlier `agy` cold-start
+  failure was cached, and replaced obsolete Gemini CLI-only sign-in guidance with the installed
+  `agy` command.
+
 ## [0.8.1] - 2026-08-26
 
 ### Added

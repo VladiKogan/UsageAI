@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+## 0.1.12
+
+- Prevented background Gemini refreshes from preferring the standalone `agy` on `PATH` or allowing
+  its headless `/usage` probe to become interactive.
+- Made a stale Gemini reading recover from sleep in one refresh even when an earlier `agy` cold-start
+  failure was cached, and replaced obsolete Gemini CLI-only sign-in guidance with `agy`.
+
 ## 0.1.11
 
 - Added Gemini quota discovery through the official Antigravity VS Code extension's locally installed

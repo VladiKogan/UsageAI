@@ -20,9 +20,9 @@ Choose one or more providers for compact Status Bar readings. Hover over a readi
 
 ## Install
 
-The current extension release is **0.1.11**. Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai) or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai).
+The current extension release is **0.1.12**. Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai) or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai).
 
-For a manual installation, download [`usageai-0.1.11.vsix`](https://open-vsx.org/api/vladikogan/usageai/0.1.11/file/vladikogan.usageai-0.1.11.vsix), then run **Extensions: Install from VSIX...** in VS Code or Antigravity.
+For a manual installation, download [`usageai-0.1.12.vsix`](https://open-vsx.org/api/vladikogan/usageai/0.1.12/file/vladikogan.usageai-0.1.12.vsix), then run **Extensions: Install from VSIX...** in VS Code or Antigravity.
 
 ## Get started
 
@@ -75,9 +75,11 @@ Additional protections include allowlisted provider endpoints, blocked redirects
 
 When no Antigravity language server is already available, the extension may briefly invoke Google's
 official `agy` CLI in read-only `/usage` mode, including the backend installed by Google's official
-VS Code extension. Stdin is closed, output and runtime are bounded, failed cold starts are suppressed
-for 30 minutes, and only the process tree started by UsageAI is cleaned up. VS Code does not need to
-remain open after sign-in, and UsageAI never reads or modifies Antigravity credentials.
+VS Code extension. Stdin is closed, the probe is forced into non-interactive mode, and output and
+runtime are bounded. A failed cold start is skipped while a healthy Gemini CLI fallback remains
+available; if both paths are stale, the next refresh retries `agy` immediately. Only the process tree
+started by UsageAI is cleaned up. VS Code does not need to remain open after sign-in, and UsageAI never
+reads or modifies Antigravity credentials.
 
 Cached snapshots may contain usage information, reset times, plan names, and account labels so the extension can keep the last successful reading available.
 
@@ -101,8 +103,8 @@ npm.cmd run package:vsix
 The resulting VSIX can be installed manually in both VS Code and Antigravity. Marketplace publication uses the same artifact:
 
 ```powershell
-npm.cmd run publish:vscode -- --packagePath usageai-0.1.11.vsix
-npm.cmd run publish:openvsx -- usageai-0.1.11.vsix
+npm.cmd run publish:vscode -- --packagePath usageai-0.1.12.vsix
+npm.cmd run publish:openvsx -- usageai-0.1.12.vsix
 ```
 
 Publishing requires separate publisher identities and credentials for Visual Studio Marketplace and Open VSX.
