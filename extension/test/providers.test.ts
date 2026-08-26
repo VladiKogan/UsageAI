@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import * as os from "node:os";
+import * as path from "node:path";
 import test from "node:test";
 import {
   assertClaudeCredentialsUsable,
@@ -9,6 +11,7 @@ import {
 import { parseCodexSnapshot } from "../src/providers/codex";
 import { parseCopilotSnapshot } from "../src/providers/copilot";
 import {
+  agyExecutableCandidates,
   parseAntigravityQuotaSummary,
   parseAntigravityUserStatus,
   parseAgyUsageOutput,
@@ -193,4 +196,56 @@ test("Gemini parses CLI and Antigravity quota shapes", () => {
   assert.equal(agy.plan, "Google AI Pro");
   assert.equal(agy.accountName, "agy@example.com");
   assert.deepEqual(agy.metrics.map((metric) => metric.usedPercent), [28, 56]);
+
+  const currentAgy = parseAgyUsageOutput(JSON.stringify({
+    status: "SUCCESS",
+    response: "Gemini Models: 81% remaining",
+    command: {
+      name: "usage",
+      data: {
+        groups: [
+          {
+            name: "Gemini Models",
+            buckets: [
+              {
+                id: "gemini_5h",
+                name: "5-hour limit",
+                window: "5h",
+                remaining_fraction: 0.81,
+                reset_time: "2026-08-26T14:00:00Z",
+              },
+              {
+                id: "gemini_weekly",
+                name: "Weekly limit",
+                window: "7d",
+                remaining_fraction: 0.62,
+                reset_time: "2026-09-01T00:00:00Z",
+              },
+            ],
+          },
+          {
+            name: "Claude and GPT models",
+            buckets: [
+              { id: "other_5h", window: "5h", remaining_fraction: 1.2 },
+              { id: "other_weekly", window: "weekly", remaining_fraction: -0.2 },
+            ],
+          },
+        ],
+      },
+    },
+  }));
+  assert.ok(currentAgy);
+  assert.equal(currentAgy.plan, "Antigravity");
+  assert.deepEqual(currentAgy.metrics.map((metric) => [metric.name, metric.usedPercent]), [
+    ["Gemini Models (5-hour)", 19],
+    ["Gemini Models (Weekly)", 38],
+    ["Claude and GPT models (5-hour)", 0],
+    ["Claude and GPT models (Weekly)", 100],
+  ]);
+  assert.equal(currentAgy.metrics[1]?.resetsAt, "2026-09-01T00:00:00.000Z");
+});
+
+test("Antigravity CLI discovery includes the VS Code extension backend", () => {
+  const executable = process.platform === "win32" ? "agy.exe" : "agy";
+  assert.ok(agyExecutableCandidates().includes(path.join(os.homedir(), ".gemini", "bin", executable)));
 });

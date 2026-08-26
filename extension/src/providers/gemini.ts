@@ -346,13 +346,13 @@ async function tryFetchAgySnapshot(signal?: AbortSignal): Promise<UsageSnapshot 
   child.stderr.on("data", () => undefined);
 
   const probeController = new AbortController();
-  const timeout = setTimeout(() => probeController.abort(new Error("The Antigravity CLI probe timed out.")), 8_000);
+  const timeout = setTimeout(() => probeController.abort(new Error("The Antigravity CLI probe timed out.")), 15_000);
   timeout.unref();
   const abortFromCaller = () => probeController.abort(
     signal?.reason instanceof Error ? signal.reason : new Error("Operation cancelled."),
   );
   signal?.addEventListener("abort", abortFromCaller, { once: true });
-  const deadline = Date.now() + 8_000;
+  const deadline = Date.now() + 15_000;
   try {
     while (Date.now() < deadline && !probeController.signal.aborted) {
       if (child.pid) {
@@ -403,10 +403,7 @@ async function findAgyExecutable(): Promise<string | undefined> {
     return fromPath;
   }
 
-  const candidates = process.platform === "win32"
-    ? [path.join(process.env.LOCALAPPDATA ?? "", "agy", "bin", "agy.exe")]
-    : [path.join(userHome(), ".local", "bin", "agy"), "/opt/homebrew/bin/agy", "/usr/local/bin/agy"];
-  for (const candidate of candidates) {
+  for (const candidate of agyExecutableCandidates()) {
     if (!candidate || !path.isAbsolute(candidate)) {
       continue;
     }
@@ -418,6 +415,14 @@ async function findAgyExecutable(): Promise<string | undefined> {
     }
   }
   return undefined;
+}
+
+export function agyExecutableCandidates(): readonly string[] {
+  const executable = process.platform === "win32" ? "agy.exe" : "agy";
+  const extensionBackend = path.join(userHome(), ".gemini", "bin", executable);
+  return process.platform === "win32"
+    ? [extensionBackend, path.join(process.env.LOCALAPPDATA ?? "", "agy", "bin", executable)]
+    : [extensionBackend, path.join(userHome(), ".local", "bin", executable), "/opt/homebrew/bin/agy", "/usr/local/bin/agy"];
 }
 
 async function discoverManagedAgyPorts(rootPid: number): Promise<Array<{ readonly pid: number; readonly port: number }>> {
@@ -726,19 +731,21 @@ export function parseAntigravityQuotaSummary(root: unknown): readonly UsageMetri
   const parsed: Array<{ readonly groupOrder: number; readonly windowOrder: number; readonly sourceOrder: number; readonly metric: UsageMetric }> = [];
   let sourceOrder = 0;
   for (const group of groups) {
-    const groupName = getString(group, "displayName");
+    const groupName = getString(group, "displayName") ?? getString(group, "name");
     const buckets = getArray(group, "buckets");
     if (!groupName || !buckets) {
       continue;
     }
     for (const bucket of buckets) {
       const remaining = getNumber(bucket, "remainingFraction")
-        ?? getNumber(getObject(bucket, "remaining"), "remainingFraction");
+        ?? getNumber(bucket, "remaining_fraction")
+        ?? getNumber(getObject(bucket, "remaining"), "remainingFraction")
+        ?? getNumber(getObject(bucket, "remaining"), "remaining_fraction");
       if (remaining === undefined) {
         continue;
       }
       const window = classifySummaryWindow(bucket);
-      const resetsAt = parseDate(getString(bucket, "resetTime"));
+      const resetsAt = parseDate(getString(bucket, "resetTime") ?? getString(bucket, "reset_time"));
       parsed.push({
         groupOrder: /^(Gemini Models)$/i.test(groupName) ? 0 : /Claude|GPT/i.test(groupName) ? 1 : 2,
         windowOrder: window.order,
@@ -771,8 +778,8 @@ function classifySummaryWindow(bucket: unknown): {
   readonly durationMinutes?: number;
   readonly order: number;
 } {
-  const displayName = getString(bucket, "displayName");
-  const descriptor = [getString(bucket, "bucketId"), displayName, getString(bucket, "window")]
+  const displayName = getString(bucket, "displayName") ?? getString(bucket, "name");
+  const descriptor = [getString(bucket, "bucketId") ?? getString(bucket, "id"), displayName, getString(bucket, "window")]
     .filter(Boolean)
     .join(" ")
     .toLowerCase();

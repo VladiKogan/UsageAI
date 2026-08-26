@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+## 0.1.11
+
+- Added Gemini quota discovery through the official Antigravity VS Code extension's locally installed
+  `agy` backend, including its current snake-case `/usage` response format, so VS Code does not need
+  to remain open after sign-in.
 - Added rotating refresh indicators to dashboard cards, the dashboard header, and Status Bar
   readings while retaining the last visible percentages. Dashboard actions, the view-title button,
   the Status Bar hover action, and **UsageAI: Refresh** now share VS Code's native window progress

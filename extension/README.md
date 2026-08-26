@@ -20,9 +20,9 @@ Choose one or more providers for compact Status Bar readings. Hover over a readi
 
 ## Install
 
-The current extension release is **0.1.10**. Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai) or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai).
+The current extension release is **0.1.11**. Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai) or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai).
 
-For a manual installation, download [`usageai-0.1.10.vsix`](https://open-vsx.org/api/vladikogan/usageai/0.1.10/file/vladikogan.usageai-0.1.10.vsix), then run **Extensions: Install from VSIX...** in VS Code or Antigravity.
+For a manual installation, download [`usageai-0.1.11.vsix`](https://open-vsx.org/api/vladikogan/usageai/0.1.11/file/vladikogan.usageai-0.1.11.vsix), then run **Extensions: Install from VSIX...** in VS Code or Antigravity.
 
 ## Get started
 
@@ -42,7 +42,7 @@ You only need one of these sign-in methods:
 | Codex | A Codex CLI sign-in created by `codex login` |
 | Claude Code | A Claude Code sign-in created by running `claude`, or the optional `USAGEAI_CLAUDE_SESSION_KEY` environment variable |
 | GitHub Copilot | A supported local Copilot credential, `COPILOT_GITHUB_TOKEN`, or the optional GitHub CLI fallback |
-| Google Gemini | An Antigravity CLI sign-in created by running `agy` (recommended), a Gemini CLI sign-in, or a running Antigravity language server |
+| Google Gemini | A sign-in through Google's Antigravity VS Code extension or `agy` (recommended), a Gemini CLI sign-in, or a running Antigravity language server |
 
 UsageAI requires VS Code 1.90 or newer, or a compatible Antigravity IDE build. It is a desktop extension because it needs access to local provider files and commands; it does not run in vscode.dev or github.dev.
 
@@ -74,9 +74,10 @@ Your provider credentials stay in the extension host. UsageAI does not scan brow
 Additional protections include allowlisted provider endpoints, blocked redirects, size-limited responses, read-only Claude OAuth credentials, in-memory-only refresh caching for other providers, and ownership checks before using a local Antigravity connection. When Claude's short-lived access token expires, the extension briefly invokes the official `claude auth status --json` command with bounded runtime and output, then rereads the credentials. Claude Code remains the only process that can exchange the shared refresh token or update its credential store. The optional Claude web session key remains an environment variable and is never saved by UsageAI.
 
 When no Antigravity language server is already available, the extension may briefly invoke Google's
-official `agy` CLI in read-only `/usage` mode. Stdin is closed, output and runtime are bounded, failed
-cold starts are suppressed for 30 minutes, and only the process tree started by UsageAI is cleaned up.
-The extension never reads or modifies Antigravity credentials.
+official `agy` CLI in read-only `/usage` mode, including the backend installed by Google's official
+VS Code extension. Stdin is closed, output and runtime are bounded, failed cold starts are suppressed
+for 30 minutes, and only the process tree started by UsageAI is cleaned up. VS Code does not need to
+remain open after sign-in, and UsageAI never reads or modifies Antigravity credentials.
 
 Cached snapshots may contain usage information, reset times, plan names, and account labels so the extension can keep the last successful reading available.
 
@@ -100,8 +101,8 @@ npm.cmd run package:vsix
 The resulting VSIX can be installed manually in both VS Code and Antigravity. Marketplace publication uses the same artifact:
 
 ```powershell
-npm.cmd run publish:vscode -- --packagePath usageai-0.1.10.vsix
-npm.cmd run publish:openvsx -- usageai-0.1.10.vsix
+npm.cmd run publish:vscode -- --packagePath usageai-0.1.11.vsix
+npm.cmd run publish:openvsx -- usageai-0.1.11.vsix
 ```
 
 Publishing requires separate publisher identities and credentials for Visual Studio Marketplace and Open VSX.

@@ -46,7 +46,7 @@ export class CodexUsageClient implements UsageClient {
         id: 1,
         method: "initialize",
         params: {
-          clientInfo: { name: "usage-ai-vscode", title: "UsageAI", version: "0.1.10" },
+          clientInfo: { name: "usage-ai-vscode", title: "UsageAI", version: "0.1.11" },
           capabilities: { experimentalApi: true },
         },
       });

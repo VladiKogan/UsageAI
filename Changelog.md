@@ -8,6 +8,9 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- Added Gemini quota discovery through the official Antigravity VS Code extension's locally installed
+  `agy` backend, including its current snake-case `/usage` response format, so VS Code does not need
+  to remain open after sign-in.
 - Added animated refresh-progress indicators across the desktop app and editor extension. The
   Windows tray gauge rotates for manual and automatic refreshes, while the shared compact/full
   dashboard button shows an animated reading indicator. Editor dashboard cards, the dashboard
@@ -16,7 +19,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Added enforced CI coverage gates for both applications, focused desktop-test filtering, and safe
   Windows integration checks for startup registration, single-instance messaging, Credential
   Manager reads, and the installer elevation contract. The expanded suites now cover 60 desktop
-  checks and 30 editor-extension tests without modifying real startup settings or credentials.
+  checks and 31 editor-extension tests without modifying real startup settings or credentials.
 
 ### Fixed
 
