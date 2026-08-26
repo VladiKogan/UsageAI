@@ -833,6 +833,59 @@ internal static class Program
             Path.Combine("C:\\", "Users", "example", "AppData", "Local"));
         Equal(Path.Combine("C:\\", "Users", "example", ".gemini", "bin", "agy.exe"), executablePaths[0]);
         Equal(Path.Combine("C:\\", "Users", "example", "AppData", "Local", "agy", "bin", "agy.exe"), executablePaths[1]);
+        var startInfo = AgyUsageProbe.CreateStartInfo(executablePaths[0]);
+        True(startInfo.CreateNoWindow);
+        True(startInfo.RedirectStandardInput);
+        Equal("1", startInfo.Environment["CI"]);
+        True(startInfo.ArgumentList.Contains("--print-timeout=12s"));
+        True(AgyUsageProbe.IsOwnedProcessName("agy"));
+        True(AgyUsageProbe.IsOwnedProcessName("language_server_windows_x64"));
+        False(AgyUsageProbe.IsOwnedProcessName("powershell"));
+
+        using var http = new HttpClient();
+        var recoveryDirectory = Path.Combine(Path.GetTempPath(), $"usageai-agy-recovery-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(recoveryDirectory);
+        var originalGeminiConfig = Environment.GetEnvironmentVariable("GEMINI_CONFIG_DIR");
+        try
+        {
+            Environment.SetEnvironmentVariable("GEMINI_CONFIG_DIR", recoveryDirectory);
+            var agyCalls = 0;
+            var recoveredSnapshot = new UsageSnapshot(
+                "Antigravity",
+                new[] { new UsageMetric("Gemini Models", UsageMetricKind.Session, 23) },
+                DateTimeOffset.Now,
+                "gemini",
+                "Google Gemini");
+            var recoveryClient = new GeminiUsageClient(
+                http,
+                _ => Task.FromResult<UsageSnapshot?>(null),
+                _ => Task.FromResult<UsageSnapshot?>(++agyCalls == 1 ? recoveredSnapshot : null));
+            typeof(GeminiUsageClient)
+                .GetField("_agyRetryAfterUtc", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .SetValue(recoveryClient, DateTimeOffset.UtcNow.AddMinutes(20));
+            Equal(recoveredSnapshot, await recoveryClient.GetUsageAsync());
+            Equal(1, agyCalls);
+
+            var disconnectedClient = new GeminiUsageClient(
+                http,
+                _ => Task.FromResult<UsageSnapshot?>(null),
+                _ => Task.FromResult<UsageSnapshot?>(null));
+            try
+            {
+                await disconnectedClient.GetUsageAsync();
+                throw new InvalidOperationException("Expected GeminiUsageException.");
+            }
+            catch (GeminiUsageException disconnected)
+            {
+                True(disconnected.Message.Contains("`agy`", StringComparison.Ordinal));
+                False(disconnected.Message.Contains("`gemini`", StringComparison.Ordinal));
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("GEMINI_CONFIG_DIR", originalGeminiConfig);
+            Directory.Delete(recoveryDirectory, recursive: true);
+        }
 
         var expected = new UsageSnapshot(
             "Antigravity",
@@ -840,7 +893,6 @@ internal static class Program
             DateTimeOffset.Now,
             "gemini",
             "Google Gemini");
-        using var http = new HttpClient();
         var client = new GeminiUsageClient(
             http,
             _ => Task.FromResult<UsageSnapshot?>(null),

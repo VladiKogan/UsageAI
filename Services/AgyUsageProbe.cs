@@ -158,6 +158,12 @@ internal static class AgyUsageProbe
 
     private static Process Start(string executable)
     {
+        return Process.Start(CreateStartInfo(executable))
+            ?? throw new InvalidOperationException("Windows could not start the Antigravity CLI.");
+    }
+
+    internal static ProcessStartInfo CreateStartInfo(string executable)
+    {
         var startInfo = new ProcessStartInfo
         {
             FileName = executable,
@@ -175,14 +181,15 @@ internal static class AgyUsageProbe
             "NODE_EXTRA_CA_CERTS",
             "SSL_CERT_DIR",
             "SSL_CERT_FILE");
+        startInfo.Environment["CI"] = "1";
         startInfo.Environment["AGY_CLI_HIDE_ACCOUNT_INFO"] = "1";
         startInfo.ArgumentList.Add("-p");
         startInfo.ArgumentList.Add("/usage");
         startInfo.ArgumentList.Add("--output-format");
         startInfo.ArgumentList.Add("json");
+        startInfo.ArgumentList.Add("--print-timeout=12s");
 
-        return Process.Start(startInfo)
-            ?? throw new InvalidOperationException("Windows could not start the Antigravity CLI.");
+        return startInfo;
     }
 
     private static string? FindExecutable()
@@ -195,15 +202,24 @@ internal static class AgyUsageProbe
             return Path.GetFullPath(configured);
         }
 
+        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
+        var wellKnown = GetWellKnownExecutablePaths(userProfile, localAppData);
+        if (wellKnown[0] is { } extensionBackend &&
+            Path.IsPathFullyQualified(extensionBackend) &&
+            File.Exists(extensionBackend))
+        {
+            return extensionBackend;
+        }
+
         var fromPath = ProcessSecurity.FindAbsoluteExecutableOnPath("agy.exe");
         if (fromPath is not null)
         {
             return fromPath;
         }
 
-        var userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        var localAppData = Environment.GetFolderPath(Environment.SpecialFolder.LocalApplicationData);
-        return GetWellKnownExecutablePaths(userProfile, localAppData)
+        return wellKnown
+            .Skip(1)
             .FirstOrDefault(path => Path.IsPathFullyQualified(path) && File.Exists(path));
     }
 
@@ -499,8 +515,7 @@ internal static class AgyUsageProbe
                 using var process = Process.GetProcessById(processId);
                 var name = process.ProcessName;
                 if (process.StartTime.ToUniversalTime() >= startedAtUtc.AddSeconds(-2) &&
-                    (name.Equals("agy", StringComparison.OrdinalIgnoreCase) ||
-                     name.Contains("antigravity", StringComparison.OrdinalIgnoreCase)))
+                    IsOwnedProcessName(name))
                 {
                     ProcessSecurity.TryKill(process);
                 }
@@ -516,6 +531,11 @@ internal static class AgyUsageProbe
             }
         }
     }
+
+    internal static bool IsOwnedProcessName(string name) =>
+        name.Equals("agy", StringComparison.OrdinalIgnoreCase) ||
+        name.Contains("antigravity", StringComparison.OrdinalIgnoreCase) ||
+        name.StartsWith("language_server", StringComparison.OrdinalIgnoreCase);
 
     private static async Task<string?> TryReadCompletedOutputAsync(Task<string>? task)
     {

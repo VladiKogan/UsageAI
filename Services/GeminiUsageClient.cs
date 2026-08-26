@@ -14,6 +14,10 @@ internal sealed class GeminiUsageClient : IUsageClient
     private const string QuotaEndpoint = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
     private const string CodeAssistEndpoint = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
     private const string TokenRefreshEndpoint = "https://oauth2.googleapis.com/token";
+    private const string NotSignedInMessage =
+        "Google Gemini is not signed in. Run `agy` to sign in, then refresh.";
+    private const string SignInAgainMessage =
+        "Google Gemini sign-in has expired. Run `agy` to sign in again, then refresh.";
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
     private static readonly HttpClient SharedClient = SecureHttp.CreateClient(RequestTimeout);
     private static readonly JsonSerializerOptions IndentedJsonOptions = new() { WriteIndented = true };
@@ -61,9 +65,10 @@ internal sealed class GeminiUsageClient : IUsageClient
             return antigravitySnapshot;
         }
 
-        // 2. Ask the official Antigravity CLI. A failed cold start is negatively cached so
-        // Gemini-CLI-only users do not pay the process timeout on every refresh.
-        if (DateTimeOffset.UtcNow >= _agyRetryAfterUtc)
+        // 2. Ask the official Antigravity CLI. A failed cold start is negatively cached while
+        // a working Gemini CLI fallback remains available.
+        var agyWasSkipped = DateTimeOffset.UtcNow < _agyRetryAfterUtc;
+        if (!agyWasSkipped)
         {
             var agySnapshot = await _agyProbe(cancellationToken);
             if (agySnapshot is not null)
@@ -74,7 +79,30 @@ internal sealed class GeminiUsageClient : IUsageClient
             _agyRetryAfterUtc = DateTimeOffset.UtcNow.AddMinutes(30);
         }
 
-        // 3. Compatibility fallback to Gemini CLI OAuth API
+        // 3. Compatibility fallback to Gemini CLI OAuth API. If that fallback is also stale,
+        // retry agy immediately so a manual refresh can recover from sleep in one attempt.
+        try
+        {
+            return await GetGeminiCliUsageAsync(cancellationToken);
+        }
+        catch (GeminiUsageException)
+        {
+            _agyRetryAfterUtc = default;
+            if (agyWasSkipped)
+            {
+                var recoveredSnapshot = await _agyProbe(cancellationToken);
+                if (recoveredSnapshot is not null)
+                {
+                    return recoveredSnapshot;
+                }
+            }
+
+            throw;
+        }
+    }
+
+    private async Task<UsageSnapshot> GetGeminiCliUsageAsync(CancellationToken cancellationToken)
+    {
         GeminiCredentials credentials;
         try
         {
@@ -82,11 +110,7 @@ internal sealed class GeminiUsageClient : IUsageClient
         }
         catch (GeminiUsageException)
         {
-            // A disconnected user may have just completed `agy` sign-in before pressing Refresh.
-            // Let that explicit recovery attempt bypass the negative cache.
-            _agyRetryAfterUtc = default;
-            throw new GeminiUsageException(
-                "Gemini is not signed in. Run `agy` (recommended) or `gemini` in Terminal, then refresh.");
+            throw new GeminiUsageException(NotSignedInMessage);
         }
 
         if (string.IsNullOrWhiteSpace(credentials.AccessToken) || credentials.IsExpired)
@@ -401,13 +425,13 @@ internal sealed class GeminiUsageClient : IUsageClient
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 throw new GeminiUsageException(
-                    "Gemini login has expired. Run `gemini` in Terminal to sign in again.");
+                    SignInAgainMessage);
             }
 
             if (response.StatusCode == HttpStatusCode.Forbidden)
             {
                 throw new GeminiUsageException(
-                    "Gemini login cannot access quota details. Sign in with `gemini` again.");
+                    SignInAgainMessage);
             }
 
             if (response.StatusCode == HttpStatusCode.TooManyRequests)
@@ -843,7 +867,7 @@ internal sealed class GeminiUsageClient : IUsageClient
         if (!File.Exists(credsPath))
         {
             throw new GeminiUsageException(
-                "Gemini is not signed in. Run `gemini` in Terminal to authenticate, then refresh.");
+                NotSignedInMessage);
         }
 
         try
@@ -867,7 +891,7 @@ internal sealed class GeminiUsageClient : IUsageClient
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or JsonException)
         {
             throw new GeminiUsageException(
-                "Gemini saved login could not be read. Run `gemini` in Terminal to sign in again.",
+                NotSignedInMessage,
                 exception);
         }
     }
@@ -892,7 +916,8 @@ internal sealed class GeminiUsageClient : IUsageClient
         if (string.IsNullOrWhiteSpace(credentials.RefreshToken))
         {
             throw new GeminiUsageException(
-                "Gemini login has expired and no refresh token is available. Run `gemini` to sign in again.");
+                "Google Gemini sign-in has expired and no refresh token is available. " +
+                "Run `agy` to sign in again, then refresh.");
         }
 
         var refreshed = await RefreshCredentialsAsync(credentials, cancellationToken);
@@ -929,7 +954,7 @@ internal sealed class GeminiUsageClient : IUsageClient
             if (!response.IsSuccessStatusCode)
             {
                 throw new GeminiUsageException(
-                    "Gemini login refresh was rejected by Google. Run `gemini` in Terminal to sign in again.");
+                    SignInAgainMessage);
             }
 
             using var document = await SecureHttp.ReadJsonDocumentAsync(response, cancellationToken);

@@ -6,6 +6,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.8.2] - 2026-08-26
+
 ### Fixed
 
 - Prevented background Gemini refreshes from preferring the standalone `agy.exe` on `PATH`, forcing
