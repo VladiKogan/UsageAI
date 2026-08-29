@@ -129,7 +129,7 @@ UsageAI reads the login your tools already made, and nothing else:
   official `claude auth status --json` command; Claude Code may refresh its own login, after which
   UsageAI rereads the access token.
 - 🏠 **No telemetry or tracking.** Network access is limited to provider usage requests and
-  one GitHub release check per day while UsageAI is running.
+  one automatic GitHub release check per day while UsageAI is running, and checks you start manually.
 - 🗑️ **Your history is yours to delete** — one button in Settings.
 
 For Gemini, UsageAI first reuses a running Antigravity language server. If none is available, it
@@ -177,11 +177,18 @@ The key is kept in memory, is never forwarded to provider CLI child processes, a
 - Whether history is recorded, and whether the trend and forecast are shown
 - Which provider drives the tray icon (or let it follow whichever is running hottest), which providers appear, and in what order
 - The global hotkey
+- The installed desktop-app version, with a manual **Check for updates** action under **About**
 
-UsageAI checks GitHub for a newer release once per day while it is running. When one exists, it asks
-before downloading or installing anything; choosing **No** leaves the current version untouched.
+UsageAI checks GitHub for a newer release once per day while it is running. You can also open
+**Settings...** and use **About** → **Check for updates** at any time. The result says whether your
+installed version is current, a newer version is available, or the check could not be completed.
+When an update exists, UsageAI asks before downloading or installing anything; choosing **No** leaves
+the current version untouched.
 Installed builds can download the matching Setup.exe, verify its published SHA-256, and ask Windows
-to install it.
+to install it. During an in-app upgrade, Windows closes the running tray process, replaces the
+executable, and reopens the updated build automatically. The first upgrade from a version released
+before restart support may still require you to open UsageAI once from the Start menu; later updates
+restart it automatically.
 
 ## 🩹 Troubleshooting
 

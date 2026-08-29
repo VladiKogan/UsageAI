@@ -11,7 +11,10 @@ internal sealed class SettingsForm : Form
     private static readonly object[] ThemeChoices = { "Follow Windows", "Dark", "Light" };
 
     private readonly List<Font> _ownedFonts = new();
+    private readonly CancellationTokenSource _lifetime = new();
     private readonly AppSettings _settings;
+    private readonly Func<CancellationToken, Task<UpdateCheckResult>> _checkForUpdates;
+    private readonly Func<UpdateRelease, Task> _promptForUpdate;
     private readonly TableLayoutPanel _layout;
     private readonly NumericUpDown _refreshInterval;
     private readonly CheckBox _slowWhenHidden;
@@ -27,10 +30,29 @@ internal sealed class SettingsForm : Form
     private readonly CheckBox _forecastEnabled;
     private readonly CheckBox _hotkeyEnabled;
     private readonly CheckedListBox _providers;
+    private readonly Button _checkForUpdatesButton;
+    private readonly Label _updateStatus;
+    private bool _isCheckingForUpdates;
+    private bool _resourcesDisposed;
 
     public SettingsForm(AppSettings settings, IReadOnlyList<(string Id, string DisplayName)> providers)
+        : this(
+            settings,
+            providers,
+            UpdateChecker.CheckForUpdateAsync,
+            static _ => Task.CompletedTask)
+    {
+    }
+
+    internal SettingsForm(
+        AppSettings settings,
+        IReadOnlyList<(string Id, string DisplayName)> providers,
+        Func<CancellationToken, Task<UpdateCheckResult>> checkForUpdates,
+        Func<UpdateRelease, Task> promptForUpdate)
     {
         _settings = settings;
+        _checkForUpdates = checkForUpdates;
+        _promptForUpdate = promptForUpdate;
         var scale = new LayoutScale(this);
 
         AutoScaleMode = AutoScaleMode.None;
@@ -136,6 +158,20 @@ internal sealed class SettingsForm : Form
             _trayProvider.Items.Add(entry);
         }
 
+        _checkForUpdatesButton = CreateDialogButton("Check for updates", scale, primary: false);
+        _checkForUpdatesButton.AutoSize = true;
+        _checkForUpdatesButton.MinimumSize = new Size(scale[142], scale[30]);
+        _checkForUpdatesButton.Margin = scale.Pad(0, 4, 0, 4);
+        _checkForUpdatesButton.Click += async (_, _) => await CheckForUpdatesAsync();
+
+        _updateStatus = new Label
+        {
+            AutoSize = true,
+            ForeColor = Theme.Muted,
+            Margin = scale.Pad(0, 2, 0, 8),
+            Text = "Updates are also checked automatically once a day.",
+        };
+
         AddSection("Refresh");
         AddRow("Refresh every (minutes)", _refreshInterval);
         AddSpan(_slowWhenHidden);
@@ -182,6 +218,18 @@ internal sealed class SettingsForm : Form
         AddSection("System");
         AddSpan(_hotkeyEnabled);
 
+        AddSection("About");
+        AddRow("Installed version", new Label
+        {
+            AutoSize = true,
+            Font = Own(Typography.Mono(9F)),
+            ForeColor = Theme.Signal,
+            Margin = scale.Pad(0, 8, 0, 4),
+            Text = $"v{AppIdentity.Version}",
+        });
+        AddSpan(_checkForUpdatesButton);
+        AddSpan(_updateStatus);
+
         var buttons = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
@@ -200,6 +248,59 @@ internal sealed class SettingsForm : Form
         CancelButton = cancel;
 
         LoadValues();
+    }
+
+    private async Task CheckForUpdatesAsync()
+    {
+        if (_isCheckingForUpdates)
+        {
+            return;
+        }
+
+        _isCheckingForUpdates = true;
+        _checkForUpdatesButton.Enabled = false;
+        _checkForUpdatesButton.Text = "Checking...";
+        _updateStatus.ForeColor = Theme.Muted;
+        _updateStatus.Text = "Contacting GitHub releases...";
+
+        try
+        {
+            var result = await _checkForUpdates(_lifetime.Token);
+            if (_lifetime.IsCancellationRequested || IsDisposed)
+            {
+                return;
+            }
+
+            _settings.LastUpdateCheckUtc = DateTimeOffset.UtcNow;
+            _settings.Save();
+
+            if (!result.Succeeded)
+            {
+                _updateStatus.ForeColor = Theme.Warning;
+                _updateStatus.Text = "Couldn’t check for updates. Check your connection and try again.";
+                return;
+            }
+
+            if (result.Release is null)
+            {
+                _updateStatus.ForeColor = Theme.Success;
+                _updateStatus.Text = $"You’re up to date — v{AppIdentity.Version} is the latest version.";
+                return;
+            }
+
+            _updateStatus.ForeColor = Theme.Signal;
+            _updateStatus.Text = $"Version {result.Release.Version} is available.";
+            await _promptForUpdate(result.Release);
+        }
+        finally
+        {
+            _isCheckingForUpdates = false;
+            if (!IsDisposed)
+            {
+                _checkForUpdatesButton.Enabled = true;
+                _checkForUpdatesButton.Text = "Check for updates";
+            }
+        }
     }
 
     private void LoadValues()
@@ -421,8 +522,11 @@ internal sealed class SettingsForm : Form
 
     protected override void Dispose(bool disposing)
     {
-        if (disposing)
+        if (disposing && !_resourcesDisposed)
         {
+            _resourcesDisposed = true;
+            _lifetime.Cancel();
+            _lifetime.Dispose();
             foreach (var font in _ownedFonts)
             {
                 font.Dispose();

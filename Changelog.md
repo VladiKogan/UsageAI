@@ -6,6 +6,19 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Added an **About** section to the desktop settings window that shows the installed UsageAI
+  version and provides a manual **Check for updates** action. The check reports whether the app is
+  current, an update is available, or GitHub could not be reached, and newer releases continue
+  through the existing verified installer flow.
+
+### Fixed
+
+- Registered the desktop tray process with Windows Restart Manager so later in-app updates reopen
+  the updated executable automatically after installation. The update that first installs this fix
+  may still need one manual launch because the older running process could not register retroactively.
+
 ## [0.9.0] - 2026-08-26
 
 ### Changed

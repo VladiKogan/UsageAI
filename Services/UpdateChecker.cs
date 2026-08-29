@@ -13,6 +13,8 @@ internal sealed record UpdateRelease(
     UpdateAsset? Installer,
     UpdateAsset? Checksum);
 
+internal sealed record UpdateCheckResult(bool Succeeded, UpdateRelease? Release);
+
 /// <summary>
 /// Automatic discovery of newer published releases. The caller persists the time of each attempt so
 /// a tray process that stays open does not contact GitHub more than once per day.
@@ -30,10 +32,14 @@ internal static class UpdateChecker
     private static readonly HttpClient SharedClient = SecureHttp.CreateClient(RequestTimeout);
     private static readonly char[] PrereleaseSeparators = { '-', '+' };
 
-    public static Task<UpdateRelease?> FindNewerReleaseAsync(CancellationToken cancellationToken) =>
-        FindNewerReleaseAsync(SharedClient, cancellationToken);
+    public static Task<UpdateCheckResult> CheckForUpdateAsync(CancellationToken cancellationToken) =>
+        CheckForUpdateAsync(SharedClient, cancellationToken);
 
-    internal static async Task<UpdateRelease?> FindNewerReleaseAsync(
+    public static async Task<UpdateRelease?> FindNewerReleaseAsync(
+        CancellationToken cancellationToken) =>
+        (await CheckForUpdateAsync(cancellationToken)).Release;
+
+    internal static async Task<UpdateCheckResult> CheckForUpdateAsync(
         HttpClient client,
         CancellationToken cancellationToken)
     {
@@ -51,20 +57,32 @@ internal static class UpdateChecker
                 cancellationToken);
             if (!response.IsSuccessStatusCode)
             {
-                return null;
+                return new UpdateCheckResult(false, null);
             }
 
             using var document = await SecureHttp.ReadJsonDocumentAsync(response, cancellationToken);
-            return ParseRelease(document.RootElement, AppIdentity.Version);
+            if (!HasValidReleaseTag(document.RootElement))
+            {
+                return new UpdateCheckResult(false, null);
+            }
+
+            return new UpdateCheckResult(
+                true,
+                ParseRelease(document.RootElement, AppIdentity.Version));
         }
         catch (Exception exception) when (exception is HttpRequestException
                                               or JsonException
                                               or InvalidDataException
                                               or OperationCanceledException)
         {
-            return null;
+            return new UpdateCheckResult(false, null);
         }
     }
+
+    internal static async Task<UpdateRelease?> FindNewerReleaseAsync(
+        HttpClient client,
+        CancellationToken cancellationToken) =>
+        (await CheckForUpdateAsync(client, cancellationToken)).Release;
 
     internal static bool IsCheckDue(DateTimeOffset? lastCheckUtc, DateTimeOffset nowUtc) =>
         lastCheckUtc is null ||
@@ -141,6 +159,20 @@ internal static class UpdateChecker
         }
 
         return new UpdateRelease(tag, parsedVersion.ToString(), releasePage, installer, checksum);
+    }
+
+    private static bool HasValidReleaseTag(JsonElement root)
+    {
+        if (!root.TryGetProperty("tag_name", out var tagElement) ||
+            tagElement.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        var tag = tagElement.GetString();
+        return !string.IsNullOrWhiteSpace(tag) &&
+               tag.Length <= 32 &&
+               ParseVersion(tag) is not null;
     }
 
     private static UpdateAsset? ParseAsset(JsonElement element)

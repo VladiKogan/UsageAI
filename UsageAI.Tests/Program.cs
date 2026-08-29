@@ -77,6 +77,7 @@ internal static class Program
         ("process and message-window branches", CoverageExpansionTests.TestProcessAndMessageBranchesAsync),
         ("startup registration integration", WindowsIntegrationTests.TestStartupRegistrationAsync),
         ("single-instance window-message contract", WindowsIntegrationTests.TestSingleInstanceMessageAsync),
+        ("update restart registration contract", WindowsIntegrationTests.TestUpdateRestartRegistrationAsync),
         ("Windows Credential Manager integration", WindowsIntegrationTests.TestCredentialManagerAsync),
         ("installer elevation launch contract", WindowsIntegrationTests.TestInstallerLaunchAsync),
     };

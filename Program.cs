@@ -55,6 +55,10 @@ internal static class Program
             return;
         }
 
+        // Inno Setup uses Windows Restart Manager to close this process while replacing the
+        // executable. Registration lets it reopen the updated build when installation finishes.
+        _ = ApplicationRestart.TryRegister();
+
         var settings = AppSettings.Load();
         try
         {

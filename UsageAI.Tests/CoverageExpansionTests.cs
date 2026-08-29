@@ -969,7 +969,9 @@ internal static class CoverageExpansionTests
         });
         using (var http = new HttpClient(successHandler))
         {
-            var release = await UpdateChecker.FindNewerReleaseAsync(http, CancellationToken.None);
+            var check = await UpdateChecker.CheckForUpdateAsync(http, CancellationToken.None);
+            True(check.Succeeded);
+            var release = check.Release;
             NotNull(release);
             Equal("v99.0.0", release!.Tag);
             Equal("99.0.0", release.Version);
@@ -980,31 +982,35 @@ internal static class CoverageExpansionTests
         using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
                    Task.FromResult(JsonResponse(HttpStatusCode.OK, """{"tag_name":"v0.1.0"}""")))))
         {
-            Null(await UpdateChecker.FindNewerReleaseAsync(http, CancellationToken.None));
+            var check = await UpdateChecker.CheckForUpdateAsync(http, CancellationToken.None);
+            True(check.Succeeded);
+            Null(check.Release);
         }
 
         using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
                    Task.FromResult(JsonResponse(HttpStatusCode.OK, """{"other":"value"}""")))))
         {
-            Null(await UpdateChecker.FindNewerReleaseAsync(http, CancellationToken.None));
+            var check = await UpdateChecker.CheckForUpdateAsync(http, CancellationToken.None);
+            False(check.Succeeded);
+            Null(check.Release);
         }
 
         using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
                    Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)))))
         {
-            Null(await UpdateChecker.FindNewerReleaseAsync(http, CancellationToken.None));
+            False((await UpdateChecker.CheckForUpdateAsync(http, CancellationToken.None)).Succeeded);
         }
 
         using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
                    Task.FromResult(JsonResponse(HttpStatusCode.OK, "{invalid")))))
         {
-            Null(await UpdateChecker.FindNewerReleaseAsync(http, CancellationToken.None));
+            False((await UpdateChecker.CheckForUpdateAsync(http, CancellationToken.None)).Succeeded);
         }
 
         using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
                    throw new HttpRequestException("synthetic failure"))))
         {
-            Null(await UpdateChecker.FindNewerReleaseAsync(http, CancellationToken.None));
+            False((await UpdateChecker.CheckForUpdateAsync(http, CancellationToken.None)).Succeeded);
         }
 
         True(UpdateChecker.IsNewer("6-beta.1", "5.9.0"));
@@ -2820,7 +2826,7 @@ internal static class CoverageExpansionTests
         }
     }
 
-    public static Task TestRemainingUiBranchesAsync()
+    public static async Task TestRemainingUiBranchesAsync()
     {
         var now = DateTimeOffset.Now;
         var disconnected = new ProviderStatus(
@@ -3089,8 +3095,51 @@ internal static class CoverageExpansionTests
             Equal(ThemeMode.Light, lightSettings.Theme);
         }
 
+        var offeredRelease = new UpdateRelease(
+            "v99.0.0",
+            "99.0.0",
+            new Uri("https://github.com/VladiKogan/UsageAI/releases/tag/v99.0.0"),
+            null,
+            null);
+        var updateResults = new Queue<UpdateCheckResult>(new[]
+        {
+            new UpdateCheckResult(true, null),
+            new UpdateCheckResult(false, null),
+            new UpdateCheckResult(true, offeredRelease),
+        });
+        UpdateRelease? promptedRelease = null;
+        var updateSettings = new AppSettings();
+        using (var settingsForm = new SettingsForm(
+                   updateSettings,
+                   providerEntries,
+                   _ => Task.FromResult(updateResults.Dequeue()),
+                   release =>
+                   {
+                       promptedRelease = release;
+                       return Task.CompletedTask;
+                   }))
+        {
+            var version = Descendants(settingsForm)
+                .OfType<Label>()
+                .Single(label => label.Text == $"v{AppIdentity.Version}");
+            Equal(Theme.Signal, version.ForeColor);
+
+            await InvokePrivateTaskAsync(settingsForm, "CheckForUpdatesAsync");
+            var status = GetPrivateField<Label>(settingsForm, "_updateStatus");
+            True(status.Text.Contains("up to date", StringComparison.Ordinal));
+            Equal(Theme.Success, status.ForeColor);
+
+            await InvokePrivateTaskAsync(settingsForm, "CheckForUpdatesAsync");
+            True(status.Text.Contains("Couldn’t check", StringComparison.Ordinal));
+            Equal(Theme.Warning, status.ForeColor);
+
+            await InvokePrivateTaskAsync(settingsForm, "CheckForUpdatesAsync");
+            True(status.Text.Contains("99.0.0", StringComparison.Ordinal));
+            Equal(offeredRelease, promptedRelease);
+            NotNull(updateSettings.LastUpdateCheckUtc);
+        }
+
         Theme.Apply(ThemeMode.Dark, 72, 90);
-        return Task.CompletedTask;
     }
 
     public static Task TestStalePresentationEdgesAsync()

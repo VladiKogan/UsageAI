@@ -278,7 +278,9 @@ internal sealed class UsageApplicationContext : ApplicationContext
     {
         using var dialog = new SettingsForm(
             _settings,
-            _clients.Select(client => (client.Id, client.DisplayName)).ToArray());
+            _clients.Select(client => (client.Id, client.DisplayName)).ToArray(),
+            UpdateChecker.CheckForUpdateAsync,
+            PromptForUpdateAsync);
         if (dialog.ShowDialog() != DialogResult.OK)
         {
             return;

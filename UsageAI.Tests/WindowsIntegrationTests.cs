@@ -57,6 +57,24 @@ internal static class WindowsIntegrationTests
         return Task.CompletedTask;
     }
 
+    public static Task TestUpdateRestartRegistrationAsync()
+    {
+        True(ApplicationRestart.TryRegister());
+
+        string? capturedCommandLine = null;
+        var capturedFlags = 0;
+        True(ApplicationRestart.TryRegister((commandLine, flags) =>
+        {
+            capturedCommandLine = commandLine;
+            capturedFlags = flags;
+            return 0;
+        }));
+        Equal(string.Empty, capturedCommandLine);
+        Equal(ApplicationRestart.UpdateRestartFlags, capturedFlags);
+        False(ApplicationRestart.TryRegister((_, _) => -1));
+        return Task.CompletedTask;
+    }
+
     public static Task TestCredentialManagerAsync()
     {
         var suffix = Guid.NewGuid().ToString("N");
