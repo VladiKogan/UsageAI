@@ -46,6 +46,14 @@ internal static class Program
         ("projection ignores a window reset", TestForecastResetAsync),
         ("alert thresholds and debouncing", TestNotificationsAsync),
         ("release version comparison", TestUpdateComparisonAsync),
+        ("dashboard metric display selection", TestMetricDisplaySelectionAsync),
+        ("bundled release notes and upgrade state", TestReleaseNotesAsync),
+        ("High Contrast palette and extreme DPI scale", TestHighContrastAndDpiAsync),
+        ("dashboard metric mode UI and settings isolation", CoverageExpansionTests.TestDashboardMetricModeUiAsync),
+        ("release notes parser boundary cases", CoverageExpansionTests.TestReleaseNotesBoundariesAsync),
+        ("What's New first-interaction lifecycle", CoverageExpansionTests.TestWhatsNewLifecycleAsync),
+        ("runtime High Contrast surface propagation", CoverageExpansionTests.TestRuntimeHighContrastAsync),
+        ("owned-window extreme DPI geometry", CoverageExpansionTests.TestExtremeDpiGeometryAsync),
         ("Primary metric prioritization in tray and header", TestPrimaryMetricTrayTooltipAsync),
         ("Theme usage fill colors and tray pie icon", TestThemeUsageColorsAsync),
         ("model formatting and provider status states", CoverageExpansionTests.TestModelFormattingAsync),
@@ -66,6 +74,7 @@ internal static class Program
         ("corrupt local state recovery", CoverageExpansionTests.TestCorruptLocalStateAsync),
         ("security utility edge cases", CoverageExpansionTests.TestSecurityUtilityEdgesAsync),
         ("custom UI rendering paths", CoverageExpansionTests.TestUiRenderingAsync),
+        ("dashboard keeps a responsive two-by-two provider grid", CoverageExpansionTests.TestDashboardFixedGridAsync),
         ("application context lifecycle and tray updates", CoverageExpansionTests.TestApplicationContextAsync),
         ("preview and command-line entry points", CoverageExpansionTests.TestPreviewAndEntryPointsAsync),
         ("provider credential refresh and discovery branches", CoverageExpansionTests.TestProviderCredentialBranchesAsync),
@@ -963,6 +972,7 @@ internal static class Program
             NotifyAtPercent = new[] { 150, 80, 80, 20 },
             TrayProviderId = " claude ",
             LastUpdateCheckUtc = lastUpdateCheck,
+            MetricDisplayMode = (MetricDisplayMode)999,
         };
         settings.Save();
 
@@ -972,6 +982,7 @@ internal static class Program
         Equal(20, settings.NotifyAtPercent[0]);
         Equal(80, settings.NotifyAtPercent[1]);
         Equal("claude", settings.TrayProviderId);
+        Equal(MetricDisplayMode.All, settings.MetricDisplayMode);
 
         var reloaded = AppSettings.Load();
         Equal(AppSettings.MaximumRefreshMinutes, reloaded.RefreshIntervalMinutes);
@@ -1279,6 +1290,233 @@ internal static class Program
         False(UpdateChecker.IsNewer("v0.3.0", "0.4.0"));
         False(UpdateChecker.IsNewer("v0.4.0", "0.4.0"));
         False(UpdateChecker.IsNewer("not-a-version", "0.4.0"));
+        return Task.CompletedTask;
+    }
+
+    private static Task TestMetricDisplaySelectionAsync()
+    {
+        var metrics = new UsageMetric[]
+        {
+            new("Balance", UsageMetricKind.Balance, null, RemainingText: "$4"),
+            new("Session first", UsageMetricKind.Session, 70),
+            new("Rolling low", UsageMetricKind.Rolling, 40),
+            new("Session tie", UsageMetricKind.Session, 70),
+            new("Rolling high", UsageMetricKind.Rolling, 91),
+            new("Unlimited", UsageMetricKind.Monthly, 0, IsUnlimited: true),
+            new("Monthly", UsageMetricKind.Monthly, 12),
+        };
+
+        True(ReferenceEquals(metrics, UsageMetricSelection.Select(metrics, MetricDisplayMode.All)));
+        var metered = UsageMetricSelection.Select(metrics, MetricDisplayMode.MeteredOnly);
+        Equal("Session first|Rolling low|Session tie|Rolling high|Monthly", string.Join('|', metered.Select(metric => metric.Name)));
+        var important = UsageMetricSelection.Select(metrics, MetricDisplayMode.ImportantOnly);
+        Equal("Session first|Rolling high|Monthly", string.Join('|', important.Select(metric => metric.Name)));
+        True(ReferenceEquals(metrics, UsageMetricSelection.Select(metrics, (MetricDisplayMode)999)));
+
+        var now = DateTimeOffset.Now;
+        var snapshot = new UsageSnapshot("Free", new[] { metrics[0] }, now, "codex", "Codex");
+        var status = new ProviderStatus("codex", "Codex", snapshot, null, false);
+        using var filteredEmpty = new ProviderUsageCard(
+            status,
+            expanded: true,
+            Array.Empty<UsageSample>(),
+            showTrend: false,
+            metrics: UsageMetricSelection.Select(snapshot.Metrics, MetricDisplayMode.MeteredOnly))
+        {
+            Width = 520,
+        };
+        True(filteredEmpty.AccessibleDescription!.Contains("No metered limits reported", StringComparison.Ordinal));
+        using var bitmap = new Bitmap(filteredEmpty.Width, filteredEmpty.Height);
+        filteredEmpty.DrawToBitmap(bitmap, filteredEmpty.ClientRectangle);
+        True(filteredEmpty.Height > 0);
+        return Task.CompletedTask;
+    }
+
+    private static Task TestReleaseNotesAsync()
+    {
+        const string markdown = """
+            # Changelog
+            ## [Unreleased]
+            ### Added
+            - Hidden draft
+            ## [1.4.0] - 2026-09-01
+            ### Added
+            - Current feature with a
+              wrapped continuation.
+            ### Removed
+            - Ignored category
+            ## [1.3.0] - 2026-08-01
+            ### Fixed
+            - Prior fix
+            ## [1.2.0] - 2026-07-01
+            ### Security
+            - Safer boundary
+            ## [1.1.0] - 2026-06-01
+            ### Changed
+            - Older change
+            ## [not-a-version]
+            ### Added
+            - Malformed
+            """;
+        var releases = ReleaseNotes.Parse(markdown);
+        Equal(4, releases.Count);
+        Equal("Current feature with a wrapped continuation.", releases[0].Sections[0].Bullets[0]);
+        False(releases.SelectMany(release => release.Sections).Any(section => section.Heading == "Removed"));
+        var skipped = ReleaseNotes.ForUpgrade(releases, "1.4.0", new Version(1, 0));
+        Equal(3, skipped.Releases.Count);
+        True(skipped.HasOlderSkipped);
+        Equal("1.4.0", skipped.Releases[0].DisplayVersion);
+        Equal(0, ReleaseNotes.Parse(new string('x', ReleaseNotes.MaximumInputCharacters + 1)).Count);
+        True(ReleaseNotes.LoadBundled().Any(release => release.DisplayVersion == AppIdentity.Version));
+
+        if (File.Exists(AppPaths.SettingsFile)) File.Delete(AppPaths.SettingsFile);
+        var cleanSettings = new AppSettings();
+        var beforeForms = Application.OpenForms.Count;
+        var clean = UpgradeNotice.Create(cleanSettings, profileExisted: false, "1.4.0", releases);
+        Null(clean.Pending);
+        Equal("1.4.0", cleanSettings.LastRunVersion);
+        Equal(beforeForms, Application.OpenForms.Count);
+
+        var preTracking = UpgradeNotice.Create(new AppSettings(), profileExisted: true, "1.4.0", releases);
+        NotNull(preTracking.Pending);
+        Equal(1, preTracking.Pending!.Releases.Count);
+
+        var single = UpgradeNotice.Create(
+            new AppSettings { LastRunVersion = "1.3.0" },
+            profileExisted: true,
+            "1.4.0",
+            releases);
+        Equal(1, single.Pending!.Releases.Count);
+
+        var upgradeSettings = new AppSettings { LastRunVersion = "1.1.0" };
+        var upgrade = UpgradeNotice.Create(upgradeSettings, profileExisted: true, "1.4.0", releases);
+        NotNull(upgrade.Pending);
+        Equal(3, upgrade.Pending!.Releases.Count);
+        upgrade.MarkDisplayed("1.4.0");
+        Null(upgrade.Pending);
+        Equal("1.4.0", AppSettings.Load().LastRunVersion);
+
+        var corrupt = new AppSettings { LastRunVersion = "broken" };
+        Null(UpgradeNotice.Create(corrupt, true, "1.4.0", releases).Pending);
+        Equal("1.4.0", corrupt.LastRunVersion);
+        Null(UpgradeNotice.Create(
+            new AppSettings { LastRunVersion = "1.4.0" },
+            true,
+            "1.4.0",
+            releases).Pending);
+        var downgrade = new AppSettings { LastRunVersion = "2.0.0" };
+        Null(UpgradeNotice.Create(downgrade, true, "1.4.0", releases).Pending);
+        Equal("1.4.0", downgrade.LastRunVersion);
+
+        var fallback = new WhatsNewSummary(Array.Empty<ReleaseNotesVersion>(), "1.4.0", false);
+        using var form = new WhatsNewForm(fallback)
+        {
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-10_000, -10_000),
+        };
+        form.Show();
+        Application.DoEvents();
+        using var bitmap = new Bitmap(form.Width, form.Height);
+        form.DrawToBitmap(bitmap, form.ClientRectangle);
+        True(form.Controls.Count > 0);
+        form.Hide();
+        File.Delete(AppPaths.SettingsFile);
+        return Task.CompletedTask;
+    }
+
+    private static Task TestHighContrastAndDpiAsync()
+    {
+        try
+        {
+            Theme.SetHighContrastProbe(static () => true);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+            True(Theme.IsHighContrast);
+            Equal(SystemColors.Window.ToArgb(), Theme.Night.ToArgb());
+            Equal(SystemColors.WindowText.ToArgb(), Theme.ForProvider("claude").ToArgb());
+            Equal("! ", Theme.UsageCue(72));
+            Equal("!! ", Theme.UsageCue(90));
+            Equal(string.Empty, Theme.UsageCue(71));
+
+            foreach (var dpi in new[] { 96, 192, 288 })
+            {
+                var scale = new LayoutScale(dpi);
+                Equal(dpi / 96F, scale.Factor);
+                Equal(dpi, scale[96]);
+                True(scale.Rect(2, 3, 40, 20).Width > 0);
+                Equal(scale[12], new LayoutScale(dpi)[12]);
+
+                var now = DateTimeOffset.Now;
+                var snapshot = new UsageSnapshot(
+                    "A representative plan with a long label",
+                    new UsageMetric[]
+                    {
+                        new("Session", UsageMetricKind.Session, 92, now.AddHours(2)),
+                        new("Balance", UsageMetricKind.Balance, null, RemainingText: "$5"),
+                    },
+                    now,
+                    "codex",
+                    "Codex");
+                var status = new ProviderStatus("codex", "Codex", snapshot, null, false);
+                using var popup = new UsagePopupForm(new AppSettings(), dpi)
+                {
+                    StartPosition = FormStartPosition.Manual,
+                    Location = new Point(-10_000, -10_000),
+                };
+                popup.SetMode(DashboardMode.Full);
+                popup.SetStates(new[] { status }, false, now, Array.Empty<UsageSample>());
+                popup.Show();
+                Application.DoEvents();
+                using (var popupBitmap = new Bitmap(popup.ClientSize.Width, popup.ClientSize.Height))
+                {
+                    popup.DrawToBitmap(popupBitmap, popup.ClientRectangle);
+                }
+                True(popup.ClientSize.Width > 0 && popup.ClientSize.Height > 0);
+                popup.Hide();
+
+                using var settings = new SettingsForm(
+                    new AppSettings(),
+                    new[] { ("codex", "Codex"), ("claude", "Claude Code") },
+                    _ => Task.FromResult(new UpdateCheckResult(true, null)),
+                    _ => Task.CompletedTask,
+                    dpi)
+                {
+                    StartPosition = FormStartPosition.Manual,
+                    Location = new Point(-10_000, -10_000),
+                };
+                settings.Show();
+                Application.DoEvents();
+                using (var settingsBitmap = new Bitmap(settings.ClientSize.Width, settings.ClientSize.Height))
+                {
+                    settings.DrawToBitmap(settingsBitmap, settings.ClientRectangle);
+                }
+                True(settings.ClientSize.Width > 0 && settings.ClientSize.Height > 0);
+                settings.Hide();
+
+                var summary = new WhatsNewSummary(Array.Empty<ReleaseNotesVersion>(), "1.4.0", false);
+                using var whatsNew = new WhatsNewForm(summary, dpi)
+                {
+                    StartPosition = FormStartPosition.Manual,
+                    Location = new Point(-10_000, -10_000),
+                };
+                whatsNew.Show();
+                Application.DoEvents();
+                using (var notesBitmap = new Bitmap(whatsNew.ClientSize.Width, whatsNew.ClientSize.Height))
+                {
+                    whatsNew.DrawToBitmap(notesBitmap, whatsNew.ClientRectangle);
+                }
+                True(whatsNew.ClientSize.Width > 0 && whatsNew.ClientSize.Height > 0);
+                whatsNew.Hide();
+            }
+
+            Equal(400, LayoutScale.ScaleBetweenDpis(200, 96, 192));
+            Equal(100, LayoutScale.ScaleBetweenDpis(200, 192, 96));
+            Equal(0, LayoutScale.ScaleBetweenDpis(-20, 96, 192));
+        }
+        finally
+        {
+            Theme.SetHighContrastProbe(null);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+        }
         return Task.CompletedTask;
     }
 

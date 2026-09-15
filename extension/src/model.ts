@@ -1,4 +1,5 @@
 export type UsageMetricKind = "session" | "rolling" | "monthly" | "balance";
+export type MetricDisplayMode = "all" | "metered" | "important";
 
 export interface UsageMetric {
   readonly name: string;
@@ -86,6 +87,35 @@ export function clampPercent(value: number): number {
 
 export function hasQuota(metric: UsageMetric): boolean {
   return metric.usedPercent !== null && !metric.isUnlimited;
+}
+
+export function normalizeMetricDisplayMode(value: unknown): MetricDisplayMode {
+  return value === "metered" || value === "important" ? value : "all";
+}
+
+/** Selects full-dashboard rows without changing the provider snapshot or Status Bar selection. */
+export function selectDashboardMetrics(
+  metrics: readonly UsageMetric[],
+  mode: MetricDisplayMode,
+): readonly UsageMetric[] {
+  if (mode === "all") {
+    return metrics;
+  }
+  if (mode === "metered") {
+    return metrics.filter(hasQuota);
+  }
+
+  const kinds: readonly UsageMetricKind[] = ["session", "rolling", "monthly"];
+  return kinds.flatMap((kind) => {
+    let selected: UsageMetric | undefined;
+    for (const metric of metrics) {
+      if (metric.kind === kind && hasQuota(metric)
+        && (!selected || (metric.usedPercent ?? 0) > (selected.usedPercent ?? 0))) {
+        selected = metric;
+      }
+    }
+    return selected ? [selected] : [];
+  });
 }
 
 export function highestUsedPercent(snapshot: UsageSnapshot): number {

@@ -1,4 +1,5 @@
 using UsageAI.Services;
+using UsageAI.Models;
 
 namespace UsageAI.UI;
 
@@ -9,12 +10,16 @@ namespace UsageAI.UI;
 internal sealed class SettingsForm : Form
 {
     private static readonly object[] ThemeChoices = { "Follow Windows", "Dark", "Light" };
+    private static readonly object[] MetricChoices = { "All", "Metered only", "Important only" };
 
     private readonly List<Font> _ownedFonts = new();
     private readonly CancellationTokenSource _lifetime = new();
     private readonly AppSettings _settings;
+    private readonly int? _dpiOverride;
     private readonly Func<CancellationToken, Task<UpdateCheckResult>> _checkForUpdates;
     private readonly Func<UpdateRelease, Task> _promptForUpdate;
+    private readonly TableLayoutPanel _shell;
+    private readonly Panel _scrollHost;
     private readonly TableLayoutPanel _layout;
     private readonly NumericUpDown _refreshInterval;
     private readonly CheckBox _slowWhenHidden;
@@ -25,6 +30,7 @@ internal sealed class SettingsForm : Form
     private readonly NumericUpDown _warningPercent;
     private readonly NumericUpDown _criticalPercent;
     private readonly ComboBox _theme;
+    private readonly ComboBox _metricDisplayMode;
     private readonly ComboBox _trayProvider;
     private readonly CheckBox _historyEnabled;
     private readonly CheckBox _forecastEnabled;
@@ -32,6 +38,10 @@ internal sealed class SettingsForm : Form
     private readonly CheckedListBox _providers;
     private readonly Button _checkForUpdatesButton;
     private readonly Label _updateStatus;
+    private readonly Label _versionLabel;
+    private readonly FlowLayoutPanel _buttons;
+    private readonly Button _saveButton;
+    private readonly Button _cancelButton;
     private bool _isCheckingForUpdates;
     private bool _resourcesDisposed;
 
@@ -40,7 +50,8 @@ internal sealed class SettingsForm : Form
             settings,
             providers,
             UpdateChecker.CheckForUpdateAsync,
-            static _ => Task.CompletedTask)
+            static _ => Task.CompletedTask,
+            dpiOverride: null)
     {
     }
 
@@ -48,12 +59,14 @@ internal sealed class SettingsForm : Form
         AppSettings settings,
         IReadOnlyList<(string Id, string DisplayName)> providers,
         Func<CancellationToken, Task<UpdateCheckResult>> checkForUpdates,
-        Func<UpdateRelease, Task> promptForUpdate)
+        Func<UpdateRelease, Task> promptForUpdate,
+        int? dpiOverride = null)
     {
         _settings = settings;
+        _dpiOverride = dpiOverride;
         _checkForUpdates = checkForUpdates;
         _promptForUpdate = promptForUpdate;
-        var scale = new LayoutScale(this);
+        var scale = Scale();
 
         AutoScaleMode = AutoScaleMode.None;
         BackColor = Theme.Night;
@@ -64,10 +77,13 @@ internal sealed class SettingsForm : Form
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.CenterScreen;
         Text = "UsageAI settings";
-        ClientSize = new Size(scale[470], scale[640]);
+        var workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, scale[1920], scale[1080]);
+        ClientSize = new Size(
+            Math.Min(scale[470], Math.Max(320, workingArea.Width - scale[24])),
+            Math.Min(scale[640], Math.Max(280, workingArea.Height - scale[24])));
         Font = Own(Typography.Text(9F));
 
-        var shell = new TableLayoutPanel
+        _shell = new TableLayoutPanel
         {
             ColumnCount = 1,
             Dock = DockStyle.Fill,
@@ -75,19 +91,19 @@ internal sealed class SettingsForm : Form
             Padding = Padding.Empty,
             RowCount = 2,
         };
-        shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
-        shell.RowStyles.Add(new RowStyle(SizeType.Absolute, scale[52]));
-        Controls.Add(shell);
+        _shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _shell.RowStyles.Add(new RowStyle(SizeType.Absolute, scale[52]));
+        Controls.Add(_shell);
 
-        var scrollHost = new Panel
+        _scrollHost = new Panel
         {
             AutoScroll = true,
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
         };
-        scrollHost.HandleCreated += OnScrollableControlHandleCreated;
-        shell.Controls.Add(scrollHost, 0, 0);
+        _scrollHost.HandleCreated += OnScrollableControlHandleCreated;
+        _shell.Controls.Add(_scrollHost, 0, 0);
 
         _layout = new TableLayoutPanel
         {
@@ -100,7 +116,7 @@ internal sealed class SettingsForm : Form
         };
         _layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
         _layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
-        scrollHost.Controls.Add(_layout);
+        _scrollHost.Controls.Add(_layout);
 
         _refreshInterval = CreateNumeric(AppSettings.MinimumRefreshMinutes, AppSettings.MaximumRefreshMinutes);
         _slowWhenHidden = CreateCheckBox("Slow down while no window is open");
@@ -123,6 +139,18 @@ internal sealed class SettingsForm : Form
             Margin = scale.Pad(0, 4, 0, 4),
         };
         _theme.Items.AddRange(ThemeChoices);
+
+        _metricDisplayMode = new ComboBox
+        {
+            AccessibleName = "Dashboard metric display mode",
+            BackColor = Theme.SurfaceRaised,
+            Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = Theme.Text,
+            Margin = scale.Pad(0, 4, 0, 4),
+        };
+        _metricDisplayMode.Items.AddRange(MetricChoices);
 
         _trayProvider = new ComboBox
         {
@@ -184,6 +212,14 @@ internal sealed class SettingsForm : Form
 
         AddSection("Appearance");
         AddRow("Theme", _theme);
+        AddRow("Dashboard metrics", _metricDisplayMode);
+        AddSpan(new Label
+        {
+            AutoSize = true,
+            ForeColor = Theme.Muted,
+            Margin = scale.Pad(0, 0, 0, 8),
+            Text = "Metered shows every percentage limit. Important shows the highest Session, Rolling, and Monthly limit.",
+        });
         AddRow("Warning colour from (% used)", _warningPercent);
         AddRow("Critical colour from (% used)", _criticalPercent);
 
@@ -219,35 +255,40 @@ internal sealed class SettingsForm : Form
         AddSpan(_hotkeyEnabled);
 
         AddSection("About");
-        AddRow("Installed version", new Label
+        _versionLabel = new Label
         {
             AutoSize = true,
             Font = Own(Typography.Mono(9F)),
             ForeColor = Theme.Signal,
             Margin = scale.Pad(0, 8, 0, 4),
             Text = $"v{AppIdentity.Version}",
-        });
+        };
+        AddRow("Installed version", _versionLabel);
         AddSpan(_checkForUpdatesButton);
+        AddSpan(CreateLinkButton("What's new", (_, _) => WhatsNewForm.ShowCurrent(this)));
         AddSpan(_updateStatus);
 
-        var buttons = new FlowLayoutPanel
+        _buttons = new FlowLayoutPanel
         {
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.RightToLeft,
             Margin = Padding.Empty,
             Padding = scale.Pad(0, 10, 18, 10),
         };
-        var save = CreateDialogButton("Save", scale, primary: true);
-        save.Click += (_, _) => Apply();
-        var cancel = CreateDialogButton("Cancel", scale, primary: false);
-        cancel.DialogResult = DialogResult.Cancel;
-        buttons.Controls.Add(save);
-        buttons.Controls.Add(cancel);
-        shell.Controls.Add(buttons, 0, 1);
-        AcceptButton = save;
-        CancelButton = cancel;
+        _saveButton = CreateDialogButton("Save", scale, primary: true);
+        _saveButton.Click += (_, _) => Apply();
+        _cancelButton = CreateDialogButton("Cancel", scale, primary: false);
+        _cancelButton.DialogResult = DialogResult.Cancel;
+        _buttons.Controls.Add(_saveButton);
+        _buttons.Controls.Add(_cancelButton);
+        _shell.Controls.Add(_buttons, 0, 1);
+        AcceptButton = _saveButton;
+        CancelButton = _cancelButton;
 
         LoadValues();
+        Theme.Changed += OnThemeChanged;
+        ApplyScaledLayout();
+        ApplyThemeColors();
     }
 
     private async Task CheckForUpdatesAsync()
@@ -317,6 +358,7 @@ internal sealed class SettingsForm : Form
         _warningPercent.Value = _settings.WarningPercent;
         _criticalPercent.Value = _settings.CriticalPercent;
         _theme.SelectedIndex = (int)_settings.Theme;
+        _metricDisplayMode.SelectedIndex = (int)_settings.MetricDisplayMode;
         _historyEnabled.Checked = _settings.HistoryEnabled;
         _forecastEnabled.Checked = _settings.ForecastEnabled;
         _hotkeyEnabled.Checked = _settings.GlobalHotkeyEnabled;
@@ -349,6 +391,12 @@ internal sealed class SettingsForm : Form
             1 => ThemeMode.Dark,
             2 => ThemeMode.Light,
             _ => ThemeMode.System,
+        };
+        _settings.MetricDisplayMode = _metricDisplayMode.SelectedIndex switch
+        {
+            1 => MetricDisplayMode.MeteredOnly,
+            2 => MetricDisplayMode.ImportantOnly,
+            _ => MetricDisplayMode.All,
         };
         _settings.HistoryEnabled = _historyEnabled.Checked;
         _settings.ForecastEnabled = _forecastEnabled.Checked;
@@ -407,7 +455,7 @@ internal sealed class SettingsForm : Form
 
     private void AddSection(string title)
     {
-        var scale = new LayoutScale(this);
+        var scale = Scale();
         var label = new Label
         {
             AutoSize = true,
@@ -424,7 +472,7 @@ internal sealed class SettingsForm : Form
 
     private void AddRow(string label, Control control)
     {
-        var scale = new LayoutScale(this);
+        var scale = Scale();
         var caption = new Label
         {
             AutoSize = true,
@@ -451,7 +499,7 @@ internal sealed class SettingsForm : Form
         AutoSize = true,
         FlatStyle = FlatStyle.Flat,
         ForeColor = Theme.Text,
-        Margin = new LayoutScale(this).Pad(0, 4, 0, 4),
+        Margin = Scale().Pad(0, 4, 0, 4),
         Text = text,
     };
 
@@ -461,7 +509,7 @@ internal sealed class SettingsForm : Form
         BorderStyle = BorderStyle.FixedSingle,
         Dock = DockStyle.Fill,
         ForeColor = Theme.Text,
-        Margin = new LayoutScale(this).Pad(0, 4, 0, 4),
+        Margin = Scale().Pad(0, 4, 0, 4),
         Maximum = maximum,
         Minimum = minimum,
     };
@@ -474,7 +522,7 @@ internal sealed class SettingsForm : Form
             BackColor = Theme.Night,
             FlatStyle = FlatStyle.Flat,
             ForeColor = Theme.Signal,
-            Margin = new LayoutScale(this).Pad(0, 4, 0, 4),
+            Margin = Scale().Pad(0, 4, 0, 4),
             Text = text,
             UseVisualStyleBackColor = false,
         };
@@ -509,22 +557,128 @@ internal sealed class SettingsForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark);
+        WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
     }
 
     private static void OnScrollableControlHandleCreated(object? sender, EventArgs eventArgs)
     {
         if (sender is Control control)
         {
-            WindowThemeHelpers.ApplyDarkScrollbar(control, Theme.IsDark);
+            WindowThemeHelpers.ApplyDarkScrollbar(control, Theme.IsDark && !Theme.IsHighContrast);
         }
     }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs eventArgs)
+    {
+        var scrollY = LayoutScale.ScaleBetweenDpis(
+            -_scrollHost.AutoScrollPosition.Y,
+            eventArgs.DeviceDpiOld,
+            eventArgs.DeviceDpiNew);
+        base.OnDpiChanged(eventArgs);
+        ApplyScaledLayout();
+        Bounds = FitToWorkingArea(Bounds, Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea);
+        _scrollHost.AutoScrollPosition = new Point(0, scrollY);
+    }
+
+    private void ApplyScaledLayout()
+    {
+        var scale = Scale();
+        var workingArea = Screen.FromPoint(Location).WorkingArea;
+        MinimumSize = new Size(
+            Math.Min(scale[390], workingArea.Width),
+            Math.Min(scale[420], workingArea.Height));
+        _shell.RowStyles[1] = new RowStyle(SizeType.Absolute, scale[52]);
+        _layout.Padding = scale.Pad(18, 16, 18, 8);
+        _providers.Height = scale[104];
+        _checkForUpdatesButton.MinimumSize = new Size(scale[142], scale[30]);
+        _buttons.Padding = scale.Pad(0, 10, 18, 10);
+        _saveButton.Size = new Size(scale[104], scale[30]);
+        _cancelButton.Size = new Size(scale[104], scale[30]);
+        foreach (var numeric in _layout.Controls.OfType<NumericUpDown>()) numeric.Margin = scale.Pad(0, 4, 0, 4);
+        foreach (var combo in _layout.Controls.OfType<ComboBox>()) combo.Margin = scale.Pad(0, 4, 0, 4);
+        foreach (var checkBox in _layout.Controls.OfType<CheckBox>()) checkBox.Margin = scale.Pad(0, 4, 0, 4);
+    }
+
+    private static Rectangle FitToWorkingArea(Rectangle bounds, Rectangle workingArea)
+    {
+        var width = Math.Min(bounds.Width, workingArea.Width);
+        var height = Math.Min(bounds.Height, workingArea.Height);
+        var x = Math.Clamp(bounds.X, workingArea.Left, Math.Max(workingArea.Left, workingArea.Right - width));
+        var y = Math.Clamp(bounds.Y, workingArea.Top, Math.Max(workingArea.Top, workingArea.Bottom - height));
+        return new Rectangle(x, y, width, height);
+    }
+
+    private void OnThemeChanged(object? sender, EventArgs eventArgs)
+    {
+        if (!IsDisposed && !Disposing) ApplyThemeColors();
+    }
+
+    private void ApplyThemeColors()
+    {
+        BackColor = Theme.Night;
+        ForeColor = Theme.Text;
+        ApplyControlTheme(_shell);
+        _updateStatus.ForeColor = Theme.Muted;
+        _saveButton.BackColor = Theme.Accent;
+        _saveButton.ForeColor = Theme.OnAccent;
+        _saveButton.FlatAppearance.BorderColor = Theme.Accent;
+        _cancelButton.BackColor = Theme.SurfaceRaised;
+        _cancelButton.ForeColor = Theme.Text;
+        _cancelButton.FlatAppearance.BorderColor = Theme.Hairline;
+        _versionLabel.ForeColor = Theme.Signal;
+        WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
+        WindowThemeHelpers.ApplyDarkScrollbar(_scrollHost, Theme.IsDark && !Theme.IsHighContrast);
+        WindowThemeHelpers.ApplyDarkScrollbar(_providers, Theme.IsDark && !Theme.IsHighContrast);
+        Invalidate(invalidateChildren: true);
+    }
+
+    private static void ApplyControlTheme(Control control)
+    {
+        switch (control)
+        {
+            case NumericUpDown or ComboBox or CheckedListBox:
+                control.BackColor = Theme.SurfaceRaised;
+                control.ForeColor = Theme.Text;
+                break;
+            case CheckBox:
+                control.BackColor = Theme.Night;
+                control.ForeColor = Theme.Text;
+                break;
+            case Label label:
+                label.BackColor = Theme.Night;
+                label.ForeColor = label.Text.Equals(label.Text.ToUpperInvariant(), StringComparison.Ordinal)
+                    ? Theme.Muted
+                    : Theme.Text;
+                break;
+            case Button button when button.FlatAppearance.BorderSize == 0:
+                button.BackColor = Theme.Night;
+                button.ForeColor = Theme.Signal;
+                break;
+            case Button button:
+                button.BackColor = Theme.SurfaceRaised;
+                button.ForeColor = Theme.Text;
+                button.FlatAppearance.BorderColor = Theme.Hairline;
+                break;
+            default:
+                control.BackColor = Theme.Night;
+                control.ForeColor = Theme.Text;
+                break;
+        }
+
+        foreach (Control child in control.Controls)
+        {
+            ApplyControlTheme(child);
+        }
+    }
+
+    private LayoutScale Scale() => _dpiOverride is { } dpi ? new LayoutScale(dpi) : new LayoutScale(this);
 
     protected override void Dispose(bool disposing)
     {
         if (disposing && !_resourcesDisposed)
         {
             _resourcesDisposed = true;
+            Theme.Changed -= OnThemeChanged;
             _lifetime.Cancel();
             _lifetime.Dispose();
             foreach (var font in _ownedFonts)

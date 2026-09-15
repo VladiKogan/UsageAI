@@ -67,6 +67,105 @@ test("Claude client sends OAuth usage requests and honors throttling hints", asy
   }
 });
 
+test("Claude client validates through the CLI and retries one unexpected usage failure", async () => {
+  const environmentNames = [
+    "USAGEAI_CLAUDE_OAUTH_TOKEN",
+    "USAGEAI_CLAUDE_OAUTH_SCOPES",
+    "USAGEAI_CLAUDE_SESSION_KEY",
+    "CLAUDE_AI_SESSION_KEY",
+    "CLAUDE_WEB_SESSION_KEY",
+    "CLAUDE_CONFIG_DIR",
+  ] as const;
+  const previous = new Map(environmentNames.map((name) => [name, process.env[name]]));
+  for (const name of environmentNames) delete process.env[name];
+
+  const credentialJson = JSON.stringify({
+    claudeAiOauth: {
+      accessToken: "file-access-token",
+      expiresAt: Date.now() + 3_600_000,
+      scopes: ["user:profile"],
+      subscriptionType: "pro",
+    },
+  });
+  try {
+    mock.method(security, "readBoundedText", (async () => credentialJson) as typeof security.readBoundedText);
+    let requests = 0;
+    let probes = 0;
+    mock.method(security, "requestJson", (async () => {
+      requests += 1;
+      return requests === 1
+        ? { status: 401, headers: {}, data: {} }
+        : {
+            status: 200,
+            headers: {},
+            data: { five_hour: { utilization: 26, resets_at: "2026-09-16T00:00:00Z" } },
+          };
+    }) as typeof security.requestJson);
+    const recovered = await new ClaudeUsageClient(async () => {
+      probes += 1;
+      return true;
+    }).getUsage();
+    assert.equal(recovered.metrics[0]?.usedPercent, 26);
+    assert.equal(requests, 2);
+    assert.equal(probes, 1);
+
+    mock.restoreAll();
+    mock.method(security, "readBoundedText", (async () => credentialJson) as typeof security.readBoundedText);
+    requests = 0;
+    probes = 0;
+    mock.method(security, "requestJson", (async () => {
+      requests += 1;
+      if (requests === 1) throw new SyntaxError("synthetic invalid response");
+      return {
+        status: 200,
+        headers: {},
+        data: { seven_day: { utilization: 44, resets_at: "2026-09-22T00:00:00Z" } },
+      };
+    }) as typeof security.requestJson);
+    const retried = await new ClaudeUsageClient(async () => {
+      probes += 1;
+      return true;
+    }).getUsage();
+    assert.equal(retried.metrics[0]?.usedPercent, 44);
+    assert.equal(requests, 2);
+    assert.equal(probes, 1);
+
+    mock.restoreAll();
+    mock.method(security, "readBoundedText", (async () => credentialJson) as typeof security.readBoundedText);
+    requests = 0;
+    mock.method(security, "requestJson", (async () => {
+      requests += 1;
+      return { status: 403, headers: {}, data: {} };
+    }) as typeof security.requestJson);
+    await assert.rejects(
+      () => new ClaudeUsageClient(async () => false).getUsage(),
+      /cannot read account usage/i,
+    );
+    assert.equal(requests, 1);
+
+    mock.restoreAll();
+    mock.method(security, "readBoundedText", (async () => credentialJson) as typeof security.readBoundedText);
+    requests = 0;
+    probes = 0;
+    mock.method(security, "requestJson", (async () => {
+      requests += 1;
+      return { status: 401, headers: {}, data: {} };
+    }) as typeof security.requestJson);
+    await assert.rejects(
+      () => new ClaudeUsageClient(async () => {
+        probes += 1;
+        return true;
+      }).getUsage(),
+      /login has expired/i,
+    );
+    assert.equal(requests, 2);
+    assert.equal(probes, 1);
+  } finally {
+    mock.restoreAll();
+    for (const name of environmentNames) restoreEnvironment(name, previous.get(name));
+  }
+});
+
 test("Copilot client rejects bad credentials and prioritizes the working token", async () => {
   const oldToken = process.env.COPILOT_GITHUB_TOKEN;
   process.env.COPILOT_GITHUB_TOKEN = "rejected-token";

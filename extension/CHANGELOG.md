@@ -2,6 +2,66 @@
 
 ## Unreleased
 
+## 0.1.14
+
+### Added
+
+- Added persistent collapsible provider cards with semantic keyboard-focusable header buttons,
+  `aria-expanded`, visible focus treatment, native Enter/Space behavior, chevrons, and content that
+  leaves keyboard and accessibility navigation when collapsed.
+- Added globally persisted per-provider expansion preferences under a versioned state key. Connected
+  providers still start expanded until changed, and preferences survive view disposal, editor
+  restart, workspace changes, provider reordering, and provider disable/re-enable.
+- Added **Collapse all** and **Expand all** dashboard actions. Restored and incoming state is limited
+  to known provider IDs and ignores malformed, duplicate, or unknown values.
+- Added an unfiltered collapsed summary showing the highest-used metered metric, its percentage, and
+  reset countdown, with **No metered limit** when the provider reports only balances or unlimited
+  metrics.
+- Added the `usageai.metricDisplayMode` setting and dashboard shortcut with `all`, `metered`, and
+  `important` choices. Metered includes every usable percentage limit; Important selects the
+  highest-used Session, Rolling, and Monthly metric with stable first-reported tie-breaking.
+- Added **No metered limits reported** to expanded connected cards when the active filter removes all
+  rows.
+- Added one bounded Claude Code OAuth recovery attempt when the initial usage request is rejected as
+  unauthorized/forbidden or fails with unexpected unavailable data. The extension asks the official
+  `claude auth status --json` command to validate or refresh the login, rereads the credential file,
+  and retries usage once without handling or writing the shared refresh token. Explicit environment
+  token overrides remain authoritative and bypass this fallback.
+
+### Changed
+
+- Disconnected, errored, and stale cards now expand temporarily so recovery details cannot be hidden.
+  Temporary attention never overwrites the saved preference, and recovered cards return to the
+  user's remembered state.
+- Dashboard metric-mode changes are validated in the extension host, stored globally through VS
+  Code's configuration API, and rerender immediately without fetching provider data.
+- Metric filtering applies only to expanded dashboard rows. Collapsed summaries and Status Bar
+  selection retain the complete provider response and their previous curated behavior.
+- Chevron and spinner animation now honors the editor's reduced-motion preference.
+- The dashboard now executes the same exported pure selection, attention, and collapsed-summary
+  functions covered by the test suite instead of maintaining test-only equivalents.
+- Expanded the editor-extension suite to 38 checks. New fixtures cover manifest settings,
+  mirrored metric selection, empty and future-kind inputs, global-state sanitization, individual and
+  bulk expansion persistence, malformed messages, forced attention and recovery, unfiltered summary
+  ties, semantic/hidden webview markup, activation wiring, configuration updates, Claude
+  authorization/invalid-response recovery, bounded single retries, and failed CLI validation.
+  Aggregate coverage is now 74.10% line, 71.12% branch, and 78.90% function.
+
+### Fixed
+
+- Fixed Claude Code remaining stale when its access token stopped working before the saved expiry
+  time, or when a one-off invalid usage response recovered after Claude CLI validation.
+- Declared the dashboard metric display mode as application-scoped so a workspace override cannot
+  mask changes made with the dashboard selector.
+- Prevented temporary stale or disconnected expansion from silently changing a user's saved card
+  preference.
+- Prevented unknown provider IDs, invalid expansion booleans, and invalid metric modes from being
+  persisted or acted on by the extension host.
+- Preserved the earliest provider-reported metric when equal percentages tie within the same kind,
+  including duplicate Gemini Session and Rolling limits.
+- Kept provider names, plan/account details, errors, and summary text escaped through DOM
+  `textContent`; no provider content is injected as HTML.
+
 ## 0.1.13
 
 - Read Google Gemini quota from one long-lived Antigravity CLI `--hub` server for the session instead of

@@ -37,7 +37,7 @@ internal sealed class ProviderUsageCard : Control
     private const int HeaderHeight = 46;
     private const int MetricRowHeight = 54;
     private const int MetricRowWithTrendHeight = 72;
-    private const int ConnectionBlockHeight = 70;
+    private const int ConnectionBlockHeight = 78;
     private const int CardRadius = 12;
     private const int Gutter = 14;
 
@@ -50,6 +50,8 @@ internal sealed class ProviderUsageCard : Control
     private readonly ProviderStatus _status;
     private readonly IReadOnlyList<UsageSample> _history;
     private readonly bool _showTrend;
+    private readonly IReadOnlyList<UsageMetric> _metrics;
+    private readonly int? _dpiOverride;
     private Rectangle _actionBounds = Rectangle.Empty;
     private Rectangle _linkBounds = Rectangle.Empty;
 
@@ -59,13 +61,20 @@ internal sealed class ProviderUsageCard : Control
         ProviderStatus status,
         bool expanded,
         IReadOnlyList<UsageSample> history,
-        bool showTrend)
+        bool showTrend,
+        IReadOnlyList<UsageMetric>? metrics = null,
+        int? dpiOverride = null)
     {
         _status = status;
         _expanded = expanded;
         _history = history;
         _showTrend = showTrend && expanded;
+        _metrics = expanded
+            ? metrics ?? status.Snapshot?.Metrics ?? Array.Empty<UsageMetric>()
+            : status.Snapshot?.Metrics ?? Array.Empty<UsageMetric>();
+        _dpiOverride = dpiOverride;
         DoubleBuffered = true;
+        ResizeRedraw = true;
         TabStop = expanded;
         SetStyle(ControlStyles.Selectable, expanded);
         Margin = new Padding(0, 0, 0, 10);
@@ -163,7 +172,7 @@ internal sealed class ProviderUsageCard : Control
         _actionBounds = Rectangle.Empty;
         _linkBounds = Rectangle.Empty;
 
-        var scale = new LayoutScale(this);
+        var scale = Scale();
         var card = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
         var providerColor = Theme.ForProvider(_status.ProviderId);
         var severity = SeverityColor(providerColor);
@@ -210,7 +219,9 @@ internal sealed class ProviderUsageCard : Control
 
         var textLeft = scale[58];
         var metric = _status.Snapshot?.Primary;
-        var valueText = metric?.DisplayUsed ?? (_status.IsLoading ? "..." : "--");
+        var valueText = metric is { HasQuota: true }
+            ? Theme.UsageCue(metric.UsedPercent!.Value) + metric.DisplayUsed
+            : metric?.DisplayUsed ?? (_status.IsLoading ? "..." : "--");
         var valueWidth = MeasureWidth(graphics, valueText, _valueFont);
         var nameWidth = Math.Max(scale[40], Width - textLeft - valueWidth - scale[26]);
 
@@ -329,7 +340,7 @@ internal sealed class ProviderUsageCard : Control
                 TextFormatFlags.Right | TextFormatFlags.EndEllipsis);
         }
 
-        var metrics = _status.Snapshot?.Metrics ?? Array.Empty<UsageMetric>();
+        var metrics = _metrics;
         if (metrics.Count == 0)
         {
             DrawConnectionBlock(graphics, scale);
@@ -337,12 +348,19 @@ internal sealed class ProviderUsageCard : Control
         }
 
         var top = scale[HeaderHeight];
-        var extraY = Math.Max(0, Height - NaturalHeight);
-        var extraPerRow = metrics.Count > 0 ? extraY / metrics.Count : 0;
+        var staleFooterHeight = _status.IsStale && Height >= NaturalHeight
+            ? scale[20]
+            : 0;
+        var availableRowsHeight = Math.Max(metrics.Count, Height - top - staleFooterHeight);
+        var naturalRowsHeight = metrics.Sum(metric => RowHeight(metric, scale));
+        var extraPerRow = Math.Max(0, availableRowsHeight - naturalRowsHeight) / metrics.Count;
+        var compressedRowHeight = Math.Max(1, availableRowsHeight / metrics.Count);
 
         foreach (var metric in metrics)
         {
-            var rowHeight = RowHeight(metric, scale) + extraPerRow;
+            var rowHeight = availableRowsHeight < naturalRowsHeight
+                ? compressedRowHeight
+                : RowHeight(metric, scale) + extraPerRow;
             DrawMetricRow(graphics, scale, metric, top, rowHeight, providerColor, severity);
             top += rowHeight;
         }
@@ -374,15 +392,36 @@ internal sealed class ProviderUsageCard : Control
         }
 
         var valueColor = metric.HasQuota ? Theme.ForUsage(metric.UsedPercent!.Value) : severity;
-        var valueText = metric.DisplayUsed;
+        var valueText = metric.HasQuota
+            ? Theme.UsageCue(metric.UsedPercent!.Value) + metric.DisplayUsed
+            : metric.DisplayUsed;
         var valueWidth = MeasureWidth(graphics, valueText, _valueFont);
+        var baseRowHeight = RowHeight(metric, scale);
+
+        if (rowHeight < scale[MetricRowHeight])
+        {
+            DrawCompressedMetricRow(
+                graphics,
+                scale,
+                metric,
+                top,
+                rowHeight,
+                valueText,
+                valueWidth,
+                valueColor,
+                providerColor);
+            return;
+        }
+
+        var contentOffset = Math.Max(0, (rowHeight - baseRowHeight) / 2);
+        var contentTop = top + contentOffset;
 
         DrawingHelpers.DrawText(
             graphics,
             metric.Name.ToUpperInvariant(),
             _utilityFont,
             Theme.Muted,
-            new Rectangle(scale[14], top + scale[8], Math.Max(scale[40], Width - scale[28] - valueWidth - scale[8]), scale[16]),
+            new Rectangle(scale[14], contentTop + scale[8], Math.Max(scale[40], Width - scale[28] - valueWidth - scale[8]), scale[16]),
             TextFormatFlags.EndEllipsis);
 
         DrawingHelpers.DrawText(
@@ -390,12 +429,12 @@ internal sealed class ProviderUsageCard : Control
             valueText,
             _valueFont,
             metric.IsUnlimited ? Theme.Muted : valueColor,
-            new Rectangle(Width - scale[14] - valueWidth, top + scale[4], valueWidth, scale[22]),
+            new Rectangle(Width - scale[14] - valueWidth, contentTop + scale[4], valueWidth, scale[22]),
             TextFormatFlags.Right);
 
         DrawSplitLine(
             graphics,
-            new Rectangle(scale[14], top + scale[26], Width - scale[28], scale[16]),
+            new Rectangle(scale[14], contentTop + scale[26], Width - scale[28], scale[16]),
             SecondaryText(metric),
             UsageFormatting.RelativeReset(metric.ResetsAt, DateTimeOffset.Now),
             _smallFont,
@@ -405,14 +444,14 @@ internal sealed class ProviderUsageCard : Control
         DrawMeter(
             graphics,
             metric,
-            new Rectangle(scale[14], top + scale[44], Width - scale[28], scale[4]),
-            providerColor);        var baseRowHeight = RowHeight(metric, scale);
+            new Rectangle(scale[14], contentTop + scale[44], Width - scale[28], scale[4]),
+            providerColor);
         if (baseRowHeight <= scale[MetricRowHeight])
         {
             return;
         }
 
-        var trendTop = top + scale[52];
+        var trendTop = contentTop + scale[52];
         var sparklineWidth = Math.Clamp((Width - scale[28]) / 3, scale[84], scale[220]);
         var trend = UsageForecast.Trend(_history, _status.ProviderId, metric);
         if (trend.Count >= 2)
@@ -440,15 +479,84 @@ internal sealed class ProviderUsageCard : Control
         }
     }
 
-    private void DrawConnectionBlock(Graphics graphics, LayoutScale scale)
+    private void DrawCompressedMetricRow(
+        Graphics graphics,
+        LayoutScale scale,
+        UsageMetric metric,
+        int top,
+        int rowHeight,
+        string valueText,
+        int valueWidth,
+        Color valueColor,
+        Color providerColor)
     {
-        var top = scale[HeaderHeight];
-        using (var divider = new Pen(Theme.Hairline))
+        var horizontalPadding = scale[14];
+        var primaryHeight = Math.Min(scale[20], Math.Max(1, rowHeight - scale[6]));
+        var primaryTop = top + Math.Max(1, (rowHeight - primaryHeight - scale[14]) / 2);
+        DrawingHelpers.DrawText(
+            graphics,
+            metric.Name.ToUpperInvariant(),
+            _utilityFont,
+            Theme.Muted,
+            new Rectangle(
+                horizontalPadding,
+                primaryTop,
+                Math.Max(scale[24], Width - 2 * horizontalPadding - valueWidth - scale[8]),
+                primaryHeight),
+            TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
+        DrawingHelpers.DrawText(
+            graphics,
+            valueText,
+            _valueFont,
+            metric.IsUnlimited ? Theme.Muted : valueColor,
+            new Rectangle(
+                Width - horizontalPadding - valueWidth,
+                primaryTop,
+                valueWidth,
+                primaryHeight),
+            TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
+
+        if (rowHeight >= scale[34])
         {
-            graphics.DrawLine(divider, scale[Gutter], top, Width - scale[Gutter], top);
+            DrawSplitLine(
+                graphics,
+                new Rectangle(
+                    horizontalPadding,
+                    Math.Min(top + rowHeight - scale[18], primaryTop + primaryHeight),
+                    Width - 2 * horizontalPadding,
+                    scale[14]),
+                SecondaryText(metric),
+                UsageFormatting.RelativeReset(metric.ResetsAt, DateTimeOffset.Now),
+                _smallFont,
+                Theme.Muted,
+                Theme.Muted);
         }
 
-        var message = _status.IsLoading
+        DrawMeter(
+            graphics,
+            metric,
+            new Rectangle(
+                horizontalPadding,
+                Math.Max(top + 1, top + rowHeight - scale[4]),
+                Width - 2 * horizontalPadding,
+                Math.Max(1, scale[3])),
+            providerColor);
+    }
+
+    private void DrawConnectionBlock(Graphics graphics, LayoutScale scale)
+    {
+        var headerBottom = scale[HeaderHeight];
+        using (var divider = new Pen(Theme.Hairline))
+        {
+            graphics.DrawLine(divider, scale[Gutter], headerBottom, Width - scale[Gutter], headerBottom);
+        }
+
+        var availableHeight = Math.Max(0, Height - headerBottom);
+        var top = headerBottom + Math.Max(0, (availableHeight - scale[ConnectionBlockHeight]) / 2);
+
+        var message = _status.Snapshot is not null && _metrics.Count == 0
+            ? "No metered limits reported"
+            : _status.IsLoading
             ? $"Reading {_status.ProviderName} usage..."
             : string.IsNullOrWhiteSpace(_status.Error)
                 ? "Connect this provider, then refresh."
@@ -462,7 +570,7 @@ internal sealed class ProviderUsageCard : Control
             new Rectangle(scale[18], top + scale[10], Width - scale[36], scale[34]),
             TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
 
-        if (_status.IsLoading || string.IsNullOrWhiteSpace(_status.SignInCommand))
+        if (_status.Snapshot is not null || _status.IsLoading || string.IsNullOrWhiteSpace(_status.SignInCommand))
         {
             return;
         }
@@ -639,7 +747,7 @@ internal sealed class ProviderUsageCard : Control
 
     private void ApplyHeight()
     {
-        var scale = new LayoutScale(this);
+        var scale = Scale();
         if (!_expanded)
         {
             NaturalHeight = scale[CompactHeight];
@@ -647,7 +755,7 @@ internal sealed class ProviderUsageCard : Control
             return;
         }
 
-        var metrics = _status.Snapshot?.Metrics ?? Array.Empty<UsageMetric>();
+        var metrics = _metrics;
         if (metrics.Count == 0)
         {
             NaturalHeight = scale[HeaderHeight] + scale[ConnectionBlockHeight];
@@ -673,6 +781,8 @@ internal sealed class ProviderUsageCard : Control
         }
     }
 
+    private LayoutScale Scale() => _dpiOverride is { } dpi ? new LayoutScale(dpi) : new LayoutScale(this);
+
     /// <summary>
     /// Everything on the card is painted, so screen readers would otherwise see an empty
     /// box. The description carries the same facts the pixels do.
@@ -684,7 +794,11 @@ internal sealed class ProviderUsageCard : Control
         if (_status.Snapshot is { } snapshot)
         {
             parts.Add(snapshot.Plan);
-            foreach (var metric in snapshot.Metrics)
+            if (_expanded && _metrics.Count == 0)
+            {
+                parts.Add("No metered limits reported");
+            }
+            foreach (var metric in _expanded ? _metrics : snapshot.Metrics)
             {
                 var reset = UsageFormatting.RelativeReset(metric.ResetsAt, DateTimeOffset.Now);
                 var values = metric.HasQuota

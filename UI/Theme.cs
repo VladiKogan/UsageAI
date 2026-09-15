@@ -14,12 +14,15 @@ internal static class Theme
 
     private static int _warningPercent = 72;
     private static int _criticalPercent = 90;
+    private static Func<bool> _highContrastProbe = static () => SystemInformation.HighContrast;
 
     static Theme() => Apply(ThemeMode.System, 72, 90);
 
     public static event EventHandler? Changed;
 
     public static bool IsDark { get; private set; } = true;
+
+    public static bool IsHighContrast { get; private set; }
 
     /// <summary>Window background.</summary>
     public static Color Night { get; private set; }
@@ -65,6 +68,7 @@ internal static class Theme
         _warningPercent = Math.Clamp(warningPercent, 1, 99);
         _criticalPercent = Math.Clamp(criticalPercent, _warningPercent + 1, 100);
 
+        IsHighContrast = ProbeHighContrast();
         var dark = mode switch
         {
             ThemeMode.Dark => true,
@@ -73,7 +77,27 @@ internal static class Theme
         };
 
         IsDark = dark;
-        if (dark)
+        if (IsHighContrast)
+        {
+            Night = SystemColors.Window;
+            Surface = SystemColors.Window;
+            SurfaceRaised = SystemColors.Control;
+            Hairline = SystemColors.WindowFrame;
+            Track = SystemColors.ControlDark;
+            Text = SystemColors.WindowText;
+            Muted = SystemColors.GrayText;
+            Signal = SystemColors.Highlight;
+            Success = SystemColors.WindowText;
+            Warning = SystemColors.WindowText;
+            Critical = SystemColors.WindowText;
+            Codex = SystemColors.WindowText;
+            Claude = SystemColors.WindowText;
+            Copilot = SystemColors.WindowText;
+            Gemini = SystemColors.WindowText;
+            Accent = SystemColors.Highlight;
+            OnAccent = SystemColors.HighlightText;
+        }
+        else if (dark)
         {
             Night = Color.FromArgb(10, 14, 20);
             Surface = Color.FromArgb(17, 24, 33);
@@ -110,8 +134,11 @@ internal static class Theme
             Gemini = Color.FromArgb(26, 115, 232);
         }
 
-        Accent = ResolveAccent(dark);
-        OnAccent = Luminance(Accent) > 0.55 ? Color.FromArgb(12, 16, 22) : Color.FromArgb(250, 252, 255);
+        if (!IsHighContrast)
+        {
+            Accent = ResolveAccent(dark);
+            OnAccent = Luminance(Accent) > 0.55 ? Color.FromArgb(12, 16, 22) : Color.FromArgb(250, 252, 255);
+        }
         Changed?.Invoke(null, EventArgs.Empty);
     }
 
@@ -135,11 +162,38 @@ internal static class Theme
     /// <summary>Blends <paramref name="foreground"/> onto <paramref name="background"/>.</summary>
     public static Color Blend(Color foreground, Color background, double amount)
     {
+        if (IsHighContrast)
+        {
+            return foreground;
+        }
+
         var weight = Math.Clamp(amount, 0, 1);
         return Color.FromArgb(
             (int)Math.Round(foreground.R * weight + background.R * (1 - weight)),
             (int)Math.Round(foreground.G * weight + background.G * (1 - weight)),
             (int)Math.Round(foreground.B * weight + background.B * (1 - weight)));
+    }
+
+    public static string UsageCue(int usedPercent) =>
+        usedPercent >= _criticalPercent ? "!! " :
+        usedPercent >= _warningPercent ? "! " :
+        string.Empty;
+
+    internal static void SetHighContrastProbe(Func<bool>? probe)
+    {
+        _highContrastProbe = probe ?? (static () => SystemInformation.HighContrast);
+    }
+
+    private static bool ProbeHighContrast()
+    {
+        try
+        {
+            return _highContrastProbe();
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            return false;
+        }
     }
 
     private static bool IsSystemDark()

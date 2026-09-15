@@ -45,9 +45,9 @@ internal static class TrayIconFactory
             // A dark outer edge plus a light inner track keeps the empty ring visible on
             // both light and dark taskbars, regardless of the UsageAI theme.
             using (var trackOutline = new Pen(
-                       Color.FromArgb(210, 24, 30, 40),
+                       Theme.IsHighContrast ? SystemColors.WindowFrame : Color.FromArgb(210, 24, 30, 40),
                        ringWidth + Math.Max(1.5F, pixels * 0.08F)))
-            using (var track = new Pen(Color.FromArgb(235, 205, 214, 226), ringWidth))
+            using (var track = new Pen(Theme.IsHighContrast ? SystemColors.WindowText : Color.FromArgb(235, 205, 214, 226), ringWidth))
             {
                 graphics.DrawEllipse(trackOutline, circle);
                 graphics.DrawEllipse(track, circle);
@@ -58,7 +58,7 @@ internal static class TrayIconFactory
             {
                 var sweep = hasError ? 360F : Math.Max(10F, 360F * normalizedUsage / 100F);
                 var fillAlpha = Math.Clamp((int)(55 + normalizedUsage * 0.85), 55, 160);
-                using (var fillBrush = new SolidBrush(Color.FromArgb(fillAlpha, color)))
+                using (var fillBrush = new SolidBrush(Theme.IsHighContrast ? color : Color.FromArgb(fillAlpha, color)))
                 {
                     graphics.FillPie(fillBrush, circle.X, circle.Y, circle.Width, circle.Height, -90, sweep);
                 }
@@ -81,7 +81,7 @@ internal static class TrayIconFactory
                     (pixels - markerDiameter) / 2F,
                     markerDiameter,
                     markerDiameter);
-                using var markerOutline = new SolidBrush(Color.FromArgb(220, 24, 30, 40));
+                using var markerOutline = new SolidBrush(Theme.IsHighContrast ? SystemColors.WindowFrame : Color.FromArgb(220, 24, 30, 40));
                 using var marker = new SolidBrush(identityColor ?? color);
                 graphics.FillEllipse(
                     markerOutline,
@@ -137,9 +137,9 @@ internal static class TrayIconFactory
             var inset = ringWidth / 2F + pixels * 0.06F;
             var circle = new RectangleF(inset, inset, pixels - inset * 2F, pixels - inset * 2F);
             using (var outline = new Pen(
-                       Color.FromArgb(210, 24, 30, 40),
+                       Theme.IsHighContrast ? SystemColors.WindowFrame : Color.FromArgb(210, 24, 30, 40),
                        ringWidth + Math.Max(1.5F, pixels * 0.08F)))
-            using (var track = new Pen(Color.FromArgb(180, 205, 214, 226), ringWidth))
+            using (var track = new Pen(Theme.IsHighContrast ? SystemColors.WindowText : Color.FromArgb(180, 205, 214, 226), ringWidth))
             using (var arc = new Pen(Theme.Signal, ringWidth)
                    {
                        StartCap = LineCap.Round,

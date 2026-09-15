@@ -24,6 +24,7 @@ export interface ClaudeCredentials {
   readonly expiresAt?: number;
   readonly scopes: readonly string[];
   readonly plan: string;
+  readonly isEnvironmentOverride?: boolean;
 }
 
 export type ClaudeAuthProbe = (signal?: AbortSignal) => Promise<boolean>;
@@ -65,39 +66,28 @@ export class ClaudeUsageClient implements UsageClient {
     }
 
     try {
-      const response = await requestJson(usageEndpoint, {
-        allowedHosts: ["api.anthropic.com"],
-        headers: {
-          Authorization: `Bearer ${credentials.accessToken}`,
-          "anthropic-beta": oauthBeta,
-        },
-        ...(signal ? { signal } : {}),
-      });
-      if (response.status === 401) {
-        throw new UsageProviderError("Claude Code's login has expired. Run `claude` to sign in again, then refresh.");
-      }
-      if (response.status === 403) {
-        throw new UsageProviderError("Claude Code's login cannot read account usage. Run `claude` to sign in again.");
-      }
-      if (response.status === 429) {
-        throw new UsageProviderError(
-          "Anthropic rate-limited the usage request.",
-          parseRetryAfter(response.headers),
-        );
-      }
-      if (response.status < 200 || response.status >= 300) {
-        throw new UsageProviderError(`Claude Code returned HTTP ${response.status} while reading usage.`);
-      }
-      return parseClaudeSnapshot(response.data, credentials.plan);
+      return await requestClaudeUsage(credentials, signal);
     } catch (error) {
-      if (error instanceof UsageProviderError) {
+      if (!(error instanceof RecoverableClaudeUsageError) || credentials.isEnvironmentOverride) {
         throw error;
       }
-      throw new UsageProviderError(
-        "Could not read Claude Code usage because the provider returned invalid or unavailable data.",
-        0,
-        { cause: error },
+
+      const recovered = await recoverClaudeCredentialsThroughCli(
+        () => this.loadCredentials(),
+        this.claudeAuthProbe,
+        signal,
       );
+      if (!recovered) {
+        throw error;
+      }
+
+      assertClaudeCredentialsUsable(recovered);
+      if (recovered.scopes.length > 0 && !recovered.scopes.includes("user:profile")) {
+        throw new UsageProviderError(
+          "Claude Code's OAuth token is missing the user:profile scope. Run `claude` to sign in again.",
+        );
+      }
+      return requestClaudeUsage(recovered, signal);
     }
   }
 
@@ -112,6 +102,7 @@ export class ClaudeUsageClient implements UsageClient {
           .filter((scope) => scope.length > 0 && scope.length <= 128)
           .slice(0, 32),
         plan: "Claude (OAuth)",
+        isEnvironmentOverride: true,
       };
     }
 
@@ -143,6 +134,18 @@ export async function refreshExpiredClaudeCredentials(
     return credentials;
   }
 
+  return await recoverClaudeCredentialsThroughCli(
+    reloadCredentials,
+    authProbe,
+    signal,
+  ) ?? credentials;
+}
+
+export async function recoverClaudeCredentialsThroughCli(
+  reloadCredentials: () => Promise<ClaudeCredentials>,
+  authProbe: ClaudeAuthProbe,
+  signal?: AbortSignal,
+): Promise<ClaudeCredentials | undefined> {
   let claudeOwnsFreshLogin = false;
   try {
     claudeOwnsFreshLogin = await authProbe(signal);
@@ -150,10 +153,10 @@ export async function refreshExpiredClaudeCredentials(
     if (signal?.aborted) {
       throw error;
     }
-    return credentials;
+    return undefined;
   }
   if (!claudeOwnsFreshLogin) {
-    return credentials;
+    return undefined;
   }
 
   const deadline = Date.now() + credentialObservationMs;
@@ -172,7 +175,58 @@ export async function refreshExpiredClaudeCredentials(
     await abortableDelay(100, signal);
   } while (Date.now() < deadline);
 
-  return credentials;
+  return undefined;
+}
+
+async function requestClaudeUsage(
+  credentials: ClaudeCredentials,
+  signal?: AbortSignal,
+): Promise<UsageSnapshot> {
+  try {
+    const response = await requestJson(usageEndpoint, {
+      allowedHosts: ["api.anthropic.com"],
+      headers: {
+        Authorization: `Bearer ${credentials.accessToken}`,
+        "anthropic-beta": oauthBeta,
+      },
+      ...(signal ? { signal } : {}),
+    });
+    if (response.status === 401) {
+      throw new RecoverableClaudeUsageError(
+        "Claude Code's login has expired. Run `claude` to sign in again, then refresh.",
+      );
+    }
+    if (response.status === 403) {
+      throw new RecoverableClaudeUsageError(
+        "Claude Code's login cannot read account usage. Run `claude` to sign in again.",
+      );
+    }
+    if (response.status === 429) {
+      throw new UsageProviderError(
+        "Anthropic rate-limited the usage request.",
+        parseRetryAfter(response.headers),
+      );
+    }
+    if (response.status < 200 || response.status >= 300) {
+      throw new UsageProviderError(`Claude Code returned HTTP ${response.status} while reading usage.`);
+    }
+    return parseClaudeSnapshot(response.data, credentials.plan);
+  } catch (error) {
+    if (error instanceof UsageProviderError) {
+      throw error;
+    }
+    throw new RecoverableClaudeUsageError(
+      "Could not read Claude Code usage because the provider returned invalid or unavailable data.",
+      { cause: error },
+    );
+  }
+}
+
+class RecoverableClaudeUsageError extends UsageProviderError {
+  public constructor(message: string, options?: ErrorOptions) {
+    super(message, 0, options);
+    this.name = "RecoverableClaudeUsageError";
+  }
 }
 
 export async function runClaudeAuthStatus(signal?: AbortSignal): Promise<boolean> {

@@ -99,7 +99,7 @@ internal static class DrawingHelpers
         using var path = RoundedRectangle(
             new Rectangle(bounds.X, bounds.Y, width, bounds.Height),
             bounds.Height / 2F);
-        using var brush = new SolidBrush(Color.FromArgb(150, color));
+        using var brush = new SolidBrush(Theme.IsHighContrast ? color : Color.FromArgb(150, color));
         graphics.FillPath(brush, path);
     }
 
@@ -130,7 +130,7 @@ internal static class DrawingHelpers
 
         var previousMode = graphics.SmoothingMode;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var pen = new Pen(Color.FromArgb(190, color), 1.4F)
+        using (var pen = new Pen(Theme.IsHighContrast ? color : Color.FromArgb(190, color), 1.4F)
                {
                    LineJoin = LineJoin.Round,
                    StartCap = LineCap.Round,

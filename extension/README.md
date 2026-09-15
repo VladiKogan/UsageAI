@@ -20,9 +20,9 @@ Choose one or more providers for compact Status Bar readings. Hover over a readi
 
 ## Install
 
-The current extension release is **0.1.13**. Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai) or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai).
+The current extension release is **0.1.14**. Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai) or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai).
 
-For a manual installation, download [`usageai-0.1.13.vsix`](https://open-vsx.org/api/vladikogan/usageai/0.1.13/file/vladikogan.usageai-0.1.13.vsix), then run **Extensions: Install from VSIX...** in VS Code or Antigravity.
+For a manual installation, download [`usageai-0.1.14.vsix`](https://open-vsx.org/api/vladikogan/usageai/0.1.14/file/vladikogan.usageai-0.1.14.vsix), then run **Extensions: Install from VSIX...** in VS Code or Antigravity.
 
 ## Get started
 
@@ -54,6 +54,8 @@ Open **UsageAI: Open Settings** to personalize the extension:
 - The **UsageAI: Status Bar** checkboxes give each selected provider its own compact reading.
 - If no provider checkbox is selected, **Hottest When None Selected** shows the connected provider with the highest current usage. Turn it off to hide UsageAI from the Status Bar.
 - **Warning Percent** and **Critical Percent** control when usage meters change color.
+- **Metric Display Mode** chooses all dashboard metrics, every metered percentage limit, or the
+  highest-used Session, Rolling, and Monthly limit. It does not change Status Bar readings.
 - The foreground and background refresh intervals control how often readings update while the dashboard is open or hidden.
 
 For GitHub Copilot, **Enable GitHub CLI Fallback** lets UsageAI run `gh auth token` only when it cannot use a supported local credential file. This option is off by default.
@@ -63,6 +65,9 @@ For GitHub Copilot, **Enable GitHub CLI Fallback** lets UsageAI run `gh auth tok
 - Percentages and meter fill show how much quota has been **used**.
 - The text under each meter shows what remains and when that limit resets.
 - Providers can report more than one limit, such as a session window and a weekly window; UsageAI shows each one separately.
+- Select anywhere on a provider header to collapse or expand it, or use **Collapse all** and
+  **Expand all**. The preference follows the editor installation across workspaces. Stale and
+  disconnected cards temporarily stay expanded so recovery details remain visible.
 - If a refresh fails, the last successful reading stays visible and is marked as stale instead of disappearing. The dashboard and Status Bar distinguish that last good reading from the failed check and show the next automatic retry; retry-only checks do not disturb healthy providers or regular polling.
 
 If a provider says it is not connected, sign in with that provider's CLI or IDE integration and run **UsageAI: Refresh**. You can use the provider card's sign-in action when one is available.
@@ -71,7 +76,7 @@ If a provider says it is not connected, sign in with that provider's CLI or IDE 
 
 Your provider credentials stay in the extension host. UsageAI does not scan browser storage, send credentials to the dashboard webview, or include credentials in its cached usage snapshots.
 
-Additional protections include allowlisted provider endpoints, blocked redirects, size-limited responses, read-only Claude OAuth credentials, in-memory-only refresh caching for other providers, and a local Antigravity connection reachable only over loopback. When Claude's short-lived access token expires, the extension briefly invokes the official `claude auth status --json` command with bounded runtime and output, then rereads the credentials. Claude Code remains the only process that can exchange the shared refresh token or update its credential store. The optional Claude web session key remains an environment variable and is never saved by UsageAI.
+Additional protections include allowlisted provider endpoints, blocked redirects, size-limited responses, read-only Claude OAuth credentials, in-memory-only refresh caching for other providers, and a local Antigravity connection reachable only over loopback. When Claude's short-lived access token expires—or the first usage request indicates that a seemingly current login is stale—the extension invokes the official `claude auth status --json` command once with bounded runtime and output, rereads the credentials, and retries usage once. Claude Code remains the only process that can exchange the shared refresh token or update its credential store; explicit environment-token overrides are never replaced by this fallback. The optional Claude web session key remains an environment variable and is never saved by UsageAI.
 
 When no Antigravity language server is already available, the extension starts one long-lived
 `agy --hub` server on a loopback port and reads quota from it for the rest of the session, so
@@ -106,8 +111,8 @@ npm.cmd run package:vsix
 The resulting VSIX can be installed manually in both VS Code and Antigravity. Marketplace publication uses the same artifact:
 
 ```powershell
-npm.cmd run publish:vscode -- --packagePath usageai-0.1.13.vsix
-npm.cmd run publish:openvsx -- usageai-0.1.13.vsix
+npm.cmd run publish:vscode -- --packagePath usageai-0.1.14.vsix
+npm.cmd run publish:openvsx -- usageai-0.1.14.vsix
 ```
 
 Publishing requires separate publisher identities and credentials for Visual Studio Marketplace and Open VSX.

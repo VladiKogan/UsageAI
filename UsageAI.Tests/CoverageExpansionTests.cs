@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Reflection;
@@ -7,6 +8,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
+using Microsoft.Win32;
 using UsageAI.Models;
 using UsageAI.Services;
 using UsageAI.UI;
@@ -24,6 +26,10 @@ internal static class CoverageExpansionTests
     private static readonly ushort[] CandidatePorts = { 51_234, 51_234, 51_235 };
     private static readonly ushort[] OwnedCandidatePort = { 51_234 };
     private static readonly ushort[] UnrelatedCandidatePort = { 1 };
+    private static readonly string[] PreviewDpi96Args = { "--render-preview", "preview.png", "--dpi", "96" };
+    private static readonly string[] PreviewDpi192Args = { "--dpi", "192" };
+    private static readonly string[] PreviewDpi288Args = { "--dpi", "288" };
+    private static readonly string[] PreviewDpiInvalidArgs = { "--dpi", "144" };
 
     public static Task TestModelFormattingAsync()
     {
@@ -369,9 +375,18 @@ internal static class CoverageExpansionTests
             using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
                        Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized)))))
             {
+                var authProbes = 0;
                 var exception = await ThrowsAsync<ClaudeCodeUsageException>(
-                    () => new ClaudeCodeUsageClient(http).GetUsageAsync());
+                    () => new ClaudeCodeUsageClient(
+                        http,
+                        () => Array.Empty<string>(),
+                        _ =>
+                        {
+                            authProbes++;
+                            return Task.FromResult(true);
+                        }).GetUsageAsync());
                 True(exception.Message.Contains("expired", StringComparison.OrdinalIgnoreCase));
+                Equal(0, authProbes);
             }
 
             using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
@@ -497,6 +512,98 @@ internal static class CoverageExpansionTests
             var refreshedOauth = refreshedDocument.RootElement.GetProperty("claudeAiOauth");
             Equal("owner-refreshed-access", refreshedOauth.GetProperty("accessToken").GetString());
             Equal("owner-refreshed-token", refreshedOauth.GetProperty("refreshToken").GetString());
+
+            var freshCredentials = $$"""
+                {
+                  "claudeAiOauth":{
+                    "accessToken":"fresh-access",
+                    "refreshToken":"shared-refresh-token",
+                    "expiresAt":{{DateTimeOffset.UtcNow.AddHours(8).ToUnixTimeMilliseconds()}},
+                    "scopes":["user:profile"],
+                    "subscriptionType":"pro"
+                  }
+                }
+                """;
+            File.WriteAllText(credentialPath, freshCredentials);
+
+            var recoveryRequests = 0;
+            var recoveryProbes = 0;
+            using (var recoveryHttp = new HttpClient(new StubHttpHandler((_, _, _) =>
+                   {
+                       recoveryRequests++;
+                       return Task.FromResult(recoveryRequests == 1
+                           ? new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                           : JsonResponse(HttpStatusCode.OK, """{"five_hour":{"utilization":27}}"""));
+                   })))
+            {
+                var recovered = await new ClaudeCodeUsageClient(
+                    recoveryHttp,
+                    () => Array.Empty<string>(),
+                    _ =>
+                    {
+                        recoveryProbes++;
+                        return Task.FromResult(true);
+                    }).GetUsageAsync();
+                Equal(27, recovered.Primary!.UsedPercent);
+                Equal(2, recoveryRequests);
+                Equal(1, recoveryProbes);
+                Equal(freshCredentials, File.ReadAllText(credentialPath));
+            }
+
+            var invalidResponseRequests = 0;
+            using (var invalidResponseHttp = new HttpClient(new StubHttpHandler((_, _, _) =>
+                   {
+                       invalidResponseRequests++;
+                       return Task.FromResult(invalidResponseRequests == 1
+                           ? JsonResponse(HttpStatusCode.OK, "{broken")
+                           : JsonResponse(HttpStatusCode.OK, """{"seven_day":{"utilization":41}}"""));
+                   })))
+            {
+                var recovered = await new ClaudeCodeUsageClient(
+                    invalidResponseHttp,
+                    () => Array.Empty<string>(),
+                    _ => Task.FromResult(true)).GetUsageAsync();
+                Equal(41, recovered.Primary!.UsedPercent);
+                Equal(2, invalidResponseRequests);
+            }
+
+            var failedRecoveryRequests = 0;
+            using (var failedRecoveryHttp = new HttpClient(new StubHttpHandler((_, _, _) =>
+                   {
+                       failedRecoveryRequests++;
+                       return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Forbidden));
+                   })))
+            {
+                var failedException = await ThrowsAsync<ClaudeCodeUsageException>(() =>
+                    new ClaudeCodeUsageClient(
+                        failedRecoveryHttp,
+                        () => Array.Empty<string>(),
+                        _ => Task.FromResult(false)).GetUsageAsync());
+                True(failedException.Message.Contains("cannot read", StringComparison.OrdinalIgnoreCase));
+                Equal(1, failedRecoveryRequests);
+            }
+
+            var boundedRetryRequests = 0;
+            var boundedRetryProbes = 0;
+            using (var boundedRetryHttp = new HttpClient(new StubHttpHandler((_, _, _) =>
+                   {
+                       boundedRetryRequests++;
+                       return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized));
+                   })))
+            {
+                var boundedException = await ThrowsAsync<ClaudeCodeUsageException>(() =>
+                    new ClaudeCodeUsageClient(
+                        boundedRetryHttp,
+                        () => Array.Empty<string>(),
+                        _ =>
+                        {
+                            boundedRetryProbes++;
+                            return Task.FromResult(true);
+                        }).GetUsageAsync());
+                True(boundedException.Message.Contains("expired", StringComparison.OrdinalIgnoreCase));
+                Equal(2, boundedRetryRequests);
+                Equal(1, boundedRetryProbes);
+            }
         }
         finally
         {
@@ -1832,6 +1939,78 @@ internal static class CoverageExpansionTests
         return Task.CompletedTask;
     }
 
+    public static Task TestDashboardFixedGridAsync()
+    {
+        var now = DateTimeOffset.Now;
+        var providers = new[]
+        {
+            ("codex", "Codex"),
+            ("claude", "Claude Code"),
+            ("copilot", "GitHub Copilot"),
+            ("gemini", "Google Gemini"),
+        };
+        var states = providers
+            .Select((provider, index) => new ProviderStatus(
+                provider.Item1,
+                provider.Item2,
+                Snapshot(provider.Item1, provider.Item2, 20 + index * 10, now),
+                null,
+                false,
+                now))
+            .ToArray();
+
+        using var popup = new UsagePopupForm(new AppSettings(), 96)
+        {
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-10_000, -10_000),
+        };
+        popup.SetStates(states, false, now, Array.Empty<UsageSample>());
+        popup.SetMode(DashboardMode.Full);
+        popup.Show();
+        Application.DoEvents();
+
+        var content = GetPrivateField<FlowLayoutPanel>(popup, "_content");
+        popup.ClientSize = new Size(760, 620);
+        popup.PerformLayout();
+        Application.DoEvents();
+        var initialCards = content.Controls.OfType<ProviderUsageCard>().ToArray();
+        Equal(4, initialCards.Length);
+        Equal(2, initialCards.Select(card => card.Left).Distinct().Count());
+        Equal(2, initialCards.Select(card => card.Top).Distinct().Count());
+        Equal(1, initialCards.Select(card => card.Width).Distinct().Count());
+        Equal(1, initialCards.Select(card => card.Height).Distinct().Count());
+        var initialSize = initialCards[0].Size;
+
+        popup.ClientSize = new Size(1_020, 820);
+        popup.PerformLayout();
+        Application.DoEvents();
+        var resizedCards = content.Controls.OfType<ProviderUsageCard>().ToArray();
+        Equal(2, resizedCards.Select(card => card.Left).Distinct().Count());
+        Equal(2, resizedCards.Select(card => card.Top).Distinct().Count());
+        Equal(1, resizedCards.Select(card => card.Width).Distinct().Count());
+        Equal(1, resizedCards.Select(card => card.Height).Distinct().Count());
+        True(resizedCards[0].Width > initialSize.Width);
+        True(resizedCards[0].Height > initialSize.Height);
+        var resizedSize = resizedCards[0].Size;
+
+        popup.ClientSize = new Size(600, 420);
+        popup.PerformLayout();
+        Application.DoEvents();
+        var compactedCards = content.Controls.OfType<ProviderUsageCard>().ToArray();
+        Equal(2, compactedCards.Select(card => card.Left).Distinct().Count());
+        Equal(2, compactedCards.Select(card => card.Top).Distinct().Count());
+        Equal(1, compactedCards.Select(card => card.Width).Distinct().Count());
+        Equal(1, compactedCards.Select(card => card.Height).Distinct().Count());
+        True(compactedCards.All(card => card.Right <= content.ClientSize.Width));
+        True(compactedCards.All(card => card.Bottom <= content.ClientSize.Height));
+        True(compactedCards[0].Width < resizedSize.Width);
+        True(compactedCards[0].Height < resizedSize.Height);
+        DrawControl(popup);
+        popup.CloseForExit();
+
+        return Task.CompletedTask;
+    }
+
     public static async Task TestApplicationContextAsync()
     {
         var previousSynchronizationContext = SynchronizationContext.Current;
@@ -2033,11 +2212,20 @@ internal static class CoverageExpansionTests
         try
         {
             var compactPath = Path.Combine(directory, "compact.png");
+            var compact96Path = Path.Combine(directory, "compact-96.png");
             var fullPath = Path.Combine(directory, "full.png");
             PreviewRenderer.Render(new[] { "--render-preview", compactPath });
+            PreviewRenderer.Render(new[] { "--render-preview", compact96Path, "--dpi", "96" });
             PreviewRenderer.Render(new[] { "--render-preview", fullPath, "--full" });
             True(new FileInfo(compactPath).Length > 1_000);
+            True(new FileInfo(compact96Path).Length > 1_000);
             True(new FileInfo(fullPath).Length > 1_000);
+            using (var compact = Image.FromFile(compactPath))
+            using (var compact96 = Image.FromFile(compact96Path))
+            {
+                Equal(compact96.Width * 2, compact.Width);
+                Equal(compact96.Height * 2, compact.Height);
+            }
 
             var applicationAssembly = typeof(ProviderStatus).Assembly.Location;
             var applicationExecutable = Path.ChangeExtension(applicationAssembly, ".exe");
@@ -3415,6 +3603,494 @@ internal static class CoverageExpansionTests
         foreach (var (name, value) in values)
         {
             Environment.SetEnvironmentVariable(name, value);
+        }
+    }
+
+    public static Task TestDashboardMetricModeUiAsync()
+    {
+        var now = DateTimeOffset.Now;
+        var metrics = new UsageMetric[]
+        {
+            new("Credits", UsageMetricKind.Balance, null, RemainingText: "$7"),
+            new("Session lower", UsageMetricKind.Session, 30, now.AddHours(1)),
+            new("Rolling", UsageMetricKind.Rolling, 81, now.AddDays(2)),
+            new("Session highest", UsageMetricKind.Session, 74, now.AddHours(2)),
+            new("Monthly unlimited", UsageMetricKind.Monthly, 100, IsUnlimited: true),
+            new("Monthly", UsageMetricKind.Monthly, 62, now.AddDays(8)),
+        };
+        var snapshot = new UsageSnapshot("Pro", metrics, now, "gemini", "Google Gemini");
+        var status = new ProviderStatus("gemini", "Google Gemini", snapshot, null, false);
+        var settings = new AppSettings
+        {
+            MetricDisplayMode = MetricDisplayMode.ImportantOnly,
+            GlobalHotkeyEnabled = false,
+        };
+
+        using var popup = new UsagePopupForm(settings, 96);
+        popup.StartPosition = FormStartPosition.Manual;
+        popup.Location = new Point(-10_000, -10_000);
+        popup.SetStates(new[] { status }, false, now, Array.Empty<UsageSample>());
+        popup.Show();
+        Application.DoEvents();
+        var modeControl = GetPrivateField<ComboBox>(popup, "_metricMode");
+        False(modeControl.Visible);
+        var content = GetPrivateField<FlowLayoutPanel>(popup, "_content");
+        var compactCard = content.Controls.OfType<ProviderUsageCard>().Single();
+        Equal(6, GetPrivateField<IReadOnlyList<UsageMetric>>(compactCard, "_metrics").Count);
+
+        popup.SetMode(DashboardMode.Full);
+        True(modeControl.Visible);
+        True(modeControl is ThemedComboBox);
+        Equal(DrawMode.OwnerDrawFixed, modeControl.DrawMode);
+        using (var pickerBitmap = new Bitmap(modeControl.Width, modeControl.Height))
+        {
+            modeControl.DrawToBitmap(pickerBitmap, modeControl.ClientRectangle);
+            False(pickerBitmap.GetPixel(modeControl.Width - 4, 4).ToArgb() == Color.White.ToArgb());
+        }
+
+        InvokeProtected(modeControl, "OnMouseEnter", EventArgs.Empty);
+        InvokeProtected(modeControl, "OnMouseLeave", EventArgs.Empty);
+        InvokeProtected(modeControl, "OnGotFocus", EventArgs.Empty);
+        InvokeProtected(modeControl, "OnLostFocus", EventArgs.Empty);
+        InvokeProtected(modeControl, "OnDropDown", EventArgs.Empty);
+        InvokeProtected(modeControl, "OnDropDownClosed", EventArgs.Empty);
+        InvokeProtected(modeControl, "OnDpiChangedAfterParent", EventArgs.Empty);
+        using (var itemBitmap = new Bitmap(180, 30))
+        using (var itemGraphics = Graphics.FromImage(itemBitmap))
+        {
+            InvokeProtected(
+                modeControl,
+                "OnDrawItem",
+                new DrawItemEventArgs(
+                    itemGraphics,
+                    modeControl.Font,
+                    new Rectangle(0, 0, itemBitmap.Width, itemBitmap.Height),
+                    0,
+                    DrawItemState.Selected | DrawItemState.Focus));
+            modeControl.Enabled = false;
+            InvokeProtected(
+                modeControl,
+                "OnDrawItem",
+                new DrawItemEventArgs(
+                    itemGraphics,
+                    modeControl.Font,
+                    new Rectangle(0, 0, itemBitmap.Width, itemBitmap.Height),
+                    0,
+                    DrawItemState.ComboBoxEdit));
+            InvokeProtected(
+                modeControl,
+                "OnDrawItem",
+                new DrawItemEventArgs(
+                    itemGraphics,
+                    modeControl.Font,
+                    Rectangle.Empty,
+                    -1,
+                    DrawItemState.None));
+            modeControl.Enabled = true;
+        }
+
+        var importantCard = content.Controls.OfType<ProviderUsageCard>().Single();
+        Equal(
+            "Session highest|Rolling|Monthly",
+            string.Join('|', GetPrivateField<IReadOnlyList<UsageMetric>>(importantCard, "_metrics").Select(metric => metric.Name)));
+        Equal(6, snapshot.Metrics.Count);
+        True(ReferenceEquals(metrics, snapshot.Metrics));
+
+        modeControl.SelectedIndex = 1;
+        Equal(MetricDisplayMode.MeteredOnly, settings.MetricDisplayMode);
+        var meteredCard = content.Controls.OfType<ProviderUsageCard>().Single();
+        Equal(
+            "Session lower|Rolling|Session highest|Monthly",
+            string.Join('|', GetPrivateField<IReadOnlyList<UsageMetric>>(meteredCard, "_metrics").Select(metric => metric.Name)));
+        Equal(MetricDisplayMode.MeteredOnly, AppSettings.Load().MetricDisplayMode);
+
+        popup.SetMode(DashboardMode.Compact);
+        False(modeControl.Visible);
+        Equal(6, GetPrivateField<IReadOnlyList<UsageMetric>>(
+            content.Controls.OfType<ProviderUsageCard>().Single(), "_metrics").Count);
+
+        var balanceSnapshot = snapshot with { Metrics = new[] { metrics[0] } };
+        var balanceStatus = status with { Snapshot = balanceSnapshot };
+        using var emptyCard = new ProviderUsageCard(
+            balanceStatus,
+            expanded: true,
+            Array.Empty<UsageSample>(),
+            showTrend: false,
+            metrics: UsageMetricSelection.Select(balanceSnapshot.Metrics, MetricDisplayMode.MeteredOnly),
+            dpiOverride: 96)
+        {
+            Width = 520,
+        };
+        Equal(0, GetPrivateField<IReadOnlyList<UsageMetric>>(emptyCard, "_metrics").Count);
+        True(emptyCard.AccessibleDescription!.Contains("No metered limits reported", StringComparison.Ordinal));
+        DrawControl(emptyCard);
+
+        var settingsCopy = new AppSettings();
+        using var dialog = new SettingsForm(
+            settingsCopy,
+            new[] { ("gemini", "Google Gemini") },
+            _ => Task.FromResult(new UpdateCheckResult(true, null)),
+            _ => Task.CompletedTask,
+            96);
+        var settingsMode = GetPrivateField<ComboBox>(dialog, "_metricDisplayMode");
+        Equal(0, settingsMode.SelectedIndex);
+        settingsMode.SelectedIndex = 2;
+        InvokePrivate(dialog, "Apply");
+        Equal(MetricDisplayMode.ImportantOnly, settingsCopy.MetricDisplayMode);
+
+        AppPaths.WriteAllTextAtomic(
+            AppPaths.SettingsFile,
+            """{"RefreshIntervalMinutes":12,"MetricDisplayMode":999}""");
+        var numericInvalid = AppSettings.Load();
+        Equal(12, numericInvalid.RefreshIntervalMinutes);
+        Equal(MetricDisplayMode.All, numericInvalid.MetricDisplayMode);
+        AppPaths.WriteAllTextAtomic(
+            AppPaths.SettingsFile,
+            """{"RefreshIntervalMinutes":12,"MetricDisplayMode":"future"}""");
+        var stringInvalid = AppSettings.Load();
+        Equal(5, stringInvalid.RefreshIntervalMinutes);
+        Equal(MetricDisplayMode.All, stringInvalid.MetricDisplayMode);
+        popup.Hide();
+        return Task.CompletedTask;
+    }
+
+    public static Task TestReleaseNotesBoundariesAsync()
+    {
+        var manyBullets = new StringBuilder("## [2.0.0] - 2026-09-15\n### Added\n");
+        for (var index = 0; index < 40; index++)
+        {
+            manyBullets.AppendLine(CultureInfo.InvariantCulture, $"- Bullet {index}");
+        }
+        var cappedBullets = ReleaseNotes.Parse(manyBullets.ToString());
+        Equal(32, cappedBullets.Single().Sections.Single().Bullets.Count);
+
+        var manyVersions = new StringBuilder();
+        for (var index = 0; index < 140; index++)
+        {
+            manyVersions.AppendLine(CultureInfo.InvariantCulture, $"## [{index + 1}.0.0] - 2026-09-15");
+            manyVersions.AppendLine("### Fixed");
+            manyVersions.AppendLine("- Bounded entry");
+        }
+        Equal(128, ReleaseNotes.Parse(manyVersions.ToString()).Count);
+        Equal(0, ReleaseNotes.LoadBundled(typeof(string).Assembly).Count);
+        Equal(0, ReleaseNotes.Parse("## [not-a-version]\n### Added\n- ignored").Count);
+        Equal(0, ReleaseNotes.Parse("## [1.0.0] unexpected\n### Added\n- ignored").Count);
+
+        var longBullet = ReleaseNotes.Parse(
+            "## [1.0.0]\n### Added\n- " + new string('x', 2_000));
+        Equal(1_000, longBullet.Single().Sections.Single().Bullets.Single().Length);
+
+        var literal = ReleaseNotes.Parse("""
+            ## [3.0.0] - 2026-09-15
+            ### Security
+            - Keep <b>literal HTML</b> and **Markdown** as text.
+            """);
+        var summary = new WhatsNewSummary(literal, "3.0.0", false);
+        var rendered = InvokePrivateStatic<string>(typeof(WhatsNewForm), "BuildText", summary);
+        True(rendered.Contains("<b>literal HTML</b>", StringComparison.Ordinal));
+        True(rendered.Contains("**Markdown**", StringComparison.Ordinal));
+        True(rendered.Contains("SECURITY", StringComparison.Ordinal));
+
+        var invalidCurrent = ReleaseNotes.ForUpgrade(literal, "invalid", previousVersion: null);
+        Equal(0, invalidCurrent.Releases.Count);
+        var invalidSettings = new AppSettings { LastRunVersion = "1.0.0" };
+        Null(UpgradeNotice.Create(invalidSettings, true, "invalid", literal).Pending);
+        Equal("1.0.0", invalidSettings.LastRunVersion);
+
+        var longVersion = new AppSettings { LastRunVersion = new string('1', 64) };
+        longVersion.Save();
+        Equal(string.Empty, longVersion.LastRunVersion);
+        var notice = UpgradeNotice.Create(new AppSettings(), true, "3.0.0", literal);
+        NotNull(notice.Pending);
+        notice.MarkDisplayed("3.0.0");
+        notice.MarkDisplayed("4.0.0");
+        Equal("3.0.0", AppSettings.Load().LastRunVersion);
+        return Task.CompletedTask;
+    }
+
+    public static Task TestWhatsNewLifecycleAsync()
+    {
+        if (File.Exists(AppPaths.SettingsFile))
+        {
+            File.Delete(AppPaths.SettingsFile);
+        }
+
+        var now = DateTimeOffset.Now;
+        var client = new QueueUsageClient("codex", "Codex");
+        client.Enqueue(Snapshot("codex", "Codex", 25, now));
+        var settings = new AppSettings { GlobalHotkeyEnabled = false };
+        using var context = new UsageApplicationContext(
+            new[] { client },
+            settings,
+            showTrayIcon: false,
+            enableAutomaticUpdateChecks: false,
+            profileExisted: true);
+        Equal(0, Application.OpenForms.OfType<WhatsNewForm>().Count());
+        Null(settings.LastRunVersion);
+
+        var seen = new HashSet<Form>();
+        using var closer = new System.Windows.Forms.Timer { Interval = 10 };
+        closer.Tick += (_, _) =>
+        {
+            foreach (var form in Application.OpenForms.OfType<WhatsNewForm>().ToArray())
+            {
+                seen.Add(form);
+                form.Close();
+            }
+        };
+        closer.Start();
+        InvokePrivate(context, "ToggleCompactPopup");
+        closer.Stop();
+        Equal(1, seen.Count);
+        Equal(AppIdentity.Version, settings.LastRunVersion);
+        Null(GetPrivateField<UpgradeNotice>(context, "_upgradeNotice").Pending);
+
+        InvokePrivate(context, "ToggleCompactPopup");
+        Equal(1, seen.Count);
+
+        using (var dialog = new SettingsForm(settings, new[] { ("codex", "Codex") }))
+        {
+            dialog.StartPosition = FormStartPosition.Manual;
+            dialog.Location = new Point(-10_000, -10_000);
+            dialog.Show();
+            Application.DoEvents();
+            var whatsNew = Descendants(dialog).OfType<Button>().Single(button => button.Text == "What's new");
+            closer.Start();
+            whatsNew.PerformClick();
+            closer.Stop();
+            Equal(2, seen.Count);
+            Equal(AppIdentity.Version, settings.LastRunVersion);
+            dialog.Hide();
+        }
+
+        var cleanClient = new QueueUsageClient("codex", "Codex");
+        cleanClient.Enqueue(Snapshot("codex", "Codex", 20, now));
+        var cleanSettings = new AppSettings { GlobalHotkeyEnabled = false };
+        using var cleanContext = new UsageApplicationContext(
+            new[] { cleanClient },
+            cleanSettings,
+            showTrayIcon: false,
+            enableAutomaticUpdateChecks: false,
+            profileExisted: false);
+        Null(GetPrivateField<UpgradeNotice>(cleanContext, "_upgradeNotice").Pending);
+        Equal(AppIdentity.Version, cleanSettings.LastRunVersion);
+        return Task.CompletedTask;
+    }
+
+    public static Task TestRuntimeHighContrastAsync()
+    {
+        var highContrast = false;
+        Theme.SetHighContrastProbe(() => highContrast);
+        try
+        {
+            Theme.Apply(ThemeMode.Light, 72, 90);
+            var settings = new AppSettings { GlobalHotkeyEnabled = false };
+            using var popup = new UsagePopupForm(settings, 96);
+            using var dialog = new SettingsForm(settings, new[] { ("codex", "Codex") });
+            using var whatsNew = new WhatsNewForm(
+                new WhatsNewSummary(Array.Empty<ReleaseNotesVersion>(), AppIdentity.Version, false),
+                96);
+
+            highContrast = true;
+            Theme.Reapply(ThemeMode.Light);
+            True(Theme.IsHighContrast);
+            Equal(SystemColors.Window, popup.BackColor);
+            Equal(SystemColors.Window, dialog.BackColor);
+            Equal(SystemColors.Window, whatsNew.BackColor);
+            Equal(SystemColors.Control, GetPrivateField<ComboBox>(dialog, "_theme").BackColor);
+            Equal(SystemColors.Window, GetPrivateField<RichTextBox>(whatsNew, "_content").BackColor);
+            Equal(SystemColors.Highlight, GetPrivateField<Button>(whatsNew, "_close").BackColor);
+            Equal(SystemColors.HighlightText, GetPrivateField<Button>(whatsNew, "_close").ForeColor);
+            Equal(SystemColors.WindowText, Theme.ForUsage(95));
+            Equal(SystemColors.WindowText, Theme.ForProvider("gemini"));
+            Equal(Color.Red, Theme.Blend(Color.Red, Color.Blue, 0.5));
+
+            using var icon = TrayIconFactory.Create(92, "G", size: 24, identityColor: Theme.Gemini);
+            using var iconBitmap = icon.ToBitmap();
+            True(iconBitmap.Width == 24 && iconBitmap.Height == 24);
+            DrawControl(popup);
+            DrawControl(dialog);
+            DrawControl(whatsNew);
+
+            var contextClient = new QueueUsageClient("codex", "Codex");
+            contextClient.Enqueue(Snapshot("codex", "Codex", 20, DateTimeOffset.Now));
+            using var context = new UsageApplicationContext(
+                new[] { contextClient },
+                new AppSettings { GlobalHotkeyEnabled = false, LastRunVersion = AppIdentity.Version },
+                showTrayIcon: false,
+                enableAutomaticUpdateChecks: false,
+                profileExisted: true);
+            var menu = GetPrivateField<ContextMenuStrip>(context, "_menu");
+            True(menu.Renderer is ToolStripSystemRenderer);
+
+            highContrast = false;
+            InvokePrivate(
+                context,
+                "OnUserPreferenceChanged",
+                new object(),
+                new UserPreferenceChangedEventArgs(UserPreferenceCategory.Accessibility));
+            False(Theme.IsHighContrast);
+            True(menu.Renderer is ToolStripProfessionalRenderer);
+            Equal(Theme.Night, popup.BackColor);
+            Equal(Theme.Night, dialog.BackColor);
+            Equal(Theme.Night, whatsNew.BackColor);
+        }
+        finally
+        {
+            Theme.SetHighContrastProbe(null);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+        }
+        return Task.CompletedTask;
+    }
+
+    public static Task TestExtremeDpiGeometryAsync()
+    {
+        Equal(96, InvokePrivateStatic<int>(
+            typeof(PreviewRenderer),
+            "ResolveDpi",
+            (object)PreviewDpi96Args));
+        Equal(192, InvokePrivateStatic<int>(
+            typeof(PreviewRenderer),
+            "ResolveDpi",
+            (object)PreviewDpi192Args));
+        Equal(288, InvokePrivateStatic<int>(
+            typeof(PreviewRenderer),
+            "ResolveDpi",
+            (object)PreviewDpi288Args));
+        Equal(192, InvokePrivateStatic<int>(
+            typeof(PreviewRenderer),
+            "ResolveDpi",
+            (object)PreviewDpiInvalidArgs));
+
+        var now = DateTimeOffset.Now;
+        var snapshot = new UsageSnapshot(
+            "A long representative provider plan",
+            new UsageMetric[]
+            {
+                new("Session limit with a long label", UsageMetricKind.Session, 85, now.AddHours(2)),
+                new("Monthly", UsageMetricKind.Monthly, 45, now.AddDays(10)),
+            },
+            now,
+            "codex",
+            "Codex");
+        var status = new ProviderStatus("codex", "Codex", snapshot, null, false);
+        var previousCardHeight = 0;
+
+        foreach (var dpi in new[] { 96, 192, 288 })
+        {
+            var scale = new LayoutScale(dpi);
+            using var card = new ProviderUsageCard(
+                status,
+                expanded: true,
+                Array.Empty<UsageSample>(),
+                showTrend: false,
+                dpiOverride: dpi)
+            {
+                Width = scale[520],
+            };
+            Equal(scale[46] + scale[8] + 2 * scale[54], card.NaturalHeight);
+            True(card.NaturalHeight > previousCardHeight);
+            previousCardHeight = card.NaturalHeight;
+            DrawControl(card);
+
+            var disconnected = new ProviderStatus(
+                "claude",
+                "Claude Code",
+                null,
+                "Sign in required",
+                false,
+                SignInCommand: "claude");
+            using var actionCard = new ProviderUsageCard(
+                disconnected,
+                expanded: true,
+                Array.Empty<UsageSample>(),
+                showTrend: false,
+                dpiOverride: dpi)
+            {
+                Width = scale[520],
+            };
+            DrawControl(actionCard);
+            var actionBounds = GetPrivateField<Rectangle>(actionCard, "_actionBounds");
+            True(actionBounds.Width > 0 && actionBounds.Height > 0);
+            True(actionCard.ClientRectangle.Contains(actionBounds));
+            Equal(
+                ProviderCardAction.CopyCommand,
+                InvokePrivate<ProviderCardAction>(actionCard, "HitTest", new Point(
+                    actionBounds.Left + actionBounds.Width / 2,
+                    actionBounds.Top + actionBounds.Height / 2)));
+
+            using var popup = new UsagePopupForm(new AppSettings(), dpi)
+            {
+                StartPosition = FormStartPosition.Manual,
+                Location = new Point(-10_000, -10_000),
+            };
+            popup.SetMode(DashboardMode.Full);
+            popup.SetStates(new[] { status }, false, now, Array.Empty<UsageSample>());
+            popup.Show();
+            Application.DoEvents();
+            var popupArea = Screen.FromControl(popup).WorkingArea;
+            True(popup.Width <= popupArea.Width && popup.Height <= popupArea.Height);
+            AssertVisibleActionsInBounds(popup);
+            DrawControl(popup);
+            popup.Hide();
+
+            using var settings = new SettingsForm(
+                new AppSettings(),
+                new[] { ("codex", "Codex"), ("gemini", "Google Gemini") },
+                _ => Task.FromResult(new UpdateCheckResult(true, null)),
+                _ => Task.CompletedTask,
+                dpi)
+            {
+                StartPosition = FormStartPosition.Manual,
+                Location = new Point(-10_000, -10_000),
+            };
+            settings.Show();
+            Application.DoEvents();
+            var settingsArea = Screen.FromControl(settings).WorkingArea;
+            True(settings.Width <= settingsArea.Width && settings.Height <= settingsArea.Height);
+            var settingsPadding = GetPrivateField<TableLayoutPanel>(settings, "_layout").Padding;
+            var settingsSize = settings.ClientSize;
+            InvokePrivate(settings, "ApplyScaledLayout");
+            Equal(settingsPadding, GetPrivateField<TableLayoutPanel>(settings, "_layout").Padding);
+            Equal(settingsSize, settings.ClientSize);
+            AssertVisibleActionsInBounds(settings);
+            var scrollHost = GetPrivateField<Panel>(settings, "_scrollHost");
+            True(scrollHost.DisplayRectangle.Height >= scrollHost.ClientSize.Height);
+            DrawControl(settings);
+            settings.Hide();
+
+            using var notes = new WhatsNewForm(
+                new WhatsNewSummary(Array.Empty<ReleaseNotesVersion>(), "9.9.9", false),
+                dpi)
+            {
+                StartPosition = FormStartPosition.Manual,
+                Location = new Point(-10_000, -10_000),
+            };
+            notes.Show();
+            Application.DoEvents();
+            var notesArea = Screen.FromControl(notes).WorkingArea;
+            True(notes.Width <= notesArea.Width && notes.Height <= notesArea.Height);
+            var notesPadding = GetPrivateField<TableLayoutPanel>(notes, "_shell").Padding;
+            var notesSize = notes.ClientSize;
+            InvokePrivate(notes, "ApplyScaledLayout");
+            Equal(notesPadding, GetPrivateField<TableLayoutPanel>(notes, "_shell").Padding);
+            Equal(notesSize, notes.ClientSize);
+            AssertVisibleActionsInBounds(notes);
+            DrawControl(notes);
+            notes.Hide();
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static void AssertVisibleActionsInBounds(Control root)
+    {
+        foreach (var control in Descendants(root).Where(control => control.Visible && control is Button or ComboBox))
+        {
+            True(control.Width > 0 && control.Height > 0);
+            True(control.Left >= 0 && control.Top >= 0);
+            True(control.Right <= control.Parent!.ClientSize.Width + control.Parent.Padding.Right);
+            True(control.Bottom <= control.Parent.ClientSize.Height + control.Parent.Padding.Bottom);
         }
     }
 

@@ -23,6 +23,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private readonly System.Windows.Forms.Timer _refreshAnimationTimer;
     private readonly ToolStripMenuItem _startupItem;
     private readonly bool _automaticUpdateChecksEnabled;
+    private readonly UpgradeNotice _upgradeNotice;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly SynchronizationContext _syncContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
     private Icon? _currentIcon;
@@ -30,8 +31,8 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private bool _isExiting;
     private bool _updateCheckRunning;
 
-    public UsageApplicationContext(IEnumerable<IUsageClient> clients, AppSettings settings)
-        : this(clients, settings, showTrayIcon: true, enableAutomaticUpdateChecks: true)
+    public UsageApplicationContext(IEnumerable<IUsageClient> clients, AppSettings settings, bool profileExisted)
+        : this(clients, settings, showTrayIcon: true, enableAutomaticUpdateChecks: true, profileExisted)
     {
     }
 
@@ -39,12 +40,18 @@ internal sealed class UsageApplicationContext : ApplicationContext
         IEnumerable<IUsageClient> clients,
         AppSettings settings,
         bool showTrayIcon,
-        bool enableAutomaticUpdateChecks = false)
+        bool enableAutomaticUpdateChecks = false,
+        bool profileExisted = false)
     {
         _settings = settings;
         _automaticUpdateChecksEnabled = enableAutomaticUpdateChecks;
         _clients = clients.ToArray();
         Theme.Apply(_settings.Theme, _settings.WarningPercent, _settings.CriticalPercent);
+        _upgradeNotice = UpgradeNotice.Create(
+            _settings,
+            profileExisted,
+            AppIdentity.Version,
+            ReleaseNotes.LoadBundled());
 
         _service = new UsageRefreshService(_clients, _settings);
         _service.Updated += OnServiceUpdated;
@@ -59,7 +66,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         {
             BackColor = Theme.Surface,
             ForeColor = Theme.Text,
-            Renderer = new ToolStripProfessionalRenderer(new DarkColorTable()),
+            Renderer = CreateMenuRenderer(),
             ShowImageMargin = false,
             Padding = new Padding(4),
         };
@@ -255,6 +262,8 @@ internal sealed class UsageApplicationContext : ApplicationContext
             return;
         }
 
+        ShowPendingWhatsNew();
+
         if (_popup.Visible && _popup.Mode == DashboardMode.Compact)
         {
             _popup.Hide();
@@ -269,6 +278,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
     {
         if (!_isExiting)
         {
+            ShowPendingWhatsNew();
             PushStateToPopup();
             _popup.ShowNearTray(DashboardMode.Full);
         }
@@ -276,6 +286,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     private void OpenSettings()
     {
+        ShowPendingWhatsNew();
         using var dialog = new SettingsForm(
             _settings,
             _clients.Select(client => (client.Id, client.DisplayName)).ToArray(),
@@ -293,6 +304,25 @@ internal sealed class UsageApplicationContext : ApplicationContext
         UpdateTray();
         _ = RefreshAsync(force: false);
         _ = CheckForUpdatesIfDueAsync();
+    }
+
+    private void ShowPendingWhatsNew()
+    {
+        if (_upgradeNotice.Pending is not { } summary || _isExiting)
+        {
+            return;
+        }
+
+        try
+        {
+            using var form = new WhatsNewForm(summary);
+            form.Shown += (_, _) => _upgradeNotice.MarkDisplayed(AppIdentity.Version);
+            form.ShowDialog();
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        {
+            // Keep the notice queued. A later explicit interaction can try again.
+        }
     }
 
     private void ApplyHotkeySetting()
@@ -432,8 +462,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     private void OnUserPreferenceChanged(object sender, UserPreferenceChangedEventArgs eventArgs)
     {
-        if (eventArgs.Category is not (UserPreferenceCategory.General or UserPreferenceCategory.Color) ||
-            _settings.Theme != ThemeMode.System)
+        if (eventArgs.Category is not (UserPreferenceCategory.General or UserPreferenceCategory.Color or UserPreferenceCategory.Accessibility))
         {
             return;
         }
@@ -441,11 +470,22 @@ internal sealed class UsageApplicationContext : ApplicationContext
         RunOnUi(() =>
         {
             Theme.Reapply(_settings.Theme);
-            _menu.BackColor = Theme.Surface;
-            _menu.ForeColor = Theme.Text;
+            ApplyMenuTheme();
             UpdateTray();
         });
     }
+
+    private void ApplyMenuTheme()
+    {
+        _menu.BackColor = Theme.Surface;
+        _menu.ForeColor = Theme.Text;
+        _menu.Renderer = CreateMenuRenderer();
+        _menu.Invalidate(invalidateChildren: true);
+    }
+
+    private static ToolStripRenderer CreateMenuRenderer() => Theme.IsHighContrast
+        ? new ToolStripSystemRenderer()
+        : new ToolStripProfessionalRenderer(new DarkColorTable());
 
     private void RunOnUi(Action action)
     {

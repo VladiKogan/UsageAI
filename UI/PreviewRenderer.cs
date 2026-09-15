@@ -1,5 +1,6 @@
 using System.Drawing.Drawing2D;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Threading;
 using UsageAI.Models;
 using UsageAI.Services;
@@ -15,12 +16,14 @@ internal static class PreviewRenderer
 {
     public static void Render(string[] args)
     {
+        using var dpiScope = PreviewDpiScope.EnterBaseline();
         CultureInfo.DefaultThreadCurrentCulture = CultureInfo.InvariantCulture;
         CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
         Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture;
         Thread.CurrentThread.CurrentUICulture = CultureInfo.InvariantCulture;
 
         var outputPath = ResolveOutputPath(args);
+        var previewDpi = ResolveDpi(args);
         var now = DateTimeOffset.Now;
         var settings = new AppSettings();
         Theme.Apply(settings.Theme, settings.WarningPercent, settings.CriticalPercent);
@@ -217,7 +220,7 @@ internal static class PreviewRenderer
             new UsageSample(lastRefreshed, "gemini", "Rolling:CLAUDE AND GPT MODELS (WEEKLY)", 83),
         };
 
-        using var form = new UsagePopupForm(settings);
+        using var form = new UsagePopupForm(settings, LayoutScale.BaselineDpi);
         var isFull = args.Contains("--full", StringComparer.OrdinalIgnoreCase);
         var mode = isFull ? DashboardMode.Full : DashboardMode.Compact;
         form.ShowNearTray(mode);
@@ -225,7 +228,8 @@ internal static class PreviewRenderer
         if (isFull)
         {
             form.FormBorderStyle = FormBorderStyle.None;
-            form.ClientSize = new Size(940, 930);
+            var scale = new LayoutScale(LayoutScale.BaselineDpi);
+            form.ClientSize = new Size(scale[940], scale[930]);
         }
         else
         {
@@ -235,25 +239,36 @@ internal static class PreviewRenderer
         form.Location = new Point(-10_000, -10_000);
         Application.DoEvents();
         form.PerformLayout();
-        using var lowResBitmap = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
-        form.DrawToBitmap(lowResBitmap, form.ClientRectangle);
+        using var baselineBitmap = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
+        baselineBitmap.SetResolution(LayoutScale.BaselineDpi, LayoutScale.BaselineDpi);
+        form.DrawToBitmap(baselineBitmap, form.ClientRectangle);
+        SaveScaled(baselineBitmap, outputPath, previewDpi);
+        form.Hide();
+    }
 
-        const float scaleFactor = 2F;
-        var highWidth = (int)Math.Round(form.ClientSize.Width * scaleFactor);
-        var highHeight = (int)Math.Round(form.ClientSize.Height * scaleFactor);
-
-        using var highResBitmap = new Bitmap(highWidth, highHeight);
-        using (var graphics = Graphics.FromImage(highResBitmap))
+    private static void SaveScaled(Bitmap baseline, string outputPath, int outputDpi)
+    {
+        if (outputDpi == LayoutScale.BaselineDpi)
         {
-            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            graphics.SmoothingMode = SmoothingMode.HighQuality;
-            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            graphics.CompositingQuality = CompositingQuality.HighQuality;
-            graphics.DrawImage(lowResBitmap, new Rectangle(0, 0, highWidth, highHeight));
+            baseline.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
+            return;
         }
 
-        highResBitmap.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
-        form.Hide();
+        var factor = outputDpi / (float)LayoutScale.BaselineDpi;
+        using var scaled = new Bitmap(
+            (int)Math.Round(baseline.Width * factor),
+            (int)Math.Round(baseline.Height * factor));
+        scaled.SetResolution(outputDpi, outputDpi);
+        using (var graphics = Graphics.FromImage(scaled))
+        {
+            graphics.CompositingQuality = CompositingQuality.HighQuality;
+            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.SmoothingMode = SmoothingMode.HighQuality;
+            graphics.DrawImage(baseline, new Rectangle(Point.Empty, scaled.Size));
+        }
+
+        scaled.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
     }
 
     private static string ResolveOutputPath(string[] args)
@@ -265,5 +280,42 @@ internal static class PreviewRenderer
                !args[flagIndex + 1].StartsWith('-')
             ? Path.GetFullPath(args[flagIndex + 1])
             : Path.Combine(Environment.CurrentDirectory, "usageai-preview.png");
+    }
+
+    private static int ResolveDpi(string[] args)
+    {
+        var flagIndex = Array.FindIndex(args, argument => argument.Equals("--dpi", StringComparison.OrdinalIgnoreCase));
+        return flagIndex >= 0 && flagIndex + 1 < args.Length &&
+               int.TryParse(args[flagIndex + 1], NumberStyles.Integer, CultureInfo.InvariantCulture, out var dpi) &&
+               dpi is 96 or 192 or 288
+            ? dpi
+            : 192;
+    }
+
+    /// <summary>
+    /// Preview composition starts from a virtual 96-DPI surface and is then resampled as one image.
+    /// This keeps point-sized fonts and pixel geometry in lockstep on every host monitor scale.
+    /// </summary>
+    private readonly struct PreviewDpiScope : IDisposable
+    {
+        private static readonly nint DpiAwarenessContextUnaware = -1;
+        private readonly nint _previousContext;
+
+        private PreviewDpiScope(nint previousContext) => _previousContext = previousContext;
+
+        public static PreviewDpiScope EnterBaseline() =>
+            new(SetThreadDpiAwarenessContext(DpiAwarenessContextUnaware));
+
+        public void Dispose()
+        {
+            if (_previousContext != 0)
+            {
+                _ = SetThreadDpiAwarenessContext(_previousContext);
+            }
+        }
+
+        [DllImport("user32.dll")]
+        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
+        private static extern nint SetThreadDpiAwarenessContext(nint dpiContext);
     }
 }

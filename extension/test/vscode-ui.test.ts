@@ -51,6 +51,7 @@ const registeredCommands = new Map<string, (...args: readonly unknown[]) => unkn
 const informationMessages: string[] = [];
 const openedUris: string[] = [];
 const clipboardWrites: string[] = [];
+const configurationUpdates: Array<{ readonly key: string; readonly value: unknown; readonly target: unknown }> = [];
 let configurationListener: ((event: { affectsConfiguration(section: string): boolean }) => void) | undefined;
 let registeredDashboard: unknown;
 
@@ -63,11 +64,16 @@ const configuration = {
   inspect<T>(key: string): { readonly globalValue?: T } | undefined {
     return inspectedConfiguration.has(key) ? { globalValue: configurationValues.get(key) as T } : undefined;
   },
+  async update(key: string, value: unknown, target: unknown): Promise<void> {
+    configurationValues.set(key, value);
+    configurationUpdates.push({ key, value, target });
+  },
 };
 
 const vscodeStub = {
   StatusBarAlignment: { Left: 1 },
   ProgressLocation: { Window: 1 },
+  ConfigurationTarget: { Global: 1 },
   MarkdownString: FakeMarkdownString,
   Uri: { parse: (value: string) => ({ value, toString: () => value }) },
   commands: {
@@ -116,7 +122,8 @@ moduleLoader._load = (request, parent, isMain) => request === "vscode"
   : originalLoad.call(moduleLoader, request, parent, isMain);
 
 const { StatusBarController } = localRequire("../src/status-bar") as typeof import("../src/status-bar");
-const { UsageDashboardViewProvider } = localRequire("../src/dashboard-view") as typeof import("../src/dashboard-view");
+const dashboardModule = localRequire("../src/dashboard-view") as typeof import("../src/dashboard-view");
+const { UsageDashboardViewProvider } = dashboardModule;
 const extensionModule = localRequire("../src/extension") as typeof import("../src/extension");
 const { UsageRefreshService } = localRequire("../src/refresh-service") as typeof import("../src/refresh-service");
 moduleLoader._load = originalLoad;
@@ -232,29 +239,71 @@ test("dashboard wires visibility, safe messages, state posting, and CSP", async 
     },
   };
 
-  const dashboard = new UsageDashboardViewProvider(service, () => 72, () => 90);
+  const savedExpanded: string[][] = [];
+  const changedModes: string[] = [];
+  const dashboard = new UsageDashboardViewProvider(service, () => 72, () => 90, {
+    loadExpandedProviders: () => ["codex", "codex", "unknown", 42],
+    saveExpandedProviders: (ids) => { savedExpanded.push([...ids]); },
+    metricDisplayMode: () => "important",
+    setMetricDisplayMode: (mode) => { changedModes.push(mode); },
+  });
   dashboard.resolveWebviewView(view as never);
   assert.deepEqual(webview.options, { enableScripts: true, localResourceRoots: [] });
   assert.match(webview.html, /default-src 'none'/);
   assert.match(webview.html, /Last good/);
   assert.match(webview.html, /Retry at/);
+  assert.match(webview.html, /aria-expanded/);
+  assert.match(webview.html, /el\('button', 'card-toggle'\)/);
+  assert.match(webview.html, /body\.hidden = !expanded/);
+  assert.match(webview.html, /head\.type = 'button'/);
+  assert.match(webview.html, /textContent = text/);
+  assert.match(webview.html, /Collapse all/);
+  assert.match(webview.html, /No metered limits reported/);
+  assert.match(webview.html, /prefers-reduced-motion/);
   assert.doesNotMatch(webview.html, /innerHTML/);
   assert.equal(visibility.at(-1), true);
   assert.ok(posted.length >= 1);
+  assert.deepEqual(posted[0], {
+    type: "states",
+    states,
+    warningPercent: 72,
+    criticalPercent: 90,
+    metricDisplayMode: "important",
+    expandedProviders: ["codex"],
+  });
 
   await messageHandler?.({ type: "ready" });
   await messageHandler?.({ type: "refresh", providerId: "codex" });
   await messageHandler?.({ type: "settings" });
   await messageHandler?.({ type: "openAccount", providerId: "codex" });
   await messageHandler?.({ type: "copySignIn", providerId: "codex" });
+  await messageHandler?.({ type: "setProviderExpanded", providerId: "codex", expanded: false });
+  await messageHandler?.({ type: "setProviderExpanded", providerId: "unknown", expanded: true });
+  await messageHandler?.({ type: "setProviderExpanded", providerId: "claude", expanded: "yes" });
+  await messageHandler?.({ type: "setAllExpanded", expanded: true });
+  await messageHandler?.({ type: "setAllExpanded", expanded: "no" });
+  await messageHandler?.({ type: "setAllExpanded", expanded: false });
+  await messageHandler?.({ type: "setProviderExpanded", providerId: "gemini", expanded: true });
+  await messageHandler?.({ type: "setMetricDisplayMode", mode: "metered" });
+  await messageHandler?.({ type: "setMetricDisplayMode", mode: "invalid" });
   await messageHandler?.({ type: "openAccount", providerId: "unknown" });
   await messageHandler?.({ unsafe: true });
   assert.deepEqual(executedCommands.map((entry) => entry.command), ["usageai.refresh", "usageai.openSettings"]);
   assert.deepEqual(openedUris, ["https://example.com/codex"]);
   assert.deepEqual(clipboardWrites, ["codex login"]);
   assert.deepEqual(informationMessages, ["Copied: codex login"]);
+  assert.deepEqual(savedExpanded, [
+    [],
+    ["codex", "claude", "copilot", "gemini"],
+    [],
+    ["gemini"],
+  ]);
+  assert.deepEqual(changedModes, ["metered"]);
 
   updateListener?.(states);
+  const postedBeforeConfiguration = posted.length;
+  dashboard.configurationChanged();
+  assert.equal(posted.length, postedBeforeConfiguration + 1);
   view.visible = false;
   visibilityHandler?.();
   disposeHandler?.();
@@ -263,7 +312,51 @@ test("dashboard wires visibility, safe messages, state posting, and CSP", async 
   assert.equal(updateListener, undefined);
 });
 
-test("activation helpers sanitize configuration and activation registers its surface", () => {
+test("expanded provider state defaults open and sanitizes restored ids", () => {
+  assert.deepEqual(dashboardModule.sanitizeExpandedProviderIds(undefined), ["codex", "claude", "copilot", "gemini"]);
+  assert.deepEqual(dashboardModule.sanitizeExpandedProviderIds(["gemini", "bad", "gemini", null]), ["gemini"]);
+  assert.deepEqual(dashboardModule.sanitizeExpandedProviderIds([], ["codex"]), []);
+});
+
+test("dashboard expansion keeps attention temporary and summaries unfiltered", () => {
+  const connected: ProviderState = {
+    id: "gemini",
+    displayName: "Gemini",
+    signInCommand: "agy",
+    accountUrl: "https://example.com/gemini",
+    snapshot: {
+      ...snapshot("gemini", 30),
+      metrics: [
+        { name: "Balance", kind: "balance", usedPercent: null },
+        { name: "Gemini session", kind: "session", usedPercent: 88 },
+        { name: "GPT session tie", kind: "session", usedPercent: 88 },
+        { name: "Unlimited", kind: "monthly", usedPercent: 100, isUnlimited: true },
+      ],
+    },
+    stale: false,
+    refreshing: false,
+  };
+  assert.equal(dashboardModule.dashboardNeedsAttention(connected), false);
+  assert.equal(dashboardModule.effectiveDashboardExpansion(connected, false), false);
+  assert.equal(dashboardModule.effectiveDashboardExpansion(connected, true), true);
+  assert.equal(dashboardModule.collapsedDashboardMetric(connected)?.name, "Gemini session");
+
+  const stale = { ...connected, stale: true, error: "Temporary failure" };
+  assert.equal(dashboardModule.dashboardNeedsAttention(stale), true);
+  assert.equal(dashboardModule.effectiveDashboardExpansion(stale, false), true);
+  const { error: _error, ...recovered } = stale;
+  assert.equal(dashboardModule.effectiveDashboardExpansion({ ...recovered, stale: false }, false), false);
+
+  const { snapshot: _connectedSnapshot, ...withoutSnapshot } = connected;
+  const disconnected = { ...withoutSnapshot, error: "Sign in required" };
+  assert.equal(dashboardModule.effectiveDashboardExpansion(disconnected, false), true);
+  assert.equal(dashboardModule.collapsedDashboardMetric({}), undefined);
+  assert.equal(dashboardModule.collapsedDashboardMetric({
+    snapshot: { ...connected.snapshot!, metrics: [{ name: "Credits", kind: "balance", usedPercent: null }] },
+  }), undefined);
+});
+
+test("activation helpers sanitize configuration and activation registers its surface", async () => {
   assert.deepEqual(extensionModule.sanitizeProviderIds(["gemini", "bad", "codex", "gemini"]), ["gemini", "codex"]);
   assert.equal(extensionModule.clampMinutes(Number.NaN, 1, 120), 1);
   assert.equal(extensionModule.clampMinutes(500, 1, 120), 120);
@@ -275,6 +368,7 @@ test("activation helpers sanitize configuration and activation registers its sur
   }), { codex: snapshot("codex", 45) });
 
   configurationValues.clear();
+  configurationUpdates.length = 0;
   inspectedConfiguration.clear();
   configurationValues.set("providers", ["codex", "unknown"]);
   configurationValues.set("statusBarProvider", ["gemini"]);
@@ -288,7 +382,9 @@ test("activation helpers sanitize configuration and activation registers its sur
   const context = {
     subscriptions,
     globalState: {
-      get: (_key: string, fallback: unknown) => fallback,
+      get: (key: string, fallback: unknown) => key === dashboardModule.dashboardExpandedProvidersKey
+        ? ["claude"]
+        : fallback,
       update: async (_key: string, value: unknown) => { updates.push(value); },
     },
   };
@@ -304,6 +400,28 @@ test("activation helpers sanitize configuration and activation registers its sur
     assert.ok(subscriptions.length >= 8);
     assert.ok(updates.length >= 1);
     configurationListener?.({ affectsConfiguration: (section) => section === "usageai" });
+    const activatedDashboard = registeredDashboard as InstanceType<typeof UsageDashboardViewProvider>;
+    const posted: unknown[] = [];
+    let dashboardMessage: ((message: unknown) => Promise<void>) | undefined;
+    activatedDashboard.resolveWebviewView({
+      visible: true,
+      webview: {
+        options: {},
+        html: "",
+        postMessage(message: unknown) { posted.push(message); return Promise.resolve(true); },
+        onDidReceiveMessage(handler: (message: unknown) => Promise<void>) {
+          dashboardMessage = handler;
+          return { dispose() {} };
+        },
+      },
+      onDidChangeVisibility() { return { dispose() {} }; },
+      onDidDispose() { return { dispose() {} }; },
+    } as never);
+    assert.deepEqual((posted[0] as { expandedProviders: string[] }).expandedProviders, ["claude"]);
+    await dashboardMessage?.({ type: "setProviderExpanded", providerId: "claude", expanded: false });
+    await dashboardMessage?.({ type: "setMetricDisplayMode", mode: "important" });
+    assert.ok(updates.some((value) => Array.isArray(value) && value.length === 0));
+    assert.deepEqual(configurationUpdates, [{ key: "metricDisplayMode", value: "important", target: 1 }]);
   } finally {
     mock.restoreAll();
     for (const subscription of subscriptions) subscription.dispose();

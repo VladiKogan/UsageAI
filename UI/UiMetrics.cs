@@ -13,6 +13,24 @@ internal readonly struct LayoutScale
 
     public LayoutScale(Control control) => _factor = Math.Clamp(control.DeviceDpi / (float)BaselineDpi, 0.5F, 6F);
 
+    /// <summary>Explicit-DPI seam for deterministic geometry tests and previews.</summary>
+    internal LayoutScale(int dpi) => _factor = Math.Clamp(dpi / (float)BaselineDpi, 0.5F, 6F);
+
+    internal float Factor => _factor;
+
+    /// <summary>Preserves a logical pixel offset while moving between monitor DPIs.</summary>
+    internal static int ScaleBetweenDpis(int pixels, int oldDpi, int newDpi)
+    {
+        if (pixels <= 0 || oldDpi <= 0 || newDpi <= 0)
+        {
+            return Math.Max(0, pixels);
+        }
+
+        return (int)Math.Min(
+            int.MaxValue,
+            Math.Round(pixels * (double)newDpi / oldDpi));
+    }
+
     /// <summary>Scales a baseline pixel measurement.</summary>
     public int this[int baselinePixels] => (int)Math.Round(baselinePixels * _factor);
 

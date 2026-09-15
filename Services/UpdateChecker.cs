@@ -204,7 +204,7 @@ internal static class UpdateChecker
             "/VladiKogan/UsageAI/releases/",
             StringComparison.OrdinalIgnoreCase);
 
-    private static Version? ParseVersion(string value)
+    internal static Version? ParseVersion(string value)
     {
         var trimmed = value.Trim().TrimStart('v', 'V');
         var cut = trimmed.IndexOfAny(PrereleaseSeparators);

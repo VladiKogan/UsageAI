@@ -7,10 +7,12 @@ import {
   highestUsedPercent,
   formatResetCountdown,
   normalizeStatusBarProviders,
+  normalizeMetricDisplayMode,
   primaryMetric,
   segmentedUsageBar,
   statusBarMetrics,
   statusBarProvidersFromCheckboxes,
+  selectDashboardMetrics,
   type UsageClient,
   type UsageSnapshot,
 } from "../src/model";
@@ -48,9 +50,57 @@ test("marketplace previews resolve from the extension directory", async () => {
     access(resolve(__dirname, "../..", previewPath))));
 });
 
+test("extension manifest exposes the dashboard metric mode contract", async () => {
+  const packageJson = JSON.parse(
+    await readFile(resolve(__dirname, "../../package.json"), "utf8"),
+  ) as {
+    contributes?: {
+      configuration?: Array<{
+        properties?: Record<string, { default?: unknown; enum?: unknown[]; scope?: unknown }>;
+      }>;
+    };
+  };
+  const properties = Object.assign({}, ...(
+    packageJson.contributes?.configuration ?? []
+  ).map((section) => section.properties ?? {}));
+  assert.deepEqual(properties["usageai.metricDisplayMode"]?.enum, ["all", "metered", "important"]);
+  assert.equal(properties["usageai.metricDisplayMode"]?.default, "all");
+  assert.equal(properties["usageai.metricDisplayMode"]?.scope, "application");
+});
+
 test("model selects real quota before balance", () => {
   assert.equal(primaryMetric(snapshot)?.name, "Weekly");
   assert.equal(highestUsedPercent(snapshot), 74);
+});
+
+test("dashboard metric modes mirror the desktop selection contract", () => {
+  const metrics: UsageSnapshot["metrics"] = [
+    { name: "Balance", kind: "balance", usedPercent: null, remainingText: "$5" },
+    { name: "Session first", kind: "session", usedPercent: 70 },
+    { name: "Rolling lower", kind: "rolling", usedPercent: 40 },
+    { name: "Session tie", kind: "session", usedPercent: 70 },
+    { name: "Rolling high", kind: "rolling", usedPercent: 91 },
+    { name: "Monthly unlimited", kind: "monthly", usedPercent: 0, isUnlimited: true },
+    { name: "Monthly", kind: "monthly", usedPercent: 12 },
+  ];
+  assert.equal(selectDashboardMetrics(metrics, "all"), metrics);
+  assert.deepEqual(selectDashboardMetrics(metrics, "metered").map((metric) => metric.name), [
+    "Session first", "Rolling lower", "Session tie", "Rolling high", "Monthly",
+  ]);
+  assert.deepEqual(selectDashboardMetrics(metrics, "important").map((metric) => metric.name), [
+    "Session first", "Rolling high", "Monthly",
+  ]);
+  assert.equal(normalizeMetricDisplayMode("metered"), "metered");
+  assert.equal(normalizeMetricDisplayMode("future"), "all");
+  assert.equal(normalizeMetricDisplayMode(null), "all");
+  assert.deepEqual(selectDashboardMetrics([], "important"), []);
+  assert.deepEqual(selectDashboardMetrics([
+    { name: "Future kind", kind: "future" as never, usedPercent: 99 },
+    { name: "Balance only", kind: "balance", usedPercent: null },
+  ], "important"), []);
+  assert.deepEqual(statusBarMetrics({ ...snapshot, metrics }).map((metric) => metric.name), [
+    "Session first", "Rolling lower",
+  ]);
 });
 
 test("status bar prioritizes session and weekly windows", () => {

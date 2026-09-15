@@ -1,5 +1,6 @@
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using UsageAI.Models;
 
 namespace UsageAI.Services;
 
@@ -100,6 +101,8 @@ internal sealed class AppSettings
 
     public ThemeMode Theme { get; set; } = ThemeMode.System;
 
+    public MetricDisplayMode MetricDisplayMode { get; set; } = MetricDisplayMode.All;
+
     public bool HistoryEnabled { get; set; } = true;
 
     public bool ForecastEnabled { get; set; } = true;
@@ -108,6 +111,9 @@ internal sealed class AppSettings
 
     /// <summary>Last GitHub release check, used to keep the automatic request to once per day.</summary>
     public DateTimeOffset? LastUpdateCheckUtc { get; set; }
+
+    /// <summary>Installed version whose bundled release notes were last acknowledged.</summary>
+    public string? LastRunVersion { get; set; }
 
     public string[] HiddenProviders { get; set; } = Array.Empty<string>();
 
@@ -212,6 +218,10 @@ internal sealed class AppSettings
         RefreshIntervalMinutes = Math.Clamp(RefreshIntervalMinutes, MinimumRefreshMinutes, MaximumRefreshMinutes);
         WarningPercent = Math.Clamp(WarningPercent, 1, 99);
         CriticalPercent = Math.Clamp(CriticalPercent, WarningPercent + 1, 100);
+        if (!Enum.IsDefined(MetricDisplayMode))
+        {
+            MetricDisplayMode = MetricDisplayMode.All;
+        }
         NotifyAtPercent = NotifyAtPercent is { Length: > 0 } thresholds
             ? thresholds
                 .Where(percent => percent is > 0 and <= 100)
@@ -229,6 +239,12 @@ internal sealed class AppSettings
             LastUpdateCheckUtc = utc > DateTimeOffset.UtcNow.AddMinutes(5)
                 ? null
                 : utc;
+        }
+
+        if (LastRunVersion is not null)
+        {
+            var normalizedVersion = LastRunVersion.Trim();
+            LastRunVersion = normalizedVersion.Length <= 32 ? normalizedVersion : string.Empty;
         }
 
         if (DashboardBounds is { Length: not 4 })

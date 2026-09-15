@@ -19,8 +19,12 @@ internal static class ProviderIconPainter
         var color = Theme.ForProvider(providerId);
 
         // A tint that reads on a near-black card is nearly invisible on a white one.
-        using var background = new SolidBrush(Color.FromArgb(Theme.IsDark ? 32 : 40, color));
-        using var border = new Pen(Color.FromArgb(Theme.IsDark ? 105 : 125, color), 1F);
+        using var background = new SolidBrush(Theme.IsHighContrast
+            ? Theme.Surface
+            : Color.FromArgb(Theme.IsDark ? 32 : 40, color));
+        using var border = new Pen(Theme.IsHighContrast
+            ? Theme.Hairline
+            : Color.FromArgb(Theme.IsDark ? 105 : 125, color), 1F);
         using var shape = DrawingHelpers.RoundedRectangle(bounds, bounds.Width * 0.26F);
         graphics.FillPath(background, shape);
         graphics.DrawPath(border, shape);

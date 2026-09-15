@@ -59,10 +59,11 @@ internal static class Program
         // executable. Registration lets it reopen the updated build when installation finishes.
         _ = ApplicationRestart.TryRegister();
 
+        var profileExisted = Directory.Exists(AppPaths.DataDirectory);
         var settings = AppSettings.Load();
         try
         {
-            Application.Run(new UsageApplicationContext(CreateUsageClients(), settings));
+            Application.Run(new UsageApplicationContext(CreateUsageClients(), settings, profileExisted));
         }
         finally
         {
@@ -76,7 +77,7 @@ internal static class Program
           UsageAI.exe                       Start the tray application.
           UsageAI.exe --diagnose <provider>  Print one provider's usage as JSON.
                                              Providers: codex, claude, copilot, gemini.
-          UsageAI.exe --render-preview [path] [--full]
+          UsageAI.exe --render-preview [path] [--full] [--dpi 96|192|288]
                                              Render a preview image of the popup.
           UsageAI.exe --version              Print the application version.
           UsageAI.exe --help                 Show this help.

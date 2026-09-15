@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { UsageDashboardViewProvider } from "./dashboard-view";
+import { dashboardExpandedProvidersKey, UsageDashboardViewProvider } from "./dashboard-view";
 import {
   statusBarProvidersFromCheckboxes,
   type ProviderState,
@@ -39,6 +39,19 @@ export function activate(context: vscode.ExtensionContext): void {
     refreshService,
     () => clampMinutes(configuration().get("warningPercent", 72), 1, 100),
     () => clampMinutes(configuration().get("criticalPercent", 90), 1, 100),
+    {
+      loadExpandedProviders: () => context.globalState.get<unknown>(dashboardExpandedProvidersKey),
+      saveExpandedProviders: (providerIds) => context.globalState.update(
+        dashboardExpandedProvidersKey,
+        [...providerIds],
+      ),
+      metricDisplayMode: () => configuration().get<unknown>("metricDisplayMode", "all"),
+      setMetricDisplayMode: (mode) => configuration().update(
+        "metricDisplayMode",
+        mode,
+        vscode.ConfigurationTarget.Global,
+      ),
+    },
   );
   const statusBars = new StatusBarController();
   const refreshManually = () => vscode.window.withProgress(
@@ -77,6 +90,7 @@ export function activate(context: vscode.ExtensionContext): void {
       if (event.affectsConfiguration("usageai")) {
         refreshService.configurationChanged();
         updateUi(refreshService.getStates());
+        dashboard.configurationChanged();
       }
     }),
   );

@@ -2,7 +2,7 @@
   "name": "usageai",
   "displayName": "UsageAI",
   "description": "Keep Codex, Claude Code, GitHub Copilot, and Gemini usage visible while you code.",
-  "version": "0.1.13",
+  "version": "0.1.14",
   "publisher": "vladikogan",
   "license": "MIT",
   "engines": {
@@ -176,6 +176,23 @@
             "default": false,
             "order": 40,
             "description": "Allow UsageAI to invoke `gh auth token` when no Copilot credential file is usable."
+          },
+          "usageai.metricDisplayMode": {
+            "type": "string",
+            "enum": [
+              "all",
+              "metered",
+              "important"
+            ],
+            "enumDescriptions": [
+              "Show every metric reported by each provider.",
+              "Show every metric with a usable percentage.",
+              "Show the highest-used Session, Rolling, and Monthly metric."
+            ],
+            "default": "all",
+            "scope": "application",
+            "order": 50,
+            "description": "Metrics shown in expanded dashboard cards. Collapsed summaries and the Status Bar are unchanged."
           }
         }
       },

@@ -6,15 +6,82 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+## [0.10.0] - 2026-09-15
+
 ### Added
 
+- Added `All`, `Metered only`, and `Important only` metric display modes to the full desktop
+  dashboard. Metered mode includes every usable percentage limit; Important mode keeps the
+  highest-used Session, Rolling, and Monthly metric with stable first-reported tie-breaking.
+- Added the metric display preference to Settings and a full-dashboard shortcut that saves and
+  rebuilds cards immediately without refreshing providers. Filtering never changes cached snapshots,
+  alerts, forecasts, diagnostics, the tray gauge, or compact-popup metric selection.
+- Added an explicit **No metered limits reported** state for connected providers whose balance or
+  unlimited metrics are hidden by the selected dashboard mode.
+- Added one bounded Claude Code OAuth recovery attempt when the first usage request is rejected as
+  unauthorized/forbidden or returns unexpected unavailable data. UsageAI asks the official
+  `claude auth status --json` command to validate or refresh the login, rereads Claude's credential
+  store, and retries usage once; it never exchanges the refresh token or writes credentials itself.
+  Explicit `USAGEAI_CLAUDE_OAUTH_TOKEN` overrides remain authoritative and bypass this fallback.
+- Added a native **What's new** window backed by the `Changelog.md` embedded in the executable. Real
+  upgrades queue up to three newer released versions and open them only after the user's first popup,
+  dashboard, or Settings interaction; clean installations remain quiet.
+- Added conservative upgrade-version tracking that handles installations predating the setting,
+  skipped releases, same-version launches, downgrades, and malformed stored versions without blocking
+  startup. A queued version is marked seen only after the release-notes window is displayed.
+- Added **What's new** under Settings > About for reopening the installed release notes, plus a
+  **View complete changelog** action and a safe fallback when the installed version has no bundled
+  section. Runtime parsing ignores `Unreleased`, accepts only released Added/Changed/Fixed/Security
+  bullets, and bounds input, versions, bullets, and output.
 - Added an **About** section to the desktop settings window that shows the installed UsageAI
   version and provides a manual **Check for updates** action. The check reports whether the app is
   current, an update is available, or GitHub could not be reached, and newer releases continue
   through the existing verified installer flow.
+- Added an explicit-DPI preview and construction seam for 96, 192, and 288 DPI, including the
+  `--dpi 96|192|288` preview option.
+### Changed
+
+- The full desktop dashboard now keeps all four provider cards in a fixed 2×2 grid. Resizing or
+  maximizing the window adjusts both card dimensions and their internal metric spacing. Short cards
+  use a denser metric-row presentation so the second provider row remains visible while resizing.
+- Windows High Contrast now overrides System, Dark, and Light theme choices. Every palette entry is
+  derived from `SystemColors`; provider identity remains available through names and glyphs instead
+  of brand colors, and tray menus switch to the native system renderer.
+- High Contrast changes now apply while UsageAI is running to the popup, full dashboard, Settings,
+  What's New, custom-painted cards, scrollbars, menu renderer, and regenerated tray icon.
+- Warning and critical quota states now include visible symbolic cues, while stale, disconnected,
+  and refreshing states remain stated in text rather than depending on color alone.
+- Popup, dashboard, Settings, and What's New layout metrics now reapply during per-monitor DPI
+  transitions, preserve practical scroll and logical sizing state, and constrain windows to the
+  destination monitor's working area.
+- Expanded the desktop regression harness to 70 registered checks. New coverage exercises
+  metric filtering and settings isolation, release-note bounds and lifecycle behavior, runtime High
+  Contrast propagation, native dialog reopening, successful bitmap painting, responsive 2×2
+  dashboard resizing, owned-window/card geometry at 96, 192, and 288 DPI, and bounded Claude CLI
+  recovery after authorization and invalid-response failures. The `UsageAI`
+  package now measures 86.46% line and 80.16% branch coverage in the coverage gate.
 
 ### Fixed
 
+- Replaced the full dashboard's native metric picker chrome with theme-aware drawing so its arrow
+  button, menu items, focus border, and selected item no longer turn white in dark mode.
+- Fixed Claude Code remaining stale when its access token stopped working before the saved expiry
+  time, or when a one-off invalid usage response recovered after Claude CLI validation.
+- Fixed explicit-DPI preview rendering so layout and typography scale together independently of the
+  host monitor's scale factor.
+- Fixed popup, dashboard, and Settings scroll restoration across mixed-DPI monitor transitions by
+  preserving the logical position instead of reusing the old physical-pixel offset.
+- Fixed the release-notes parser's per-bullet boundary so an oversized first line is truncated to
+  the same limit as wrapped continuation text.
+- Fixed a disconnected-provider card's copy-sign-in action extending beyond the card's declared
+  natural height, which could clip the button or hit target at some display scales.
+- Fixed invalid numeric dashboard-mode settings reaching rendering code by normalizing them to
+  `All`; invalid string enum JSON continues through the existing safe-load fallback without blocking
+  startup.
+- Fixed High Contrast rendering paths that could retain translucent brand colors in provider icons,
+  balance markers, sparklines, tray gauges, or the UsageAI mark.
+- Fixed full-dashboard footer sizing so the metric selector and Settings action remain readable at
+  supported scales.
 - Registered the desktop tray process with Windows Restart Manager so later in-app updates reopen
   the updated executable automatically after installation. The update that first installs this fix
   may still need one manual launch because the older running process could not register retroactively.

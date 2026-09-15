@@ -62,6 +62,28 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         var credentials = await RefreshExpiredCredentialsThroughClaudeAsync(
             LoadCredentials(),
             cancellationToken);
+        ValidateCredentials(credentials);
+
+        try
+        {
+            return await RequestUsageAsync(credentials, cancellationToken);
+        }
+        catch (ClaudeCodeUsageException exception) when (
+            exception.CanRetryAfterAuthProbe && !credentials.IsEnvironmentOverride)
+        {
+            var recovered = await RecoverCredentialsThroughClaudeAsync(cancellationToken);
+            if (recovered is null)
+            {
+                throw;
+            }
+
+            ValidateCredentials(recovered);
+            return await RequestUsageAsync(recovered, cancellationToken);
+        }
+    }
+
+    private static void ValidateCredentials(ClaudeCredentials credentials)
+    {
         if (credentials.IsExpired)
         {
             throw new ClaudeCodeUsageException(
@@ -74,7 +96,12 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             throw new ClaudeCodeUsageException(
                 "Claude Code's OAuth token is missing the user:profile scope. Run `claude` to sign in again.");
         }
+    }
 
+    private async Task<UsageSnapshot> RequestUsageAsync(
+        ClaudeCredentials credentials,
+        CancellationToken cancellationToken)
+    {
         using var request = new HttpRequestMessage(HttpMethod.Get, UsageEndpoint);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentials.AccessToken);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
@@ -91,13 +118,19 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 throw new ClaudeCodeUsageException(
-                    "Claude Code's login has expired. Run `claude` to sign in again, then refresh.");
+                    "Claude Code's login has expired. Run `claude` to sign in again, then refresh.")
+                {
+                    CanRetryAfterAuthProbe = true,
+                };
             }
 
             if (response.StatusCode == HttpStatusCode.Forbidden)
             {
                 throw new ClaudeCodeUsageException(
-                    "Claude Code's login cannot read account usage. Run `claude` to sign in again.");
+                    "Claude Code's login cannot read account usage. Run `claude` to sign in again.")
+                {
+                    CanRetryAfterAuthProbe = true,
+                };
             }
 
             if (response.StatusCode == HttpStatusCode.TooManyRequests)
@@ -133,7 +166,10 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         {
             throw new ClaudeCodeUsageException(
                 "Could not read Claude Code usage because the provider returned invalid or unavailable data.",
-                exception);
+                exception)
+            {
+                CanRetryAfterAuthProbe = true,
+            };
         }
     }
 
@@ -195,7 +231,8 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
                 environmentToken,
                 null,
                 scopes,
-                "Claude (OAuth)");
+                "Claude (OAuth)",
+                IsEnvironmentOverride: true);
         }
 
         Exception? fileError = null;
@@ -244,6 +281,12 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             return credentials;
         }
 
+        return await RecoverCredentialsThroughClaudeAsync(cancellationToken) ?? credentials;
+    }
+
+    private async Task<ClaudeCredentials?> RecoverCredentialsThroughClaudeAsync(
+        CancellationToken cancellationToken)
+    {
         bool claudeOwnsFreshLogin;
         try
         {
@@ -255,12 +298,12 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         }
         catch
         {
-            return credentials;
+            return null;
         }
 
         if (!claudeOwnsFreshLogin)
         {
-            return credentials;
+            return null;
         }
 
         var startedAt = Stopwatch.GetTimestamp();
@@ -284,7 +327,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         }
         while (Stopwatch.GetElapsedTime(startedAt) < CredentialObservationWindow);
 
-        return credentials;
+        return null;
     }
 
     internal static async Task<bool> RunClaudeAuthStatusAsync(CancellationToken cancellationToken)
@@ -763,7 +806,8 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         string AccessToken,
         DateTimeOffset? ExpiresAt,
         IReadOnlyList<string> Scopes,
-        string Plan)
+        string Plan,
+        bool IsEnvironmentOverride = false)
     {
         public bool IsExpired => ExpiresAt is { } expiresAt && expiresAt <= DateTimeOffset.UtcNow;
     }
@@ -785,4 +829,7 @@ internal sealed class ClaudeCodeUsageException : Exception, IThrottledUsageExcep
 
     /// <summary>Set from the provider's Retry-After header; zero when the provider did not say.</summary>
     public TimeSpan RetryAfter { get; init; }
+
+    /// <summary>True when one bounded official CLI validation may repair this failure.</summary>
+    internal bool CanRetryAfterAuthProbe { get; init; }
 }

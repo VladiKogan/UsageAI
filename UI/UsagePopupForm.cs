@@ -17,8 +17,11 @@ internal sealed class UsagePopupForm : Form
     private const int FullWidthBaseline = 620;
     private const int HeaderRowBaseline = 58;
     private const int FooterRowBaseline = 46;
+    private const int DashboardColumns = 2;
+    private const int DashboardRows = 2;
 
     private readonly AppSettings _settings;
+    private readonly int? _dpiOverride;
     private readonly TableLayoutPanel _shell;
     private readonly TableLayoutPanel _header;
     private readonly FlowLayoutPanel _content;
@@ -26,6 +29,7 @@ internal sealed class UsagePopupForm : Form
     private readonly Label _subtitleLabel;
     private readonly Label _summaryLabel;
     private readonly Label _updatedLabel;
+    private readonly ComboBox _metricMode;
     private readonly Button _detailsButton;
     private readonly Button _refreshButton;
     private readonly Button _settingsButton;
@@ -44,9 +48,10 @@ internal sealed class UsagePopupForm : Form
     private readonly System.Windows.Forms.Timer _refreshAnimationTimer;
     private float _refreshAnimationAngle;
 
-    public UsagePopupForm(AppSettings settings)
+    public UsagePopupForm(AppSettings settings, int? dpiOverride = null)
     {
         _settings = settings;
+        _dpiOverride = dpiOverride;
         // Every measurement in this window is scaled explicitly, so WinForms auto-scaling is
         // left off rather than applied on top of it.
         AutoScaleMode = AutoScaleMode.None;
@@ -63,7 +68,7 @@ internal sealed class UsagePopupForm : Form
         ResizeRedraw = true;
         KeyPreview = true;
 
-        var scale = new LayoutScale(this);
+        var scale = Scale();
         ClientSize = new Size(scale[CompactWidthBaseline], scale[236]);
 
         _shell = new TableLayoutPanel
@@ -161,6 +166,29 @@ internal sealed class UsagePopupForm : Form
             Text = "Checking accounts...",
             TextAlign = ContentAlignment.MiddleLeft,
         };
+        _metricMode = new ThemedComboBox
+        {
+            AccessibleName = "Dashboard metrics",
+            BackColor = Theme.SurfaceRaised,
+            Dock = DockStyle.Fill,
+            Font = Typography.Text(8.5F),
+            ForeColor = Theme.Text,
+            Margin = scale.Pad(6, 7, 0, 1),
+            Visible = false,
+        };
+        _metricMode.Items.AddRange(new object[] { "All metrics", "Metered only", "Important only" });
+        _metricMode.SelectedIndex = (int)_settings.MetricDisplayMode;
+        _metricMode.SelectedIndexChanged += (_, _) =>
+        {
+            if (_metricMode.SelectedIndex < 0)
+            {
+                return;
+            }
+
+            _settings.MetricDisplayMode = (MetricDisplayMode)_metricMode.SelectedIndex;
+            _settings.Save();
+            RebuildCards();
+        };
         _detailsButton = CreateButton("Details", scale, primary: false);
         _detailsButton.Click += (_, _) => ShowNearTray(DashboardMode.Full);
         _settingsButton = CreateButton("Settings", scale, primary: false);
@@ -172,20 +200,22 @@ internal sealed class UsagePopupForm : Form
 
         _footer = new TableLayoutPanel
         {
-            ColumnCount = 4,
+            ColumnCount = 5,
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
             RowCount = 1,
         };
         _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[76]));
+        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 0));
+        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[84]));
         _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[76]));
         _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[84]));
         _footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _footer.Controls.Add(_updatedLabel, 0, 0);
-        _footer.Controls.Add(_detailsButton, 1, 0);
-        _footer.Controls.Add(_settingsButton, 2, 0);
-        _footer.Controls.Add(_refreshButton, 3, 0);
+        _footer.Controls.Add(_metricMode, 1, 0);
+        _footer.Controls.Add(_detailsButton, 2, 0);
+        _footer.Controls.Add(_settingsButton, 3, 0);
+        _footer.Controls.Add(_refreshButton, 4, 0);
         _shell.Controls.Add(_footer, 0, 2);
 
         if (_settings.DashboardBounds is { Length: 4 } saved)
@@ -249,6 +279,7 @@ internal sealed class UsagePopupForm : Form
         _mode = mode;
         ConfigureWindowPresentation();
         _detailsButton.Visible = mode == DashboardMode.Compact;
+        _metricMode.Visible = mode == DashboardMode.Full;
         _content.FlowDirection = mode == DashboardMode.Full
             ? FlowDirection.LeftToRight
             : FlowDirection.TopDown;
@@ -289,11 +320,18 @@ internal sealed class UsagePopupForm : Form
         }
 
         ApplyPreferredSize(screen);
-        var x = Math.Clamp(cursor.X - Width + 24, screen.Left + 8, Math.Max(screen.Left + 8, screen.Right - Width - 8));
-        var y = Math.Clamp(screen.Bottom - Height - 8, screen.Top + 8, Math.Max(screen.Top + 8, screen.Bottom - Height - 8));
+        var scale = Scale();
+        var x = Math.Clamp(
+            cursor.X - Width + scale[24],
+            screen.Left + scale[8],
+            Math.Max(screen.Left + scale[8], screen.Right - Width - scale[8]));
+        var y = Math.Clamp(
+            screen.Bottom - Height - scale[8],
+            screen.Top + scale[8],
+            Math.Max(screen.Top + scale[8], screen.Bottom - Height - scale[8]));
         if (cursor.Y < screen.Top + Height)
         {
-            y = screen.Top + 8;
+            y = screen.Top + scale[8];
         }
 
         Location = new Point(x, y);
@@ -343,9 +381,23 @@ internal sealed class UsagePopupForm : Form
 
     protected override void OnDpiChanged(DpiChangedEventArgs eventArgs)
     {
+        var scrollY = LayoutScale.ScaleBetweenDpis(
+            -_content.AutoScrollPosition.Y,
+            eventArgs.DeviceDpiOld,
+            eventArgs.DeviceDpiNew);
         base.OnDpiChanged(eventArgs);
         ApplyScaledChrome();
         RebuildCards();
+        _content.AutoScrollPosition = new Point(0, scrollY);
+        var workingArea = Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea;
+        if (_mode == DashboardMode.Full)
+        {
+            Bounds = FitDashboardToWorkingArea(Bounds, workingArea);
+        }
+        else
+        {
+            ApplyPreferredSize(workingArea);
+        }
     }
 
     protected override void OnPaint(PaintEventArgs e)
@@ -358,7 +410,7 @@ internal sealed class UsagePopupForm : Form
     protected override void OnHandleCreated(EventArgs e)
     {
         base.OnHandleCreated(e);
-        WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark);
+        WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
     }
 
     protected override void OnVisibleChanged(EventArgs e)
@@ -434,6 +486,8 @@ internal sealed class UsagePopupForm : Form
         _titleLabel.ForeColor = Theme.Text;
         _subtitleLabel.ForeColor = Theme.Muted;
         _updatedLabel.ForeColor = Theme.Muted;
+        _metricMode.BackColor = Theme.SurfaceRaised;
+        _metricMode.ForeColor = Theme.Text;
         _refreshButton.BackColor = Theme.Accent;
         _refreshButton.ForeColor = Theme.OnAccent;
         _refreshButton.FlatAppearance.BorderColor = Theme.Accent;
@@ -443,22 +497,23 @@ internal sealed class UsagePopupForm : Form
         _settingsButton.BackColor = Theme.SurfaceRaised;
         _settingsButton.ForeColor = Theme.Text;
         _settingsButton.FlatAppearance.BorderColor = Theme.Hairline;
-        WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark);
-        WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark);
+        WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
+        WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
         UpdateStatus();
     }
 
     private void ApplyScaledChrome()
     {
-        var scale = new LayoutScale(this);
+        var scale = Scale();
         _shell.Padding = scale.Pad(16, 14, 16, 12);
         _shell.RowStyles[0] = new RowStyle(SizeType.Absolute, scale[HeaderRowBaseline]);
         _shell.RowStyles[2] = new RowStyle(SizeType.Absolute, scale[FooterRowBaseline]);
         _header.ColumnStyles[0] = new ColumnStyle(SizeType.Absolute, scale[46]);
         _header.ColumnStyles[2] = new ColumnStyle(SizeType.Absolute, scale[150]);
-        _footer.ColumnStyles[1] = new ColumnStyle(SizeType.Absolute, _mode == DashboardMode.Compact ? scale[76] : 0);
-        _footer.ColumnStyles[2] = new ColumnStyle(SizeType.Absolute, scale[76]);
+        _footer.ColumnStyles[1] = new ColumnStyle(SizeType.Absolute, _mode == DashboardMode.Full ? scale[132] : 0);
+        _footer.ColumnStyles[2] = new ColumnStyle(SizeType.Absolute, _mode == DashboardMode.Compact ? scale[76] : 0);
         _footer.ColumnStyles[3] = new ColumnStyle(SizeType.Absolute, scale[84]);
+        _footer.ColumnStyles[4] = new ColumnStyle(SizeType.Absolute, scale[84]);
     }
 
     private void RebuildCards()
@@ -479,7 +534,7 @@ internal sealed class UsagePopupForm : Form
             {
                 _content.Controls.Add(new EmptyProvidersControl
                 {
-                    Height = new LayoutScale(this)[104],
+                    Height = Scale()[104],
                     Margin = new Padding(0, 0, 0, 10),
                 });
             }
@@ -488,11 +543,16 @@ internal sealed class UsagePopupForm : Form
                 var expanded = _mode == DashboardMode.Full;
                 foreach (var state in visibleStates)
                 {
+                    var selectedMetrics = expanded && state.Snapshot is { } snapshot
+                        ? UsageMetricSelection.Select(snapshot.Metrics, _settings.MetricDisplayMode)
+                        : null;
                     var card = new ProviderUsageCard(
                         state,
                         expanded,
                         _history,
-                        _settings.ForecastEnabled && _settings.HistoryEnabled);
+                        _settings.ForecastEnabled && _settings.HistoryEnabled,
+                        selectedMetrics,
+                        _dpiOverride);
                     card.ActionInvoked += OnCardActionInvoked;
                     _content.Controls.Add(card);
                 }
@@ -670,7 +730,7 @@ internal sealed class UsagePopupForm : Form
             return;
         }
 
-        var scale = new LayoutScale(_refreshButton);
+        var scale = _dpiOverride is { } dpi ? new LayoutScale(dpi) : new LayoutScale(_refreshButton);
         var pixels = Math.Max(scale[13], 8);
         var bitmap = new Bitmap(pixels, pixels);
         using (var graphics = Graphics.FromImage(bitmap))
@@ -723,7 +783,7 @@ internal sealed class UsagePopupForm : Form
 
     internal void ApplyPreferredSize(Rectangle workingArea)
     {
-        var scale = new LayoutScale(this);
+        var scale = Scale();
         var width = scale[_mode == DashboardMode.Compact ? CompactWidthBaseline : FullWidthBaseline];
         int contentHeight;
         if (_mode == DashboardMode.Compact || _content.Controls.Count <= 1)
@@ -734,29 +794,23 @@ internal sealed class UsagePopupForm : Form
         }
         else
         {
-            var hasVerticalScroll = _content.VerticalScroll.Visible;
-            var availableWidth = width - _shell.Padding.Horizontal - (hasVerticalScroll ? SystemInformation.VerticalScrollBarWidth : 0);
             var gap = scale[10];
-            var minCardWidth = scale[250];
-            var cols = Math.Max(1, (availableWidth + gap) / (minCardWidth + gap));
-            var colHeights = new int[cols];
-            var cardHeights = _content.Controls.Cast<Control>().Select(c => c.Height + gap).ToArray();
-            for (var i = 0; i < cardHeights.Length; i++)
-            {
-                colHeights[i % cols] += cardHeights[i];
-            }
-
-            contentHeight = colHeights.Max();
+            var tallestCard = _content.Controls
+                .Cast<Control>()
+                .Select(control => control is ProviderUsageCard card ? card.NaturalHeight : control.Height)
+                .DefaultIfEmpty(scale[104])
+                .Max();
+            contentHeight = DashboardRows * tallestCard + gap;
         }
 
         contentHeight = Math.Max(scale[104], contentHeight);
         var chromeHeight = _shell.Padding.Vertical + scale[HeaderRowBaseline] + scale[FooterRowBaseline];
         var nonClientWidth = Width - ClientSize.Width;
         var nonClientHeight = Height - ClientSize.Height;
-        var maximumHeight = Math.Max(scale[260], workingArea.Height - nonClientHeight - 32);
+        var maximumHeight = Math.Max(scale[260], workingArea.Height - nonClientHeight - scale[32]);
         var desiredHeight = Math.Min(chromeHeight + contentHeight, maximumHeight);
         ClientSize = new Size(
-            Math.Min(width, Math.Max(scale[260], workingArea.Width - nonClientWidth - 32)),
+            Math.Min(width, Math.Max(scale[260], workingArea.Width - nonClientWidth - scale[32])),
             desiredHeight);
         UpdateCardWidths();
     }
@@ -766,18 +820,18 @@ internal sealed class UsagePopupForm : Form
         SuspendLayout();
         try
         {
-            var scale = new LayoutScale(this);
+            var scale = Scale();
             if (_mode == DashboardMode.Full)
             {
                 FormBorderStyle = FormBorderStyle.Sizable;
                 MaximizeBox = true;
                 MinimizeBox = true;
-                MinimumSize = new Size(scale[440], scale[300]);
+                MinimumSize = new Size(scale[560], scale[300]);
                 ShowInTaskbar = true;
                 Text = "UsageAI Dashboard";
                 TopMost = false;
-                WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark);
-                WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark);
+                WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
+                WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
                 return;
             }
 
@@ -811,7 +865,7 @@ internal sealed class UsagePopupForm : Form
         {
             if (_dashboardBounds is { } restored)
             {
-                Bounds = FitToWorkingArea(restored, workingArea);
+                Bounds = FitDashboardToWorkingArea(restored, workingArea);
             }
             else
             {
@@ -826,7 +880,7 @@ internal sealed class UsagePopupForm : Form
         }
         else if (changedToFull && _dashboardBounds is { } savedBounds)
         {
-            Bounds = FitToWorkingArea(savedBounds, workingArea);
+            Bounds = FitDashboardToWorkingArea(savedBounds, workingArea);
         }
 
         if (!Visible)
@@ -862,10 +916,19 @@ internal sealed class UsagePopupForm : Form
         _settings.Save();
     }
 
-    private static Rectangle FitToWorkingArea(Rectangle bounds, Rectangle workingArea)
+    private Rectangle FitDashboardToWorkingArea(Rectangle bounds, Rectangle workingArea) =>
+        FitToWorkingArea(bounds, workingArea, Scale());
+
+    private static Rectangle FitToWorkingArea(Rectangle bounds, Rectangle workingArea) =>
+        FitToWorkingArea(bounds, workingArea, new LayoutScale(LayoutScale.BaselineDpi));
+
+    private static Rectangle FitToWorkingArea(
+        Rectangle bounds,
+        Rectangle workingArea,
+        LayoutScale scale)
     {
-        var width = Math.Clamp(bounds.Width, Math.Min(460, workingArea.Width), workingArea.Width);
-        var height = Math.Clamp(bounds.Height, Math.Min(360, workingArea.Height), workingArea.Height);
+        var width = Math.Clamp(bounds.Width, Math.Min(scale[460], workingArea.Width), workingArea.Width);
+        var height = Math.Clamp(bounds.Height, Math.Min(scale[360], workingArea.Height), workingArea.Height);
         var x = Math.Clamp(bounds.X, workingArea.Left, Math.Max(workingArea.Left, workingArea.Right - width));
         var y = Math.Clamp(bounds.Y, workingArea.Top, Math.Max(workingArea.Top, workingArea.Bottom - height));
         return new Rectangle(x, y, width, height);
@@ -882,7 +945,7 @@ internal sealed class UsagePopupForm : Form
         _content.SuspendLayout();
         try
         {
-            var scale = new LayoutScale(this);
+            var scale = Scale();
             var hasVerticalScroll = _content.VerticalScroll.Visible;
             var availableWidth = _content.ClientSize.Width - (hasVerticalScroll ? SystemInformation.VerticalScrollBarWidth : 0);
             if (availableWidth < scale[100])
@@ -905,44 +968,27 @@ internal sealed class UsagePopupForm : Form
             else
             {
                 var gap = scale[10];
-                var minCardWidth = scale[250];
-                var cols = Math.Max(1, (availableWidth + gap) / (minCardWidth + gap));
-                var cardWidth = Math.Max(scale[220], (availableWidth - (cols - 1) * gap) / cols);
-
+                var cardWidth = Math.Max(1, (availableWidth - gap) / DashboardColumns);
                 var count = _content.Controls.Count;
-                var rows = Math.Max(1, (count + cols - 1) / cols);
                 var availableHeight = _content.ClientSize.Height;
-
-                var rowHeights = new int[rows];
-                for (var i = 0; i < count; i++)
-                {
-                    var rowIndex = i / cols;
-                    var card = _content.Controls[i] as ProviderUsageCard;
-                    var naturalH = card?.NaturalHeight ?? _content.Controls[i].Height;
-                    rowHeights[rowIndex] = Math.Max(rowHeights[rowIndex], naturalH);
-                }
-
-                var totalNaturalHeight = rowHeights.Sum() + Math.Max(0, (rows - 1) * gap);
-                var extraHeight = Math.Max(0, availableHeight - totalNaturalHeight);
-                var extraPerRow = rows > 0 ? extraHeight / rows : 0;
+                var availableCardHeight = Math.Max(1, (availableHeight - gap) / DashboardRows);
 
                 for (var i = 0; i < count; i++)
                 {
                     var control = _content.Controls[i];
-                    var colIndex = i % cols;
-                    var rowIndex = i / cols;
-                    var rightMargin = colIndex == cols - 1 ? 0 : gap;
-                    var bottomMargin = rowIndex == rows - 1 ? 0 : gap;
+                    var colIndex = i % DashboardColumns;
+                    var rowIndex = i / DashboardColumns;
+                    var rightMargin = colIndex == DashboardColumns - 1 ? 0 : gap;
+                    var bottomMargin = rowIndex == DashboardRows - 1 ? 0 : gap;
                     var margin = new Padding(0, 0, rightMargin, bottomMargin);
                     if (control.Margin != margin)
                     {
                         control.Margin = margin;
                     }
 
-                    var targetHeight = rowHeights[rowIndex] + extraPerRow;
-                    if (control.Width != cardWidth || control.Height != targetHeight)
+                    if (control.Width != cardWidth || control.Height != availableCardHeight)
                     {
-                        control.Size = new Size(cardWidth, targetHeight);
+                        control.Size = new Size(cardWidth, availableCardHeight);
                     }
                 }
             }
@@ -972,8 +1018,10 @@ internal sealed class UsagePopupForm : Form
         Invalidate();
     }
 
+    private LayoutScale Scale() => _dpiOverride is { } dpi ? new LayoutScale(dpi) : new LayoutScale(this);
+
     private void OnContentHandleCreated(object? sender, EventArgs eventArgs) =>
-        WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark);
+        WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
 
     private sealed class UsageMarkControl : Control
     {
@@ -1005,7 +1053,7 @@ internal sealed class UsagePopupForm : Form
             var side = Math.Min(Width, Height);
             var box = new Rectangle(0, Math.Max(0, (Height - side) / 2), Math.Max(1, side - 1), Math.Max(1, side - 1));
 
-            var logo = LogoImage.Value;
+            var logo = Theme.IsHighContrast ? null : LogoImage.Value;
             if (logo != null)
             {
                 using var path = DrawingHelpers.RoundedRectangle(box, scale.Exact(9));
