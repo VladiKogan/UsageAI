@@ -392,6 +392,7 @@ internal sealed class UsagePopupForm : Form
         var workingArea = Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea;
         if (_mode == DashboardMode.Full)
         {
+            ApplyDashboardMinimumSize(workingArea);
             Bounds = FitDashboardToWorkingArea(Bounds, workingArea);
         }
         else
@@ -820,13 +821,12 @@ internal sealed class UsagePopupForm : Form
         SuspendLayout();
         try
         {
-            var scale = Scale();
             if (_mode == DashboardMode.Full)
             {
                 FormBorderStyle = FormBorderStyle.Sizable;
                 MaximizeBox = true;
                 MinimizeBox = true;
-                MinimumSize = new Size(scale[560], scale[300]);
+                ApplyDashboardMinimumSize(Screen.FromPoint(Location).WorkingArea);
                 ShowInTaskbar = true;
                 Text = "UsageAI Dashboard";
                 TopMost = false;
@@ -861,6 +861,7 @@ internal sealed class UsagePopupForm : Form
             WindowState = FormWindowState.Normal;
         }
 
+        ApplyDashboardMinimumSize(workingArea);
         if (!_dashboardWasShown)
         {
             if (_dashboardBounds is { } restored)
@@ -890,6 +891,14 @@ internal sealed class UsagePopupForm : Form
 
         Activate();
         BringToFront();
+    }
+
+    private void ApplyDashboardMinimumSize(Rectangle workingArea)
+    {
+        var scale = Scale();
+        MinimumSize = new Size(
+            Math.Min(scale[560], workingArea.Width),
+            Math.Min(scale[300], workingArea.Height));
     }
 
     private void SaveDashboardBounds()

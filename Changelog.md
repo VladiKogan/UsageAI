@@ -6,6 +6,11 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Fixed
+
+- Capped the full dashboard's scaled minimum size to the active monitor's working area so compact
+  displays remain usable at 200% and 300% scaling.
+
 ## [0.10.0] - 2026-09-15
 
 ### Added

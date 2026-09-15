@@ -4026,9 +4026,9 @@ internal static class CoverageExpansionTests
             };
             popup.SetMode(DashboardMode.Full);
             popup.SetStates(new[] { status }, false, now, Array.Empty<UsageSample>());
-            popup.Show();
+            var popupArea = new Rectangle(0, 0, 1024, 768);
+            InvokePrivate(popup, "ShowDashboard", popupArea, false);
             Application.DoEvents();
-            var popupArea = Screen.FromControl(popup).WorkingArea;
             True(popup.Width <= popupArea.Width && popup.Height <= popupArea.Height);
             AssertVisibleActionsInBounds(popup);
             DrawControl(popup);
