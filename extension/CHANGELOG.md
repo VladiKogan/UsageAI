@@ -10,9 +10,10 @@
   process-owned port parsing. Aggregate coverage is now 79.89% line, 80.10% branch, and 81.41%
   function coverage.
 - Mapping a process id to its listening ports no longer starts PowerShell. The Antigravity probe
-  needs that mapping more than once per refresh, because it re-checks that a port is still owned by
-  the language server immediately before sending it a token, and `Get-NetTCPConnection` measured
-  1.2 seconds per call; `netstat -ano` answers the same question in 15 to 33 milliseconds.
+  reads that mapping twice per language server, because it re-checks ownership after building the
+  candidate list and before any CSRF token is sent, so a port the server has released in between is
+  never handed one. `Get-NetTCPConnection` measured 1.2 seconds per call; `netstat -ano` answers the
+  same question in 15 to 33 milliseconds.
 
 ### Fixed
 

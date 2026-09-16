@@ -18,8 +18,9 @@ The project follows [Semantic Versioning](https://semver.org/).
   snapshot cache, and alerts are still written once per refresh rather than once per provider.
 - Refreshes now wake for a quota window that has reset instead of waiting out the whole refresh
   interval, so the tray stops showing a spent quota long after it rolled over — up to two hours at
-  the maximum refresh setting — and reset notifications arrive on time. Each window is polled once,
-  and a provider serving out a failure backoff keeps it.
+  the maximum refresh setting — and reset notifications arrive on time. A window costs at most three
+  polls, spaced a minute apart, because a provider whose counters trail its own published reset
+  instant needs asking again; a provider serving out a failure backoff keeps it either way.
 - Google Gemini now goes straight to a serving `agy` hub instead of running the Antigravity IDE probe
   ahead of it, which is what the editor extension already did. The probe itself no longer starts
   PowerShell to map a process id to its listening ports, reading them through the IP Helper API
