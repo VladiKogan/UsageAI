@@ -28,8 +28,15 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
   `--hub` server bound to a loopback port, or on older builds through its read-only `/usage` path,
   each with stdin closed, bounded output and runtime, a minimal environment, and cleanup restricted to
   the exact process tree UsageAI created. The hub is reached over plain HTTP on 127.0.0.1 only, gated
-  by a random token UsageAI mints into that child's environment and sends on every call; no other
-  endpoint may be plaintext. UsageAI never opens or modifies the Antigravity keyring or credential
+  by a random token UsageAI mints per session and sends on every call; no other endpoint may be
+  plaintext. That token is supplied to the child both in its environment and as `--csrf_token`,
+  because CLI builds from September 2026 onwards read only the latter. The command-line form is
+  visible to local process listings, and to any process-creation auditing or endpoint agent that
+  records command lines, so unlike the environment form it can reach a log on disk. This is how
+  Google's Antigravity IDE already provisions the language server it starts on the same machine. The
+  token is minted per session, is never persisted by UsageAI, and reaches only that child's loopback
+  port — but it authorises that port's whole `LanguageServerService`, not a quota-only endpoint, for
+  the lifetime of that child. UsageAI never opens or modifies the Antigravity keyring or credential
   files.
 
 The VS Code/Antigravity extension follows the same contract. Provider credentials stay in the local
@@ -38,7 +45,8 @@ extension, which uses the same bounded official-CLI recovery path; other provide
 tokens are cached only in memory for the editor process. Its persisted
 snapshot cache contains usage metadata, never credentials. Local Antigravity CSRF tokens are bound to
 ports owned by the process that supplied them, and the token for the extension's own `agy --hub` child
-is generated per session and never written to disk. The extension applies the same bounded
+is generated per session and never persisted by the extension, with the same command-line exposure and
+session-scoped grant described above. The extension applies the same bounded
 official-`agy` handling and never sends its output to the dashboard webview except after it has been
 reduced to ordinary quota metadata.
 

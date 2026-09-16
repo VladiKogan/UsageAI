@@ -9,8 +9,13 @@ import { ClaudeUsageClient, runClaudeAuthStatus } from "../src/providers/claude"
 import { CodexUsageClient } from "../src/providers/codex";
 import { CopilotUsageClient } from "../src/providers/copilot";
 import {
+  agyHubArguments,
+  clearHubStartBackoff,
   GeminiUsageClient,
+  hubRetryIntervalMs,
   parseAntigravityProcessLines,
+  recordHubStartFailure,
+  shouldSkipHubStart,
   tryFetchAntigravitySnapshot,
 } from "../src/providers/gemini";
 
@@ -689,4 +694,48 @@ test("Gemini cloud and refresh failures retain safe provider errors", async () =
     restoreEnvironment("GEMINI_CLIENT_ID", oldClientId);
     restoreEnvironment("GEMINI_CLIENT_SECRET", oldClientSecret);
   }
+});
+
+test("a failed agy hub start is negatively cached instead of retried every refresh", () => {
+  // CLI builds from 2026-09 onwards reject the environment-supplied CSRF token, so every hub call
+  // fails and the probe falls back to `agy -p /usage` — a child process per refresh, which flashes a
+  // console on Windows. Retrying the dead hub each poll pays a 20s stall on top of that.
+  clearHubStartBackoff();
+  const failedAt = Date.now();
+  assert.equal(shouldSkipHubStart(failedAt), false);
+
+  recordHubStartFailure(failedAt);
+  assert.equal(shouldSkipHubStart(failedAt), true);
+  assert.equal(shouldSkipHubStart(failedAt + hubRetryIntervalMs - 60_000), true);
+  assert.equal(shouldSkipHubStart(failedAt + hubRetryIntervalMs), false);
+
+  clearHubStartBackoff();
+  assert.equal(shouldSkipHubStart(failedAt), false);
+});
+
+test("the agy hub is started with the CSRF token on its command line", () => {
+  const args = agyHubArguments(51234, "TOKEN");
+  assert.deepEqual([...args], ["--hub", "--hub-port=51234", "--csrf_token=TOKEN"]);
+  // The sign-in lives in the CLI's default data directory, so the hub must not be redirected.
+  assert.equal(args.some((argument) => argument.startsWith("--app_data_dir")), false);
+});
+
+test("a refresh the user asked for clears both agy backoffs", async () => {
+  // Without this, one missed hub start keeps the per-refresh `agy -p /usage` fallback — and its
+  // console flash — in place for the whole 30-minute window, however often the user hits Refresh.
+  let cleared = 0;
+  const client = new GeminiUsageClient({
+    fetchAntigravity: async () => undefined,
+    fetchAgy: async () => undefined,
+    hasAgyHub: () => false,
+    resetAgyBackoff: () => { cleared += 1; },
+    loadCredentials: async () => { throw new UsageProviderError("Google Gemini is not signed in."); },
+  });
+
+  await assert.rejects(client.getUsage());
+  // The "both paths are stale" recovery exists to retry agy at once, so it must release the hub too.
+  assert.equal(cleared, 1);
+
+  client.onForcedRefresh();
+  assert.equal(cleared, 2);
 });

@@ -110,6 +110,11 @@ export class UsageRefreshService {
       return backoff ? backoff.retryAt <= now : regularRefresh;
     });
     for (const client of clients) {
+      if (manual) {
+        // The user asked for fresh numbers, so a provider sitting out its own recovery backoff
+        // should try that path again rather than repeat a degraded reading.
+        client.onForcedRefresh?.();
+      }
       const current = this.states.get(client.id);
       if (current) {
         this.states.set(client.id, { ...current, refreshing: true });

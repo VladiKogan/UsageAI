@@ -9,7 +9,7 @@ using UsageAI.Models;
 
 namespace UsageAI.Services;
 
-internal sealed class GeminiUsageClient : IUsageClient
+internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
 {
     private const string QuotaEndpoint = "https://cloudcode-pa.googleapis.com/v1internal:retrieveUserQuota";
     private const string CodeAssistEndpoint = "https://cloudcode-pa.googleapis.com/v1internal:loadCodeAssist";
@@ -25,6 +25,7 @@ internal sealed class GeminiUsageClient : IUsageClient
     private readonly HttpClient _client;
     private readonly Func<CancellationToken, Task<UsageSnapshot?>> _localProbe;
     private readonly Func<CancellationToken, Task<UsageSnapshot?>> _agyProbe;
+    private readonly Action _resetAgyBackoff;
     private GeminiCredentials? _refreshedCredentials;
     private DateTimeOffset _agyRetryAfterUtc;
 
@@ -32,20 +33,34 @@ internal sealed class GeminiUsageClient : IUsageClient
         : this(
             SharedClient,
             TryFetchAntigravityLocalSnapshotAsync,
-            AgyUsageProbe.TryFetchAsync)
+            AgyUsageProbe.TryFetchAsync,
+            AgyUsageProbe.ClearHubStartBackoff)
     {
     }
 
     internal GeminiUsageClient(
         HttpClient client,
         Func<CancellationToken, Task<UsageSnapshot?>>? localProbe = null,
-        Func<CancellationToken, Task<UsageSnapshot?>>? agyProbe = null)
+        Func<CancellationToken, Task<UsageSnapshot?>>? agyProbe = null,
+        Action? resetAgyBackoff = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _localProbe = localProbe ?? TryFetchAntigravityLocalSnapshotAsync;
         // Internal callers are tests with injected transports. Keep process discovery opt-in there;
         // the public constructor wires the real official-CLI probe.
         _agyProbe = agyProbe ?? (_ => Task.FromResult<UsageSnapshot?>(null));
+        _resetAgyBackoff = resetAgyBackoff ?? (() => { });
+    }
+
+    /// <summary>
+    /// Clears both agy backoffs so a refresh the user asked for retries the official CLI at once.
+    /// Without this a single missed hub start would keep the per-refresh `agy -p /usage` fallback,
+    /// and its console flash, in place for the whole backoff window.
+    /// </summary>
+    public void OnForcedRefresh()
+    {
+        _agyRetryAfterUtc = default;
+        _resetAgyBackoff();
     }
 
     public string Id => "gemini";
@@ -88,6 +103,7 @@ internal sealed class GeminiUsageClient : IUsageClient
         catch (GeminiUsageException)
         {
             _agyRetryAfterUtc = default;
+            _resetAgyBackoff();
             if (agyWasSkipped)
             {
                 var recoveredSnapshot = await _agyProbe(cancellationToken);

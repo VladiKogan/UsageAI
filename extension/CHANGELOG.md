@@ -4,12 +4,25 @@
 
 ### Changed
 
-- Expanded the suite to 43 checks with provider parser edge cases, Codex protocol failures, bounded
-  Claude CLI authentication probes, and Gemini cloud and token-refresh failures. Aggregate coverage
-  is now 79.57% line, 79.86% branch, and 81.03% function coverage.
+- Expanded the suite to 47 checks with provider parser edge cases, Codex protocol failures, bounded
+  Claude CLI authentication probes, Gemini cloud and token-refresh failures, the Antigravity hub
+  command line, start backoff, and forced-refresh recovery, and metric-mode persistence failures.
+  Aggregate coverage is now 79.70% line, 79.97% branch, and 81.30% function coverage.
 
 ### Fixed
 
+- Fixed Google Gemini starting an `agy.exe` child process on every refresh. Antigravity CLI builds
+  from September 2026 onwards ignore the CSRF token passed through the hub's environment and mint
+  their own, so every hub call was rejected as unauthenticated and each refresh fell back to a
+  short-lived `agy -p /usage` read, which boots MCP servers through `cmd.exe` and flashes a console
+  window. The token is now also supplied as `--csrf_token`, the way the Antigravity IDE provisions
+  the language server it starts, which both older and newer builds accept.
+- Held off further Antigravity hub starts for 30 minutes after one fails to become ready, so a future
+  change to the CLI costs one 20-second attempt per half hour rather than an extra child process and
+  a 20-second stall on every poll.
+- Cleared the Antigravity hub and `agy` probe backoffs when the user asks for a refresh, so a single
+  missed hub start cannot hold a provider on the degraded per-refresh path until the window expires.
+  The existing immediate-`agy` retry after both paths go stale now releases the hub backoff too.
 - Fixed a dashboard metric-mode change that cannot be written to settings leaving the dashboard
   showing a mode the Status Bar and the next reload do not use. The mode is still applied immediately,
   but a rejected write now rolls it back and rerenders instead of being discarded unobserved.

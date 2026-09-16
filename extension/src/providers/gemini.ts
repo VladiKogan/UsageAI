@@ -35,6 +35,7 @@ interface GeminiUsageDependencies {
   readonly fetchAntigravity: (signal?: AbortSignal) => Promise<UsageSnapshot | undefined>;
   readonly fetchAgy: (signal?: AbortSignal) => Promise<UsageSnapshot | undefined>;
   readonly hasAgyHub?: () => boolean;
+  readonly resetAgyBackoff?: () => void;
   readonly loadCredentials: () => Promise<GeminiCredentials>;
 }
 
@@ -62,8 +63,19 @@ export class GeminiUsageClient implements UsageClient {
     fetchAntigravity: tryFetchAntigravitySnapshot,
     fetchAgy: tryFetchAgySnapshot,
     hasAgyHub: hasActiveAgyHub,
+    resetAgyBackoff: clearHubStartBackoff,
     loadCredentials,
   }) {}
+
+  /**
+   * Clears both agy backoffs so a refresh the user asked for retries the official CLI at once.
+   * Without this a single missed hub start would keep the per-refresh `agy -p /usage` fallback, and
+   * its console flash, in place for the whole backoff window.
+   */
+  public onForcedRefresh(): void {
+    this.agyRetryAfter = 0;
+    this.dependencies.resetAgyBackoff?.();
+  }
 
   public async getUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
     // Once a hub is serving this session, prefer it: the Antigravity IDE probe costs a PowerShell
@@ -92,7 +104,9 @@ export class GeminiUsageClient implements UsageClient {
     try {
       return await this.getGeminiCliUsage(signal);
     } catch (error) {
+      // The immediate agy retry below is the point of this path, so release the hub backoff too.
       this.agyRetryAfter = 0;
+      this.dependencies.resetAgyBackoff?.();
       if (agyWasSkipped) {
         const recovered = await this.dependencies.fetchAgy(signal);
         if (recovered) {
@@ -360,41 +374,76 @@ interface AgyHub {
 }
 
 const hubReadyTimeoutMs = 20_000;
+/** How long a hub that failed to start is left alone before it is tried again. */
+export const hubRetryIntervalMs = 30 * 60_000;
 let activeHub: AgyHub | undefined;
 let pendingHub: Promise<AgyHub | undefined> | undefined;
+let hubRetryAfterMs = 0;
 
 /**
  * The Antigravity CLI serves the same quota summary from a long-lived `--hub` server. Reusing one hub
  * for the session keeps refreshes free of child processes, which matters on Windows because `agy -p`
  * boots every configured MCP server through `cmd.exe`, and those grandchildren can flash a console.
+ * A hub that never becomes ready is negatively cached, because the `agy -p` fallback starts a child
+ * process per refresh and is exactly what the hub exists to avoid.
  */
 async function ensureAgyHub(): Promise<AgyHub | undefined> {
   if (activeHub && activeHub.child.exitCode === null && !activeHub.child.killed) {
     return activeHub;
   }
   activeHub = undefined;
+  if (shouldSkipHubStart()) {
+    return undefined;
+  }
   pendingHub ??= startAgyHub().finally(() => {
     pendingHub = undefined;
   });
   return pendingHub;
 }
 
+/** True while a hub start that just failed should not be attempted again. */
+export function shouldSkipHubStart(now: number = Date.now()): boolean {
+  return now < hubRetryAfterMs;
+}
+
+/** Holds off further hub starts after one failed to become ready. */
+export function recordHubStartFailure(now: number = Date.now()): void {
+  hubRetryAfterMs = now + hubRetryIntervalMs;
+}
+
+/** Clears the hub start backoff. Called once a hub answers, and when the session's hub is freed. */
+export function clearHubStartBackoff(): void {
+  hubRetryAfterMs = 0;
+}
+
+/**
+ * Command line for the session's hub. Older CLI builds read the CSRF token from their own environment;
+ * builds from 2026-09 onwards mint their own unless `--csrf_token` supplies one, which is how the
+ * Antigravity IDE provisions the language server it starts. `--app_data_dir` is deliberately omitted:
+ * the CLI's default data directory is the one holding the Antigravity sign-in.
+ */
+export function agyHubArguments(port: number, token: string): readonly string[] {
+  return ["--hub", `--hub-port=${port}`, `--csrf_token=${token}`];
+}
+
 async function startAgyHub(): Promise<AgyHub | undefined> {
   const executable = await findAgyExecutable();
   if (!executable) {
+    recordHubStartFailure();
     return undefined;
   }
   const port = await reserveLoopbackPort();
   if (!port) {
+    recordHubStartFailure();
     return undefined;
   }
-  // The hub authenticates callers with a token it reads from its own environment, so minting one here
-  // keeps the socket usable by this extension alone. `--app_data_dir` is deliberately omitted: the CLI's
-  // default data directory is the one holding the Antigravity sign-in.
+  // The hub authenticates callers with a token supplied when it starts, so minting one here keeps the
+  // socket usable by this extension alone. Both the flag and the environment form are sent so either
+  // CLI build authenticates this extension.
   const token = randomUUID();
   const child = spawnSecure(
     executable,
-    ["--hub", `--hub-port=${port}`],
+    [...agyHubArguments(port, token)],
     ["ANTIGRAVITY_CLI_PATH", "GOOGLE_CLOUD_PROJECT", "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR", "SSL_CERT_FILE"],
     { CI: "1", ANTIGRAVITY_CSRF_TOKEN: token },
   );
@@ -411,15 +460,18 @@ async function startAgyHub(): Promise<AgyHub | undefined> {
   const deadline = Date.now() + hubReadyTimeoutMs;
   while (Date.now() < deadline) {
     if (child.exitCode !== null || child.signalCode !== null) {
+      recordHubStartFailure();
       return undefined;
     }
     if (await queryHubQuotaSummary(port, token) !== undefined) {
       activeHub = { child, port, token };
+      clearHubStartBackoff();
       return activeHub;
     }
     await abortableDelay(400);
   }
   try { child.kill(); } catch { /* It already exited. */ }
+  recordHubStartFailure();
   return undefined;
 }
 
@@ -432,6 +484,7 @@ export function hasActiveAgyHub(): boolean {
 export function disposeAgyHub(): void {
   const hub = activeHub;
   activeHub = undefined;
+  clearHubStartBackoff();
   if (!hub) {
     return;
   }

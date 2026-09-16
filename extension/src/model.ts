@@ -40,6 +40,11 @@ export interface UsageClient {
   readonly signInCommand: string;
   readonly accountUrl: string;
   getUsage(signal?: AbortSignal): Promise<UsageSnapshot>;
+  /**
+   * Called before a refresh the user asked for. Clients that negatively cache an expensive recovery
+   * path clear it here instead of serving a degraded reading until the backoff expires.
+   */
+  onForcedRefresh?(): void;
 }
 
 export type StatusBarProviderId = "hottest" | "codex" | "claude" | "copilot" | "gemini";

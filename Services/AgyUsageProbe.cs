@@ -13,7 +13,9 @@ namespace UsageAI.Services;
 /// Reads quota through Google's official Antigravity CLI without owning its credentials.
 /// A single long-lived <c>--hub</c> server answers every refresh over loopback, so a running app
 /// spawns no child process per poll; short-lived <c>agy -p /usage</c> reads remain the fallback for
-/// CLI builds without a hub. Output is bounded and only processes created here are cleaned up.
+/// CLI builds without a hub. A hub that never becomes ready is negatively cached, because that
+/// fallback starts a child process per refresh and is exactly what the hub exists to avoid.
+/// Output is bounded and only processes created here are cleaned up.
 /// </summary>
 internal static class AgyUsageProbe
 {
@@ -22,7 +24,11 @@ internal static class AgyUsageProbe
     private const int MaxOutputCharacters = 262_144;
     private const int MaxErrorCharacters = 16_384;
 
+    /// <summary>How long a hub that failed to start is left alone before it is tried again.</summary>
+    internal static readonly TimeSpan HubRetryInterval = TimeSpan.FromMinutes(30);
+
     private static readonly SemaphoreSlim HubGate = new(1, 1);
+    private static DateTimeOffset _hubRetryAfterUtc;
     private static Process? _hubProcess;
     private static HttpClient? _hubClient;
     private static ushort _hubPort;
@@ -52,12 +58,23 @@ internal static class AgyUsageProbe
             _hubClient = null;
             _hubPort = 0;
             _hubToken = string.Empty;
+            _hubRetryAfterUtc = default;
         }
         finally
         {
             HubGate.Release();
         }
     }
+
+    /// <summary>True while a hub start that just failed should not be attempted again.</summary>
+    internal static bool ShouldSkipHubStart(DateTimeOffset utcNow) => utcNow < _hubRetryAfterUtc;
+
+    /// <summary>Holds off further hub starts after one failed to become ready.</summary>
+    internal static void RecordHubStartFailure(DateTimeOffset utcNow) =>
+        _hubRetryAfterUtc = utcNow + HubRetryInterval;
+
+    /// <summary>Clears the hub start backoff. Called once a hub answers.</summary>
+    internal static void ClearHubStartBackoff() => _hubRetryAfterUtc = default;
 
     private static async Task<UsageSnapshot?> TryFetchFromHubAsync(CancellationToken cancellationToken)
     {
@@ -102,6 +119,11 @@ internal static class AgyUsageProbe
                 return _hubClient;
             }
 
+            if (ShouldSkipHubStart(DateTimeOffset.UtcNow))
+            {
+                return null;
+            }
+
             ProcessSecurity.TryKill(_hubProcess);
             _hubProcess?.Dispose();
             _hubProcess = null;
@@ -111,15 +133,17 @@ internal static class AgyUsageProbe
             var executable = FindExecutable();
             if (executable is null || !TryReserveLoopbackPort(out var port))
             {
+                RecordHubStartFailure(DateTimeOffset.UtcNow);
                 return null;
             }
 
-            // The hub authenticates callers with a token read from its own environment, so minting one
-            // here keeps the socket usable by this process alone.
+            // The hub authenticates callers with a token supplied when it starts, so minting one here
+            // keeps the socket usable by this process alone.
             var token = Convert.ToHexString(RandomNumberGenerator.GetBytes(24));
             var process = Process.Start(CreateHubStartInfo(executable, port, token));
             if (process is null)
             {
+                RecordHubStartFailure(DateTimeOffset.UtcNow);
                 return null;
             }
 
@@ -141,6 +165,7 @@ internal static class AgyUsageProbe
                     {
                         _hubProcess = process;
                         _hubClient = client;
+                        ClearHubStartBackoff();
                         return client;
                     }
 
@@ -157,6 +182,7 @@ internal static class AgyUsageProbe
             client.Dispose();
             _hubPort = 0;
             _hubToken = string.Empty;
+            RecordHubStartFailure(DateTimeOffset.UtcNow);
             return null;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
@@ -165,6 +191,9 @@ internal static class AgyUsageProbe
         }
         catch
         {
+            // Windows refused to start the CLI at all. Retrying that on every poll only pays the
+            // failure again, so the same backoff applies.
+            RecordHubStartFailure(DateTimeOffset.UtcNow);
             return null;
         }
         finally
@@ -193,11 +222,16 @@ internal static class AgyUsageProbe
             "SSL_CERT_DIR",
             "SSL_CERT_FILE");
         startInfo.Environment["CI"] = "1";
+        // Older CLI builds read the token from their own environment; builds from 2026-09 onwards mint
+        // their own unless `--csrf_token` supplies one, which is how the Antigravity IDE provisions the
+        // language server it starts. Both forms are sent so either build authenticates this process.
         startInfo.Environment["ANTIGRAVITY_CSRF_TOKEN"] = token;
         startInfo.ArgumentList.Add("--hub");
         // `--app_data_dir` is deliberately omitted: the CLI's default data directory holds the sign-in.
         startInfo.ArgumentList.Add(
             string.Create(CultureInfo.InvariantCulture, $"--hub-port={port}"));
+        startInfo.ArgumentList.Add(
+            string.Create(CultureInfo.InvariantCulture, $"--csrf_token={token}"));
         return startInfo;
     }
 

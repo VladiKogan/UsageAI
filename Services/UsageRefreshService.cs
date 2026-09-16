@@ -133,6 +133,16 @@ internal sealed class UsageRefreshService : IDisposable
                 .Where(client => _settings.IsProviderVisible(client.Id))
                 .Where(client => IsProviderDue(client.Id, force, regularRefresh, now))
                 .ToArray();
+            if (force)
+            {
+                // The user asked for fresh numbers, so a provider sitting out its own recovery
+                // backoff should try that path again rather than repeat a degraded reading.
+                foreach (var client in due.OfType<IForcedRefreshAware>())
+                {
+                    client.OnForcedRefresh();
+                }
+            }
+
             if (due.Length == 0)
             {
                 if (regularRefresh)

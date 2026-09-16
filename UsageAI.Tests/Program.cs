@@ -894,6 +894,38 @@ internal static class Program
         // The sign-in lives in the CLI's default data directory, so the hub must not be redirected.
         False(hubStartInfo.ArgumentList.Any(argument => argument.StartsWith("--app_data_dir", StringComparison.Ordinal)));
         Equal("TOKEN", hubStartInfo.Environment["ANTIGRAVITY_CSRF_TOKEN"]);
+        // CLI builds from 2026-09 onwards ignore the environment token and mint their own unless
+        // `--csrf_token` supplies one, so the hub rejects every call and the probe falls back to the
+        // per-refresh `agy -p /usage` read the hub exists to avoid.
+        True(hubStartInfo.ArgumentList.Contains("--csrf_token=TOKEN"));
+
+        // A hub that fails to start must not be retried on every poll for the same reason.
+        AgyUsageProbe.ClearHubStartBackoff();
+        var hubFailedAt = DateTimeOffset.UtcNow;
+        False(AgyUsageProbe.ShouldSkipHubStart(hubFailedAt));
+        AgyUsageProbe.RecordHubStartFailure(hubFailedAt);
+        True(AgyUsageProbe.ShouldSkipHubStart(hubFailedAt));
+        True(AgyUsageProbe.ShouldSkipHubStart(
+            hubFailedAt + AgyUsageProbe.HubRetryInterval - TimeSpan.FromMinutes(1)));
+        False(AgyUsageProbe.ShouldSkipHubStart(hubFailedAt + AgyUsageProbe.HubRetryInterval));
+        AgyUsageProbe.ClearHubStartBackoff();
+        False(AgyUsageProbe.ShouldSkipHubStart(hubFailedAt));
+
+        // A refresh the user asked for must release both backoffs, or one missed hub start keeps the
+        // per-refresh `agy -p /usage` fallback, and its console flash, for the whole window.
+        var hubBackoffCleared = 0;
+        var forcedClient = new GeminiUsageClient(
+            new HttpClient(),
+            _ => Task.FromResult<UsageSnapshot?>(null),
+            _ => Task.FromResult<UsageSnapshot?>(null),
+            () => hubBackoffCleared++);
+        var agyRetryField = typeof(GeminiUsageClient).GetField(
+            "_agyRetryAfterUtc",
+            System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+        agyRetryField.SetValue(forcedClient, DateTimeOffset.UtcNow.AddMinutes(30));
+        ((IForcedRefreshAware)forcedClient).OnForcedRefresh();
+        Equal(1, hubBackoffCleared);
+        Equal(default(DateTimeOffset), (DateTimeOffset)agyRetryField.GetValue(forcedClient)!);
         True(AgyUsageProbe.IsOwnedProcessName("agy"));
         True(AgyUsageProbe.IsOwnedProcessName("Antigravity CLI"));
         True(AgyUsageProbe.IsOwnedProcessName("language_server"));

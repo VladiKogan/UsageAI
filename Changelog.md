@@ -10,11 +10,23 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 - Expanded risk-focused coverage for provider parsing, authentication and protocol failures,
   Antigravity hub fallbacks, update metadata validation, font fallbacks, startup registration, and
-  single-instance messaging. Desktop coverage is now 88.27% line and 82.17% branch; the editor's 43
-  checks reach 79.57% line, 79.86% branch, and 81.03% function coverage.
+  single-instance messaging. Desktop coverage is now 88.19% line and 82.18% branch; the editor's 47
+  checks reach 79.70% line, 79.97% branch, and 81.30% function coverage.
 
 ### Fixed
 
+- Fixed Google Gemini starting an `agy.exe` child process on every refresh. Antigravity CLI builds
+  from September 2026 onwards ignore the CSRF token passed through the hub's environment and mint
+  their own, so every hub call was rejected as unauthenticated and each refresh fell back to a
+  short-lived `agy -p /usage` read, which boots MCP servers through `cmd.exe` and flashes a console
+  window. The token is now also supplied as `--csrf_token`, the way the Antigravity IDE provisions
+  the language server it starts, which both older and newer builds accept.
+- Held off further Antigravity hub starts for 30 minutes after one fails to become ready, so a future
+  change to the CLI costs one 20-second attempt per half hour rather than an extra child process and
+  a 20-second stall on every poll.
+- Cleared the Antigravity hub and `agy` probe backoffs when the user asks for a refresh, so a single
+  missed hub start cannot hold a provider on the degraded per-refresh path until the window expires.
+  The existing immediate-`agy` retry after both paths go stale now releases the hub backoff too.
 - Capped the full dashboard's scaled minimum size to the active monitor's working area so compact
   displays remain usable at 200% and 300% scaling.
 - Ignored malformed GitHub release assets whose size is not numeric instead of allowing update

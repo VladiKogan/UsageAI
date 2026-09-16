@@ -18,6 +18,15 @@ internal interface IUsageClient
 }
 
 /// <summary>
+/// Implemented by provider clients that negatively cache an expensive recovery path, so a refresh
+/// the user asked for clears that cache instead of serving a degraded reading until it expires.
+/// </summary>
+internal interface IForcedRefreshAware
+{
+    void OnForcedRefresh();
+}
+
+/// <summary>
 /// Implemented by provider exceptions that know when the provider will accept another
 /// request, so the refresh schedule can honour it instead of guessing.
 /// </summary>

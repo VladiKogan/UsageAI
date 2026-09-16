@@ -82,10 +82,13 @@ When no Antigravity language server is already available, the extension starts o
 `agy --hub` server on a loopback port and reads quota from it for the rest of the session, so
 refreshes launch no child process of their own. This includes the backend installed by Google's
 official VS Code extension. The hub is reachable only from this machine, is gated by a token the
-extension mints into the CLI's environment, and is stopped when the extension deactivates. Should the
-installed CLI predate `--hub`, the extension falls back to a short read-only `agy -p /usage` run with
-stdin closed and bounded output and runtime. A failed cold start is skipped while a healthy Gemini CLI
-fallback remains available; if both paths are stale, the next refresh retries `agy` immediately. Only
+extension mints per session and passes to the CLI both in its environment and as `--csrf_token`, and
+is stopped when the extension deactivates. Should the installed CLI predate `--hub`, the extension
+falls back to a short read-only `agy -p /usage` run with stdin closed and bounded output and runtime.
+A hub that fails to become ready is left alone for 30 minutes, so a refresh costs the one short
+`agy -p /usage` read rather than that plus a doomed hub start; a refresh you ask for clears that wait
+immediately. A failed cold start is skipped while a healthy Gemini CLI fallback remains available; if
+both paths are stale, the next refresh retries `agy` immediately. Only
 the process tree started by UsageAI is cleaned up. VS Code does not need to remain open after sign-in,
 and UsageAI never reads or modifies Antigravity credentials.
 
