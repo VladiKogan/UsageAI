@@ -61,6 +61,8 @@ internal static class Program
         ("scheduled stale-provider recovery", CoverageExpansionTests.TestScheduledStaleRecoveryAsync),
         ("scheduler advances with no visible providers", CoverageExpansionTests.TestNoVisibleProviderScheduleAsync),
         ("refresh concurrency and shutdown cancellation", CoverageExpansionTests.TestRefreshConcurrencyAsync),
+        ("providers publish as each one lands", CoverageExpansionTests.TestIncrementalProviderPublishingAsync),
+        ("local probe discovery and candidate ordering", CoverageExpansionTests.TestListeningPortLookupAsync),
         ("Claude HTTP success and error handling", CoverageExpansionTests.TestClaudeHttpAsync),
         ("Claude delegates refresh ownership to its CLI", CoverageExpansionTests.TestClaudeCredentialsAreReadOnlyAsync),
         ("Copilot HTTP success and error handling", CoverageExpansionTests.TestCopilotHttpAsync),

@@ -161,41 +161,26 @@ internal sealed class UsageRefreshService : IDisposable
 
             Updated?.Invoke(this, EventArgs.Empty);
 
-            var results = await Task.WhenAll(due.Select(client => FetchAsync(client, now)));
-            if (_shutdown.IsCancellationRequested)
-            {
-                return;
-            }
-
+            // Each provider is applied the moment it lands instead of after the slowest one,
+            // so a fast card stops spinning on its own schedule. Completions are still folded
+            // in one at a time, which keeps the backoff bookkeeping single-threaded.
+            var pending = due.Select(client => FetchAsync(client, now)).ToList();
             var alerts = new List<UsageAlert>();
             var samples = new List<UsageSample>();
-            foreach (var result in results)
+            while (pending.Count > 0)
             {
-                var providerId = result.Status.ProviderId;
+                var finished = await Task.WhenAny(pending);
+                pending.Remove(finished);
+                if (_shutdown.IsCancellationRequested)
+                {
+                    return;
+                }
 
-                if (result.IsFresh && result.Status.Snapshot is { } snapshot)
-                {
-                    _failures.Remove(providerId);
-                    _nextAttempt.Remove(providerId);
-                    _statuses[providerId] = result.Status;
-                    alerts.AddRange(_notifications.Evaluate(snapshot, _settings, now));
-                    if (_settings.HistoryEnabled)
-                    {
-                        samples.AddRange(UsageHistoryStore.SamplesFrom(snapshot));
-                    }
-                }
-                else if (result.Failed)
-                {
-                    var failures = _failures.TryGetValue(providerId, out var count) ? count + 1 : 1;
-                    _failures[providerId] = failures;
-                    var retryAt = now + (result.ThrottleHint ?? BackoffFor(failures));
-                    _nextAttempt[providerId] = retryAt;
-                    _statuses[providerId] = result.Status with { NextRetryAt = retryAt };
-                }
-                else
-                {
-                    _statuses[providerId] = result.Status;
-                }
+                ApplyResult(await finished, now, alerts, samples);
+
+                // The tray spinner keeps turning while any provider is still outstanding.
+                _isRefreshing = pending.Count > 0;
+                Updated?.Invoke(this, EventArgs.Empty);
             }
 
             if (samples.Count > 0)
@@ -250,6 +235,43 @@ internal sealed class UsageRefreshService : IDisposable
         // These synchronization objects are intentionally not disposed: an in-flight fetch
         // still holds the token and will release the semaphore during shutdown.
         _shutdown.Cancel();
+    }
+
+    /// <summary>
+    /// Folds one completed fetch into the shared state. Only ever called from the refresh
+    /// loop, one result at a time, so concurrent fetches cannot race the backoff bookkeeping.
+    /// </summary>
+    private void ApplyResult(
+        FetchResult result,
+        DateTimeOffset now,
+        List<UsageAlert> alerts,
+        List<UsageSample> samples)
+    {
+        var providerId = result.Status.ProviderId;
+
+        if (result.IsFresh && result.Status.Snapshot is { } snapshot)
+        {
+            _failures.Remove(providerId);
+            _nextAttempt.Remove(providerId);
+            _statuses[providerId] = result.Status;
+            alerts.AddRange(_notifications.Evaluate(snapshot, _settings, now));
+            if (_settings.HistoryEnabled)
+            {
+                samples.AddRange(UsageHistoryStore.SamplesFrom(snapshot));
+            }
+        }
+        else if (result.Failed)
+        {
+            var failures = _failures.TryGetValue(providerId, out var count) ? count + 1 : 1;
+            _failures[providerId] = failures;
+            var retryAt = now + (result.ThrottleHint ?? BackoffFor(failures));
+            _nextAttempt[providerId] = retryAt;
+            _statuses[providerId] = result.Status with { NextRetryAt = retryAt };
+        }
+        else
+        {
+            _statuses[providerId] = result.Status;
+        }
     }
 
     private bool IsProviderDue(

@@ -152,6 +152,32 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         }
     }
 
+    /// <summary>
+    /// The port and token that last answered. A language server publishes several candidate
+    /// combinations and only one of them responds, so trying the known-good one first saves a
+    /// wasted loopback round trip on every later refresh.
+    /// </summary>
+    private static BoundAntigravityCandidate? _lastAnsweringCandidate;
+
+    /// <summary>Orders candidates so the one that answered last time is tried first.</summary>
+    internal static IEnumerable<BoundAntigravityCandidate> Prioritize(
+        IReadOnlyList<BoundAntigravityCandidate> candidates,
+        BoundAntigravityCandidate? preferred)
+    {
+        if (preferred is null || !candidates.Contains(preferred))
+        {
+            return candidates;
+        }
+
+        return candidates
+            .OrderByDescending(candidate => candidate == preferred)
+            .ToArray();
+    }
+
+    private static IEnumerable<BoundAntigravityCandidate> Prioritize(
+        IReadOnlyList<BoundAntigravityCandidate> candidates) =>
+        Prioritize(candidates, _lastAnsweringCandidate);
+
     private static async Task<UsageSnapshot?> TryFetchAntigravityLocalSnapshotAsync(CancellationToken cancellationToken)
     {
         try
@@ -174,9 +200,12 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
 
             foreach (var proc in processes)
             {
-                foreach (var candidate in proc.GetBoundCandidates())
+                // One port lookup per process. Ownership used to be re-read for every
+                // candidate, which meant repeating the most expensive step of the probe.
+                var ports = proc.OwnedListeningPorts();
+                foreach (var candidate in Prioritize(proc.GetBoundCandidates(ports)))
                 {
-                    if (!proc.IsListeningPortStillOwned(candidate))
+                    if (!proc.IsListeningPortStillOwned(candidate, ports))
                     {
                         continue;
                     }
@@ -188,11 +217,13 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
                         cancellationToken);
                     if (snapshot is not null)
                     {
+                        _lastAnsweringCandidate = candidate;
                         return snapshot;
                     }
                 }
             }
 
+            _lastAnsweringCandidate = null;
             return null;
         }
         catch
@@ -1287,7 +1318,121 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         ushort? ExtensionPort,
         uint? Pid)
     {
+        /// <summary>
+        /// Command lines are fixed for the life of a process, so a language server that was
+        /// already read once is served from here instead of paying for another CIM query.
+        /// The identity includes start time because Windows reuses process ids.
+        /// </summary>
+        private static readonly Dictionary<(uint Pid, long StartedAt), ProcessInfo> CommandLineCache = new();
+
+        private static readonly object CommandLineCacheGate = new();
+
         public static List<ProcessInfo> DetectLocalLanguageServerProcesses()
+        {
+            // Enumerating process names costs a few milliseconds; the CIM query below costs
+            // most of a second. On a machine with no language server running — the common
+            // case — this check alone is the whole probe.
+            var live = FindLiveLanguageServers();
+            if (live.Count == 0)
+            {
+                lock (CommandLineCacheGate)
+                {
+                    CommandLineCache.Clear();
+                }
+
+                return new List<ProcessInfo>();
+            }
+
+            if (TryServeFromCache(live) is { } cached)
+            {
+                return cached;
+            }
+
+            var detected = QueryLanguageServerCommandLines();
+            lock (CommandLineCacheGate)
+            {
+                CommandLineCache.Clear();
+                foreach (var info in detected)
+                {
+                    if (info.Pid is { } pid && live.TryGetValue(pid, out var startedAt))
+                    {
+                        CommandLineCache[(pid, startedAt)] = info;
+                    }
+                }
+            }
+
+            return detected;
+        }
+
+        /// <summary>Live language server processes by pid, with the start time that identifies them.</summary>
+        internal static Dictionary<uint, long> FindLiveLanguageServers()
+        {
+            var live = new Dictionary<uint, long>();
+            Process[] processes;
+            try
+            {
+                processes = Process.GetProcesses();
+            }
+            catch (InvalidOperationException)
+            {
+                return live;
+            }
+
+            foreach (var process in processes)
+            {
+                try
+                {
+                    if (process.ProcessName.Contains("language_server", StringComparison.OrdinalIgnoreCase))
+                    {
+                        // A process whose start time cannot be read still counts; it just
+                        // cannot be cached across refreshes, so it re-queries each time.
+                        long startedAt;
+                        try
+                        {
+                            startedAt = process.StartTime.Ticks;
+                        }
+                        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+                        {
+                            startedAt = 0;
+                        }
+
+                        live[(uint)process.Id] = startedAt;
+                    }
+                }
+                catch (InvalidOperationException)
+                {
+                    // The process exited between enumeration and inspection.
+                }
+                finally
+                {
+                    process.Dispose();
+                }
+            }
+
+            return live;
+        }
+
+        /// <summary>Cached entries, but only when every live server is already known.</summary>
+        internal static List<ProcessInfo>? TryServeFromCache(Dictionary<uint, long> live)
+        {
+            lock (CommandLineCacheGate)
+            {
+                var served = new List<ProcessInfo>();
+                foreach (var (pid, startedAt) in live)
+                {
+                    if (startedAt == 0 || !CommandLineCache.TryGetValue((pid, startedAt), out var info))
+                    {
+                        return null;
+                    }
+
+                    served.Add(info);
+                }
+
+                return served.Count > 0 ? served : null;
+            }
+        }
+
+        private static List<ProcessInfo> QueryLanguageServerCommandLines()
         {
             var list = new List<ProcessInfo>();
             try
@@ -1357,15 +1502,12 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             return list;
         }
 
-        public IReadOnlyList<BoundAntigravityCandidate> GetBoundCandidates()
-        {
-            if (Pid is not { } pid)
-            {
-                return Array.Empty<BoundAntigravityCandidate>();
-            }
+        public IReadOnlyList<BoundAntigravityCandidate> GetBoundCandidates() =>
+            GetBoundCandidates(OwnedListeningPorts());
 
-            return GetBoundCandidates(GetListeningPortsForPid(pid));
-        }
+        /// <summary>The listening ports this process owns right now, read once per refresh.</summary>
+        public IReadOnlyList<ushort> OwnedListeningPorts() =>
+            Pid is { } pid ? GetListeningPortsForPid(pid) : Array.Empty<ushort>();
 
         internal IReadOnlyList<BoundAntigravityCandidate> GetBoundCandidates(
             IEnumerable<ushort> pidOwnedPorts)
@@ -1416,54 +1558,13 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             return tokens;
         }
 
-        private static List<ushort> GetListeningPortsForPid(uint pid)
-        {
-            var ports = new List<ushort>();
-            try
-            {
-                var powershellExe = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell", "v1.0", "powershell.exe");
-                if (!File.Exists(powershellExe))
-                {
-                    powershellExe = "powershell.exe";
-                }
-
-                var startInfo = new ProcessStartInfo
-                {
-                    FileName = powershellExe,
-                    Arguments = $"-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"Get-NetTCPConnection -OwningProcess {pid} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort\"",
-                    UseShellExecute = false,
-                    CreateNoWindow = true,
-                    RedirectStandardOutput = true,
-                };
-                ProcessSecurity.ApplyMinimalEnvironment(startInfo);
-
-                using var process = Process.Start(startInfo);
-                if (process is null)
-                {
-                    return ports;
-                }
-
-                var stdout = process.StandardOutput.ReadToEnd();
-                process.WaitForExit(3000);
-
-                foreach (var line in stdout.Split('\n'))
-                {
-                    if (ushort.TryParse(line.Trim(), out var port))
-                    {
-                        if (!ports.Contains(port))
-                        {
-                            ports.Add(port);
-                        }
-                    }
-                }
-            }
-            catch
-            {
-                // Return empty list
-            }
-
-            return ports;
-        }
+        /// <summary>
+        /// Reads the listening ports from the IP Helper API. This used to shell out to
+        /// <c>Get-NetTCPConnection</c>, which cost over a second per call and ran more than
+        /// once per refresh.
+        /// </summary>
+        internal static IReadOnlyList<ushort> GetListeningPortsForPid(uint pid) =>
+            ListeningPortTable.ForProcess(pid);
     }
 
     internal sealed record BoundAntigravityCandidate(uint Pid, ushort Port, string Token);

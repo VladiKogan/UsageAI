@@ -310,6 +310,123 @@ internal static class CoverageExpansionTests
         False(service.IsRefreshing);
     }
 
+    /// <summary>
+    /// A fast provider must reach the UI while a slow one is still in flight, so one slow
+    /// provider cannot hold every other card in its loading state for the whole refresh.
+    /// </summary>
+    public static async Task TestIncrementalProviderPublishingAsync()
+    {
+        UsageHistoryStore.Clear();
+        SnapshotCache.Clear();
+        var now = DateTimeOffset.Now;
+
+        var fast = new QueueUsageClient("fast", "Fast");
+        fast.Enqueue(Snapshot("fast", "Fast", 40, now));
+
+        var slow = new GatedUsageClient("slow", "Slow", Snapshot("slow", "Slow", 60, now));
+
+        var settings = new AppSettings
+        {
+            RefreshIntervalMinutes = 1,
+            SlowRefreshWhenHidden = false,
+            HistoryEnabled = false,
+            NotificationsEnabled = false,
+        };
+
+        using var service = new UsageRefreshService(new IUsageClient[] { fast, slow }, settings);
+
+        // Completed by the Updated handler the first time the fast card is done while the
+        // slow one is still loading. Batching every provider into one update never reaches
+        // that state, so a regression fails here as a timeout rather than a silent pass.
+        var landedEarly = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var spinnerStillTurning = false;
+        service.Updated += (_, _) =>
+        {
+            var fastStatus = service.Statuses.Single(status => status.ProviderId == "fast");
+            var slowStatus = service.Statuses.Single(status => status.ProviderId == "slow");
+            if (fastStatus is { IsLoading: false, Snapshot: not null } && slowStatus.IsLoading)
+            {
+                spinnerStillTurning = service.IsRefreshing;
+                landedEarly.TrySetResult();
+            }
+        };
+
+        var refresh = service.RefreshAsync(force: true, anyWindowVisible: true);
+        try
+        {
+            await landedEarly.Task.WaitAsync(TimeSpan.FromSeconds(15));
+        }
+        finally
+        {
+            slow.Release();
+        }
+
+        await refresh;
+        True(spinnerStillTurning);
+
+        Equal(40, service.Statuses.Single(status => status.ProviderId == "fast").Snapshot!.Primary!.UsedPercent);
+        Equal(60, service.Statuses.Single(status => status.ProviderId == "slow").Snapshot!.Primary!.UsedPercent);
+        False(service.IsRefreshing);
+    }
+
+    /// <summary>
+    /// The Antigravity probe reads owner-to-port mapping from the IP Helper API instead of
+    /// shelling out, and retries the combination that answered last before the others.
+    /// </summary>
+    public static Task TestListeningPortLookupAsync()
+    {
+        Equal(443, ListeningPortTable.ToHostPort(0xBB01));
+        Equal(0, ListeningPortTable.ToHostPort(0));
+
+        using var listener = new System.Net.Sockets.TcpListener(System.Net.IPAddress.Loopback, 0);
+        listener.Start();
+        try
+        {
+            var expected = (ushort)((System.Net.IPEndPoint)listener.LocalEndpoint).Port;
+            var ports = ListeningPortTable.ForProcess((uint)Environment.ProcessId);
+            True(ports.Contains(expected));
+            Equal(ports.Count, ports.Distinct().Count());
+        }
+        finally
+        {
+            listener.Stop();
+        }
+
+        // A pid that owns nothing must come back empty rather than throw.
+        Equal(0, ListeningPortTable.ForProcess(uint.MaxValue).Count);
+
+        // Discovery has to hold up whether or not a language server happens to be running on
+        // the machine running the suite, so this asserts the shape rather than the population.
+        var live = GeminiUsageClient.ProcessInfo.FindLiveLanguageServers();
+        Null(GeminiUsageClient.ProcessInfo.TryServeFromCache(new Dictionary<uint, long> { [uint.MaxValue] = 1 }));
+
+        // A pid whose start time could not be read is never served from the cache, because
+        // there is nothing to tell it apart from a recycled id.
+        Null(GeminiUsageClient.ProcessInfo.TryServeFromCache(new Dictionary<uint, long> { [uint.MaxValue] = 0 }));
+
+        var detected = GeminiUsageClient.ProcessInfo.DetectLocalLanguageServerProcesses();
+        True(detected.All(info => !string.IsNullOrWhiteSpace(info.CsrfToken)));
+        True(detected.Count <= live.Count);
+
+        // The second call is served from the command-line cache and must agree with the first.
+        var repeated = GeminiUsageClient.ProcessInfo.DetectLocalLanguageServerProcesses();
+        Equal(detected.Count, repeated.Count);
+
+        var first = new GeminiUsageClient.BoundAntigravityCandidate(7, 51_001, "extension");
+        var second = new GeminiUsageClient.BoundAntigravityCandidate(7, 51_002, "primary");
+        var candidates = new[] { first, second };
+
+        Equal(second, GeminiUsageClient.Prioritize(candidates, second).First());
+        Equal(first, GeminiUsageClient.Prioritize(candidates, first).First());
+        Equal(first, GeminiUsageClient.Prioritize(candidates, null).First());
+        Equal(
+            first,
+            GeminiUsageClient.Prioritize(
+                candidates,
+                new GeminiUsageClient.BoundAntigravityCandidate(9, 9_999, "stale")).First());
+        return Task.CompletedTask;
+    }
+
     public static async Task TestRefreshConcurrencyAsync()
     {
         UsageHistoryStore.Clear();
@@ -4689,6 +4806,36 @@ internal static class CoverageExpansionTests
         var error = process.StandardError.ReadToEndAsync();
         await process.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(30));
         return (process.ExitCode, await output, await error);
+    }
+
+    /// <summary>A provider that stays in flight until the test lets it finish.</summary>
+    private sealed class GatedUsageClient : IUsageClient
+    {
+        private readonly TaskCompletionSource _release = new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly UsageSnapshot _snapshot;
+
+        public GatedUsageClient(string id, string displayName, UsageSnapshot snapshot)
+        {
+            Id = id;
+            DisplayName = displayName;
+            _snapshot = snapshot;
+        }
+
+        public string Id { get; }
+
+        public string DisplayName { get; }
+
+        public string SignInCommand => $"{Id} login";
+
+        public Uri AccountUrl { get; } = new("https://example.com/account");
+
+        public void Release() => _release.TrySetResult();
+
+        public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default)
+        {
+            await _release.Task.WaitAsync(cancellationToken);
+            return _snapshot;
+        }
     }
 
     private sealed class QueueUsageClient : IUsageClient
