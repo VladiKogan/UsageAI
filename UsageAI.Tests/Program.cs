@@ -79,6 +79,7 @@ internal static class Program
         ("security utility edge cases", CoverageExpansionTests.TestSecurityUtilityEdgesAsync),
         ("custom UI rendering paths", CoverageExpansionTests.TestUiRenderingAsync),
         ("dashboard keeps a responsive two-by-two provider grid", CoverageExpansionTests.TestDashboardFixedGridAsync),
+        ("dashboard grid never shows a scrollbar", CoverageExpansionTests.TestDashboardNeverScrollsAsync),
         ("application context lifecycle and tray updates", CoverageExpansionTests.TestApplicationContextAsync),
         ("preview and command-line entry points", CoverageExpansionTests.TestPreviewAndEntryPointsAsync),
         ("provider credential refresh and discovery branches", CoverageExpansionTests.TestProviderCredentialBranchesAsync),

@@ -284,6 +284,12 @@ internal sealed class UsagePopupForm : Form
             ? FlowDirection.LeftToRight
             : FlowDirection.TopDown;
         _content.WrapContents = mode == DashboardMode.Full;
+
+        // The full dashboard is a fixed 2x2 grid whose cards are always resized to the client
+        // area, so there is never anything below the fold to scroll to. Leaving AutoScroll on
+        // let the freshly built, natural-height cards latch a scrollbar before UpdateCardWidths
+        // compacted them, which then stole width from the grid for the rest of the session.
+        _content.AutoScroll = mode == DashboardMode.Compact;
         ApplyScaledChrome();
         _titleLabel.Text = mode == DashboardMode.Compact ? "Usage at a glance" : "Usage dashboard";
         _subtitleLabel.Text = mode == DashboardMode.Compact
@@ -955,8 +961,10 @@ internal sealed class UsagePopupForm : Form
         try
         {
             var scale = Scale();
-            var hasVerticalScroll = _content.VerticalScroll.Visible;
-            var availableWidth = _content.ClientSize.Width - (hasVerticalScroll ? SystemInformation.VerticalScrollBarWidth : 0);
+
+            // ClientSize already excludes a visible scrollbar, so it is the usable width in
+            // both modes; subtracting the scrollbar again only left a dead strip on the right.
+            var availableWidth = _content.ClientSize.Width;
             if (availableWidth < scale[100])
             {
                 return;

@@ -2404,6 +2404,73 @@ internal static class CoverageExpansionTests
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// The full dashboard always paints a fixed 2x2 grid sized to its client area, so a
+    /// scrollbar can never reveal anything. It used to appear anyway: the freshly built cards
+    /// are laid out at their natural height before the grid compacts them, and that transient
+    /// overflow latched a scrollbar which then stole width from every card.
+    /// </summary>
+    public static Task TestDashboardNeverScrollsAsync()
+    {
+        var now = DateTimeOffset.Now;
+        var providers = new[]
+        {
+            ("codex", "Codex"),
+            ("claude", "Claude Code"),
+            ("copilot", "GitHub Copilot"),
+            ("gemini", "Google Gemini"),
+        };
+        var states = providers
+            .Select((provider, index) => new ProviderStatus(
+                provider.Item1,
+                provider.Item2,
+                Snapshot(provider.Item1, provider.Item2, 20 + index * 10, now),
+                null,
+                false,
+                now))
+            .ToArray();
+
+        using var popup = new UsagePopupForm(new AppSettings(), 96)
+        {
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-10_000, -10_000),
+        };
+        popup.SetStates(states, false, now, Array.Empty<UsageSample>());
+        popup.SetMode(DashboardMode.Full);
+        popup.Show();
+        Application.DoEvents();
+
+        var content = GetPrivateField<FlowLayoutPanel>(popup, "_content");
+        False(content.AutoScroll);
+
+        // The smallest sizes are where the cards overflow their natural height by the most,
+        // which is exactly where the old layout gave up and scrolled instead of compacting.
+        foreach (var size in new[] { new Size(1_020, 820), new Size(760, 620), new Size(600, 420) })
+        {
+            popup.ClientSize = size;
+            popup.PerformLayout();
+            Application.DoEvents();
+
+            False(content.VerticalScroll.Visible);
+            False(content.HorizontalScroll.Visible);
+            var cards = content.Controls.OfType<ProviderUsageCard>().ToArray();
+            Equal(4, cards.Length);
+            True(cards.All(card => card.Bottom <= content.ClientSize.Height));
+
+            // No scrollbar means no dead strip: the right column reaches the client edge,
+            // give or take the integer division that splits the row into two equal cards.
+            True(cards.Max(card => card.Right) >= content.ClientSize.Width - 2);
+        }
+
+        popup.SetMode(DashboardMode.Compact);
+        Application.DoEvents();
+        True(content.AutoScroll);
+
+        popup.CloseForExit();
+
+        return Task.CompletedTask;
+    }
+
     public static Task TestDashboardFixedGridAsync()
     {
         var now = DateTimeOffset.Now;

@@ -27,6 +27,18 @@ The project follows [Semantic Versioning](https://semver.org/).
   one. Windows High Contrast still flattens every category colour to the system foreground, and the
   category name is always spelled out, so colour is never the only cue.
 
+### Fixed
+
+- Removed the scrollbar from the full dashboard. The grid is a fixed 2x2 of provider cards that are
+  always resized to the window's client area, so there was never anything below the fold to scroll
+  to, yet a vertical scrollbar still appeared at common window sizes with an empty scroll range —
+  at a 760x620 client area it showed up with `AutoScrollMinSize` at zero. Cards are built at their
+  natural height and only compacted to their grid cell a moment later, and that transient overflow
+  was enough to latch the scrollbar, which then cost the grid 49 pixels of width and left a dead
+  strip down the right-hand side for the rest of the session. The compact tray popup, which can
+  genuinely overflow, still scrolls. Card widths also no longer subtract the scrollbar a second
+  time: `ClientSize` already excludes it, so the deduction only narrowed the cards further.
+
 ## [0.11.0] - 2026-09-16
 
 ### Changed
