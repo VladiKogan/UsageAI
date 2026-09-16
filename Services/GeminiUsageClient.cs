@@ -25,6 +25,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
     private readonly HttpClient _client;
     private readonly Func<CancellationToken, Task<UsageSnapshot?>> _localProbe;
     private readonly Func<CancellationToken, Task<UsageSnapshot?>> _agyProbe;
+    private readonly Func<CancellationToken, Task<UsageSnapshot?>> _agyHubProbe;
     private readonly Func<bool> _hasAgyHub;
     private readonly Action _resetAgyBackoff;
     private GeminiCredentials? _refreshedCredentials;
@@ -36,7 +37,8 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             TryFetchAntigravityLocalSnapshotAsync,
             AgyUsageProbe.TryFetchAsync,
             AgyUsageProbe.ClearHubStartBackoff,
-            AgyUsageProbe.HasActiveHub)
+            AgyUsageProbe.HasActiveHub,
+            AgyUsageProbe.TryFetchFromServingHubAsync)
     {
     }
 
@@ -45,7 +47,8 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         Func<CancellationToken, Task<UsageSnapshot?>>? localProbe = null,
         Func<CancellationToken, Task<UsageSnapshot?>>? agyProbe = null,
         Action? resetAgyBackoff = null,
-        Func<bool>? hasAgyHub = null)
+        Func<bool>? hasAgyHub = null,
+        Func<CancellationToken, Task<UsageSnapshot?>>? agyHubProbe = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _localProbe = localProbe ?? TryFetchAntigravityLocalSnapshotAsync;
@@ -54,6 +57,9 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         _agyProbe = agyProbe ?? (_ => Task.FromResult<UsageSnapshot?>(null));
         _resetAgyBackoff = resetAgyBackoff ?? (() => { });
         _hasAgyHub = hasAgyHub ?? (() => false);
+        // Defaults to the full agy probe only when a test supplies neither; the public
+        // constructor always wires the hub-only path for the short cut.
+        _agyHubProbe = agyHubProbe ?? _agyProbe;
     }
 
     /// <summary>
@@ -79,10 +85,12 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
     {
         // 0. Once a hub is serving this session, prefer it: it answers the same quota buckets over
         // loopback, and the Antigravity IDE probe below still reads command lines through PowerShell.
-        // This mirrors the editor extension, which takes the same short cut.
+        // This asks the hub alone. A hub that has stopped answering — an expired sign-in, a rotated
+        // token — must fall through to the ordered chain below rather than spawn `agy -p /usage`
+        // here, ahead of the backoff that exists to suppress exactly that child process.
         if (_hasAgyHub())
         {
-            var hubbedSnapshot = await _agyProbe(cancellationToken);
+            var hubbedSnapshot = await _agyHubProbe(cancellationToken);
             if (hubbedSnapshot is not null)
             {
                 return hubbedSnapshot;
@@ -1340,7 +1348,13 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         /// already read once is served from here instead of paying for another CIM query.
         /// The identity includes start time because Windows reuses process ids.
         /// </summary>
-        private static readonly Dictionary<(uint Pid, long StartedAt), ProcessInfo> CommandLineCache = new();
+        /// <summary>
+        /// A null value records a live process the command-line query returned nothing for — an
+        /// unrelated product's language server, or one not yet provisioned with a CSRF token.
+        /// Without that marker such a process is never "known", so every refresh misses the cache
+        /// and pays the CIM query this cache exists to avoid.
+        /// </summary>
+        private static readonly Dictionary<(uint Pid, long StartedAt), ProcessInfo?> CommandLineCache = new();
 
         private static readonly object CommandLineCacheGate = new();
 
@@ -1369,9 +1383,21 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             lock (CommandLineCacheGate)
             {
                 CommandLineCache.Clear();
+
+                // Every live process is recorded, including the ones the query said nothing
+                // about, so a language server belonging to some other product cannot keep the
+                // cache missing forever.
+                foreach (var (pid, startedAt) in live)
+                {
+                    if (startedAt != 0)
+                    {
+                        CommandLineCache[(pid, startedAt)] = null;
+                    }
+                }
+
                 foreach (var info in detected)
                 {
-                    if (info.Pid is { } pid && live.TryGetValue(pid, out var startedAt))
+                    if (info.Pid is { } pid && live.TryGetValue(pid, out var startedAt) && startedAt != 0)
                     {
                         CommandLineCache[(pid, startedAt)] = info;
                     }
@@ -1429,7 +1455,11 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             return live;
         }
 
-        /// <summary>Cached entries, but only when every live server is already known.</summary>
+        /// <summary>
+        /// Cached entries, but only when every live server is already known. A process known to
+        /// have no usable command line counts as known and contributes nothing, so an unrelated
+        /// language server cannot force the query to run again on every refresh.
+        /// </summary>
         internal static List<ProcessInfo>? TryServeFromCache(Dictionary<uint, long> live)
         {
             lock (CommandLineCacheGate)
@@ -1442,7 +1472,10 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
                         return null;
                     }
 
-                    served.Add(info);
+                    if (info is not null)
+                    {
+                        served.Add(info);
+                    }
                 }
 
                 return served.Count > 0 ? served : null;

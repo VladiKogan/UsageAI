@@ -34,6 +34,8 @@ interface GeminiCredentials {
 interface GeminiUsageDependencies {
   readonly fetchAntigravity: (signal?: AbortSignal) => Promise<UsageSnapshot | undefined>;
   readonly fetchAgy: (signal?: AbortSignal) => Promise<UsageSnapshot | undefined>;
+  /** Hub only, never the `agy -p /usage` read behind it. Used for the serving-hub short cut. */
+  readonly fetchAgyHub?: (signal?: AbortSignal) => Promise<UsageSnapshot | undefined>;
   readonly hasAgyHub?: () => boolean;
   readonly resetAgyBackoff?: () => void;
   readonly loadCredentials: () => Promise<GeminiCredentials>;
@@ -62,6 +64,7 @@ export class GeminiUsageClient implements UsageClient {
   public constructor(private readonly dependencies: GeminiUsageDependencies = {
     fetchAntigravity: tryFetchAntigravitySnapshot,
     fetchAgy: tryFetchAgySnapshot,
+    fetchAgyHub: tryFetchAgyHubSnapshot,
     hasAgyHub: hasActiveAgyHub,
     resetAgyBackoff: clearHubStartBackoff,
     loadCredentials,
@@ -79,9 +82,11 @@ export class GeminiUsageClient implements UsageClient {
 
   public async getUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
     // Once a hub is serving this session, prefer it: the Antigravity IDE probe costs a PowerShell
-    // child process on every refresh and reports the same quota buckets.
+    // child process on every refresh and reports the same quota buckets. This asks the hub alone,
+    // so a hub that has stopped answering falls through to the ordered chain below instead of
+    // spawning `agy -p /usage` ahead of the backoff meant to suppress it.
     if (this.dependencies.hasAgyHub?.() === true) {
-      const hubbed = await this.dependencies.fetchAgy(signal);
+      const hubbed = await (this.dependencies.fetchAgyHub ?? this.dependencies.fetchAgy)(signal);
       if (hubbed) {
         return hubbed;
       }
@@ -550,24 +555,34 @@ async function queryHubQuotaSummary(
   return metrics.length > 0 ? metrics : undefined;
 }
 
-async function tryFetchAgySnapshot(signal?: AbortSignal): Promise<UsageSnapshot | undefined> {
+/**
+ * Asks only the hub. The serving-hub short cut in `getUsage` uses this: falling through to
+ * `agy -p /usage` there would reintroduce the per-refresh child process the hub exists to avoid,
+ * and would do it ahead of the backoff that is supposed to suppress exactly that.
+ */
+async function tryFetchAgyHubSnapshot(signal?: AbortSignal): Promise<UsageSnapshot | undefined> {
   const hub = await ensureAgyHub();
-  if (hub) {
-    const metrics = await queryHubQuotaSummary(hub.port, hub.token, signal);
-    if (metrics) {
-      const status = parseAntigravityUserStatus(await requestHub(hub.port, hub.token, "GetUserStatus", signal));
-      return status
-        ? { ...status, metrics: mergeQuotaSummary(status.metrics, metrics) }
-        : {
-          plan: "Antigravity",
-          metrics,
-          fetchedAt: new Date().toISOString(),
-          providerId: "gemini",
-          providerName: "Google Gemini",
-        };
-    }
+  if (!hub) {
+    return undefined;
   }
-  return tryFetchAgyPrintSnapshot(signal);
+  const metrics = await queryHubQuotaSummary(hub.port, hub.token, signal);
+  if (!metrics) {
+    return undefined;
+  }
+  const status = parseAntigravityUserStatus(await requestHub(hub.port, hub.token, "GetUserStatus", signal));
+  return status
+    ? { ...status, metrics: mergeQuotaSummary(status.metrics, metrics) }
+    : {
+      plan: "Antigravity",
+      metrics,
+      fetchedAt: new Date().toISOString(),
+      providerId: "gemini",
+      providerName: "Google Gemini",
+    };
+}
+
+async function tryFetchAgySnapshot(signal?: AbortSignal): Promise<UsageSnapshot | undefined> {
+  return (await tryFetchAgyHubSnapshot(signal)) ?? await tryFetchAgyPrintSnapshot(signal);
 }
 
 /** Fallback for CLI builds without `--hub`: one short-lived `agy -p /usage` read. */
@@ -973,9 +988,15 @@ export function parseNetstatListeningPorts(stdout: string, pid: number): number[
   const ports = new Set<number>();
   for (const line of stdout.split(/\r?\n/)) {
     const columns = line.trim().split(/\s+/);
-    // PROTO  LOCAL  FOREIGN  STATE  PID — UDP rows have no state and are skipped by the length
-    // check, which also keeps the pid from being read out of the wrong column.
-    if (columns.length < 5 || !/^TCP$/i.test(columns[0]) || !/^LISTENING$/i.test(columns[3])) {
+    // PROTO  LOCAL  FOREIGN  STATE  PID — UDP rows have only four columns, so the length check
+    // also keeps the pid from being read out of the wrong column.
+    if (columns.length !== 5 || !/^TCP$/i.test(columns[0])) {
+      continue;
+    }
+    // A listening socket is identified by its wildcard foreign address, never by the state word:
+    // netstat localizes that ("ABHÖREN" on German Windows, "ESCUCHAR" on Spanish), so matching
+    // "LISTENING" would find nothing outside an English install.
+    if (!/^(0\.0\.0\.0|\[::\]|\*):0$/.test(columns[2])) {
       continue;
     }
     if (Number(columns[4]) !== pid) {

@@ -474,6 +474,14 @@ test("netstat listening ports stay bound to the owning process", () => {
   assert.deepEqual(parseNetstatListeningPorts(stdout, 99), [5002]);
   assert.deepEqual(parseNetstatListeningPorts(stdout, 7), []);
   assert.deepEqual(parseNetstatListeningPorts("", 42), []);
+
+  // netstat localizes the state word, so discovery must not depend on reading "LISTENING".
+  const german = [
+    "  Proto  Lokale Adresse         Remoteadresse          Status          PID",
+    "  TCP    127.0.0.1:5005         0.0.0.0:0              ABHÖREN         42",
+    "  TCP    127.0.0.1:5006         127.0.0.1:5007         HERGESTELLT     42",
+  ].join("\r\n");
+  assert.deepEqual(parseNetstatListeningPorts(german, 42), [5005]);
 });
 
 test("Antigravity discovery binds tokens to revalidated process-owned ports", async () => {

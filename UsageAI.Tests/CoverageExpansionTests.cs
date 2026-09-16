@@ -487,6 +487,36 @@ internal static class CoverageExpansionTests
         Equal(probed, await emptyHub.GetUsageAsync());
         Equal(1, probeCalls);
         Equal(0, hubCalls);
+
+        // The short cut asks the hub alone. A hub that has stopped answering must fall through to
+        // the ordered chain, never reach the full agy probe from here: that one spawns
+        // `agy -p /usage`, which is the per-refresh child process the hub exists to avoid, and it
+        // would run ahead of the backoff meant to suppress it.
+        var fullAgyCalls = 0;
+        var hubOnlyCalls = 0;
+        var silentHub = new GeminiUsageClient(
+            http,
+            Probe,
+            agyProbe: _ =>
+            {
+                fullAgyCalls++;
+                return Task.FromResult<UsageSnapshot?>(null);
+            },
+            resetAgyBackoff: () => { },
+            hasAgyHub: () => true,
+            agyHubProbe: _ =>
+            {
+                hubOnlyCalls++;
+                return Task.FromResult<UsageSnapshot?>(null);
+            });
+
+        probeCalls = 0;
+        Equal(probed, await silentHub.GetUsageAsync());
+        Equal(1, hubOnlyCalls);
+        Equal(1, probeCalls);
+
+        // The local probe answered, so the chain stopped before the full agy probe entirely.
+        Equal(0, fullAgyCalls);
     }
 
     /// <summary>

@@ -45,6 +45,15 @@ internal static class AgyUsageProbe
         return await TryFetchFromPrintAsync(cancellationToken);
     }
 
+    /// <summary>
+    /// Asks only the serving hub, never the short-lived <c>agy -p /usage</c> read behind it.
+    /// Callers that take the hub short cut use this: falling through to a child process there
+    /// would reintroduce the per-refresh spawn the hub exists to avoid, and would do it ahead of
+    /// the backoff that is supposed to suppress exactly that.
+    /// </summary>
+    public static Task<UsageSnapshot?> TryFetchFromServingHubAsync(CancellationToken cancellationToken) =>
+        TryFetchFromHubAsync(cancellationToken);
+
     /// <summary>Stops the shared hub. Called when the application shuts down.</summary>
     public static void DisposeHub()
     {
@@ -74,7 +83,22 @@ internal static class AgyUsageProbe
     /// probe, which still costs a PowerShell child process to read command lines and reports
     /// the same quota buckets the hub already answers over loopback.
     /// </summary>
-    public static bool HasActiveHub() => _hubClient is not null && _hubProcess is { HasExited: false };
+    public static bool HasActiveHub()
+    {
+        // Read once: DisposeHub can dispose the process and null the field between these two
+        // reads, and HasExited throws on a disposed instance. A shutdown racing a refresh must
+        // report "no hub", not surface an exception on the provider card.
+        var process = _hubProcess;
+        var client = _hubClient;
+        try
+        {
+            return client is not null && process is { HasExited: false };
+        }
+        catch (InvalidOperationException)
+        {
+            return false;
+        }
+    }
 
     /// <summary>Holds off further hub starts after one failed to become ready.</summary>
     internal static void RecordHubStartFailure(DateTimeOffset utcNow) =>

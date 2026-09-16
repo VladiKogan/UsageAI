@@ -10,8 +10,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 - Expanded risk-focused coverage for provider parsing, authentication and protocol failures,
   Antigravity hub fallbacks, update metadata validation, font fallbacks, startup registration, and
-  single-instance messaging. Desktop coverage is now 88.31% line and 82.08% branch; the editor's 48
-  checks reach 79.94% line, 80.10% branch, and 81.64% function coverage.
+  single-instance messaging. Desktop coverage is now 88.10% line and 81.80% branch; the editor's 48
+  checks reach 79.93% line, 80.10% branch, and 81.41% function coverage.
 - Provider readings now reach the cards as each one lands rather than after the slowest provider in
   the refresh returns, so a provider that answered in 0.6 seconds no longer appears to take as long
   as one that needs 4. The tray spinner still turns until the last provider is in, and history, the

@@ -241,6 +241,11 @@ internal sealed class UsageRefreshService : IDisposable
 
                 ApplyResult(await finished, now, alerts, samples);
 
+                // Recorded before the event, not after the persistence below: the moment the
+                // spinner stops, the cards are read together with this timestamp, and a fresh
+                // card next to the previous refresh's "last updated" time reads as a bug.
+                _lastRefreshed = now;
+
                 // The tray spinner keeps turning while any provider is still outstanding.
                 _isRefreshing = pending.Count > 0;
                 Updated?.Invoke(this, EventArgs.Empty);
@@ -261,7 +266,6 @@ internal sealed class UsageRefreshService : IDisposable
                 SnapshotCache.Save(snapshots);
             }
 
-            _lastRefreshed = now;
             if (regularRefresh)
             {
                 ScheduleRegularRefresh(now, anyWindowVisible);
