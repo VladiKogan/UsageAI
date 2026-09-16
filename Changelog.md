@@ -10,8 +10,22 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 - Expanded risk-focused coverage for provider parsing, authentication and protocol failures,
   Antigravity hub fallbacks, update metadata validation, font fallbacks, startup registration, and
-  single-instance messaging. Desktop coverage is now 88.19% line and 82.18% branch; the editor's 47
-  checks reach 79.70% line, 79.97% branch, and 81.30% function coverage.
+  single-instance messaging. Desktop coverage is now 88.31% line and 82.08% branch; the editor's 48
+  checks reach 79.94% line, 80.10% branch, and 81.64% function coverage.
+- Provider readings now reach the cards as each one lands rather than after the slowest provider in
+  the refresh returns, so a provider that answered in 0.6 seconds no longer appears to take as long
+  as one that needs 4. The tray spinner still turns until the last provider is in, and history, the
+  snapshot cache, and alerts are still written once per refresh rather than once per provider.
+- Refreshes now wake for a quota window that has reset instead of waiting out the whole refresh
+  interval, so the tray stops showing a spent quota long after it rolled over — up to two hours at
+  the maximum refresh setting — and reset notifications arrive on time. Each window is polled once,
+  and a provider serving out a failure backoff keeps it.
+- Google Gemini now goes straight to a serving `agy` hub instead of running the Antigravity IDE probe
+  ahead of it, which is what the editor extension already did. The probe itself no longer starts
+  PowerShell to map a process id to its listening ports, reading them through the IP Helper API
+  instead: the two discovery steps measured 0.65 seconds and 1.2 seconds per call and now cost about
+  10 milliseconds and under a millisecond. Command lines are still read through PowerShell, but only
+  when a language server is actually running, and the result is kept for the life of that process.
 
 ### Fixed
 

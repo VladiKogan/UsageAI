@@ -4,10 +4,15 @@
 
 ### Changed
 
-- Expanded the suite to 47 checks with provider parser edge cases, Codex protocol failures, bounded
+- Expanded the suite to 48 checks with provider parser edge cases, Codex protocol failures, bounded
   Claude CLI authentication probes, Gemini cloud and token-refresh failures, the Antigravity hub
-  command line, start backoff, and forced-refresh recovery, and metric-mode persistence failures.
-  Aggregate coverage is now 79.70% line, 79.97% branch, and 81.30% function coverage.
+  command line, start backoff, and forced-refresh recovery, metric-mode persistence failures, and
+  process-owned port parsing. Aggregate coverage is now 79.94% line, 80.10% branch, and 81.64%
+  function coverage.
+- Mapping a process id to its listening ports no longer starts PowerShell. The Antigravity probe
+  needs that mapping more than once per refresh, because it re-checks that a port is still owned by
+  the language server immediately before sending it a token, and `Get-NetTCPConnection` measured
+  1.2 seconds per call; `netstat -ano` answers the same question in 15 to 33 milliseconds.
 
 ### Fixed
 
