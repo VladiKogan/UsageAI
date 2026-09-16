@@ -19,12 +19,25 @@ internal sealed class UsageRefreshService : IDisposable
     private static readonly TimeSpan MinimumBackoff = TimeSpan.FromMinutes(1);
     private static readonly TimeSpan MaximumBackoff = TimeSpan.FromMinutes(60);
 
+    /// <summary>
+    /// How long after a window's reset the follow-up poll runs. Providers publish the reset
+    /// instant, not the moment their own counters roll over, so this waits out the skew.
+    /// </summary>
+    private static readonly TimeSpan ResetSettlingDelay = TimeSpan.FromSeconds(15);
+
     private readonly IUsageClient[] _clients;
     private readonly AppSettings _settings;
     private readonly NotificationCoordinator _notifications = new();
     private readonly Dictionary<string, ProviderStatus> _statuses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _failures = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _nextAttempt = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The reset instant each provider has already been polled for. One follow-up per window:
+    /// a provider that still reports the old window must not be asked again in a tight loop.
+    /// </summary>
+    private readonly Dictionary<string, DateTimeOffset> _handledResets = new(StringComparer.OrdinalIgnoreCase);
+
     private readonly List<UsageSample> _history = new();
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private readonly CancellationTokenSource _shutdown = new();
@@ -96,7 +109,48 @@ internal sealed class UsageRefreshService : IDisposable
         now >= _nextRegularRefresh ||
         _clients
             .Where(client => _settings.IsProviderVisible(client.Id))
-            .Any(client => _nextAttempt.TryGetValue(client.Id, out var retryAt) && now >= retryAt);
+            .Any(client => _nextAttempt.TryGetValue(client.Id, out var retryAt)
+                ? now >= retryAt
+                : PendingResetAt(client.Id, now) is not null);
+
+    /// <summary>
+    /// The reset instant a provider is overdue a poll for, or null. A metered window that has
+    /// rolled over is worth one prompt poll: otherwise the tray can sit at a spent quota for a
+    /// whole refresh interval — up to two hours at the maximum setting — after it actually reset,
+    /// and the reset notification arrives just as late.
+    /// </summary>
+    private DateTimeOffset? PendingResetAt(string providerId, DateTimeOffset now)
+    {
+        if (!_statuses.TryGetValue(providerId, out var status) || status.Snapshot is not { } snapshot)
+        {
+            return null;
+        }
+
+        _handledResets.TryGetValue(providerId, out var handled);
+
+        DateTimeOffset? pending = null;
+        foreach (var metric in snapshot.Metrics)
+        {
+            if (!metric.HasQuota || metric.ResetsAt is not { } resetsAt)
+            {
+                continue;
+            }
+
+            // One poll per window: a provider that still reports the window it just left must
+            // not be asked again on every tick until its own numbers catch up.
+            if (resetsAt <= handled || now < resetsAt + ResetSettlingDelay)
+            {
+                continue;
+            }
+
+            if (pending is null || resetsAt > pending)
+            {
+                pending = resetsAt;
+            }
+        }
+
+        return pending;
+    }
 
     /// <summary>
     /// Refreshes visible providers now, respecting provider backoff unless force is set.
@@ -140,6 +194,15 @@ internal sealed class UsageRefreshService : IDisposable
                 foreach (var client in due.OfType<IForcedRefreshAware>())
                 {
                     client.OnForcedRefresh();
+                }
+            }
+
+            // Recorded before fetching, because the fetch replaces the snapshot these are read from.
+            foreach (var client in due)
+            {
+                if (PendingResetAt(client.Id, now) is { } resetAt)
+                {
+                    _handledResets[client.Id] = resetAt;
                 }
             }
 
@@ -285,9 +348,11 @@ internal sealed class UsageRefreshService : IDisposable
             return true;
         }
 
+        // A provider serving out its failure backoff keeps it; a rolled-over window does not
+        // get to bypass the retry schedule.
         return _nextAttempt.TryGetValue(providerId, out var retryAt)
             ? now >= retryAt
-            : regularRefresh;
+            : regularRefresh || PendingResetAt(providerId, now) is not null;
     }
 
     private void ScheduleRegularRefresh(DateTimeOffset now, bool anyWindowVisible) =>

@@ -412,6 +412,14 @@ internal static class CoverageExpansionTests
         var repeated = GeminiUsageClient.ProcessInfo.DetectLocalLanguageServerProcesses();
         Equal(detected.Count, repeated.Count);
 
+        // Ownership is revalidated against a freshly read table, never the one that built the
+        // candidates: a port released between the two reads must not be handed a CSRF token.
+        var owner = new GeminiUsageClient.ProcessInfo("primary", "extension", ExtensionPort: 5_002, Pid: 42);
+        var released = owner.GetBoundCandidates(new ushort[] { 5_001, 5_002 })
+            .Single(candidate => candidate.Port == 5_002 && candidate.Token == "extension");
+        False(owner.IsListeningPortStillOwned(released, new ushort[] { 5_001 }));
+        True(owner.IsListeningPortStillOwned(released, new ushort[] { 5_001, 5_002 }));
+
         var first = new GeminiUsageClient.BoundAntigravityCandidate(7, 51_001, "extension");
         var second = new GeminiUsageClient.BoundAntigravityCandidate(7, 51_002, "primary");
         var candidates = new[] { first, second };
@@ -425,6 +433,117 @@ internal static class CoverageExpansionTests
                 candidates,
                 new GeminiUsageClient.BoundAntigravityCandidate(9, 9_999, "stale")).First());
         return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Once an agy hub is serving, Gemini must go straight to it. The Antigravity IDE probe
+    /// ahead of it still reads command lines through PowerShell and reports the same buckets,
+    /// so paying for it on every refresh is wasted work. Mirrors the editor extension.
+    /// </summary>
+    public static async Task TestGeminiPrefersServingHubAsync()
+    {
+        var hubbed = Snapshot("gemini", "Google Gemini", 21, DateTimeOffset.Now);
+        var probed = Snapshot("gemini", "Google Gemini", 78, DateTimeOffset.Now);
+
+        using var http = new HttpClient(new StubHttpHandler((_, _, _) =>
+            throw new InvalidOperationException("HTTP should not be reached.")));
+
+        var probeCalls = 0;
+        var hubCalls = 0;
+        Task<UsageSnapshot?> Probe(CancellationToken _)
+        {
+            probeCalls++;
+            return Task.FromResult<UsageSnapshot?>(probed);
+        }
+
+        Task<UsageSnapshot?> Hub(CancellationToken _)
+        {
+            hubCalls++;
+            return Task.FromResult<UsageSnapshot?>(hubbed);
+        }
+
+        var serving = new GeminiUsageClient(http, Probe, Hub, () => { }, () => true);
+        Equal(hubbed, await serving.GetUsageAsync());
+        Equal(0, probeCalls);
+        Equal(1, hubCalls);
+
+        // With no hub the probe keeps its place at the front of the chain.
+        probeCalls = 0;
+        hubCalls = 0;
+        var noHub = new GeminiUsageClient(http, Probe, Hub, () => { }, () => false);
+        Equal(probed, await noHub.GetUsageAsync());
+        Equal(1, probeCalls);
+        Equal(0, hubCalls);
+
+        // A hub that claims to be serving but answers nothing must not strand the provider.
+        probeCalls = 0;
+        hubCalls = 0;
+        var emptyHub = new GeminiUsageClient(
+            http,
+            Probe,
+            _ => Task.FromResult<UsageSnapshot?>(null),
+            () => { },
+            () => true);
+        Equal(probed, await emptyHub.GetUsageAsync());
+        Equal(1, probeCalls);
+        Equal(0, hubCalls);
+    }
+
+    /// <summary>
+    /// A metered window that has rolled over earns one prompt poll, so the tray stops showing a
+    /// spent quota long after it reset. It must happen once per window, and must never override
+    /// a provider's failure backoff.
+    /// </summary>
+    public static async Task TestResetAwareSchedulingAsync()
+    {
+        UsageHistoryStore.Clear();
+        SnapshotCache.Clear();
+        var now = DateTimeOffset.Now;
+
+        // Snapshot() puts the reset two hours after the fetch time, so an old fetch time is a
+        // window that has already rolled over.
+        var alpha = new QueueUsageClient("alpha", "Alpha");
+        alpha.Enqueue(Snapshot("alpha", "Alpha", 90, now.AddHours(-3)));
+        alpha.Enqueue(Snapshot("alpha", "Alpha", 90, now.AddHours(-3)));
+        alpha.Enqueue(Snapshot("alpha", "Alpha", 5, now.AddHours(-2).AddMinutes(-1)));
+
+        var beta = new QueueUsageClient("beta", "Beta");
+        beta.Enqueue(Snapshot("beta", "Beta", 80, now.AddHours(-3)));
+        beta.Enqueue(new GeminiUsageException("Beta is unavailable."));
+
+        var settings = new AppSettings
+        {
+            // Far enough out that nothing below can be a regular refresh.
+            RefreshIntervalMinutes = 120,
+            SlowRefreshWhenHidden = false,
+            HistoryEnabled = false,
+            NotificationsEnabled = false,
+        };
+
+        using var service = new UsageRefreshService(new IUsageClient[] { alpha, beta }, settings);
+        await service.RefreshAsync(force: true, anyWindowVisible: true);
+        Equal(1, alpha.CallCount);
+        Equal(1, beta.CallCount);
+
+        // Both now hold a window whose reset is in the past, so the scheduler wakes for it even
+        // though the two-hour regular deadline is nowhere near.
+        True(service.IsDue(DateTimeOffset.Now));
+
+        await service.RefreshDueAsync(anyWindowVisible: true);
+        Equal(2, alpha.CallCount);
+        Equal(2, beta.CallCount);
+
+        // alpha still reports the window it just left, and beta is in failure backoff. Neither
+        // may be polled again: one is rate-limited by the handled-reset guard, the other by its
+        // own retry schedule.
+        False(service.IsDue(DateTimeOffset.Now));
+        await service.RefreshDueAsync(anyWindowVisible: true);
+        Equal(2, alpha.CallCount);
+        Equal(2, beta.CallCount);
+
+        var betaStatus = service.Statuses.Single(status => status.ProviderId == "beta");
+        NotNull(betaStatus.NextRetryAt);
+        Equal(80, betaStatus.Snapshot!.Primary!.UsedPercent);
     }
 
     public static async Task TestRefreshConcurrencyAsync()

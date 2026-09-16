@@ -63,6 +63,8 @@ internal static class Program
         ("refresh concurrency and shutdown cancellation", CoverageExpansionTests.TestRefreshConcurrencyAsync),
         ("providers publish as each one lands", CoverageExpansionTests.TestIncrementalProviderPublishingAsync),
         ("local probe discovery and candidate ordering", CoverageExpansionTests.TestListeningPortLookupAsync),
+        ("Gemini prefers a serving agy hub", CoverageExpansionTests.TestGeminiPrefersServingHubAsync),
+        ("reset-aware scheduling polls once per window", CoverageExpansionTests.TestResetAwareSchedulingAsync),
         ("Claude HTTP success and error handling", CoverageExpansionTests.TestClaudeHttpAsync),
         ("Claude delegates refresh ownership to its CLI", CoverageExpansionTests.TestClaudeCredentialsAreReadOnlyAsync),
         ("Copilot HTTP success and error handling", CoverageExpansionTests.TestCopilotHttpAsync),

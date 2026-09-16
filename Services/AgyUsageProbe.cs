@@ -69,6 +69,13 @@ internal static class AgyUsageProbe
     /// <summary>True while a hub start that just failed should not be attempted again.</summary>
     internal static bool ShouldSkipHubStart(DateTimeOffset utcNow) => utcNow < _hubRetryAfterUtc;
 
+    /// <summary>
+    /// True once a hub is serving this session. Callers use it to skip the Antigravity IDE
+    /// probe, which still costs a PowerShell child process to read command lines and reports
+    /// the same quota buckets the hub already answers over loopback.
+    /// </summary>
+    public static bool HasActiveHub() => _hubClient is not null && _hubProcess is { HasExited: false };
+
     /// <summary>Holds off further hub starts after one failed to become ready.</summary>
     internal static void RecordHubStartFailure(DateTimeOffset utcNow) =>
         _hubRetryAfterUtc = utcNow + HubRetryInterval;

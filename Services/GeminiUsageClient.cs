@@ -25,6 +25,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
     private readonly HttpClient _client;
     private readonly Func<CancellationToken, Task<UsageSnapshot?>> _localProbe;
     private readonly Func<CancellationToken, Task<UsageSnapshot?>> _agyProbe;
+    private readonly Func<bool> _hasAgyHub;
     private readonly Action _resetAgyBackoff;
     private GeminiCredentials? _refreshedCredentials;
     private DateTimeOffset _agyRetryAfterUtc;
@@ -34,7 +35,8 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             SharedClient,
             TryFetchAntigravityLocalSnapshotAsync,
             AgyUsageProbe.TryFetchAsync,
-            AgyUsageProbe.ClearHubStartBackoff)
+            AgyUsageProbe.ClearHubStartBackoff,
+            AgyUsageProbe.HasActiveHub)
     {
     }
 
@@ -42,7 +44,8 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         HttpClient client,
         Func<CancellationToken, Task<UsageSnapshot?>>? localProbe = null,
         Func<CancellationToken, Task<UsageSnapshot?>>? agyProbe = null,
-        Action? resetAgyBackoff = null)
+        Action? resetAgyBackoff = null,
+        Func<bool>? hasAgyHub = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _localProbe = localProbe ?? TryFetchAntigravityLocalSnapshotAsync;
@@ -50,6 +53,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         // the public constructor wires the real official-CLI probe.
         _agyProbe = agyProbe ?? (_ => Task.FromResult<UsageSnapshot?>(null));
         _resetAgyBackoff = resetAgyBackoff ?? (() => { });
+        _hasAgyHub = hasAgyHub ?? (() => false);
     }
 
     /// <summary>
@@ -73,6 +77,18 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
 
     public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default)
     {
+        // 0. Once a hub is serving this session, prefer it: it answers the same quota buckets over
+        // loopback, and the Antigravity IDE probe below still reads command lines through PowerShell.
+        // This mirrors the editor extension, which takes the same short cut.
+        if (_hasAgyHub())
+        {
+            var hubbedSnapshot = await _agyProbe(cancellationToken);
+            if (hubbedSnapshot is not null)
+            {
+                return hubbedSnapshot;
+            }
+        }
+
         // 1. Try local Antigravity LanguageServer probe if running
         var antigravitySnapshot = await _localProbe(cancellationToken);
         if (antigravitySnapshot is not null)
@@ -200,12 +216,13 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
 
             foreach (var proc in processes)
             {
-                // One port lookup per process. Ownership used to be re-read for every
-                // candidate, which meant repeating the most expensive step of the probe.
-                var ports = proc.OwnedListeningPorts();
-                foreach (var candidate in Prioritize(proc.GetBoundCandidates(ports)))
+                foreach (var candidate in Prioritize(proc.GetBoundCandidates()))
                 {
-                    if (!proc.IsListeningPortStillOwned(candidate, ports))
+                    // Ownership is re-read immediately before the token is sent rather than
+                    // reused from the listing that built the candidates: a port the process has
+                    // since released must never be handed a CSRF token. The native lookup makes
+                    // that re-check cost a fraction of a millisecond, so it stays.
+                    if (!proc.IsListeningPortStillOwned(candidate))
                     {
                         continue;
                     }
@@ -1505,7 +1522,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         public IReadOnlyList<BoundAntigravityCandidate> GetBoundCandidates() =>
             GetBoundCandidates(OwnedListeningPorts());
 
-        /// <summary>The listening ports this process owns right now, read once per refresh.</summary>
+        /// <summary>The listening ports this process owns right now.</summary>
         public IReadOnlyList<ushort> OwnedListeningPorts() =>
             Pid is { } pid ? GetListeningPortsForPid(pid) : Array.Empty<ushort>();
 

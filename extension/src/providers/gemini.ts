@@ -350,6 +350,9 @@ export async function tryFetchAntigravitySnapshot(
         ? [processInfo.hintedPort, ...ownedPorts.filter((port) => port !== processInfo.hintedPort)]
         : ownedPorts;
       for (const port of ports.slice(0, 32)) {
+        // Ownership is re-read immediately before the token is sent, not reused from the
+        // listing above: a port the process has since released must never be handed a CSRF
+        // token. The native lookup makes that re-check cheap enough to keep.
         if (!(await dependencies.listeningPorts(processInfo.pid)).includes(port)) {
           continue;
         }
@@ -961,14 +964,43 @@ export function parseAntigravityProcessLines(stdout: string): AntigravityProcess
   return results;
 }
 
+/**
+ * Listening ports owned by a pid, parsed from `netstat -ano`. The obvious PowerShell spelling,
+ * `Get-NetTCPConnection`, measured 1.2 s per call because PowerShell has to start and autoload
+ * NetTCPIP; netstat is a plain native binary and answers in 15-33 ms.
+ */
+export function parseNetstatListeningPorts(stdout: string, pid: number): number[] {
+  const ports = new Set<number>();
+  for (const line of stdout.split(/\r?\n/)) {
+    const columns = line.trim().split(/\s+/);
+    // PROTO  LOCAL  FOREIGN  STATE  PID — UDP rows have no state and are skipped by the length
+    // check, which also keeps the pid from being read out of the wrong column.
+    if (columns.length < 5 || !/^TCP$/i.test(columns[0]) || !/^LISTENING$/i.test(columns[3])) {
+      continue;
+    }
+    if (Number(columns[4]) !== pid) {
+      continue;
+    }
+    const local = columns[1];
+    const separator = local.lastIndexOf(":");
+    if (separator < 0) {
+      continue;
+    }
+    const port = Number(local.slice(separator + 1));
+    if (validPort(port)) {
+      ports.add(port);
+    }
+  }
+  return [...ports];
+}
+
 async function listeningPorts(pid: number): Promise<number[]> {
   if (process.platform === "win32") {
     const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
-    const powershell = path.join(systemRoot, "System32", "WindowsPowerShell", "v1.0", "powershell.exe");
+    const netstat = path.join(systemRoot, "System32", "netstat.exe");
     try {
-      const script = `Get-NetTCPConnection -OwningProcess ${pid} -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty LocalPort`;
-      const result = await collectProcessOutput(spawnSecure(powershell, ["-NoProfile", "-NonInteractive", "-Command", script]), 3_000, 32_768);
-      return [...new Set(result.stdout.split(/\s+/).map(Number).filter(validPort))];
+      const result = await collectProcessOutput(spawnSecure(netstat, ["-ano"]), 3_000, 1_048_576);
+      return parseNetstatListeningPorts(result.stdout, pid);
     } catch {
       return [];
     }

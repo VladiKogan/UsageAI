@@ -14,6 +14,7 @@ import {
   GeminiUsageClient,
   hubRetryIntervalMs,
   parseAntigravityProcessLines,
+  parseNetstatListeningPorts,
   recordHubStartFailure,
   shouldSkipHubStart,
   tryFetchAntigravitySnapshot,
@@ -449,6 +450,30 @@ test("Gemini retries agy when a cached cold-start failure and CLI fallback are b
     disconnected.getUsage(),
     (error: unknown) => error instanceof Error && /`agy`/.test(error.message) && !/`gemini`/.test(error.message),
   );
+});
+
+test("netstat listening ports stay bound to the owning process", () => {
+  const stdout = [
+    "",
+    "Active Connections",
+    "",
+    "  Proto  Local Address          Foreign Address        State           PID",
+    "  TCP    127.0.0.1:5001         0.0.0.0:0              LISTENING       42",
+    "  TCP    [::1]:5003             [::]:0                 LISTENING       42",
+    "  TCP    127.0.0.1:5001         0.0.0.0:0              LISTENING       42",
+    "  TCP    127.0.0.1:5002         0.0.0.0:0              LISTENING       99",
+    "  TCP    127.0.0.1:5010         127.0.0.1:5011         ESTABLISHED     42",
+    "  UDP    127.0.0.1:5004         *:*                                    42",
+    "  TCP    127.0.0.1:0            0.0.0.0:0              LISTENING       42",
+    "garbage",
+  ].join("\r\n");
+
+  // Only this process's listeners, de-duplicated, IPv6 included, and never a port that is
+  // merely connected or owned by someone else.
+  assert.deepEqual(parseNetstatListeningPorts(stdout, 42), [5001, 5003]);
+  assert.deepEqual(parseNetstatListeningPorts(stdout, 99), [5002]);
+  assert.deepEqual(parseNetstatListeningPorts(stdout, 7), []);
+  assert.deepEqual(parseNetstatListeningPorts("", 42), []);
 });
 
 test("Antigravity discovery binds tokens to revalidated process-owned ports", async () => {

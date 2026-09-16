@@ -7,7 +7,12 @@ namespace UsageAI.UI;
 
 internal sealed class UsageApplicationContext : ApplicationContext
 {
-    private static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(30);
+    /// <summary>
+    /// How closely a due refresh is honoured. Each tick only asks the service whether anything
+    /// is due, so this is cheap; at 30 s a window that had just reset could stay on screen for
+    /// half a minute longer than the schedule intended.
+    /// </summary>
+    private static readonly TimeSpan TickInterval = TimeSpan.FromSeconds(10);
     private const int MaximumTooltipLength = 127;
     private const int MaximumBalloonTitle = 63;
     private const int MaximumBalloonText = 255;
