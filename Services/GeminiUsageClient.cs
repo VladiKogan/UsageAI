@@ -1345,14 +1345,11 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
     {
         /// <summary>
         /// Command lines are fixed for the life of a process, so a language server that was
-        /// already read once is served from here instead of paying for another CIM query.
-        /// The identity includes start time because Windows reuses process ids.
-        /// </summary>
-        /// <summary>
-        /// A null value records a live process the command-line query returned nothing for — an
-        /// unrelated product's language server, or one not yet provisioned with a CSRF token.
-        /// Without that marker such a process is never "known", so every refresh misses the cache
-        /// and pays the CIM query this cache exists to avoid.
+        /// already read once is served from here instead of paying for another CIM query. The
+        /// identity includes start time because Windows reuses process ids. A null value records
+        /// a live process the query returned nothing for — an unrelated product's language
+        /// server, or one not yet provisioned with a CSRF token. Without that marker such a
+        /// process is never "known", so every refresh misses and pays the query again.
         /// </summary>
         private static readonly Dictionary<(uint Pid, long StartedAt), ProcessInfo?> CommandLineCache = new();
 
@@ -1478,7 +1475,10 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
                     }
                 }
 
-                return served.Count > 0 ? served : null;
+                // Every live process was known, so this is an answer even when it is empty:
+                // "the servers running here have no usable command line" must not be mistaken
+                // for a cache miss, or the query it exists to avoid runs on every refresh.
+                return served;
             }
         }
 

@@ -404,6 +404,11 @@ internal static class CoverageExpansionTests
         // there is nothing to tell it apart from a recycled id.
         Null(GeminiUsageClient.ProcessInfo.TryServeFromCache(new Dictionary<uint, long> { [uint.MaxValue] = 0 }));
 
+        // A live server the command-line query yields nothing for — another product's language
+        // server, or one not yet given a CSRF token — is a known answer, not a cache miss. If it
+        // read as a miss, the query this cache exists to avoid would run on every refresh.
+        Equal(0, GeminiUsageClient.ProcessInfo.TryServeFromCache(new Dictionary<uint, long>())!.Count);
+
         var detected = GeminiUsageClient.ProcessInfo.DetectLocalLanguageServerProcesses();
         True(detected.All(info => !string.IsNullOrWhiteSpace(info.CsrfToken)));
         True(detected.Count <= live.Count);

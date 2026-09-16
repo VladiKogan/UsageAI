@@ -25,6 +25,16 @@ internal sealed class UsageRefreshService : IDisposable
     /// </summary>
     private static readonly TimeSpan ResetSettlingDelay = TimeSpan.FromSeconds(15);
 
+    /// <summary>
+    /// Spacing between follow-up polls for the same window. A provider whose counters lag its
+    /// own published reset instant gets another chance instead of the tray keeping a spent
+    /// quota until the next regular refresh, which the reset poll exists to prevent.
+    /// </summary>
+    private static readonly TimeSpan ResetRetryInterval = TimeSpan.FromMinutes(1);
+
+    /// <summary>Total polls one window may cause, so a lagging provider cannot be polled forever.</summary>
+    private const int MaximumResetAttempts = 3;
+
     private readonly IUsageClient[] _clients;
     private readonly AppSettings _settings;
     private readonly NotificationCoordinator _notifications = new();
@@ -33,10 +43,11 @@ internal sealed class UsageRefreshService : IDisposable
     private readonly Dictionary<string, DateTimeOffset> _nextAttempt = new(StringComparer.OrdinalIgnoreCase);
 
     /// <summary>
-    /// The reset instant each provider has already been polled for. One follow-up per window:
-    /// a provider that still reports the old window must not be asked again in a tight loop.
+    /// What each provider has already been polled for after a window rolled over. Bounded and
+    /// spaced rather than a single attempt: a provider that still reports the window it just
+    /// left has to be asked again, but never in a tight loop.
     /// </summary>
-    private readonly Dictionary<string, DateTimeOffset> _handledResets = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, ResetPoll> _resetPolls = new(StringComparer.OrdinalIgnoreCase);
 
     private readonly List<UsageSample> _history = new();
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
@@ -126,7 +137,7 @@ internal sealed class UsageRefreshService : IDisposable
             return null;
         }
 
-        _handledResets.TryGetValue(providerId, out var handled);
+        _resetPolls.TryGetValue(providerId, out var polled);
 
         DateTimeOffset? pending = null;
         foreach (var metric in snapshot.Metrics)
@@ -136,9 +147,12 @@ internal sealed class UsageRefreshService : IDisposable
                 continue;
             }
 
-            // One poll per window: a provider that still reports the window it just left must
-            // not be asked again on every tick until its own numbers catch up.
-            if (resetsAt <= handled || now < resetsAt + ResetSettlingDelay)
+            if (now < resetsAt + ResetSettlingDelay)
+            {
+                continue;
+            }
+
+            if (polled is not null && !IsAnotherAttemptAllowed(polled, resetsAt, now))
             {
                 continue;
             }
@@ -151,6 +165,20 @@ internal sealed class UsageRefreshService : IDisposable
 
         return pending;
     }
+
+    /// <summary>
+    /// Whether a window already polled for deserves another attempt. A provider whose counters
+    /// trail its published reset instant would otherwise spend its one follow-up on a reading
+    /// that still shows the spent window, and keep showing it until the next regular refresh.
+    /// </summary>
+    private static bool IsAnotherAttemptAllowed(ResetPoll polled, DateTimeOffset resetsAt, DateTimeOffset now) =>
+        polled.ResetsAt < resetsAt ||
+        (polled.ResetsAt == resetsAt &&
+         polled.Attempts < MaximumResetAttempts &&
+         now >= polled.LastAttemptAt + ResetRetryInterval);
+
+    /// <summary>A provider's follow-up polls for one rolled-over window.</summary>
+    private sealed record ResetPoll(DateTimeOffset ResetsAt, int Attempts, DateTimeOffset LastAttemptAt);
 
     /// <summary>
     /// Refreshes visible providers now, respecting provider backoff unless force is set.
@@ -202,7 +230,10 @@ internal sealed class UsageRefreshService : IDisposable
             {
                 if (PendingResetAt(client.Id, now) is { } resetAt)
                 {
-                    _handledResets[client.Id] = resetAt;
+                    var attempts = _resetPolls.TryGetValue(client.Id, out var polled) && polled.ResetsAt == resetAt
+                        ? polled.Attempts + 1
+                        : 1;
+                    _resetPolls[client.Id] = new ResetPoll(resetAt, attempts, now);
                 }
             }
 

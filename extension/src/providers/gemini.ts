@@ -354,11 +354,14 @@ export async function tryFetchAntigravitySnapshot(
       const ports = processInfo.hintedPort && ownedPorts.includes(processInfo.hintedPort)
         ? [processInfo.hintedPort, ...ownedPorts.filter((port) => port !== processInfo.hintedPort)]
         : ownedPorts;
+      // Ownership is re-read after the candidate list is built and before any token is sent, so
+      // a port the process has released in between is never handed a CSRF token. Here that is
+      // one `netstat` child process per language server: the desktop re-reads per candidate
+      // because its lookup is an in-process IP Helper call, but at 15-33 ms a spawn this loop
+      // would pay it up to 32 times per refresh for the same guarantee.
+      const stillOwned = await dependencies.listeningPorts(processInfo.pid);
       for (const port of ports.slice(0, 32)) {
-        // Ownership is re-read immediately before the token is sent, not reused from the
-        // listing above: a port the process has since released must never be handed a CSRF
-        // token. The native lookup makes that re-check cheap enough to keep.
-        if (!(await dependencies.listeningPorts(processInfo.pid)).includes(port)) {
+        if (!stillOwned.includes(port)) {
           continue;
         }
         for (const token of processInfo.tokens) {
@@ -995,7 +998,9 @@ export function parseNetstatListeningPorts(stdout: string, pid: number): number[
     }
     // A listening socket is identified by its wildcard foreign address, never by the state word:
     // netstat localizes that ("ABHÖREN" on German Windows, "ESCUCHAR" on Spanish), so matching
-    // "LISTENING" would find nothing outside an English install.
+    // "LISTENING" would find nothing outside an English install. This also admits the rarer
+    // BOUND rows, which share that foreign address; the cost is one refused request the probe
+    // already falls through, and the port is still owned by the pid either way.
     if (!/^(0\.0\.0\.0|\[::\]|\*):0$/.test(columns[2])) {
       continue;
     }
@@ -1020,7 +1025,10 @@ async function listeningPorts(pid: number): Promise<number[]> {
     const systemRoot = process.env.SystemRoot ?? "C:\\Windows";
     const netstat = path.join(systemRoot, "System32", "netstat.exe");
     try {
-      const result = await collectProcessOutput(spawnSecure(netstat, ["-ano"]), 3_000, 1_048_576);
+      // The whole table, not `-p TCP`, which omits IPv6 rows and would lose a language server
+      // listening on [::1]. collectProcessOutput truncates silently, so the cap is generous:
+      // a busy host's table still has to fit or the server's own row could be the part dropped.
+      const result = await collectProcessOutput(spawnSecure(netstat, ["-ano"]), 3_000, 4_194_304);
       return parseNetstatListeningPorts(result.stdout, pid);
     } catch {
       return [];
