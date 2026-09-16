@@ -993,7 +993,14 @@ export function parseNetstatListeningPorts(stdout: string, pid: number): number[
     const columns = line.trim().split(/\s+/);
     // PROTO  LOCAL  FOREIGN  STATE  PID — UDP rows have only four columns, so the length check
     // also keeps the pid from being read out of the wrong column.
-    if (columns.length !== 5 || !/^TCP$/i.test(columns[0])) {
+    if (columns.length !== 5) {
+      continue;
+    }
+    const [proto, local, foreign, , owner] = columns;
+    if (proto === undefined || local === undefined || foreign === undefined || owner === undefined) {
+      continue;
+    }
+    if (!/^TCP$/i.test(proto)) {
       continue;
     }
     // A listening socket is identified by its wildcard foreign address, never by the state word:
@@ -1001,13 +1008,12 @@ export function parseNetstatListeningPorts(stdout: string, pid: number): number[
     // "LISTENING" would find nothing outside an English install. This also admits the rarer
     // BOUND rows, which share that foreign address; the cost is one refused request the probe
     // already falls through, and the port is still owned by the pid either way.
-    if (!/^(0\.0\.0\.0|\[::\]|\*):0$/.test(columns[2])) {
+    if (!/^(0\.0\.0\.0|\[::\]|\*):0$/.test(foreign)) {
       continue;
     }
-    if (Number(columns[4]) !== pid) {
+    if (Number(owner) !== pid) {
       continue;
     }
-    const local = columns[1];
     const separator = local.lastIndexOf(":");
     if (separator < 0) {
       continue;
