@@ -44,6 +44,11 @@ internal sealed class SettingsForm : Form
     private readonly Button _cancelButton;
     private bool _isCheckingForUpdates;
     private bool _resourcesDisposed;
+    private int _dragCandidate = -1;
+    private int _dragIndex = -1;
+    private Point _dragOrigin;
+    private HashSet<string> _dragChecks = new(StringComparer.OrdinalIgnoreCase);
+    private List<ProviderEntry> _dragOrder = new();
 
     public SettingsForm(AppSettings settings, IReadOnlyList<(string Id, string DisplayName)> providers)
         : this(
@@ -175,6 +180,12 @@ internal sealed class SettingsForm : Form
             Margin = scale.Pad(0, 4, 0, 4),
         };
         _providers.HandleCreated += OnScrollableControlHandleCreated;
+        _providers.AccessibleDescription =
+            "Tick a provider to show it. Reorder with Alt+Up and Alt+Down, or drag an entry.";
+        _providers.MouseDown += OnProvidersMouseDown;
+        _providers.MouseMove += OnProvidersMouseMove;
+        _providers.MouseUp += OnProvidersMouseUp;
+        _providers.KeyDown += OnProvidersKeyDown;
         foreach (var id in _settings.OrderProviders(providers.Select(provider => provider.Id).ToArray()))
         {
             var provider = providers.First(candidate =>
@@ -246,7 +257,7 @@ internal sealed class SettingsForm : Form
             AutoSize = true,
             ForeColor = Theme.Muted,
             Margin = scale.Pad(0, 0, 0, 4),
-            Text = "Tick to show. Use the buttons to change the order.",
+            Text = "Tick to show. Drag a provider to reorder it, or use Alt+Up / Alt+Down.",
         });
         AddSpan(_providers);
         AddSpan(CreateOrderButtons(scale));
@@ -439,18 +450,199 @@ internal sealed class SettingsForm : Form
     private void MoveSelected(int offset)
     {
         var index = _providers.SelectedIndex;
-        var target = index + offset;
-        if (index < 0 || target < 0 || target >= _providers.Items.Count)
+        if (index >= 0)
+        {
+            MoveProvider(index, index + offset);
+        }
+    }
+
+    /// <summary>
+    /// The one place the list is reordered, so the buttons, the keyboard shortcut, and a drag all
+    /// move an entry the same way: the tick travels with its provider and stays selected.
+    /// </summary>
+    private void MoveProvider(int from, int to)
+    {
+        var count = _providers.Items.Count;
+        if (from == to || from < 0 || from >= count || to < 0 || to >= count)
         {
             return;
         }
 
-        var item = _providers.Items[index];
-        var isChecked = _providers.GetItemChecked(index);
-        _providers.Items.RemoveAt(index);
-        _providers.Items.Insert(target, item);
-        _providers.SetItemChecked(target, isChecked);
-        _providers.SelectedIndex = target;
+        var item = _providers.Items[from];
+        var isChecked = _providers.GetItemChecked(from);
+        _providers.BeginUpdate();
+        try
+        {
+            _providers.Items.RemoveAt(from);
+            _providers.Items.Insert(to, item);
+            _providers.SetItemChecked(to, isChecked);
+            _providers.SelectedIndex = to;
+        }
+        finally
+        {
+            _providers.EndUpdate();
+        }
+
+        if (_dragIndex >= 0)
+        {
+            _dragIndex = to;
+        }
+    }
+
+    /// <summary>
+    /// The nearest entry to a point, so a drag that strays past the first or last row still drops
+    /// at that end instead of being ignored.
+    /// </summary>
+    private int ProviderIndexFromPoint(Point point)
+    {
+        var count = _providers.Items.Count;
+        if (count == 0)
+        {
+            return -1;
+        }
+
+        var index = _providers.IndexFromPoint(point);
+        return index != ListBox.NoMatches ? index : point.Y <= 0 ? 0 : count - 1;
+    }
+
+    private void OnProvidersMouseDown(object? sender, MouseEventArgs eventArgs)
+    {
+        _dragCandidate = -1;
+        if (eventArgs.Button != MouseButtons.Left)
+        {
+            return;
+        }
+
+        var index = _providers.IndexFromPoint(eventArgs.Location);
+        if (index == ListBox.NoMatches)
+        {
+            return;
+        }
+
+        // Snapshot before anything moves: CheckOnClick has already toggled this item, and a drag
+        // that is cancelled has to put both the ticks and the original order back.
+        _dragCandidate = index;
+        _dragOrigin = eventArgs.Location;
+        _dragOrder = _providers.Items.Cast<ProviderEntry>().ToList();
+        _dragChecks = _providers.CheckedItems
+            .Cast<ProviderEntry>()
+            .Select(entry => entry.Id)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+    }
+
+    /// <summary>
+    /// Reordering rides on the mouse capture the list already takes, not on OLE drag-and-drop.
+    /// Registering a drop target needs an STA thread and buys nothing here: the entry never
+    /// leaves its own list, and a <see cref="CheckedListBox"/> rejects every owner-draw mode, so
+    /// moving the row under the cursor is the clearest insertion feedback available anyway.
+    /// </summary>
+    private void OnProvidersMouseMove(object? sender, MouseEventArgs eventArgs)
+    {
+        if (eventArgs.Button != MouseButtons.Left)
+        {
+            return;
+        }
+
+        if (_dragIndex < 0)
+        {
+            // Wait for the system drag threshold so a click that wobbles still ticks the box.
+            var threshold = SystemInformation.DragSize;
+            if (_dragCandidate < 0 ||
+                (Math.Abs(eventArgs.X - _dragOrigin.X) < threshold.Width &&
+                    Math.Abs(eventArgs.Y - _dragOrigin.Y) < threshold.Height))
+            {
+                return;
+            }
+
+            _dragIndex = _dragCandidate;
+            _dragCandidate = -1;
+
+            // This gesture is a reorder, not a tick, so undo the toggle the mouse-down made.
+            RestoreProviderChecks();
+            _providers.Cursor = Cursors.SizeNS;
+        }
+
+        MoveProvider(_dragIndex, ProviderIndexFromPoint(eventArgs.Location));
+    }
+
+    private void OnProvidersMouseUp(object? sender, MouseEventArgs eventArgs)
+    {
+        _dragCandidate = -1;
+        EndProviderDrag(cancel: false);
+    }
+
+    private void OnProvidersKeyDown(object? sender, KeyEventArgs eventArgs)
+    {
+        if (eventArgs.KeyCode == Keys.Escape && _dragIndex >= 0)
+        {
+            EndProviderDrag(cancel: true);
+            eventArgs.Handled = true;
+        }
+    }
+
+    private void EndProviderDrag(bool cancel)
+    {
+        if (_dragIndex < 0)
+        {
+            return;
+        }
+
+        _dragIndex = -1;
+        _providers.Cursor = Cursors.Default;
+        if (cancel)
+        {
+            RestoreProviderOrder();
+        }
+    }
+
+    private void RestoreProviderChecks()
+    {
+        for (var index = 0; index < _providers.Items.Count; index++)
+        {
+            var entry = (ProviderEntry)_providers.Items[index]!;
+            var shouldCheck = _dragChecks.Contains(entry.Id);
+            if (_providers.GetItemChecked(index) != shouldCheck)
+            {
+                _providers.SetItemChecked(index, shouldCheck);
+            }
+        }
+    }
+
+    private void RestoreProviderOrder()
+    {
+        if (_dragOrder.Count != _providers.Items.Count)
+        {
+            return;
+        }
+
+        _providers.BeginUpdate();
+        try
+        {
+            _providers.Items.Clear();
+            foreach (var entry in _dragOrder)
+            {
+                _providers.Items.Add(entry, _dragChecks.Contains(entry.Id));
+            }
+        }
+        finally
+        {
+            _providers.EndUpdate();
+        }
+    }
+
+    /// <summary>
+    /// Alt+Up and Alt+Down give the drag gesture a keyboard equal. The buttons alone only offer
+    /// one by tabbing out of the list, which is where the selection context is easiest to lose.
+    /// </summary>
+    protected override bool ProcessCmdKey(ref Message message, Keys keyData)
+    {
+        if (_providers.Focused && keyData is (Keys.Alt | Keys.Up) or (Keys.Alt | Keys.Down))
+        {
+            MoveSelected(keyData == (Keys.Alt | Keys.Up) ? -1 : 1);
+            return true;
+        }
+
+        return base.ProcessCmdKey(ref message, keyData);
     }
 
     private void AddSection(string title)

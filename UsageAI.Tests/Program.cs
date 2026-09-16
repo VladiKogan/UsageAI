@@ -80,6 +80,7 @@ internal static class Program
         ("custom UI rendering paths", CoverageExpansionTests.TestUiRenderingAsync),
         ("dashboard keeps a responsive two-by-two provider grid", CoverageExpansionTests.TestDashboardFixedGridAsync),
         ("dashboard grid never shows a scrollbar", CoverageExpansionTests.TestDashboardNeverScrollsAsync),
+        ("settings provider list reorders by drag", CoverageExpansionTests.TestProviderDragReorderAsync),
         ("application context lifecycle and tray updates", CoverageExpansionTests.TestApplicationContextAsync),
         ("preview and command-line entry points", CoverageExpansionTests.TestPreviewAndEntryPointsAsync),
         ("provider credential refresh and discovery branches", CoverageExpansionTests.TestProviderCredentialBranchesAsync),

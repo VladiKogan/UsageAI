@@ -2410,6 +2410,213 @@ internal static class CoverageExpansionTests
     /// are laid out at their natural height before the grid compacts them, and that transient
     /// overflow latched a scrollbar which then stole width from every card.
     /// </summary>
+    /// <summary>
+    /// The provider list reorders by dragging an entry as well as by the buttons. The gesture is
+    /// driven through the real mouse handlers, which is possible precisely because it rides on the
+    /// list's own mouse capture instead of OLE drag-and-drop.
+    /// </summary>
+    public static Task TestProviderDragReorderAsync()
+    {
+        var settings = new AppSettings { HiddenProviders = new[] { "copilot" } };
+        using var dialog = new SettingsForm(
+            settings,
+            new[]
+            {
+                ("codex", "Codex"),
+                ("claude", "Claude Code"),
+                ("copilot", "GitHub Copilot"),
+                ("gemini", "Google Gemini"),
+            })
+        {
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-10_000, -10_000),
+        };
+        dialog.Show();
+        Application.DoEvents();
+
+        var list = GetPrivateField<CheckedListBox>(dialog, "_providers");
+        Equal(4, list.Items.Count);
+        var original = ProviderNames(list);
+        Equal("Codex", original[0]);
+        False(list.GetItemChecked(2));
+
+        // Press the first row and move onto the third: the entry follows the pointer, so the row
+        // the user is looking at is the row that gets dropped.
+        DragProvider(dialog, list, 0, 2, release: true);
+        var reordered = ProviderNames(list);
+        Equal("Claude Code", reordered[0]);
+        Equal("GitHub Copilot", reordered[1]);
+        Equal("Codex", reordered[2]);
+        Equal(2, list.SelectedIndex);
+
+        // The tick belongs to the provider, not to the row it happens to sit on.
+        False(list.GetItemChecked(1));
+        True(list.GetItemChecked(2));
+
+        // The drag is over, so a stray move must not keep dragging.
+        MoveOver(dialog, list, 0);
+        True(reordered.SequenceEqual(ProviderNames(list)));
+
+        // Escape abandons a drag in flight and puts the original order back.
+        DragProvider(dialog, list, 0, 3, release: false);
+        Equal("Claude Code", list.Items[3].ToString());
+        var ignored = new KeyEventArgs(Keys.Delete);
+        InvokePrivate(dialog, "OnProvidersKeyDown", null, ignored);
+        False(ignored.Handled);
+        True(GetPrivateFieldValue<int>(dialog, "_dragIndex") >= 0);
+        InvokePrivate(dialog, "OnProvidersKeyDown", null, new KeyEventArgs(Keys.Escape));
+        True(reordered.SequenceEqual(ProviderNames(list)));
+        Equal(-1, GetPrivateFieldValue<int>(dialog, "_dragIndex"));
+        Release(dialog, list, 0);
+
+        // CheckOnClick ticks the box on mouse-down, so a gesture that turns into a drag has to
+        // hand the tick back; otherwise reordering would silently show or hide a provider.
+        var ticked = list.GetItemChecked(0);
+        Press(dialog, list, 0);
+        list.SetItemChecked(0, !ticked);
+        MoveOver(dialog, list, 1);
+        Equal(ticked, list.GetItemChecked(1));
+        Release(dialog, list, 1);
+
+        // A press that never passes the drag threshold stays a click and reorders nothing.
+        var settled = ProviderNames(list);
+        Press(dialog, list, 0);
+        var centre = ProviderCentre(list, 0);
+        InvokePrivate(
+            dialog,
+            "OnProvidersMouseMove",
+            null,
+            new MouseEventArgs(MouseButtons.Left, 0, centre.X, centre.Y + 1, 0));
+        Equal(-1, GetPrivateFieldValue<int>(dialog, "_dragIndex"));
+        True(settled.SequenceEqual(ProviderNames(list)));
+        Release(dialog, list, 0);
+
+        // Only the left button reorders, so a right-click never grabs a row.
+        InvokePrivate(
+            dialog,
+            "OnProvidersMouseDown",
+            null,
+            new MouseEventArgs(MouseButtons.Right, 1, centre.X, centre.Y, 0));
+        Equal(-1, GetPrivateFieldValue<int>(dialog, "_dragCandidate"));
+
+        // Neither does pressing the empty strip below the last row.
+        InvokePrivate(
+            dialog,
+            "OnProvidersMouseDown",
+            null,
+            new MouseEventArgs(MouseButtons.Left, 1, centre.X, list.Height - 2, 0));
+        Equal(-1, GetPrivateFieldValue<int>(dialog, "_dragCandidate"));
+
+        // The ends hold: nothing climbs past the top or falls past the bottom, and an entry
+        // dropped back where it started is left alone rather than removed and reinserted.
+        var ends = ProviderNames(list);
+        var last = list.Items.Count - 1;
+        InvokePrivate(dialog, "MoveProvider", 0, -1);
+        InvokePrivate(dialog, "MoveProvider", last, last + 1);
+        InvokePrivate(dialog, "MoveProvider", 1, 1);
+        True(ends.SequenceEqual(ProviderNames(list)));
+
+        // With nothing selected there is nothing for the buttons or the shortcut to move.
+        list.ClearSelected();
+        InvokePrivate(dialog, "MoveSelected", -1);
+        True(ends.SequenceEqual(ProviderNames(list)));
+
+        // Dragging past either end lands at that end rather than being discarded.
+        Equal(3, InvokePrivate<int>(dialog, "ProviderIndexFromPoint", new Point(4, list.Height * 4)));
+        Equal(0, InvokePrivate<int>(dialog, "ProviderIndexFromPoint", new Point(4, -20)));
+
+        // Alt+Down is the keyboard equal of the drag, and must not fire from anywhere else.
+        list.SelectedIndex = 0;
+        var head = list.Items[0].ToString();
+        dialog.Activate();
+        list.Focus();
+        Application.DoEvents();
+        if (list.Focused)
+        {
+            True(InvokeProcessCmdKey(dialog, Keys.Alt | Keys.Down));
+            Equal(head, list.Items[1].ToString());
+            Equal(1, list.SelectedIndex);
+            True(InvokeProcessCmdKey(dialog, Keys.Alt | Keys.Up));
+            Equal(head, list.Items[0].ToString());
+        }
+
+        False(InvokeProcessCmdKey(dialog, Keys.Alt | Keys.Right));
+
+        // Whatever the list shows at the end is what gets saved.
+        var saved = list.Items.Cast<object>()
+            .Select(item => GetProperty<string>(item, "Id"))
+            .ToArray();
+        InvokePrivate(dialog, "Apply");
+        True(saved.SequenceEqual(settings.ProviderOrder));
+
+        dialog.Hide();
+        return Task.CompletedTask;
+    }
+
+    private static string?[] ProviderNames(CheckedListBox list) =>
+        list.Items.Cast<object>().Select(item => item.ToString()).ToArray();
+
+    private static Point ProviderCentre(CheckedListBox list, int index)
+    {
+        var bounds = list.GetItemRectangle(index);
+        return new Point(bounds.Left + (bounds.Width / 2), bounds.Top + (bounds.Height / 2));
+    }
+
+    private static void Press(SettingsForm dialog, CheckedListBox list, int index)
+    {
+        var centre = ProviderCentre(list, index);
+        InvokePrivate(
+            dialog,
+            "OnProvidersMouseDown",
+            null,
+            new MouseEventArgs(MouseButtons.Left, 1, centre.X, centre.Y, 0));
+    }
+
+    private static void MoveOver(SettingsForm dialog, CheckedListBox list, int index)
+    {
+        var centre = ProviderCentre(list, index);
+        InvokePrivate(
+            dialog,
+            "OnProvidersMouseMove",
+            null,
+            new MouseEventArgs(MouseButtons.Left, 0, centre.X, centre.Y, 0));
+    }
+
+    private static void Release(SettingsForm dialog, CheckedListBox list, int index)
+    {
+        var centre = ProviderCentre(list, index);
+        InvokePrivate(
+            dialog,
+            "OnProvidersMouseUp",
+            null,
+            new MouseEventArgs(MouseButtons.Left, 1, centre.X, centre.Y, 0));
+    }
+
+    private static void DragProvider(
+        SettingsForm dialog,
+        CheckedListBox list,
+        int from,
+        int to,
+        bool release)
+    {
+        Press(dialog, list, from);
+        MoveOver(dialog, list, to);
+        if (release)
+        {
+            Release(dialog, list, to);
+        }
+    }
+
+    private static bool InvokeProcessCmdKey(SettingsForm dialog, Keys keyData)
+    {
+        var method = typeof(SettingsForm).GetMethod(
+            "ProcessCmdKey",
+            BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Missing ProcessCmdKey.");
+        var arguments = new object?[] { default(Message), keyData };
+        return (bool)method.Invoke(dialog, arguments)!;
+    }
+
     public static Task TestDashboardNeverScrollsAsync()
     {
         var now = DateTimeOffset.Now;

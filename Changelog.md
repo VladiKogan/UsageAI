@@ -6,6 +6,18 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- The provider list in Settings can now be reordered by dragging an entry, which is the gesture
+  people try first; the Move up and Move down buttons stay, and Alt+Up and Alt+Down do the same
+  from the keyboard without leaving the list. The drag rides on the mouse capture the list already
+  takes rather than OLE drag-and-drop, because registering a drop target needs an STA thread and
+  buys nothing for an entry that never leaves its own list. A `CheckedListBox` refuses every
+  owner-draw mode, so the row moves under the cursor instead of a drawn insertion line, which also
+  shows the result rather than a promise of it. A press that never passes the system drag threshold
+  is still a click, a drag hands back the tick that `CheckOnClick` applies on mouse-down, and
+  Escape abandons a drag in flight and restores the original order.
+
 ### Changed
 
 - The What's New window now lays the release notes out as a typed document instead of one
@@ -26,6 +38,10 @@ The project follows [Semantic Versioning](https://semver.org/).
   releases exist, and the subheading names how many releases are being shown when there is more than
   one. Windows High Contrast still flattens every category colour to the system foreground, and the
   category name is always spelled out, so colour is never the only cue.
+- The desktop suite grew to 76 checks, adding the dashboard grid's scroll behaviour and the whole
+  provider-list drag gesture, down to the boundaries that must do nothing: a right-click, a press
+  on the empty strip below the last row, and a move that would carry an entry past either end.
+  Coverage on the `UsageAI` package is 88.20% line and 81.90% branch, against a gate of 83% and 76%.
 
 ### Fixed
 
