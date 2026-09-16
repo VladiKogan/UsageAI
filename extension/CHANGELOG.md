@@ -10,6 +10,9 @@
 
 ### Fixed
 
+- Fixed a dashboard metric-mode change that cannot be written to settings leaving the dashboard
+  showing a mode the Status Bar and the next reload do not use. The mode is still applied immediately,
+  but a rejected write now rolls it back and rerenders instead of being discarded unobserved.
 - Applied dashboard metric-mode changes immediately in both the webview and extension host so All,
   Metered only, and Important only no longer depend on configuration-change propagation to rerender.
 

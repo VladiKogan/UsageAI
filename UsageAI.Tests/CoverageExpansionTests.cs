@@ -1115,6 +1115,30 @@ internal static class CoverageExpansionTests
             False((await UpdateChecker.CheckForUpdateAsync(http, CancellationToken.None)).Succeeded);
         }
 
+        // Well-formed JSON of the wrong shape must report a failed check, not throw: reading a
+        // property off a non-object raises InvalidOperationException, which the caller does not
+        // catch and which would surface on the UI thread from the timer and the Settings button.
+        foreach (var rootless in new[] { "[]", "\"release\"", "123", "{\"tag_name\":[\"v9.9.9\"]}" })
+        {
+            using var http = new HttpClient(new StubHttpHandler((_, _, _) =>
+                Task.FromResult(JsonResponse(HttpStatusCode.OK, rootless))));
+            False((await UpdateChecker.CheckForUpdateAsync(http, CancellationToken.None)).Succeeded);
+        }
+
+        // A valid release whose asset entries are not objects still reports the release, with no
+        // installer to download, rather than failing the whole check.
+        foreach (var assets in new[] { "[1]", "[[]]", "[null]", "[\"UsageAI-9.9.9-Setup.exe\"]" })
+        {
+            using var http = new HttpClient(new StubHttpHandler((_, _, _) =>
+                Task.FromResult(JsonResponse(
+                    HttpStatusCode.OK,
+                    $"{{\"tag_name\":\"v9.9.9\",\"assets\":{assets}}}"))));
+            var assetCheck = await UpdateChecker.CheckForUpdateAsync(http, CancellationToken.None);
+            True(assetCheck.Succeeded);
+            NotNull(assetCheck.Release);
+            Null(assetCheck.Release!.Installer);
+        }
+
         using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
                    throw new HttpRequestException("synthetic failure"))))
         {

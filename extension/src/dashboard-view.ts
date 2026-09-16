@@ -142,9 +142,18 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
     if (message.type === "setMetricDisplayMode") {
       const mode = normalizeMetricDisplayMode(message.mode);
       if (mode !== message.mode) return;
+      // Render immediately rather than waiting for configuration-change propagation, but a setting
+      // that cannot be written must not leave this cache ahead of what the Status Bar and the next
+      // reload will read.
+      const previousMode = this.metricDisplayMode;
       this.metricDisplayMode = mode;
       this.postStates(this.refreshService.getStates());
-      await this.options.setMetricDisplayMode?.(mode);
+      try {
+        await this.options.setMetricDisplayMode?.(mode);
+      } catch {
+        this.metricDisplayMode = previousMode;
+        this.postStates(this.refreshService.getStates());
+      }
       return;
     }
     if (message.type === "setAllExpanded") {

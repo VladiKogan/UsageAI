@@ -19,6 +19,11 @@ The project follows [Semantic Versioning](https://semver.org/).
   displays remain usable at 200% and 300% scaling.
 - Ignored malformed GitHub release assets whose size is not numeric instead of allowing update
   metadata parsing to fail unexpectedly.
+- Fixed a well-formed but wrongly shaped GitHub release payload throwing out of the update check
+  instead of reporting that it failed. Reading a property from a JSON array, string, or number raises
+  an exception the check does not catch, so a non-object release root or a non-object entry in
+  `assets` could surface on the UI thread from the daily timer or the Settings **Check for updates**
+  button. Release roots and asset entries are now required to be objects.
 
 ## [0.10.0] - 2026-09-15
 

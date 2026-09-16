@@ -97,7 +97,8 @@ internal static class UpdateChecker
 
     private static UpdateRelease? ParseRelease(JsonElement root, string currentVersion)
     {
-        if (!root.TryGetProperty("tag_name", out var tagElement) ||
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("tag_name", out var tagElement) ||
             tagElement.ValueKind != JsonValueKind.String)
         {
             return null;
@@ -163,7 +164,8 @@ internal static class UpdateChecker
 
     private static bool HasValidReleaseTag(JsonElement root)
     {
-        if (!root.TryGetProperty("tag_name", out var tagElement) ||
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("tag_name", out var tagElement) ||
             tagElement.ValueKind != JsonValueKind.String)
         {
             return false;
@@ -177,7 +179,9 @@ internal static class UpdateChecker
 
     private static UpdateAsset? ParseAsset(JsonElement element)
     {
-        if (!element.TryGetProperty("name", out var nameElement) ||
+        // An `assets` array may hold anything; only an object can be read with TryGetProperty.
+        if (element.ValueKind != JsonValueKind.Object ||
+            !element.TryGetProperty("name", out var nameElement) ||
             nameElement.ValueKind != JsonValueKind.String ||
             !element.TryGetProperty("browser_download_url", out var urlElement) ||
             urlElement.ValueKind != JsonValueKind.String ||

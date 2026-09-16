@@ -528,3 +528,40 @@ test("activation helpers sanitize configuration and activation registers its sur
     for (const subscription of subscriptions) subscription.dispose();
   }
 });
+
+test("a metric-mode change that cannot be saved reverts the dashboard's cached mode", async () => {
+  // The mode is applied optimistically so the dashboard rerenders without waiting for configuration
+  // propagation. A read-only or policy-locked setting must not leave that cache ahead of what the
+  // Status Bar and the next reload read, and the rejection is never awaited by the message listener.
+  const service = {
+    onDidUpdate() { return () => {}; },
+    getStates: () => [],
+    setVisible() {},
+  } as unknown as InstanceType<typeof UsageRefreshService>;
+
+  const posted: { metricDisplayMode?: string }[] = [];
+  let handler: ((message: unknown) => Promise<void>) | undefined;
+  const dashboard = new UsageDashboardViewProvider(service, () => 72, () => 90, {
+    metricDisplayMode: () => "all",
+    setMetricDisplayMode: () => Promise.reject(new Error("setting is read-only")),
+  });
+  dashboard.resolveWebviewView({
+    visible: true,
+    webview: {
+      options: {},
+      html: "",
+      postMessage(message: { metricDisplayMode?: string }) { posted.push(message); return Promise.resolve(true); },
+      onDidReceiveMessage(next: (message: unknown) => Promise<void>) {
+        handler = next;
+        return { dispose() {} };
+      },
+    },
+    onDidChangeVisibility() { return { dispose() {} }; },
+    onDidDispose() { return { dispose() {} }; },
+  } as never);
+
+  await assert.doesNotReject(async () => handler?.({ type: "setMetricDisplayMode", mode: "important" }));
+  // Applied immediately, then rolled back once the write failed.
+  assert.equal(posted.at(-2)?.metricDisplayMode, "important");
+  assert.equal(posted.at(-1)?.metricDisplayMode, "all");
+});
