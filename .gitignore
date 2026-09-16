@@ -11,6 +11,7 @@ installer/Output/
 .dotnet-cli/
 .nuget/
 .codex-security-tmp/
+.claude/
 .agents/
 *.user
 *.suo
