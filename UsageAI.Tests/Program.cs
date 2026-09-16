@@ -1485,7 +1485,7 @@ internal static class Program
         Null(UpgradeNotice.Create(downgrade, true, "1.4.0", releases).Pending);
         Equal("1.4.0", downgrade.LastRunVersion);
 
-        var fallback = new WhatsNewSummary(Array.Empty<ReleaseNotesVersion>(), "1.4.0", false);
+        var fallback = new WhatsNewSummary(Array.Empty<ReleaseNotesVersion>(), "1.4.0", 0);
         using var form = new WhatsNewForm(fallback)
         {
             StartPosition = FormStartPosition.Manual,
@@ -1569,7 +1569,7 @@ internal static class Program
                 True(settings.ClientSize.Width > 0 && settings.ClientSize.Height > 0);
                 settings.Hide();
 
-                var summary = new WhatsNewSummary(Array.Empty<ReleaseNotesVersion>(), "1.4.0", false);
+                var summary = new WhatsNewSummary(Array.Empty<ReleaseNotesVersion>(), "1.4.0", 0);
                 using var whatsNew = new WhatsNewForm(summary, dpi)
                 {
                     StartPosition = FormStartPosition.Manual,

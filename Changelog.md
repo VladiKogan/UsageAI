@@ -4,6 +4,29 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- The What's New window now lays the release notes out as a typed document instead of one
+  undifferentiated block of text. Every release gets its own heading and date, the Added, Changed,
+  Fixed and Security categories become coloured labels, bullets hang their wrapped lines under the
+  text rather than under the marker, and releases, categories and bullets are separated by
+  progressively smaller gaps so the structure is visible before a word is read. The dates are
+  spelled out the way the changelog writes them rather than through the system long-date format,
+  which on a right-to-left locale reversed itself against the version sitting beside it.
+- Inline `code` and **strong** spans in a changelog bullet are now given a monospace and a bold face
+  instead of being printed with their Markdown delimiters still attached. No Markdown engine is
+  involved and nothing is fetched: the bundled changelog is still read through the same bounded
+  parser, only the two constructs the changelog actually uses are recognised, and an unpaired or
+  empty delimiter stays literal text. Angle brackets are never markup, so HTML in a bullet is still
+  shown verbatim.
+- The window now says how much it is leaving out. The upgrade summary has always been capped at the
+  three newest releases; it reports the number it dropped rather than a bare note that older
+  releases exist, and the subheading names how many releases are being shown when there is more than
+  one. Windows High Contrast still flattens every category colour to the system foreground, and the
+  category name is always spelled out, so colour is never the only cue.
+
 ## [0.11.0] - 2026-09-16
 
 ### Changed

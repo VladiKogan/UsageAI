@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Reflection;
 using System.Text;
 using System.Text.RegularExpressions;
@@ -9,12 +10,28 @@ internal sealed record ReleaseNoteSection(string Heading, IReadOnlyList<string> 
 internal sealed record ReleaseNotesVersion(
     Version Version,
     string DisplayVersion,
+    DateOnly? Date,
     IReadOnlyList<ReleaseNoteSection> Sections);
+
+/// <summary>How a span of bullet text was marked up in the changelog Markdown.</summary>
+internal enum ReleaseNoteRunStyle
+{
+    Normal,
+    Strong,
+    Code,
+}
+
+/// <summary>One contiguous span of a bullet that shares a single visual treatment.</summary>
+internal readonly record struct ReleaseNoteRun(string Text, ReleaseNoteRunStyle Style);
 
 internal sealed record WhatsNewSummary(
     IReadOnlyList<ReleaseNotesVersion> Releases,
     string InstalledVersion,
-    bool HasOlderSkipped);
+    int SkippedCount)
+{
+    /// <summary>True when releases were dropped to keep the window bounded.</summary>
+    public bool HasOlderSkipped => SkippedCount > 0;
+}
 
 /// <summary>Reads a bounded, intentionally small subset of the bundled changelog Markdown.</summary>
 internal static partial class ReleaseNotes
@@ -22,6 +39,7 @@ internal static partial class ReleaseNotes
     internal const string ResourceName = "UsageAI.Changelog.md";
     internal const int MaximumInputCharacters = 131_072;
     private const int MaximumVersions = 128;
+    private const int MaximumShownReleases = 3;
     private const int MaximumBulletsPerVersion = 32;
     private const int MaximumBulletCharacters = 1_000;
     private const int MaximumOutputCharacters = 24_000;
@@ -102,7 +120,10 @@ internal static partial class ReleaseNotes
                     continue;
                 }
 
-                current = new ReleaseBuilder(parsed, label.Trim().TrimStart('v', 'V'));
+                current = new ReleaseBuilder(
+                    parsed,
+                    label.Trim().TrimStart('v', 'V'),
+                    ParseDate(headingMatch.Groups[2].Value));
                 builders.Add(current);
                 continue;
             }
@@ -167,7 +188,7 @@ internal static partial class ReleaseNotes
         var current = UpdateChecker.ParseVersion(currentVersion);
         if (current is null)
         {
-            return new WhatsNewSummary(Array.Empty<ReleaseNotesVersion>(), currentVersion, false);
+            return new WhatsNewSummary(Array.Empty<ReleaseNotesVersion>(), currentVersion, 0);
         }
 
         var relevant = releases
@@ -175,25 +196,91 @@ internal static partial class ReleaseNotes
                 (previousVersion is null ? release.Version == current : release.Version > previousVersion))
             .OrderByDescending(release => release.Version)
             .ToArray();
-        return new WhatsNewSummary(relevant.Take(3).ToArray(), currentVersion, relevant.Length > 3);
+        var shown = relevant.Take(MaximumShownReleases).ToArray();
+        return new WhatsNewSummary(shown, currentVersion, relevant.Length - shown.Length);
     }
 
-    [GeneratedRegex(@"^##\s+\[([^\]]+)\](?:\s+-\s+\d{4}-\d{2}-\d{2})?\s*$", RegexOptions.CultureInvariant)]
+    /// <summary>
+    /// Splits one bullet into the inline spans the window renders differently. Only the two
+    /// constructs the changelog actually uses are recognised — <c>`code`</c> and <c>**strong**</c> —
+    /// and an unpaired or empty delimiter stays literal text, so this can never consume more of the
+    /// bullet than the markup it matched.
+    /// </summary>
+    internal static IReadOnlyList<ReleaseNoteRun> SplitInline(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+        {
+            return Array.Empty<ReleaseNoteRun>();
+        }
+
+        var runs = new List<ReleaseNoteRun>();
+        var literal = new StringBuilder();
+        var index = 0;
+
+        void FlushLiteral()
+        {
+            if (literal.Length > 0)
+            {
+                runs.Add(new ReleaseNoteRun(literal.ToString(), ReleaseNoteRunStyle.Normal));
+                literal.Clear();
+            }
+        }
+
+        while (index < text.Length)
+        {
+            var isCode = text[index] == '`';
+            var isStrong = !isCode && text[index] == '*' &&
+                index + 1 < text.Length && text[index + 1] == '*';
+            if (!isCode && !isStrong)
+            {
+                literal.Append(text[index++]);
+                continue;
+            }
+
+            var delimiter = isCode ? "`" : "**";
+            var contentStart = index + delimiter.Length;
+            var close = text.IndexOf(delimiter, contentStart, StringComparison.Ordinal);
+            if (close <= contentStart)
+            {
+                literal.Append(text[index++]);
+                continue;
+            }
+
+            FlushLiteral();
+            runs.Add(new ReleaseNoteRun(
+                text[contentStart..close],
+                isCode ? ReleaseNoteRunStyle.Code : ReleaseNoteRunStyle.Strong));
+            index = close + delimiter.Length;
+        }
+
+        FlushLiteral();
+        return runs;
+    }
+
+    private static DateOnly? ParseDate(string value) =>
+        DateOnly.TryParseExact(value, "yyyy-MM-dd", CultureInfo.InvariantCulture, DateTimeStyles.None, out var date)
+            ? date
+            : null;
+
+    [GeneratedRegex(@"^##\s+\[([^\]]+)\](?:\s+-\s+(\d{4}-\d{2}-\d{2}))?\s*$", RegexOptions.CultureInvariant)]
     private static partial Regex VersionHeading();
 
     private sealed class ReleaseBuilder
     {
         private readonly Dictionary<string, List<string>> _sections = new(StringComparer.OrdinalIgnoreCase);
 
-        public ReleaseBuilder(Version version, string displayVersion)
+        public ReleaseBuilder(Version version, string displayVersion, DateOnly? date)
         {
             Version = version;
             DisplayVersion = displayVersion;
+            Date = date;
         }
 
         public Version Version { get; }
 
         public string DisplayVersion { get; }
+
+        public DateOnly? Date { get; }
 
         public int BulletCount { get; private set; }
 
@@ -213,6 +300,7 @@ internal static partial class ReleaseNotes
         public ReleaseNotesVersion Build() => new(
             Version,
             DisplayVersion,
+            Date,
             _sections.Select(pair => new ReleaseNoteSection(pair.Key, pair.Value.ToArray())).ToArray());
     }
 }

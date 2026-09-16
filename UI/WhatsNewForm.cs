@@ -1,16 +1,20 @@
 using System.Diagnostics;
 using System.Globalization;
-using System.Text;
 using UsageAI.Services;
 
 namespace UsageAI.UI;
 
-/// <summary>A native, bundled release-notes window with no network or Markdown rendering.</summary>
+/// <summary>
+/// A native, bundled release-notes window. It never fetches anything and never runs a Markdown
+/// engine: the changelog is parsed into versions, sections and bullets before it gets here, and
+/// this form only chooses a font and colour per already-identified span.
+/// </summary>
 internal sealed class WhatsNewForm : Form
 {
     private static readonly Uri CompleteChangelogUrl =
         new("https://github.com/VladiKogan/UsageAI/blob/main/Changelog.md");
 
+    private readonly WhatsNewSummary _summary;
     private readonly TableLayoutPanel _shell;
     private readonly Label _heading;
     private readonly Label _subheading;
@@ -19,10 +23,18 @@ internal sealed class WhatsNewForm : Form
     private readonly Button _viewComplete;
     private readonly Button _close;
     private readonly int? _dpiOverride;
+    private readonly Font _bodyFont = Typography.Text(9F);
+    private readonly Font _strongFont = Typography.Text(9F, FontStyle.Bold);
+    private readonly Font _codeFont = Typography.Mono(8.5F, FontStyle.Regular);
+    private readonly Font _versionFont = Typography.Display(13F);
+    private readonly Font _dateFont = Typography.Text(8.5F);
+    private readonly Font _sectionFont = Typography.Text(8.5F, FontStyle.Bold);
+    private readonly Font _gapFont = Typography.Text(5F);
 
     public WhatsNewForm(WhatsNewSummary summary, int? dpiOverride = null)
     {
         ArgumentNullException.ThrowIfNull(summary);
+        _summary = summary;
         _dpiOverride = dpiOverride;
         AutoScaleMode = AutoScaleMode.None;
         BackColor = Theme.Night;
@@ -64,7 +76,7 @@ internal sealed class WhatsNewForm : Form
         {
             Dock = DockStyle.Fill,
             Font = Typography.Text(9F),
-            Text = $"Updated to UsageAI {summary.InstalledVersion}",
+            Text = BuildSubheading(summary),
             TextAlign = ContentAlignment.TopLeft,
         };
         _content = new RichTextBox
@@ -74,11 +86,10 @@ internal sealed class WhatsNewForm : Form
             BorderStyle = BorderStyle.FixedSingle,
             DetectUrls = false,
             Dock = DockStyle.Fill,
-            Font = Typography.Text(9F),
+            Font = _bodyFont,
             ReadOnly = true,
             ScrollBars = RichTextBoxScrollBars.Vertical,
             TabStop = true,
-            Text = BuildText(summary),
         };
         _buttons = new FlowLayoutPanel
         {
@@ -100,8 +111,12 @@ internal sealed class WhatsNewForm : Form
         AcceptButton = _close;
         CancelButton = _close;
         Theme.Changed += OnThemeChanged;
+        // Character formatting lives in the native control, so it is written once the handle
+        // exists and written again if Windows ever recreates it.
+        _content.HandleCreated += OnContentHandleCreated;
         ApplyScaledLayout();
         ApplyTheme();
+        RenderContent();
     }
 
     public static void ShowCurrent(IWin32Window? owner = null)
@@ -120,6 +135,8 @@ internal sealed class WhatsNewForm : Form
         var selectionStart = _content.SelectionStart;
         base.OnDpiChanged(eventArgs);
         ApplyScaledLayout();
+        // Bullet indents are pixel geometry, so the whole document has to be laid out again.
+        RenderContent();
         Bounds = FitToWorkingArea(Bounds, Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea);
         _content.SelectionStart = Math.Min(selectionStart, _content.TextLength);
         _content.ScrollToCaret();
@@ -132,48 +149,197 @@ internal sealed class WhatsNewForm : Form
         WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
     }
 
+    private void OnContentHandleCreated(object? sender, EventArgs eventArgs) => RenderContent();
+
     protected override void Dispose(bool disposing)
     {
         if (disposing)
         {
             Theme.Changed -= OnThemeChanged;
+            _content.HandleCreated -= OnContentHandleCreated;
             _heading.Font.Dispose();
             _subheading.Font.Dispose();
-            _content.Font.Dispose();
+            _bodyFont.Dispose();
+            _strongFont.Dispose();
+            _codeFont.Dispose();
+            _versionFont.Dispose();
+            _dateFont.Dispose();
+            _sectionFont.Dispose();
+            _gapFont.Dispose();
         }
         base.Dispose(disposing);
     }
 
-    private static string BuildText(WhatsNewSummary summary)
+    private static string BuildSubheading(WhatsNewSummary summary) =>
+        summary.Releases.Count > 1
+            ? $"Updated to UsageAI {summary.InstalledVersion} — {summary.Releases.Count} releases since you last ran it"
+            : $"Updated to UsageAI {summary.InstalledVersion}";
+
+    /// <summary>
+    /// The colour that reinforces a section's meaning. It is never the only cue: the heading text
+    /// spells the category out, and Windows High Contrast flattens all four to the system
+    /// foreground.
+    /// </summary>
+    private static Color SectionColor(string heading) => heading.ToUpperInvariant() switch
     {
-        if (summary.Releases.Count == 0)
+        "ADDED" => Theme.Success,
+        "FIXED" => Theme.Warning,
+        "SECURITY" => Theme.Critical,
+        _ => Theme.Signal,
+    };
+
+    /// <summary>
+    /// Lays the parsed release notes out as a typed document: a version line per release, a
+    /// coloured category label per section, and hanging-indented bullets whose inline code and
+    /// strong spans keep their own faces.
+    /// </summary>
+    private void RenderContent()
+    {
+        if (!_content.IsHandleCreated)
         {
-            return $"Updated to UsageAI {summary.InstalledVersion}.";
+            // Nothing to format yet; OnContentHandleCreated renders as soon as there is.
+            return;
         }
 
-        var text = new StringBuilder();
-        foreach (var release in summary.Releases)
+        var scale = Scale();
+        _content.Clear();
+        if (_summary.Releases.Count == 0)
         {
-            if (text.Length > 0) text.AppendLine();
-            text.AppendLine(CultureInfo.InvariantCulture, $"VERSION {release.DisplayVersion}");
+            AppendParagraph(
+                new[] { (Text: $"Updated to UsageAI {_summary.InstalledVersion}.", Font: _bodyFont, Color: Theme.Text) },
+                indent: 0,
+                hangingIndent: 0);
+            _content.SelectionStart = 0;
+            _content.SelectionLength = 0;
+            return;
+        }
+
+        var first = true;
+        foreach (var release in _summary.Releases)
+        {
+            if (!first)
+            {
+                AppendGap(_versionFont);
+            }
+            first = false;
+
+            var versionRuns = new List<(string Text, Font Font, Color Color)>
+            {
+                ($"UsageAI {release.DisplayVersion}", _versionFont, Theme.Text),
+            };
+            if (release.Date is { } date)
+            {
+                // Every other string in this window is English, and a right-to-left system long
+                // date reverses itself against the version it sits beside, so the date is spelled
+                // out the same way the changelog itself is.
+                versionRuns.Add((
+                    $"    {date.ToString("MMMM d, yyyy", CultureInfo.InvariantCulture)}",
+                    _dateFont,
+                    Theme.Muted));
+            }
+            AppendParagraph(versionRuns, indent: 0, hangingIndent: 0);
+
             foreach (var section in release.Sections)
             {
-                text.AppendLine();
-                text.AppendLine(section.Heading.ToUpperInvariant());
+                AppendGap(_bodyFont);
+                AppendParagraph(
+                    new[]
+                    {
+                        (Text: section.Heading.ToUpperInvariant(),
+                            Font: _sectionFont,
+                            Color: SectionColor(section.Heading)),
+                    },
+                    indent: 0,
+                    hangingIndent: 0);
+                var firstBullet = true;
                 foreach (var bullet in section.Bullets)
                 {
-                    text.Append("• ");
-                    text.AppendLine(bullet);
+                    if (!firstBullet)
+                    {
+                        AppendGap(_gapFont);
+                    }
+                    firstBullet = false;
+
+                    var runs = new List<(string Text, Font Font, Color Color)>
+                    {
+                        ("•  ", _bodyFont, Theme.Muted),
+                    };
+                    foreach (var run in ReleaseNotes.SplitInline(bullet))
+                    {
+                        runs.Add(run.Style switch
+                        {
+                            ReleaseNoteRunStyle.Code => (run.Text, _codeFont, Theme.Signal),
+                            ReleaseNoteRunStyle.Strong => (run.Text, _strongFont, Theme.Text),
+                            _ => (run.Text, _bodyFont, Theme.Text),
+                        });
+                    }
+                    AppendParagraph(runs, scale[6], scale[14]);
                 }
             }
         }
 
-        if (summary.HasOlderSkipped)
+        if (_summary.HasOlderSkipped)
         {
-            text.AppendLine();
-            text.Append("Older skipped releases are available in the complete changelog.");
+            AppendGap(_bodyFont);
+            var releaseWord = _summary.SkippedCount == 1 ? "release is" : "releases are";
+            AppendParagraph(
+                new[]
+                {
+                    (Text: $"{_summary.SkippedCount} older {releaseWord} not shown here. " +
+                        "Use View complete changelog to read them.",
+                        Font: _bodyFont,
+                        Color: Theme.Muted),
+                },
+                indent: 0,
+                hangingIndent: 0);
         }
-        return text.ToString().TrimEnd();
+
+        _content.SelectionStart = 0;
+        _content.SelectionLength = 0;
+    }
+
+    /// <summary>
+    /// A blank line of a chosen height. A RichTextBox has no paragraph spacing, so the size of the
+    /// font on an empty line is the only way to separate a release from a section from a bullet.
+    /// </summary>
+    private void AppendGap(Font font) => AppendParagraph(
+        new[] { (Text: string.Empty, Font: font, Color: Theme.Muted) },
+        indent: 0,
+        hangingIndent: 0);
+
+    private void AppendParagraph(
+        IReadOnlyList<(string Text, Font Font, Color Color)> runs,
+        int indent,
+        int hangingIndent)
+    {
+        var paragraphStart = _content.TextLength;
+        foreach (var run in runs)
+        {
+            if (run.Text.Length == 0)
+            {
+                continue;
+            }
+
+            var start = _content.TextLength;
+            _content.AppendText(run.Text);
+            _content.Select(start, _content.TextLength - start);
+            _content.SelectionFont = run.Font;
+            _content.SelectionColor = run.Color;
+        }
+
+        var lineBreakStart = _content.TextLength;
+        _content.AppendText("\n");
+        if (lineBreakStart == paragraphStart && runs.Count > 0)
+        {
+            // An empty spacer paragraph: the newline itself has to carry the height.
+            _content.Select(lineBreakStart, _content.TextLength - lineBreakStart);
+            _content.SelectionFont = runs[0].Font;
+        }
+
+        _content.Select(paragraphStart, _content.TextLength - paragraphStart);
+        _content.SelectionIndent = indent;
+        _content.SelectionHangingIndent = hangingIndent;
+        _content.Select(_content.TextLength, 0);
     }
 
     private static Button CreateButton(string text, bool primary)
@@ -232,7 +398,15 @@ internal sealed class WhatsNewForm : Form
 
     private void OnThemeChanged(object? sender, EventArgs eventArgs)
     {
-        if (!IsDisposed && !Disposing) ApplyTheme();
+        if (!IsDisposed && !Disposing)
+        {
+            ApplyTheme();
+            // Every run colour is baked into the document, so a palette change has to redraw it.
+            var selectionStart = _content.SelectionStart;
+            RenderContent();
+            _content.SelectionStart = Math.Min(selectionStart, _content.TextLength);
+            _content.ScrollToCaret();
+        }
     }
 
     private LayoutScale Scale() => _dpiOverride is { } dpi ? new LayoutScale(dpi) : new LayoutScale(this);

@@ -4451,11 +4451,59 @@ internal static class CoverageExpansionTests
             ### Security
             - Keep <b>literal HTML</b> and **Markdown** as text.
             """);
-        var summary = new WhatsNewSummary(literal, "3.0.0", false);
-        var rendered = InvokePrivateStatic<string>(typeof(WhatsNewForm), "BuildText", summary);
-        True(rendered.Contains("<b>literal HTML</b>", StringComparison.Ordinal));
-        True(rendered.Contains("**Markdown**", StringComparison.Ordinal));
-        True(rendered.Contains("SECURITY", StringComparison.Ordinal));
+        Equal("2026-09-15", literal.Single().Date!.Value.ToString("yyyy-MM-dd", CultureInfo.InvariantCulture));
+        var summary = new WhatsNewSummary(literal, "3.0.0", 0);
+        using (var rendered = new WhatsNewForm(summary, 96)
+        {
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-10_000, -10_000),
+        })
+        {
+            rendered.Show();
+            Application.DoEvents();
+            var document = GetPrivateField<RichTextBox>(rendered, "_content").Text;
+            // Angle brackets are never markup here, so the HTML survives verbatim.
+            True(document.Contains("<b>literal HTML</b>", StringComparison.Ordinal));
+            True(document.Contains("SECURITY", StringComparison.Ordinal));
+            True(document.Contains("UsageAI 3.0.0", StringComparison.Ordinal));
+            // The strong delimiters become a bold face, so the word is left without them.
+            True(document.Contains("and Markdown as text.", StringComparison.Ordinal));
+            False(document.Contains("**", StringComparison.Ordinal));
+            rendered.Hide();
+        }
+
+        Equal(0, ReleaseNotes.SplitInline(string.Empty).Count);
+        var spans = ReleaseNotes.SplitInline("run `codex.cmd` then **stop**.");
+        Equal(5, spans.Count);
+        Equal(ReleaseNoteRunStyle.Normal, spans[0].Style);
+        Equal("run ", spans[0].Text);
+        Equal(ReleaseNoteRunStyle.Code, spans[1].Style);
+        Equal("codex.cmd", spans[1].Text);
+        Equal(ReleaseNoteRunStyle.Strong, spans[3].Style);
+        Equal("stop", spans[3].Text);
+        Equal(".", spans[4].Text);
+        foreach (var unmatched in new[] { "unpaired ` tick", "empty `` and ****", "a * b ** c" })
+        {
+            var literalOnly = ReleaseNotes.SplitInline(unmatched);
+            Equal(1, literalOnly.Count);
+            Equal(unmatched, literalOnly[0].Text);
+            Equal(ReleaseNoteRunStyle.Normal, literalOnly[0].Style);
+        }
+
+        var manySkipped = ReleaseNotes.ForUpgrade(
+            ReleaseNotes.Parse(string.Join(
+                Environment.NewLine,
+                Enumerable.Range(1, 6).SelectMany(major => new[]
+                {
+                    $"## [{major}.0.0] - 2026-09-15",
+                    "### Added",
+                    $"- Entry {major}",
+                }))),
+            "6.0.0",
+            new Version(1, 0, 0));
+        Equal(3, manySkipped.Releases.Count);
+        Equal(2, manySkipped.SkippedCount);
+        True(manySkipped.HasOlderSkipped);
 
         var invalidCurrent = ReleaseNotes.ForUpgrade(literal, "invalid", previousVersion: null);
         Equal(0, invalidCurrent.Releases.Count);
@@ -4554,7 +4602,7 @@ internal static class CoverageExpansionTests
             using var popup = new UsagePopupForm(settings, 96);
             using var dialog = new SettingsForm(settings, new[] { ("codex", "Codex") });
             using var whatsNew = new WhatsNewForm(
-                new WhatsNewSummary(Array.Empty<ReleaseNotesVersion>(), AppIdentity.Version, false),
+                new WhatsNewSummary(Array.Empty<ReleaseNotesVersion>(), AppIdentity.Version, 0),
                 96);
 
             highContrast = true;
@@ -4726,7 +4774,7 @@ internal static class CoverageExpansionTests
             settings.Hide();
 
             using var notes = new WhatsNewForm(
-                new WhatsNewSummary(Array.Empty<ReleaseNotesVersion>(), "9.9.9", false),
+                new WhatsNewSummary(Array.Empty<ReleaseNotesVersion>(), "9.9.9", 0),
                 dpi)
             {
                 StartPosition = FormStartPosition.Manual,
