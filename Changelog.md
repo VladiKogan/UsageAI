@@ -6,10 +6,19 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- Expanded risk-focused coverage for provider parsing, authentication and protocol failures,
+  Antigravity hub fallbacks, update metadata validation, font fallbacks, startup registration, and
+  single-instance messaging. Desktop coverage is now 88.27% line and 82.17% branch; the editor's 43
+  checks reach 79.57% line, 79.86% branch, and 81.03% function coverage.
+
 ### Fixed
 
 - Capped the full dashboard's scaled minimum size to the active monitor's working area so compact
   displays remain usable at 200% and 300% scaling.
+- Ignored malformed GitHub release assets whose size is not numeric instead of allowing update
+  metadata parsing to fail unexpectedly.
 
 ## [0.10.0] - 2026-09-15
 

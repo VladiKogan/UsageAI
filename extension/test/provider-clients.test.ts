@@ -5,7 +5,7 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test, { mock } from "node:test";
 import { UsageProviderError } from "../src/errors";
-import { ClaudeUsageClient } from "../src/providers/claude";
+import { ClaudeUsageClient, runClaudeAuthStatus } from "../src/providers/claude";
 import { CodexUsageClient } from "../src/providers/codex";
 import { CopilotUsageClient } from "../src/providers/copilot";
 import {
@@ -234,6 +234,7 @@ input.on("line", (line) => {
     }) + "\\n");
   }
 });
+
 `;
   try {
     if (process.platform === "win32") {
@@ -254,6 +255,54 @@ input.on("line", (line) => {
     const snapshot = await new CodexUsageClient().getUsage();
     assert.equal(snapshot.plan, "Plus");
     assert.deepEqual(snapshot.metrics.map((metric) => metric.usedPercent), [31, 52]);
+  } finally {
+    restoreEnvironment("CODEX_PATH", oldCodexPath);
+    restoreEnvironment("PATH", oldPath);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Codex client translates protocol and authentication failures", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "usageai-codex-errors-"));
+  const oldCodexPath = process.env.CODEX_PATH;
+  const oldPath = process.env.PATH;
+  const installFixture = async (fixtureSource: string): Promise<void> => {
+    if (process.platform === "win32") {
+      const commandPath = path.join(directory, "codex.cmd");
+      const scriptPath = path.join(directory, "node_modules", "@openai", "codex", "bin", "codex.js");
+      await mkdir(path.dirname(scriptPath), { recursive: true });
+      await writeFile(commandPath, "@echo off\r\n", "utf8");
+      await writeFile(scriptPath, fixtureSource, "utf8");
+      process.env.CODEX_PATH = commandPath;
+      process.env.PATH = `${path.dirname(process.execPath)}${path.delimiter}${oldPath ?? ""}`;
+    } else {
+      const commandPath = path.join(directory, "codex");
+      await writeFile(commandPath, `#!${process.execPath}\n${fixtureSource}`, "utf8");
+      await chmod(commandPath, 0o755);
+      process.env.CODEX_PATH = commandPath;
+    }
+  };
+  const protocolFixture = (secondResponse: string): string => `
+const readline = require("node:readline");
+const input = readline.createInterface({ input: process.stdin });
+input.on("line", (line) => {
+  const message = JSON.parse(line);
+  if (message.id === 1) process.stdout.write(JSON.stringify({ id: "1", result: {} }) + "\\n");
+  if (message.id === 2) process.stdout.write(JSON.stringify(${secondResponse}) + "\\n");
+});
+`;
+  try {
+    await installFixture(protocolFixture(`({ id: 2, error: { message: "authentication required" } })`));
+    await assert.rejects(() => new CodexUsageClient().getUsage(), /not signed in/i);
+
+    await installFixture(protocolFixture(`({ id: 2, error: { message: "service unavailable" } })`));
+    await assert.rejects(() => new CodexUsageClient().getUsage(), /could not read the account rate limits/i);
+
+    await installFixture(protocolFixture(`({ id: 2, result: null })`));
+    await assert.rejects(() => new CodexUsageClient().getUsage(), /without usage data/i);
+
+    await installFixture(`process.stderr.write("authentication failed\\n");`);
+    await assert.rejects(() => new CodexUsageClient().getUsage(), /not signed in/i);
   } finally {
     restoreEnvironment("CODEX_PATH", oldCodexPath);
     restoreEnvironment("PATH", oldPath);
@@ -469,4 +518,175 @@ test("Gemini prefers a running agy hub over the Antigravity process probe", asyn
   });
   assert.equal(await withoutHub.getUsage(), hubbed);
   assert.equal(antigravityCalls, 1);
+});
+
+test("Claude environment overrides surface bounded provider failures without recovery", async () => {
+  const names = [
+    "USAGEAI_CLAUDE_OAUTH_TOKEN",
+    "USAGEAI_CLAUDE_OAUTH_SCOPES",
+    "USAGEAI_CLAUDE_SESSION_KEY",
+  ] as const;
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  process.env.USAGEAI_CLAUDE_OAUTH_TOKEN = "environment-token";
+  process.env.USAGEAI_CLAUDE_OAUTH_SCOPES = "user:profile";
+  delete process.env.USAGEAI_CLAUDE_SESSION_KEY;
+  let probes = 0;
+  const client = () => new ClaudeUsageClient(async () => {
+    probes += 1;
+    return true;
+  });
+  try {
+    for (const [status, pattern] of [
+      [401, /login has expired/i],
+      [403, /cannot read account usage/i],
+      [500, /HTTP 500/i],
+    ] as const) {
+      mock.restoreAll();
+      mock.method(security, "requestJson", (async () => ({ status, headers: {}, data: {} })) as typeof security.requestJson);
+      await assert.rejects(() => client().getUsage(), pattern);
+    }
+
+    mock.restoreAll();
+    mock.method(security, "requestJson", (async () => { throw new SyntaxError("invalid JSON"); }) as typeof security.requestJson);
+    await assert.rejects(() => client().getUsage(), /invalid or unavailable data/i);
+    assert.equal(probes, 0);
+
+    process.env.USAGEAI_CLAUDE_OAUTH_SCOPES = "org:create_api_key";
+    await assert.rejects(() => client().getUsage(), /missing the user:profile scope/i);
+  } finally {
+    mock.restoreAll();
+    for (const name of names) restoreEnvironment(name, previous.get(name));
+  }
+});
+
+test("Claude auth-status probe accepts valid CLI output and contains failures", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "usageai-claude-auth-"));
+  const oldClaudePath = process.env.CLAUDE_PATH;
+  const oldPath = process.env.PATH;
+  let scriptPath: string;
+  try {
+    if (process.platform === "win32") {
+      const commandPath = path.join(directory, "claude.cmd");
+      scriptPath = path.join(directory, "node_modules", "@anthropic-ai", "claude-code", "cli.js");
+      await mkdir(path.dirname(scriptPath), { recursive: true });
+      await writeFile(commandPath, "@echo off\r\n", "utf8");
+      process.env.CLAUDE_PATH = commandPath;
+      process.env.PATH = `${path.dirname(process.execPath)}${path.delimiter}${oldPath ?? ""}`;
+    } else {
+      scriptPath = path.join(directory, "claude");
+      process.env.CLAUDE_PATH = scriptPath;
+    }
+
+    const writeFixture = async (source: string): Promise<void> => {
+      await writeFile(
+        scriptPath,
+        process.platform === "win32" ? source : `#!${process.execPath}\n${source}`,
+        "utf8",
+      );
+      if (process.platform !== "win32") await chmod(scriptPath, 0o755);
+    };
+
+    await writeFixture(`process.stdout.write(JSON.stringify({ loggedIn: true }));`);
+    assert.equal(await runClaudeAuthStatus(), true);
+
+    await writeFixture(`process.stdout.write("not-json");`);
+    assert.equal(await runClaudeAuthStatus(), false);
+
+    await writeFixture(`process.exitCode = 2;`);
+    assert.equal(await runClaudeAuthStatus(), false);
+
+    await writeFixture(`process.stdout.write(JSON.stringify({ loggedIn: true }));`);
+    const controller = new AbortController();
+    const reason = new Error("cancelled fixture");
+    controller.abort(reason);
+    await assert.rejects(() => runClaudeAuthStatus(controller.signal), reason);
+  } finally {
+    restoreEnvironment("CLAUDE_PATH", oldClaudePath);
+    restoreEnvironment("PATH", oldPath);
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Gemini cloud and refresh failures retain safe provider errors", async () => {
+  const oldClientId = process.env.GEMINI_CLIENT_ID;
+  const oldClientSecret = process.env.GEMINI_CLIENT_SECRET;
+  process.env.GEMINI_CLIENT_ID = "fixture-client";
+  process.env.GEMINI_CLIENT_SECRET = "fixture-secret";
+  const createClient = (credentials: {
+    accessToken?: string;
+    refreshToken?: string;
+    idToken?: string;
+    expiresAt?: number;
+    sourcePath: string;
+  } = {
+    accessToken: "access-token",
+    expiresAt: Date.now() + 3_600_000,
+    sourcePath: "fixture",
+  }) => new GeminiUsageClient({
+    fetchAntigravity: async () => undefined,
+    fetchAgy: async () => undefined,
+    loadCredentials: async () => credentials,
+  });
+  try {
+    for (const [status, pattern] of [
+      [401, /sign-in has expired/i],
+      [403, /sign-in has expired/i],
+      [500, /HTTP 500/i],
+    ] as const) {
+      mock.restoreAll();
+      mock.method(security, "requestJson", (async (url) => String(url).includes("loadCodeAssist")
+        ? { status: 503, headers: {}, data: {} }
+        : { status, headers: {}, data: {} }) as typeof security.requestJson);
+      await assert.rejects(() => createClient().getUsage(), pattern);
+    }
+
+    mock.restoreAll();
+    mock.method(security, "requestJson", (async (url) => String(url).includes("loadCodeAssist")
+      ? { status: 200, headers: {}, data: { currentTier: { id: "free-tier" } } }
+      : { status: 429, headers: { "retry-after": "3" }, data: {} }) as typeof security.requestJson);
+    await assert.rejects(
+      () => createClient().getUsage(),
+      (error: unknown) => error instanceof UsageProviderError && error.retryAfterMs === 3_000,
+    );
+
+    mock.restoreAll();
+    mock.method(security, "requestJson", (async (url) => {
+      if (String(url).includes("loadCodeAssist")) return { status: 200, headers: {}, data: {} };
+      throw new SyntaxError("invalid quota JSON");
+    }) as typeof security.requestJson);
+    await assert.rejects(() => createClient().getUsage(), /invalid or unavailable data/i);
+
+    for (const refreshResult of [
+      { status: 500, headers: {}, data: {} },
+      { status: 200, headers: {}, data: { access_token: " " } },
+    ]) {
+      mock.restoreAll();
+      mock.method(security, "requestJson", (async () => refreshResult) as typeof security.requestJson);
+      await assert.rejects(
+        () => createClient({
+          accessToken: "expired-token",
+          refreshToken: "refresh-token",
+          expiresAt: Date.now() - 1,
+          sourcePath: "fixture",
+        }).getUsage(),
+        /sign-in has expired|empty access token/i,
+      );
+    }
+
+    mock.restoreAll();
+    mock.method(security, "requestJson", (async () => { throw new Error("network down"); }) as typeof security.requestJson);
+    await assert.rejects(
+      () => createClient({
+        accessToken: "expired-token",
+        refreshToken: "refresh-token",
+        expiresAt: Date.now() - 1,
+        sourcePath: "fixture",
+      }).getUsage(),
+      /sign-in has expired/i,
+    );
+  } finally {
+    mock.restoreAll();
+    restoreEnvironment("GEMINI_CLIENT_ID", oldClientId);
+    restoreEnvironment("GEMINI_CLIENT_SECRET", oldClientSecret);
+  }
 });

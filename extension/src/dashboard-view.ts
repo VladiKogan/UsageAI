@@ -65,6 +65,7 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
   private readonly disposables: vscode.Disposable[] = [];
   private readonly removeUpdateListener: () => void;
   private readonly expandedProviders: Set<string>;
+  private metricDisplayMode: MetricDisplayMode;
 
   public constructor(
     private readonly refreshService: UsageRefreshService,
@@ -73,6 +74,7 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
     private readonly options: DashboardViewOptions = {},
   ) {
     this.expandedProviders = new Set(sanitizeExpandedProviderIds(options.loadExpandedProviders?.()));
+    this.metricDisplayMode = normalizeMetricDisplayMode(options.metricDisplayMode?.());
     this.removeUpdateListener = refreshService.onDidUpdate((states) => this.postStates(states));
   }
 
@@ -96,6 +98,7 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
   }
 
   public configurationChanged(): void {
+    this.metricDisplayMode = normalizeMetricDisplayMode(this.options.metricDisplayMode?.());
     this.postStates(this.refreshService.getStates());
   }
 
@@ -110,7 +113,7 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
       states,
       warningPercent: this.warningPercent(),
       criticalPercent: this.criticalPercent(),
-      metricDisplayMode: normalizeMetricDisplayMode(this.options.metricDisplayMode?.()),
+      metricDisplayMode: this.metricDisplayMode,
       expandedProviders: [...this.expandedProviders],
     });
   }
@@ -139,8 +142,9 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
     if (message.type === "setMetricDisplayMode") {
       const mode = normalizeMetricDisplayMode(message.mode);
       if (mode !== message.mode) return;
-      await this.options.setMetricDisplayMode?.(mode);
+      this.metricDisplayMode = mode;
       this.postStates(this.refreshService.getStates());
+      await this.options.setMetricDisplayMode?.(mode);
       return;
     }
     if (message.type === "setAllExpanded") {
@@ -260,7 +264,8 @@ function dashboardHtml(webview: vscode.Webview): string {
     const providers = document.getElementById('providers'); const stamp = document.getElementById('stamp'); const metricMode = document.getElementById('metric-mode');
     document.getElementById('collapse-all').addEventListener('click', () => vscode.postMessage({ type: 'setAllExpanded', expanded: false }));
     document.getElementById('expand-all').addEventListener('click', () => vscode.postMessage({ type: 'setAllExpanded', expanded: true }));
-    metricMode.addEventListener('change', () => vscode.postMessage({ type: 'setMetricDisplayMode', mode: metricMode.value }));
+    let latestPayload;
+    metricMode.addEventListener('change', () => { const mode = metricMode.value; if (latestPayload) render({ ...latestPayload, metricDisplayMode: mode }); vscode.postMessage({ type: 'setMetricDisplayMode', mode }); });
     const el = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; };
     const button = (label, type, providerId) => { const node = el('button', 'action', label); node.type = 'button'; node.addEventListener('click', () => vscode.postMessage({ type, providerId })); return node; };
     const localTime = (value) => { if (!value) return ''; const date = new Date(value); return Number.isNaN(date.getTime()) ? '' : date.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }); };
@@ -279,6 +284,7 @@ function dashboardHtml(webview: vscode.Webview): string {
       const foot = el('div', 'metric-foot'); foot.append(el('span', '', metric.usageText || (100 - metric.usedPercent) + '% left'), el('span', '', countdown(metric.resetsAt))); root.append(head, rail, foot); return root;
     };
     const render = (payload) => {
+      latestPayload = payload;
       providers.replaceChildren(); const warning = payload.warningPercent ?? 72; const critical = payload.criticalPercent ?? 90;
       const mode = ['metered', 'important'].includes(payload.metricDisplayMode) ? payload.metricDisplayMode : 'all'; metricMode.value = mode;
       const remembered = new Set(Array.isArray(payload.expandedProviders) ? payload.expandedProviders : []);

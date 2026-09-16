@@ -182,6 +182,7 @@ internal static class UpdateChecker
             !element.TryGetProperty("browser_download_url", out var urlElement) ||
             urlElement.ValueKind != JsonValueKind.String ||
             !element.TryGetProperty("size", out var sizeElement) ||
+            sizeElement.ValueKind != JsonValueKind.Number ||
             !sizeElement.TryGetInt64(out var size))
         {
             return null;

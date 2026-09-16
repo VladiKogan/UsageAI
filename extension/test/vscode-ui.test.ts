@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { createRequire } from "node:module";
 import test, { mock } from "node:test";
+import vm from "node:vm";
 import type { ProviderState, UsageSnapshot } from "../src/model";
 
 const localRequire = createRequire(__filename);
@@ -69,6 +70,35 @@ const configuration = {
     configurationUpdates.push({ key, value, target });
   },
 };
+
+class FakeDomElement {
+  public className = "";
+  public textContent = "";
+  public value = "";
+  public hidden = false;
+  public id = "";
+  public max = 0;
+  public dataset: Record<string, string> = {};
+  public readonly children: FakeDomElement[] = [];
+  private readonly listeners = new Map<string, Array<() => void>>();
+
+  public constructor(public readonly tagName: string) {}
+
+  public append(...children: FakeDomElement[]): void { this.children.push(...children); }
+  public replaceChildren(...children: FakeDomElement[]): void {
+    this.children.length = 0;
+    this.children.push(...children);
+  }
+  public setAttribute(_name: string, _value: string): void {}
+  public addEventListener(type: string, listener: () => void): void {
+    const listeners = this.listeners.get(type) ?? [];
+    listeners.push(listener);
+    this.listeners.set(type, listeners);
+  }
+  public dispatch(type: string): void {
+    for (const listener of this.listeners.get(type) ?? []) listener();
+  }
+}
 
 const vscodeStub = {
   StatusBarAlignment: { Left: 1 },
@@ -261,6 +291,76 @@ test("dashboard wires visibility, safe messages, state posting, and CSP", async 
   assert.match(webview.html, /No metered limits reported/);
   assert.match(webview.html, /prefers-reduced-motion/);
   assert.doesNotMatch(webview.html, /innerHTML/);
+  const inlineScript = webview.html.match(/<script[^>]*>([\s\S]*)<\/script>/)?.[1];
+  assert.ok(inlineScript);
+  assert.doesNotThrow(() => new vm.Script(inlineScript));
+  const runtimeElements = new Map<string, FakeDomElement>([
+    ["providers", new FakeDomElement("main")],
+    ["stamp", new FakeDomElement("span")],
+    ["metric-mode", new FakeDomElement("select")],
+    ["collapse-all", new FakeDomElement("button")],
+    ["expand-all", new FakeDomElement("button")],
+  ]);
+  const runtimeMessages: unknown[] = [];
+  let stateMessage: ((event: { readonly data: unknown }) => void) | undefined;
+  const runtime = vm.createContext({
+    acquireVsCodeApi: () => ({ postMessage: (message: unknown) => runtimeMessages.push(message) }),
+    document: {
+      getElementById: (id: string) => runtimeElements.get(id),
+      createElement: (tagName: string) => new FakeDomElement(tagName),
+    },
+    window: {
+      addEventListener: (type: string, listener: (event: { readonly data: unknown }) => void) => {
+        if (type === "message") stateMessage = listener;
+      },
+    },
+  });
+  new vm.Script(inlineScript).runInContext(runtime);
+  assert.ok(stateMessage);
+  const filterSnapshot: UsageSnapshot = {
+    ...snapshot("codex", 45),
+    metrics: [
+      { name: "Balance", kind: "balance", usedPercent: null },
+      { name: "Session lower", kind: "session", usedPercent: 20 },
+      { name: "Session higher", kind: "session", usedPercent: 80 },
+      { name: "Weekly", kind: "rolling", usedPercent: 50 },
+      { name: "Monthly", kind: "monthly", usedPercent: 30 },
+      { name: "Unlimited", kind: "monthly", usedPercent: 100, isUnlimited: true },
+    ],
+  };
+  const filterState: ProviderState = {
+    ...states[0]!,
+    snapshot: filterSnapshot,
+  };
+  const metricCount = (mode: string): number => {
+    stateMessage?.({
+      data: {
+        type: "states",
+        states: [filterState],
+        warningPercent: 72,
+        criticalPercent: 90,
+        metricDisplayMode: mode,
+        expandedProviders: ["codex"],
+      },
+    });
+    const runtimeProviders = runtimeElements.get("providers");
+    const card = runtimeProviders?.children[0];
+    const body = card?.children[1];
+    return body?.children[0]?.children.length ?? -1;
+  };
+  assert.equal(metricCount("all"), 6);
+  assert.equal(metricCount("metered"), 4);
+  assert.equal(metricCount("important"), 3);
+  const runtimeMode = runtimeElements.get("metric-mode");
+  assert.ok(runtimeMode);
+  runtimeMode.value = "metered";
+  runtimeMode.dispatch("change");
+  assert.equal(JSON.stringify(runtimeMessages.at(-1)), JSON.stringify({
+    type: "setMetricDisplayMode",
+    mode: "metered",
+  }));
+  const runtimeProviders = runtimeElements.get("providers");
+  assert.equal(runtimeProviders?.children[0]?.children[1]?.children[0]?.children.length, 4);
   assert.equal(visibility.at(-1), true);
   assert.ok(posted.length >= 1);
   assert.deepEqual(posted[0], {
@@ -299,6 +399,7 @@ test("dashboard wires visibility, safe messages, state posting, and CSP", async 
     ["gemini"],
   ]);
   assert.deepEqual(changedModes, ["metered"]);
+  assert.equal((posted.at(-1) as { metricDisplayMode?: string }).metricDisplayMode, "metered");
 
   updateListener?.(states);
   const postedBeforeConfiguration = posted.length;

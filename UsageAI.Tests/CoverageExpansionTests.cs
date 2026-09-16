@@ -30,6 +30,7 @@ internal static class CoverageExpansionTests
     private static readonly string[] PreviewDpi192Args = { "--dpi", "192" };
     private static readonly string[] PreviewDpi288Args = { "--dpi", "288" };
     private static readonly string[] PreviewDpiInvalidArgs = { "--dpi", "144" };
+    private static readonly string[] MissingFontStack = { "UsageAI missing one", "UsageAI missing two" };
 
     public static Task TestModelFormattingAsync()
     {
@@ -1119,9 +1120,138 @@ internal static class CoverageExpansionTests
         {
             False((await UpdateChecker.CheckForUpdateAsync(http, CancellationToken.None)).Succeeded);
         }
+        using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
+                   throw new InvalidDataException("synthetic invalid body"))))
+        {
+            False((await UpdateChecker.CheckForUpdateAsync(http, CancellationToken.None)).Succeeded);
+        }
+        using (var cancellation = new CancellationTokenSource())
+        using (var http = new HttpClient(new StubHttpHandler((_, _, token) =>
+                   Task.FromCanceled<HttpResponseMessage>(token))))
+        {
+            cancellation.Cancel();
+            False((await UpdateChecker.CheckForUpdateAsync(http, cancellation.Token)).Succeeded);
+        }
+
+        var malformedAssets = JsonSerializer.Serialize(new
+        {
+            tag_name = "v99.1.0",
+            html_url = "http://github.com/VladiKogan/UsageAI/releases/tag/v99.1.0",
+            assets = new object[]
+            {
+                new { },
+                new { name = 1, browser_download_url = "unused", size = 1 },
+                new { name = "missing-url" },
+                new { name = "bad-url-kind", browser_download_url = 1, size = 1 },
+                new { name = "missing-size", browser_download_url = "https://github.com/VladiKogan/UsageAI/releases/download/v99.1.0/x" },
+                new { name = "bad-size-kind", browser_download_url = "https://github.com/VladiKogan/UsageAI/releases/download/v99.1.0/x", size = "1" },
+                new { name = " ", browser_download_url = "https://github.com/VladiKogan/UsageAI/releases/download/v99.1.0/x", size = 1 },
+                new { name = new string('x', 129), browser_download_url = "https://github.com/VladiKogan/UsageAI/releases/download/v99.1.0/x", size = 1 },
+                new { name = "zero-size", browser_download_url = "https://github.com/VladiKogan/UsageAI/releases/download/v99.1.0/x", size = 0 },
+                new { name = "invalid-uri", browser_download_url = "not a URI", size = 1 },
+                new { name = "wrong-host", browser_download_url = "https://example.com/VladiKogan/UsageAI/releases/x", size = 1 },
+                new { name = "wrong-path", browser_download_url = "https://github.com/other/repository/releases/x", size = 1 },
+                new { name = "notes.txt", browser_download_url = "https://github.com/VladiKogan/UsageAI/releases/download/v99.1.0/notes.txt", size = 1 },
+            },
+        });
+        using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
+                   Task.FromResult(JsonResponse(HttpStatusCode.OK, malformedAssets)))))
+        {
+            var check = await UpdateChecker.CheckForUpdateAsync(http, CancellationToken.None);
+            True(check.Succeeded);
+            NotNull(check.Release);
+            Null(check.Release!.Installer);
+            Null(check.Release.Checksum);
+            Equal("https://github.com/VladiKogan/UsageAI/releases/latest", check.Release.ReleasePageUrl.AbsoluteUri);
+        }
+
+        foreach (var invalidTag in new[] { "", new string('v', 33), "not-a-version" })
+        {
+            using var http = new HttpClient(new StubHttpHandler((_, _, _) =>
+                Task.FromResult(JsonResponse(
+                    HttpStatusCode.OK,
+                    JsonSerializer.Serialize(new { tag_name = invalidTag })))));
+            var check = await UpdateChecker.CheckForUpdateAsync(http, CancellationToken.None);
+            False(check.Succeeded);
+            Null(check.Release);
+        }
+        using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
+                   Task.FromResult(JsonResponse(HttpStatusCode.OK, """{"tag_name":42}""")))))
+        {
+            False((await UpdateChecker.CheckForUpdateAsync(http, CancellationToken.None)).Succeeded);
+        }
+
+        foreach (var (json, currentVersion, expected) in new[]
+                 {
+                     ("{}", "1.0.0", (UpdateRelease?)null),
+                     ("""{"tag_name":42}""", "1.0.0", null),
+                     ("""{"tag_name":" "}""", "1.0.0", null),
+                     (JsonSerializer.Serialize(new { tag_name = new string('v', 33) }), "1.0.0", null),
+                     ("""{"tag_name":"v1.0.0"}""", "1.0.0", null),
+                 })
+        {
+            using var document = JsonDocument.Parse(json);
+            Equal(
+                expected,
+                InvokePrivateStatic<UpdateRelease?>(
+                    typeof(UpdateChecker),
+                    "ParseRelease",
+                    document.RootElement,
+                    currentVersion));
+        }
+
+        using (var document = JsonDocument.Parse(
+                   """
+                   {"tag_name":"v99-beta.1","assets":{},"html_url":"not a URI"}
+                   """))
+        {
+            var prerelease = InvokePrivateStatic<UpdateRelease?>(
+                typeof(UpdateChecker),
+                "ParseRelease",
+                document.RootElement,
+                "1.0.0");
+            NotNull(prerelease);
+            Equal("99.0", prerelease!.Version);
+            Null(prerelease.Installer);
+            Null(prerelease.Checksum);
+        }
+        using (var document = JsonDocument.Parse(
+                   """
+                   {"tag_name":"v99.2.0","html_url":42}
+                   """))
+        {
+            var numericPage = InvokePrivateStatic<UpdateRelease?>(
+                typeof(UpdateChecker),
+                "ParseRelease",
+                document.RootElement,
+                "1.0.0");
+            NotNull(numericPage);
+            Equal("https://github.com/VladiKogan/UsageAI/releases/latest", numericPage!.ReleasePageUrl.AbsoluteUri);
+        }
+
+        True(InvokePrivateStatic<bool>(
+            typeof(UpdateChecker),
+            "IsExpectedGitHubReleaseUri",
+            new Uri("https://github.com/VladiKogan/UsageAI/releases/tag/v99.0.0")));
+        False(InvokePrivateStatic<bool>(
+            typeof(UpdateChecker),
+            "IsExpectedGitHubReleaseUri",
+            new Uri("http://github.com/VladiKogan/UsageAI/releases/tag/v99.0.0")));
+        False(InvokePrivateStatic<bool>(
+            typeof(UpdateChecker),
+            "IsExpectedGitHubReleaseUri",
+            new Uri("https://example.com/VladiKogan/UsageAI/releases/tag/v99.0.0")));
+        False(InvokePrivateStatic<bool>(
+            typeof(UpdateChecker),
+            "IsExpectedGitHubReleaseUri",
+            new Uri("https://github.com/other/repository/releases/tag/v99.0.0")));
 
         True(UpdateChecker.IsNewer("6-beta.1", "5.9.0"));
         False(UpdateChecker.IsNewer("5+build", "5.0"));
+        False(UpdateChecker.IsNewer("invalid", "5.0"));
+        False(UpdateChecker.IsNewer("6.0", "invalid"));
+        Equal(new Version(7, 0), UpdateChecker.ParseVersion("7"));
+        Null(UpdateChecker.ParseVersion("not-a-version"));
         var now = DateTimeOffset.UtcNow;
         True(UpdateChecker.IsCheckDue(null, now));
         False(UpdateChecker.IsCheckDue(now.AddHours(-23), now));
@@ -1751,6 +1881,46 @@ internal static class CoverageExpansionTests
 
     public static Task TestUiRenderingAsync()
     {
+        using (var minimumFont = Typography.Text(1F))
+        using (var maximumFont = Typography.Mono(100F))
+        using (var displayFont = Typography.Display(9F, FontStyle.Italic))
+        {
+            Equal(5F, minimumFont.Size);
+            Equal(48F, maximumFont.Size);
+            Equal(9F, displayFont.Size);
+        }
+        Equal(
+            FontStyle.Italic,
+            InvokePrivateStatic<FontStyle>(
+                typeof(Typography),
+                "AvailableStyle",
+                "UsageAI definitely missing font",
+                FontStyle.Italic));
+        using (var installedFonts = new System.Drawing.Text.InstalledFontCollection())
+        {
+            var regularOnly = installedFonts.Families.FirstOrDefault(family =>
+                family.IsStyleAvailable(FontStyle.Regular) &&
+                !family.IsStyleAvailable(FontStyle.Bold));
+            if (regularOnly is not null)
+            {
+                Equal(
+                    FontStyle.Regular,
+                    InvokePrivateStatic<FontStyle>(
+                        typeof(Typography),
+                        "AvailableStyle",
+                        regularOnly.Name,
+                        FontStyle.Bold));
+            }
+        }
+        True(!string.IsNullOrWhiteSpace(InvokePrivateStatic<string>(
+            typeof(Typography),
+            "Resolve",
+            (object)new[] { "UsageAI missing one", FontFamily.GenericSansSerif.Name })));
+        True(!string.IsNullOrWhiteSpace(InvokePrivateStatic<string>(
+            typeof(Typography),
+            "Resolve",
+            (object)MissingFontStack)));
+
         var themeChanges = 0;
         EventHandler handler = (_, _) => themeChanges++;
         Theme.Changed += handler;
@@ -2997,6 +3167,207 @@ internal static class CoverageExpansionTests
             False(pidless.IsListeningPortStillOwned(
                 new GeminiUsageClient.BoundAntigravityCandidate(1, 1, "primary"),
                 UnrelatedCandidatePort));
+
+            var reserveArguments = new object?[] { (ushort)0 };
+            True(InvokePrivateStatic<bool>(
+                typeof(AgyUsageProbe),
+                "TryReserveLoopbackPort",
+                reserveArguments));
+            True((ushort)reserveArguments[0]! > 0);
+
+            Null(await InvokePrivateStaticTaskResultAsync<string?>(
+                typeof(AgyUsageProbe),
+                "TryReadCompletedOutputAsync",
+                new object?[] { null }));
+            Equal(
+                "completed",
+                await InvokePrivateStaticTaskResultAsync<string?>(
+                    typeof(AgyUsageProbe),
+                    "TryReadCompletedOutputAsync",
+                    Task.FromResult("completed")));
+            Null(await InvokePrivateStaticTaskResultAsync<string?>(
+                typeof(AgyUsageProbe),
+                "TryReadCompletedOutputAsync",
+                Task.FromException<string>(new InvalidOperationException("synthetic output failure"))));
+
+            var syntheticMetric = new[]
+            {
+                new UsageMetric("Synthetic", UsageMetricKind.Rolling, 12),
+            };
+            var defaultAgySnapshot = InvokePrivateStatic<UsageSnapshot>(
+                typeof(AgyUsageProbe),
+                "CreateSnapshot",
+                syntheticMetric,
+                " ",
+                null);
+            Equal("Antigravity", defaultAgySnapshot.Plan);
+            Null(defaultAgySnapshot.AccountName);
+            var namedAgySnapshot = InvokePrivateStatic<UsageSnapshot>(
+                typeof(AgyUsageProbe),
+                "CreateSnapshot",
+                syntheticMetric,
+                "Named Plan",
+                "agy@example.com");
+            Equal("Named Plan", namedAgySnapshot.Plan);
+            Equal("agy@example.com", namedAgySnapshot.AccountName);
+
+            _ = InvokePrivateStatic<object?>(
+                typeof(AgyUsageProbe),
+                "TryKillOwnedProcesses",
+                new[] { int.MaxValue, int.MaxValue, Environment.ProcessId },
+                DateTime.UtcNow.AddHours(-1));
+            _ = InvokePrivateStatic<object?>(
+                typeof(AgyUsageProbe),
+                "TryKillOwnedProcesses",
+                new[] { Environment.ProcessId },
+                DateTime.UtcNow.AddHours(1));
+
+            var portField = typeof(AgyUsageProbe).GetField(
+                "_hubPort",
+                BindingFlags.Static | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("AgyUsageProbe._hubPort was not found.");
+            var tokenField = typeof(AgyUsageProbe).GetField(
+                "_hubToken",
+                BindingFlags.Static | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("AgyUsageProbe._hubToken was not found.");
+            var processField = typeof(AgyUsageProbe).GetField(
+                "_hubProcess",
+                BindingFlags.Static | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("AgyUsageProbe._hubProcess was not found.");
+            var clientField = typeof(AgyUsageProbe).GetField(
+                "_hubClient",
+                BindingFlags.Static | BindingFlags.NonPublic)
+                ?? throw new InvalidOperationException("AgyUsageProbe._hubClient was not found.");
+            var previousPort = (ushort)portField.GetValue(null)!;
+            var previousToken = (string)tokenField.GetValue(null)!;
+            var previousProcess = (Process?)processField.GetValue(null);
+            var previousClient = (HttpClient?)clientField.GetValue(null);
+            try
+            {
+                portField.SetValue(null, (ushort)51_234);
+                tokenField.SetValue(null, "synthetic-token");
+                using (var successClient = new HttpClient(new StubHttpHandler((_, _, _) =>
+                           Task.FromResult(JsonResponse(HttpStatusCode.OK, "{}")))))
+                using (var response = await InvokePrivateStaticTaskResultAsync<JsonDocument?>(
+                           typeof(AgyUsageProbe),
+                           "TryPostAsync",
+                           successClient,
+                           "GetUserStatus",
+                           "{}",
+                           CancellationToken.None))
+                {
+                    NotNull(response);
+                }
+
+                using (var unavailableClient = new HttpClient(new StubHttpHandler((_, _, _) =>
+                           Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)))))
+                {
+                    Null(await InvokePrivateStaticTaskResultAsync<JsonDocument?>(
+                        typeof(AgyUsageProbe),
+                        "TryPostAsync",
+                        unavailableClient,
+                        "GetUserStatus",
+                        "{}",
+                        CancellationToken.None));
+                }
+
+                using (var failingClient = new HttpClient(new StubHttpHandler((_, _, _) =>
+                           throw new InvalidOperationException("synthetic hub failure"))))
+                {
+                    Null(await InvokePrivateStaticTaskResultAsync<JsonDocument?>(
+                        typeof(AgyUsageProbe),
+                        "TryPostAsync",
+                        failingClient,
+                        "GetUserStatus",
+                        "{}",
+                        CancellationToken.None));
+                }
+
+                using var cancellation = new CancellationTokenSource();
+                using var cancelledClient = new HttpClient(new StubHttpHandler((_, _, token) =>
+                    Task.FromCanceled<HttpResponseMessage>(token)));
+                cancellation.Cancel();
+                await ThrowsAsync<OperationCanceledException>(() =>
+                    InvokePrivateStaticTaskResultAsync<JsonDocument?>(
+                        typeof(AgyUsageProbe),
+                        "TryPostAsync",
+                        cancelledClient,
+                        "GetUserStatus",
+                        "{}",
+                        cancellation.Token));
+
+                const string quotaSummary =
+                    """
+                    {"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini_5h","remainingFraction":0.8}]}]}
+                    """;
+                using var currentProcess = Process.GetCurrentProcess();
+                processField.SetValue(null, currentProcess);
+
+                using (var noSummaryClient = new HttpClient(new StubHttpHandler((_, _, _) =>
+                           Task.FromResult(new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)))))
+                {
+                    clientField.SetValue(null, noSummaryClient);
+                    Null(await InvokePrivateStaticTaskResultAsync<UsageSnapshot?>(
+                        typeof(AgyUsageProbe),
+                        "TryFetchFromHubAsync",
+                        CancellationToken.None));
+                }
+
+                using (var emptySummaryClient = new HttpClient(new StubHttpHandler((_, _, _) =>
+                           Task.FromResult(JsonResponse(HttpStatusCode.OK, "{}")))))
+                {
+                    clientField.SetValue(null, emptySummaryClient);
+                    Null(await InvokePrivateStaticTaskResultAsync<UsageSnapshot?>(
+                        typeof(AgyUsageProbe),
+                        "TryFetchFromHubAsync",
+                        CancellationToken.None));
+                }
+
+                using (var summaryOnlyClient = new HttpClient(new StubHttpHandler((request, _, _) =>
+                           Task.FromResult(request.RequestUri!.AbsolutePath.Contains(
+                                   "RetrieveUserQuotaSummary",
+                                   StringComparison.Ordinal)
+                               ? JsonResponse(HttpStatusCode.OK, quotaSummary)
+                               : new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)))))
+                {
+                    clientField.SetValue(null, summaryOnlyClient);
+                    var summaryOnly = await InvokePrivateStaticTaskResultAsync<UsageSnapshot?>(
+                        typeof(AgyUsageProbe),
+                        "TryFetchFromHubAsync",
+                        CancellationToken.None);
+                    NotNull(summaryOnly);
+                    Equal("Antigravity", summaryOnly!.Plan);
+                    Equal(20, summaryOnly.Primary!.UsedPercent);
+                }
+
+                using (var mergedClient = new HttpClient(new StubHttpHandler((request, _, _) =>
+                           Task.FromResult(JsonResponse(
+                               HttpStatusCode.OK,
+                               request.RequestUri!.AbsolutePath.Contains(
+                                       "RetrieveUserQuotaSummary",
+                                       StringComparison.Ordinal)
+                                   ? quotaSummary
+                                   : """
+                                     {"userStatus":{"userTier":{"name":"Hub Plan"},"cascadeModelConfigData":{"clientModelConfigs":[{"label":"Gemini Models","quotaInfo":{"remainingFraction":0.6}}]}}}
+                                     """)))))
+                {
+                    clientField.SetValue(null, mergedClient);
+                    var merged = await InvokePrivateStaticTaskResultAsync<UsageSnapshot?>(
+                        typeof(AgyUsageProbe),
+                        "TryFetchFromHubAsync",
+                        CancellationToken.None);
+                    NotNull(merged);
+                    Equal("Hub Plan", merged!.Plan);
+                    True(merged.Metrics.Any(metric => metric.Kind == UsageMetricKind.Session));
+                }
+            }
+            finally
+            {
+                clientField.SetValue(null, previousClient);
+                processField.SetValue(null, previousProcess);
+                portField.SetValue(null, previousPort);
+                tokenField.SetValue(null, previousToken);
+            }
 
             var exceptionWithInner = new GeminiUsageException(
                 "synthetic",

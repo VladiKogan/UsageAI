@@ -4,6 +4,7 @@ import * as path from "node:path";
 import test from "node:test";
 import {
   assertClaudeCredentialsUsable,
+  formatClaudePlan,
   parseClaudeCredentials,
   parseClaudeSnapshot,
   refreshExpiredClaudeCredentials,
@@ -248,4 +249,139 @@ test("Gemini parses CLI and Antigravity quota shapes", () => {
 test("Antigravity CLI discovery includes the VS Code extension backend", () => {
   const executable = process.platform === "win32" ? "agy.exe" : "agy";
   assert.ok(agyExecutableCandidates().includes(path.join(os.homedir(), ".gemini", "bin", executable)));
+});
+
+test("provider parsers reject malformed data and preserve fallback semantics", () => {
+  const fallbackBucket = parseCodexSnapshot({
+    rateLimitsByLimitId: {
+      other: {
+        planType: "prolite",
+        primary: { usedPercent: 140 },
+        secondary: { usedPercent: -20, windowDurationMins: 20_160 },
+      },
+    },
+    rateLimitResetCredits: { availableCount: 1 },
+  });
+  assert.equal(fallbackBucket.plan, "Pro Lite");
+  assert.deepEqual(fallbackBucket.metrics.map((metric) => [metric.name, metric.usedPercent]), [
+    ["Session", 100],
+    ["2-week", 0],
+    ["Reset credits", null],
+  ]);
+  assert.equal(fallbackBucket.metrics[2]?.usageText, "Full reset available");
+
+  const historical = parseCodexSnapshot({
+    rateLimits: {
+      planType: "custom_plan",
+      primary: { usedPercent: 12, windowDurationMins: 90, resetsAt: 1_900_000_000 },
+    },
+  });
+  assert.equal(historical.plan, "Custom Plan");
+  assert.equal(historical.metrics[0]?.name, "Session");
+  assert.equal(historical.metrics[0]?.resetsAt, "2030-03-17T17:46:40.000Z");
+  assert.throws(() => parseCodexSnapshot({}), /no rate-limit windows/i);
+
+  const flatCredentials = parseClaudeCredentials(JSON.stringify({
+    accessToken: " flat-access-token ",
+    rateLimitTier: "team",
+    scopes: [null, " ", "user:profile", "x".repeat(129)],
+  }));
+  assert.equal(flatCredentials.accessToken, "flat-access-token");
+  assert.equal(flatCredentials.plan, "Claude Team");
+  assert.deepEqual(flatCredentials.scopes, ["user:profile"]);
+  assert.doesNotThrow(() => assertClaudeCredentialsUsable({}));
+  assert.throws(() => parseClaudeCredentials("{}"), /no OAuth access token/i);
+
+  const camelCase = parseClaudeSnapshot({
+    fiveHour: { utilization: 0.5, resetsAt: "2030-01-01T00:00:00Z" },
+    limits: [
+      null,
+      { kind: "weekly_all", group: "monthly", percent: 90 },
+      { kind: "weekly_models" },
+      { kind: "weekly_models", group: "weekly", percent: 25, resetsAt: "2030-01-02T00:00:00Z" },
+    ],
+    extraUsage: { isEnabled: true },
+  }, "Claude Team");
+  assert.deepEqual(camelCase.metrics.map((metric) => [metric.name, metric.usedPercent]), [
+    ["5-hour", 50],
+    ["Weekly", 25],
+    ["Extra usage", null],
+  ]);
+  assert.equal(camelCase.metrics[2]?.remainingText, "ENABLED");
+
+  const invalidCurrency = parseClaudeSnapshot({
+    sevenDay: { utilization: 17 },
+    extraUsage: { isEnabled: true, usedCredits: 125, monthlyLimit: 500, currency: "not-a-currency" },
+  });
+  assert.equal(invalidCurrency.metrics[1]?.remainingText, "1.25 NOT-A-CURRENCY / 5.00 NOT-A-CURRENCY");
+  assert.throws(() => parseClaudeSnapshot({}), /without five-hour or weekly/i);
+  assert.deepEqual(
+    [undefined, "free", "pro", "max", "enterprise", "claude_max_5x_plan", "custom_tier"]
+      .map(formatClaudePlan),
+    ["Claude", "Claude Free", "Claude Pro", "Claude Max", "Claude Enterprise", "Claude Max 5x", "Custom Tier"],
+  );
+
+  assert.throws(() => parseGeminiQuotaResponse({}), /without quota buckets/i);
+  assert.throws(
+    () => parseGeminiQuotaResponse({ buckets: [{ remainingFraction: 0.5 }] }),
+    /no valid model quota buckets/i,
+  );
+  const duplicateQuota = parseGeminiQuotaResponse({
+    buckets: [
+      { modelId: "custom_model", remainingFraction: 0.8 },
+      { modelId: "custom_model", remainingFraction: 0.2, resetTime: "2030-01-01T00:00:00Z" },
+    ],
+  });
+  assert.equal(duplicateQuota.plan, "Gemini");
+  assert.equal(duplicateQuota.metrics[0]?.name, "Custom Model");
+  assert.equal(duplicateQuota.metrics[0]?.usedPercent, 80);
+
+  assert.equal(parseAntigravityUserStatus({}), undefined);
+  assert.equal(parseAntigravityUserStatus({ userStatus: {} }), undefined);
+  const groupedStatus = parseAntigravityUserStatus({
+    userStatus: {
+      planStatus: { planInfo: { planDisplayName: "Workspace" } },
+      cascadeModelConfigData: {
+        clientModelConfigs: [
+          null,
+          { label: "Other model", quotaInfo: { remainingFraction: 0.5 } },
+          { label: "Other model", quotaInfo: { remainingFraction: 0.5 } },
+          { label: "Other model", quotaInfo: { remainingFraction: 0.25, resetTime: "2030-01-01T00:00:00Z" } },
+        ],
+      },
+    },
+  });
+  assert.ok(groupedStatus);
+  assert.equal(groupedStatus.plan, "Workspace");
+  assert.deepEqual(groupedStatus.metrics.map((metric) => metric.name), [
+    "Other Models (Limit 1)",
+    "Other Models (Limit 2)",
+  ]);
+
+  assert.deepEqual(parseAntigravityQuotaSummary({}), []);
+  const assortedSummary = parseAntigravityQuotaSummary({
+    quotaSummary: {
+      groups: [
+        { name: "Broken" },
+        { name: "Other", buckets: [{ name: "Daily", remaining_fraction: 0.6 }] },
+        { name: "Gemini Models", buckets: [{ id: "weekly", remaining: { remaining_fraction: 0.3 } }] },
+      ],
+    },
+  });
+  assert.deepEqual(assortedSummary.map((metric) => [metric.name, metric.kind, metric.usedPercent]), [
+    ["Gemini Models (Weekly)", "rolling", 70],
+    ["Other (Daily)", "rolling", 40],
+  ]);
+
+  assert.equal(parseAgyUsageOutput(""), undefined);
+  assert.equal(parseAgyUsageOutput("not json"), undefined);
+  const wrapped = parseAgyUsageOutput(`noise before ${JSON.stringify({
+    accountEmail: "wrapped@example.com",
+    nested: JSON.stringify({
+      groups: [{ displayName: "Gemini Models", buckets: [{ bucketId: "5h", remainingFraction: 0.9 }] }],
+    }),
+  })} noise after`);
+  assert.ok(wrapped);
+  assert.equal(wrapped.accountName, "wrapped@example.com");
+  assert.equal(wrapped.metrics[0]?.usedPercent, 10);
 });

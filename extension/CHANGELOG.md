@@ -2,6 +2,17 @@
 
 ## Unreleased
 
+### Changed
+
+- Expanded the suite to 43 checks with provider parser edge cases, Codex protocol failures, bounded
+  Claude CLI authentication probes, and Gemini cloud and token-refresh failures. Aggregate coverage
+  is now 79.57% line, 79.86% branch, and 81.03% function coverage.
+
+### Fixed
+
+- Applied dashboard metric-mode changes immediately in both the webview and extension host so All,
+  Metered only, and Important only no longer depend on configuration-change propagation to rerender.
+
 ## 0.1.14
 
 ### Added

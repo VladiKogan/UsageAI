@@ -21,6 +21,8 @@ internal static class WindowsIntegrationTests
         try
         {
             False(StartupManager.IsEnabledAt(registryPath, valueName));
+            Throws<InvalidOperationException>(() =>
+                StartupManager.SetEnabledAt(registryPath, valueName, enabled: true, executablePath: null));
             StartupManager.SetEnabledAt(registryPath, valueName, enabled: true, executable);
             True(StartupManager.IsEnabledAt(registryPath, valueName));
             using (var key = Registry.CurrentUser.OpenSubKey(registryPath, writable: false))
@@ -54,6 +56,7 @@ internal static class WindowsIntegrationTests
         }));
         Equal(expectedHandle, actualHandle);
         Equal(SingleInstance.ShowMessage, actualMessage);
+        False(SingleInstance.PostShow(expectedHandle, (_, _, _, _) => false));
         return Task.CompletedTask;
     }
 

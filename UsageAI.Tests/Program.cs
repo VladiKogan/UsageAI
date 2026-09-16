@@ -775,7 +775,45 @@ internal static class Program
         Equal(2, parsed.Metrics.Count);
         Equal(28, parsed.Metrics[0].UsedPercent);
         Equal(56, parsed.Metrics[1].UsedPercent);
+        Null(AgyUsageProbe.ParseOutput(null));
+        Null(AgyUsageProbe.ParseOutput(" \r\n"));
         Null(AgyUsageProbe.ParseOutput("not JSON"));
+        Null(AgyUsageProbe.ParseOutput("diagnostic {not JSON} complete"));
+        Null(AgyUsageProbe.ParseOutput("{}"));
+
+        const string embeddedQuota =
+            """
+            {"groups":[{"displayName":"Other Models","buckets":[{"bucketId":"daily","remainingFraction":0.5}]}]}
+            """;
+        var nestedEnvelope = JsonSerializer.Serialize(new
+        {
+            wrapper = new object[]
+            {
+                new
+                {
+                    planName = "Nested Plan",
+                    accountEmail = "nested@example.com",
+                    payload = embeddedQuota,
+                },
+            },
+        });
+        var wrapped = AgyUsageProbe.ParseOutput($"diagnostic\n{nestedEnvelope}\ncomplete");
+        NotNull(wrapped);
+        Equal("Nested Plan", wrapped!.Plan);
+        Equal("nested@example.com", wrapped.AccountName);
+        Equal("Other Models (Quota)", wrapped.Metrics.Single().Name);
+        Equal(50, wrapped.Metrics.Single().UsedPercent);
+
+        var stringEnvelope = AgyUsageProbe.ParseOutput(JsonSerializer.Serialize(embeddedQuota));
+        NotNull(stringEnvelope);
+        Equal("Antigravity", stringEnvelope!.Plan);
+
+        object tooDeep = new { value = 1 };
+        for (var depth = 0; depth < 14; depth++)
+        {
+            tooDeep = new[] { tooDeep };
+        }
+        Null(AgyUsageProbe.ParseOutput(JsonSerializer.Serialize(tooDeep)));
 
         var currentOutput =
             """
@@ -857,7 +895,10 @@ internal static class Program
         False(hubStartInfo.ArgumentList.Any(argument => argument.StartsWith("--app_data_dir", StringComparison.Ordinal)));
         Equal("TOKEN", hubStartInfo.Environment["ANTIGRAVITY_CSRF_TOKEN"]);
         True(AgyUsageProbe.IsOwnedProcessName("agy"));
+        True(AgyUsageProbe.IsOwnedProcessName("Antigravity CLI"));
+        True(AgyUsageProbe.IsOwnedProcessName("language_server"));
         True(AgyUsageProbe.IsOwnedProcessName("language_server_windows_x64"));
+        False(AgyUsageProbe.IsOwnedProcessName("agy-helper"));
         False(AgyUsageProbe.IsOwnedProcessName("powershell"));
 
         using var http = new HttpClient();
