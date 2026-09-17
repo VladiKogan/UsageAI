@@ -180,7 +180,7 @@ The key is kept in memory, is never forwarded to provider CLI child processes, a
   important Session, Rolling, and Monthly limit
 - Whether history is recorded, and whether the trend and forecast are shown
 - Which provider drives the tray icon (or let it follow whichever is running hottest), which providers appear, and in what order
-- The global hotkey
+- The global hotkey, and whether UsageAI starts with Windows
 - The installed desktop-app version, with manual **What's new** and **Check for updates** actions
   under **About**
 
@@ -210,6 +210,7 @@ restart it automatically.
 - **"Copilot is not signed in"** — sign in through a Copilot IDE extension or Copilot CLI, then hit **Refresh**.
 - **A card says "stale"** — the provider's latest check failed, so you're looking at its previous good reading. The card shows when that reading succeeded, the provider's error, and when UsageAI will retry automatically. The retry runs independently as soon as its backoff or provider-supplied wait time expires; **Refresh** remains available for an immediate manual check.
 - **The hotkey does nothing** — another app already owns Win+Alt+U. Turn it off in **Settings...** to release it.
+- **It didn't start with Windows** — open **Settings...** ▸ **System**. **Start with Windows** shows what Windows would actually do, so if it reads off with a warning underneath, Windows Startup Apps has switched UsageAI off or the entry belongs to another copy of it. Tick the box and save to repair it.
 - **No tray icon** — open the Windows tray overflow menu and pin UsageAI.
 
 </details>

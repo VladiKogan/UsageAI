@@ -4,6 +4,24 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Start with Windows** moved from the tray menu into **Settings ▸ System**, where it is saved with
+  every other preference, and it now reports whether Windows would really launch UsageAI rather than
+  whether a registry value exists. Two states used to make that tick lie. Switching UsageAI off in
+  Task Manager or Settings ▸ Startup Apps leaves the Run entry in place and records the veto beside
+  it, so the entry outlives its own effect; and an entry written by a copy of UsageAI that has since
+  been moved, deleted, or replaced by an install elsewhere keeps pointing at that path. Both now read
+  as off with a line saying which one it is, and ticking the box repairs the entry instead of writing
+  a duplicate: enabling re-points it at the running executable and clears any Startup Apps veto, so a
+  tick always means this copy launches and an empty box always means nothing does. Only a tick the
+  person actually changed is written, so saving Settings for some unrelated preference is never how
+  a startup entry disappears — running a second copy of UsageAI once cannot unregister the installed
+  one. A registry the account cannot write is reported rather than thrown, and every other
+  preference is still saved when that write fails.
+
 ## [0.12.0] - 2026-09-17
 
 ### Added

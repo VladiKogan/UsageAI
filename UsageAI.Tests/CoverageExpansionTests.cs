@@ -2406,11 +2406,127 @@ internal static class CoverageExpansionTests
     }
 
     /// <summary>
-    /// The full dashboard always paints a fixed 2x2 grid sized to its client area, so a
-    /// scrollbar can never reveal anything. It used to appear anyway: the freshly built cards
-    /// are laid out at their natural height before the grid compacts them, and that transient
-    /// overflow latched a scrollbar which then stole width from every card.
+    /// The startup tick reports whether Windows would really launch this copy, not whether a
+    /// registry value exists. A vetoed or misdirected entry reads as off and says why, ticking it
+    /// repairs it, and saving a dialog nobody touched writes nothing.
     /// </summary>
+    public static Task TestSettingsStartupPreferenceAsync()
+    {
+        // Constructing a WinForms control installs a WindowsFormsSynchronizationContext on this
+        // thread, and the harness never pumps a message loop. Leaving it behind would strand the
+        // continuation of the next async check on a queue nobody drains, so it is put back.
+        var entrySyncContext = SynchronizationContext.Current;
+        try
+        {
+            return RunSettingsStartupPreference();
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(entrySyncContext);
+        }
+    }
+
+    private static Task RunSettingsStartupPreference()
+    {
+        var providers = new[] { ("codex", "Codex") };
+        var written = new List<bool>();
+        var state = new StartupState(StartupStatus.NotRegistered, null);
+
+        SettingsForm Open() => new(
+            new AppSettings(),
+            providers,
+            _ => Task.FromResult(new UpdateCheckResult(true, null)),
+            _ => Task.CompletedTask,
+            96,
+            () => state,
+            value => written.Add(value));
+
+        using (var dialog = Open())
+        {
+            var box = GetPrivateField<CheckBox>(dialog, "_startWithWindows");
+            var hint = GetPrivateField<Label>(dialog, "_startupHint");
+            False(box.Checked);
+            Equal(Theme.Muted, hint.ForeColor);
+
+            // Nothing was touched, so saving is not a registry write.
+            True(InvokePrivate<bool>(dialog, "TryApplyStartupPreference"));
+            Equal(0, written.Count);
+
+            box.Checked = true;
+            True(InvokePrivate<bool>(dialog, "TryApplyStartupPreference"));
+            Equal(1, written.Count);
+            True(written[0]);
+        }
+
+        written.Clear();
+        state = new StartupState(StartupStatus.Enabled, @"C:\Program Files\UsageAI\UsageAI.exe");
+        using (var dialog = Open())
+        {
+            var box = GetPrivateField<CheckBox>(dialog, "_startWithWindows");
+            var hint = GetPrivateField<Label>(dialog, "_startupHint");
+            True(box.Checked);
+            Equal(Theme.Muted, hint.ForeColor);
+            True(InvokePrivate<bool>(dialog, "TryApplyStartupPreference"));
+            Equal(0, written.Count);
+
+            box.Checked = false;
+            True(InvokePrivate<bool>(dialog, "TryApplyStartupPreference"));
+            Equal(1, written.Count);
+            False(written[0]);
+
+            // Returning the tick to where it started is not a change to save.
+            written.Clear();
+            box.Checked = true;
+            True(InvokePrivate<bool>(dialog, "TryApplyStartupPreference"));
+            Equal(0, written.Count);
+        }
+
+        // Both broken states read as off, explain themselves, and are repaired by ticking — the
+        // registration already exists, so this is the case a presence check would call satisfied.
+        foreach (var broken in new[] { StartupStatus.BlockedByWindows, StartupStatus.PathMismatch })
+        {
+            written.Clear();
+            state = new StartupState(broken, @"C:\Program Files\UsageAI\UsageAI.exe");
+            using var dialog = Open();
+            var box = GetPrivateField<CheckBox>(dialog, "_startWithWindows");
+            var hint = GetPrivateField<Label>(dialog, "_startupHint");
+            False(box.Checked);
+            Equal(Theme.Warning, hint.ForeColor);
+            True(hint.Text.Length > 0);
+
+            // Left alone, the entry another copy of UsageAI owns is not deleted by a Save the
+            // person made for some unrelated preference.
+            True(InvokePrivate<bool>(dialog, "TryApplyStartupPreference"));
+            Equal(0, written.Count);
+
+            box.Checked = true;
+            True(InvokePrivate<bool>(dialog, "TryApplyStartupPreference"));
+            Equal(1, written.Count);
+            True(written[0]);
+
+            // A theme change must not repaint the warning as ordinary body text.
+            InvokePrivate(dialog, "ApplyThemeColors");
+            Equal(Theme.Warning, hint.ForeColor);
+        }
+
+        // A registry the user cannot write is reported, not thrown out of the dialog.
+        state = new StartupState(StartupStatus.NotRegistered, null);
+        using (var failing = new SettingsForm(
+                   new AppSettings(),
+                   providers,
+                   _ => Task.FromResult(new UpdateCheckResult(true, null)),
+                   _ => Task.CompletedTask,
+                   96,
+                   () => state,
+                   _ => throw new UnauthorizedAccessException("denied")))
+        {
+            GetPrivateField<CheckBox>(failing, "_startWithWindows").Checked = true;
+            False(InvokePrivate<bool>(failing, "TryApplyStartupPreference"));
+        }
+
+        return Task.CompletedTask;
+    }
+
     /// <summary>
     /// The provider list reorders by dragging an entry as well as by the buttons. The gesture is
     /// driven with real mouse messages rather than by invoking the handlers, because the bug it
@@ -2640,6 +2756,12 @@ internal static class CoverageExpansionTests
         return (bool)method.Invoke(dialog, arguments)!;
     }
 
+    /// <summary>
+    /// The full dashboard always paints a fixed 2x2 grid sized to its client area, so a
+    /// scrollbar can never reveal anything. It used to appear anyway: the freshly built cards
+    /// are laid out at their natural height before the grid compacts them, and that transient
+    /// overflow latched a scrollbar which then stole width from every card.
+    /// </summary>
     public static Task TestDashboardNeverScrollsAsync()
     {
         var now = DateTimeOffset.Now;

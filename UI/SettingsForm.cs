@@ -35,6 +35,8 @@ internal sealed class SettingsForm : Form
     private readonly CheckBox _historyEnabled;
     private readonly CheckBox _forecastEnabled;
     private readonly CheckBox _hotkeyEnabled;
+    private readonly CheckBox _startWithWindows;
+    private readonly Label _startupHint;
     private readonly CheckedListBox _providers;
     private readonly Button _checkForUpdatesButton;
     private readonly Label _updateStatus;
@@ -42,6 +44,10 @@ internal sealed class SettingsForm : Form
     private readonly FlowLayoutPanel _buttons;
     private readonly Button _saveButton;
     private readonly Button _cancelButton;
+    private readonly Func<StartupState> _readStartup;
+    private readonly Action<bool> _writeStartup;
+    private StartupState _startupState;
+    private bool _startupLoadedChecked;
     private bool _isCheckingForUpdates;
     private bool _resourcesDisposed;
     private int _dragCandidate = -1;
@@ -66,12 +72,16 @@ internal sealed class SettingsForm : Form
         IReadOnlyList<(string Id, string DisplayName)> providers,
         Func<CancellationToken, Task<UpdateCheckResult>> checkForUpdates,
         Func<UpdateRelease, Task> promptForUpdate,
-        int? dpiOverride = null)
+        int? dpiOverride = null,
+        Func<StartupState>? readStartup = null,
+        Action<bool>? writeStartup = null)
     {
         _settings = settings;
         _dpiOverride = dpiOverride;
         _checkForUpdates = checkForUpdates;
         _promptForUpdate = promptForUpdate;
+        _readStartup = readStartup ?? (static () => StartupManager.Current);
+        _writeStartup = writeStartup ?? StartupManager.SetEnabled;
         var scale = Scale();
 
         AutoScaleMode = AutoScaleMode.None;
@@ -135,6 +145,13 @@ internal sealed class SettingsForm : Form
         _historyEnabled = CreateCheckBox("Record usage history on this machine");
         _forecastEnabled = CreateCheckBox("Show trend and burn-rate forecast");
         _hotkeyEnabled = CreateCheckBox("Global hotkey (Win+Alt+U)");
+        _startWithWindows = CreateCheckBox("Start with Windows");
+        _startupHint = new Label
+        {
+            AutoSize = true,
+            ForeColor = Theme.Muted,
+            Margin = scale.Pad(0, 0, 0, 8),
+        };
         _theme = new ComboBox
         {
             BackColor = Theme.SurfaceRaised,
@@ -264,6 +281,8 @@ internal sealed class SettingsForm : Form
         AddSpan(CreateOrderButtons(scale));
 
         AddSection("System");
+        AddSpan(_startWithWindows);
+        AddSpan(_startupHint);
         AddSpan(_hotkeyEnabled);
 
         AddSection("About");
@@ -374,6 +393,7 @@ internal sealed class SettingsForm : Form
         _historyEnabled.Checked = _settings.HistoryEnabled;
         _forecastEnabled.Checked = _settings.ForecastEnabled;
         _hotkeyEnabled.Checked = _settings.GlobalHotkeyEnabled;
+        LoadStartupState();
         _trayProvider.SelectedIndex = 0;
         if (_settings.TrayProviderId is { } trayProviderId)
         {
@@ -427,8 +447,74 @@ internal sealed class SettingsForm : Form
 
         _settings.ProviderOrder = order.ToArray();
         _settings.Save();
+        if (!TryApplyStartupPreference())
+        {
+            // Every other preference is already saved, so the dialog still closes; only the one
+            // thing that failed is reported, and reopening Settings shows the real startup state.
+            MessageBox.Show(
+                this,
+                "Windows startup settings could not be updated.",
+                "UsageAI",
+                MessageBoxButtons.OK,
+                MessageBoxIcon.Warning);
+        }
+
         DialogResult = DialogResult.OK;
         Close();
+    }
+
+    /// <summary>
+    /// Reads the effective startup state rather than the presence of the registry entry, so the
+    /// tick means "Windows will really launch this copy". A registration that Startup Apps has
+    /// vetoed, or that points at a copy of UsageAI which is no longer the one running, reads as
+    /// off and says why.
+    /// </summary>
+    private void LoadStartupState()
+    {
+        _startupState = _readStartup();
+        _startWithWindows.Checked = _startupState.WillRun;
+        _startupHint.Text = _startupState.Status switch
+        {
+            StartupStatus.Enabled => "UsageAI starts in the tray when you sign in to Windows.",
+            StartupStatus.BlockedByWindows =>
+                "Windows Startup Apps is blocking UsageAI. Tick this and save to turn it back on.",
+            StartupStatus.PathMismatch =>
+                "Startup points at another copy of UsageAI. Tick this and save to use this one.",
+            _ => "Adds UsageAI to your sign-in items and starts it in the tray.",
+        };
+        _startupHint.ForeColor = StartupHintColor();
+        _startupLoadedChecked = _startWithWindows.Checked;
+    }
+
+    private Color StartupHintColor() =>
+        _startupState.Status is StartupStatus.BlockedByWindows or StartupStatus.PathMismatch
+            ? Theme.Warning
+            : Theme.Muted;
+
+    /// <summary>
+    /// Writes only when the tick differs from the one the dialog opened with, so saving is never
+    /// how a startup entry disappears. The broken states read as off, which would otherwise make
+    /// an untouched Save delete an entry the person never asked about — a second copy of UsageAI
+    /// run once from a download would unregister the installed one. Ticking the box is still what
+    /// repairs those states, because enabling rewrites the entry and clears any Startup Apps veto.
+    /// </summary>
+    private bool TryApplyStartupPreference()
+    {
+        var desired = _startWithWindows.Checked;
+        if (desired == _startupLoadedChecked)
+        {
+            return true;
+        }
+
+        try
+        {
+            _writeStartup(desired);
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
     }
 
     private FlowLayoutPanel CreateOrderButtons(LayoutScale scale)
@@ -821,6 +907,7 @@ internal sealed class SettingsForm : Form
         ForeColor = Theme.Text;
         ApplyControlTheme(_shell);
         _updateStatus.ForeColor = Theme.Muted;
+        _startupHint.ForeColor = StartupHintColor();
         _saveButton.BackColor = Theme.Accent;
         _saveButton.ForeColor = Theme.OnAccent;
         _saveButton.FlatAppearance.BorderColor = Theme.Accent;

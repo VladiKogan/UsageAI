@@ -26,7 +26,6 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private readonly MessageWindow _messageWindow;
     private readonly System.Windows.Forms.Timer _tickTimer;
     private readonly System.Windows.Forms.Timer _refreshAnimationTimer;
-    private readonly ToolStripMenuItem _startupItem;
     private readonly bool _automaticUpdateChecksEnabled;
     private readonly UpgradeNotice _upgradeNotice;
     private readonly CancellationTokenSource _shutdown = new();
@@ -84,13 +83,6 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _menu.Items.Add("Refresh", null, async (_, _) => await RefreshAsync(force: true));
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("Settings...", null, (_, _) => OpenSettings());
-        _startupItem = new ToolStripMenuItem("Start with Windows")
-        {
-            Checked = StartupManager.IsEnabled,
-            CheckOnClick = true,
-        };
-        _startupItem.CheckedChanged += StartupItemOnCheckedChanged;
-        _menu.Items.Add(_startupItem);
         _menu.Items.Add(new ToolStripSeparator());
         _menu.Items.Add("Exit", null, (_, _) => Exit());
 
@@ -501,25 +493,6 @@ internal sealed class UsageApplicationContext : ApplicationContext
         else
         {
             _syncContext.Post(_ => action(), null);
-        }
-    }
-
-    private void StartupItemOnCheckedChanged(object? sender, EventArgs eventArgs)
-    {
-        try
-        {
-            StartupManager.SetEnabled(_startupItem.Checked);
-        }
-        catch (Exception)
-        {
-            _startupItem.CheckedChanged -= StartupItemOnCheckedChanged;
-            _startupItem.Checked = StartupManager.IsEnabled;
-            _startupItem.CheckedChanged += StartupItemOnCheckedChanged;
-            MessageBox.Show(
-                "Windows startup settings could not be updated.",
-                "UsageAI",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
         }
     }
 

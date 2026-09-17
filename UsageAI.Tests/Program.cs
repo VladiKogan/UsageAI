@@ -8,6 +8,7 @@ using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
 using System.Windows.Forms;
+using Microsoft.Win32;
 using UsageAI.Models;
 using UsageAI.Services;
 using UsageAI.UI;
@@ -83,6 +84,7 @@ internal static class Program
         ("dashboard keeps a responsive two-by-two provider grid", CoverageExpansionTests.TestDashboardFixedGridAsync),
         ("dashboard grid never shows a scrollbar", CoverageExpansionTests.TestDashboardNeverScrollsAsync),
         ("settings provider list reorders by drag", CoverageExpansionTests.TestProviderDragReorderAsync),
+        ("settings startup preference", CoverageExpansionTests.TestSettingsStartupPreferenceAsync),
         ("application context lifecycle and tray updates", CoverageExpansionTests.TestApplicationContextAsync),
         ("preview and command-line entry points", CoverageExpansionTests.TestPreviewAndEntryPointsAsync),
         ("provider credential refresh and discovery branches", CoverageExpansionTests.TestProviderCredentialBranchesAsync),
@@ -154,6 +156,11 @@ internal static class Program
             "USAGEAI_DATA_DIR",
             Path.Combine(Path.GetTempPath(), "UsageAI.SecurityTests", $"data-{Guid.NewGuid():N}"));
 
+        // Same idea for the registry: a settings dialog driven end to end saves the startup
+        // preference, and that must never reach this machine's real Run key.
+        var startupRoot = $@"Software\UsageAI-Tests-{Guid.NewGuid():N}";
+        StartupManager.SetRegistryRootForTests(startupRoot);
+
         var selectedTests = Tests.AsEnumerable();
         var filterIndex = Array.IndexOf(args, "--filter");
         if (filterIndex >= 0)
@@ -191,6 +198,8 @@ internal static class Program
             }
         }
 
+        StartupManager.SetRegistryRootForTests(null);
+        Registry.CurrentUser.DeleteSubKeyTree(startupRoot, throwOnMissingSubKey: false);
         TryRemoveDataDirectory();
         Console.WriteLine($"{testsToRun.Length - failures}/{testsToRun.Length} checks passed.");
         return failures == 0 ? 0 : 1;
