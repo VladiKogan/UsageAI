@@ -49,7 +49,7 @@ The project follows [Semantic Versioning](https://semver.org/).
   on the empty strip below the last row, and a move that would carry an entry past either end. The
   drag is exercised with real mouse messages rather than by calling the handlers, because the tick
   it has to suppress is applied by the native list box itself on button-up.
-  Coverage on the `UsageAI` package is 88.26% line and 82.04% branch, against a gate of 83% and 76%.
+  Coverage on the `UsageAI` package is 88.26% line and 82.13% branch, against a gate of 83% and 76%.
 
 ### Fixed
 
