@@ -2698,6 +2698,47 @@ internal static class CoverageExpansionTests
 
         popup.CloseForExit();
 
+        // Four providers are the 2x2 the dashboard is designed around, but with no scrollbar a
+        // fifth must earn a third row: laid out past the bottom edge it would be unreachable
+        // rather than merely awkward, which is what the scrollbar used to paper over.
+        foreach (var count in new[] { 5, 6 })
+        {
+            var extra = Enumerable.Range(0, count)
+                .Select(index => new ProviderStatus(
+                    $"p{index}",
+                    $"Provider {index}",
+                    Snapshot($"p{index}", $"Provider {index}", 20 + index, now),
+                    null,
+                    false,
+                    now))
+                .ToArray();
+
+            using var wide = new UsagePopupForm(new AppSettings(), 96)
+            {
+                StartPosition = FormStartPosition.Manual,
+                Location = new Point(-10_000, -10_000),
+            };
+            wide.SetStates(extra, false, now, Array.Empty<UsageSample>());
+            wide.SetMode(DashboardMode.Full);
+            wide.Show();
+            wide.ClientSize = new Size(900, 700);
+            wide.PerformLayout();
+            Application.DoEvents();
+
+            var grid = GetPrivateField<FlowLayoutPanel>(wide, "_content");
+            var extraCards = grid.Controls.OfType<ProviderUsageCard>().ToArray();
+            Equal(count, extraCards.Length);
+            False(grid.VerticalScroll.Visible);
+            True(extraCards.All(card => card.Bottom <= grid.ClientSize.Height));
+            True(extraCards.All(card => card.Right <= grid.ClientSize.Width));
+
+            // Still two columns, just more rows, and every card the same size as its neighbours.
+            Equal(2, extraCards.Select(card => card.Left).Distinct().Count());
+            Equal(3, extraCards.Select(card => card.Top).Distinct().Count());
+            Equal(1, extraCards.Select(card => card.Size).Distinct().Count());
+            wide.CloseForExit();
+        }
+
         return Task.CompletedTask;
     }
 

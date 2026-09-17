@@ -807,7 +807,8 @@ internal sealed class UsagePopupForm : Form
                 .Select(control => control is ProviderUsageCard card ? card.NaturalHeight : control.Height)
                 .DefaultIfEmpty(scale[104])
                 .Max();
-            contentHeight = DashboardRows * tallestCard + gap;
+            var rows = DashboardRowCount(_content.Controls.Count);
+            contentHeight = (rows * tallestCard) + (gap * (rows - 1));
         }
 
         contentHeight = Math.Max(scale[104], contentHeight);
@@ -949,6 +950,15 @@ internal sealed class UsagePopupForm : Form
         return new Rectangle(x, y, width, height);
     }
 
+    /// <summary>
+    /// How many rows the grid needs. Four providers are the 2x2 the dashboard is designed around,
+    /// but the column count is what is fixed, not the row count: the panel no longer scrolls, so a
+    /// fifth provider has to earn a third row rather than be laid out past the bottom edge where
+    /// nothing could reach it. Shorter rows are what the cards already compact for.
+    /// </summary>
+    private static int DashboardRowCount(int cardCount) =>
+        Math.Max(DashboardRows, (cardCount + DashboardColumns - 1) / DashboardColumns);
+
     private void UpdateCardWidths()
     {
         if (_updatingCardWidths || _content.IsDisposed || Disposing || IsDisposed)
@@ -987,8 +997,9 @@ internal sealed class UsagePopupForm : Form
                 var gap = scale[10];
                 var cardWidth = Math.Max(1, (availableWidth - gap) / DashboardColumns);
                 var count = _content.Controls.Count;
+                var rows = DashboardRowCount(count);
                 var availableHeight = _content.ClientSize.Height;
-                var availableCardHeight = Math.Max(1, (availableHeight - gap) / DashboardRows);
+                var availableCardHeight = Math.Max(1, (availableHeight - (gap * (rows - 1))) / rows);
 
                 for (var i = 0; i < count; i++)
                 {
@@ -996,7 +1007,7 @@ internal sealed class UsagePopupForm : Form
                     var colIndex = i % DashboardColumns;
                     var rowIndex = i / DashboardColumns;
                     var rightMargin = colIndex == DashboardColumns - 1 ? 0 : gap;
-                    var bottomMargin = rowIndex == DashboardRows - 1 ? 0 : gap;
+                    var bottomMargin = rowIndex == rows - 1 ? 0 : gap;
                     var margin = new Padding(0, 0, rightMargin, bottomMargin);
                     if (control.Margin != margin)
                     {

@@ -48,10 +48,15 @@ The project follows [Semantic Versioning](https://semver.org/).
   on the empty strip below the last row, and a move that would carry an entry past either end. The
   drag is exercised with real mouse messages rather than by calling the handlers, because the tick
   it has to suppress is applied by the native list box itself on button-up.
-  Coverage on the `UsageAI` package is 88.19% line and 81.90% branch, against a gate of 83% and 76%.
+  Coverage on the `UsageAI` package is 88.20% line and 81.90% branch, against a gate of 83% and 76%.
 
 ### Fixed
 
+- The dashboard grid now takes as many rows as it has providers instead of a fixed two. With the
+  scrollbar gone, a fifth provider was laid out immediately below the client area with no way to
+  reach it, and a sixth lost two cards; the four shipped providers are unaffected and still fill
+  the same 2x2 at the same size. The column count stays fixed at two, and the extra row makes the
+  cards shorter, which is what their metric spacing already compacts for.
 - Removed the scrollbar from the full dashboard. The grid is a fixed 2x2 of provider cards that are
   always resized to the window's client area, so there was never anything below the fold to scroll
   to, yet a vertical scrollbar still appeared at common window sizes with an empty scroll range —
