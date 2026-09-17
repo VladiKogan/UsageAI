@@ -1110,20 +1110,40 @@ internal sealed class UsagePopupForm : Form
 
     private sealed class EmptyProvidersControl : Control
     {
-        private readonly Font _titleFont = Typography.Display(9.5F);
-        private readonly Font _bodyFont = Typography.Text(8.3F);
+        private int _fontDpi;
+        private Font _titleFont;
+        private Font _bodyFont;
 
         public EmptyProvidersControl()
         {
+            _fontDpi = DeviceDpi;
+            _titleFont = Typography.Display(9.5F, _fontDpi);
+            _bodyFont = Typography.Text(8.3F, _fontDpi);
             DoubleBuffered = true;
             AccessibleName = "No connected providers";
             AccessibleDescription =
                 "No providers are connected. Open the dashboard to see each provider's connection details.";
         }
 
+        // Point-sized faces keep the DPI the process started on, so they have to be rebuilt for the
+        // monitor this control actually landed on or the text stays at the primary monitor's scale.
+        protected override void OnHandleCreated(EventArgs e)
+        {
+            base.OnHandleCreated(e);
+            EnsureFonts();
+        }
+
+        protected override void RescaleConstantsForDpi(int deviceDpiOld, int deviceDpiNew)
+        {
+            base.RescaleConstantsForDpi(deviceDpiOld, deviceDpiNew);
+            EnsureFonts();
+            Invalidate();
+        }
+
         protected override void OnPaint(PaintEventArgs e)
         {
             base.OnPaint(e);
+            EnsureFonts();
             e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
             var scale = new LayoutScale(this);
             DrawingHelpers.FillCard(
@@ -1157,6 +1177,20 @@ internal sealed class UsagePopupForm : Form
             }
 
             base.Dispose(disposing);
+        }
+
+        private void EnsureFonts()
+        {
+            if (_fontDpi == DeviceDpi)
+            {
+                return;
+            }
+
+            _fontDpi = DeviceDpi;
+            _titleFont.Dispose();
+            _bodyFont.Dispose();
+            _titleFont = Typography.Display(9.5F, _fontDpi);
+            _bodyFont = Typography.Text(8.3F, _fontDpi);
         }
     }
 }

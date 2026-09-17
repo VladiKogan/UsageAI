@@ -46,6 +46,43 @@ internal static class Typography
     public static Font Mono(float points, FontStyle style = FontStyle.Bold) =>
         Create(MonoFamily, points, style);
 
+    /// <summary>Heading face realised for one monitor's DPI. The caller owns the returned font.</summary>
+    public static Font Display(float points, int dpi, FontStyle style = FontStyle.Bold) =>
+        Create(DisplayFamily, points, dpi, style);
+
+    /// <summary>Body face realised for one monitor's DPI. The caller owns the returned font.</summary>
+    public static Font Text(float points, int dpi, FontStyle style = FontStyle.Regular) =>
+        Create(TextFamily, points, dpi, style);
+
+    /// <summary>Monospace face realised for one monitor's DPI. The caller owns the returned font.</summary>
+    public static Font Mono(float points, int dpi, FontStyle style = FontStyle.Bold) =>
+        Create(MonoFamily, points, dpi, style);
+
+    /// <summary>
+    /// Converts a point size to the em size in pixels for <paramref name="dpi"/>. A point-sized
+    /// <see cref="Font"/> is rasterised at the DPI the process started on, not the DPI of the
+    /// monitor the window is currently on, so custom-painted text drawn with one stays at the
+    /// primary monitor's scale while the pixel geometry around it follows
+    /// <see cref="Control.DeviceDpi"/>. Asking for the size in pixels instead removes the
+    /// conversion, so the text tracks the same DPI as <see cref="LayoutScale"/>.
+    /// </summary>
+    internal static float PixelSize(float points, int dpi) =>
+        Math.Max(1F, Math.Clamp(points, 5F, 48F) * Math.Clamp(dpi, 48, 600) / 72F);
+
+    private static Font Create(string familyName, float points, int dpi, FontStyle style)
+    {
+        var pixels = PixelSize(points, dpi);
+        try
+        {
+            return new Font(familyName, pixels, AvailableStyle(familyName, style), GraphicsUnit.Pixel);
+        }
+        catch (ArgumentException)
+        {
+            // The resolved family disappeared (a font cache reset); the default face still renders.
+            return new Font(FontFamily.GenericSansSerif, pixels, FontStyle.Regular, GraphicsUnit.Pixel);
+        }
+    }
+
     private static Font Create(string familyName, float points, FontStyle style)
     {
         var size = Math.Clamp(points, 5F, 48F);

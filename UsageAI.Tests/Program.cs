@@ -1,6 +1,7 @@
 using System.Diagnostics;
 using System.Drawing;
 using System.Net;
+using System.Reflection;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
@@ -49,6 +50,7 @@ internal static class Program
         ("dashboard metric display selection", TestMetricDisplaySelectionAsync),
         ("bundled release notes and upgrade state", TestReleaseNotesAsync),
         ("High Contrast palette and extreme DPI scale", TestHighContrastAndDpiAsync),
+        ("painted card text and rows follow the monitor DPI", TestCardDpiTypographyAsync),
         ("dashboard metric mode UI and settings isolation", CoverageExpansionTests.TestDashboardMetricModeUiAsync),
         ("release notes parser boundary cases", CoverageExpansionTests.TestReleaseNotesBoundariesAsync),
         ("What's New first-interaction lifecycle", CoverageExpansionTests.TestWhatsNewLifecycleAsync),
@@ -1502,6 +1504,235 @@ internal static class Program
         File.Delete(AppPaths.SettingsFile);
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// The card paints its own text, and a point-sized font is rasterised once at the DPI the
+    /// process started on. Geometry followed <see cref="Control.DeviceDpi"/> to a second monitor
+    /// while that text stayed at the primary monitor's scale, which left the dashboard full of gaps
+    /// and squeezed every four-metric provider out of the full row layout.
+    /// </summary>
+    private static Task TestCardDpiTypographyAsync()
+    {
+        using (var mono96 = Typography.Mono(13.5F, 96))
+        using (var mono192 = Typography.Mono(13.5F, 192))
+        using (var text96 = Typography.Text(8.5F, 96))
+        using (var text192 = Typography.Text(8.5F, 192))
+        {
+            Equal(GraphicsUnit.Pixel, mono96.Unit);
+            Equal(GraphicsUnit.Pixel, text96.Unit);
+            True(Math.Abs(mono192.Size - (2 * mono96.Size)) < 0.01F);
+            True(Math.Abs(text192.Size - (2 * text96.Size)) < 0.01F);
+
+            var narrow = TextRenderer.MeasureText("0% USED", mono96);
+            var wide = TextRenderer.MeasureText("0% USED", mono192);
+            True(wide.Width >= narrow.Width * 1.8 && wide.Height >= narrow.Height * 1.8);
+        }
+
+        // Point sizes and DPI are both clamped, so an absurd monitor scale still yields a face.
+        True(Typography.PixelSize(13.5F, 96) > Typography.PixelSize(13.5F, 48));
+        Equal(Typography.PixelSize(13.5F, 48), Typography.PixelSize(13.5F, 24));
+        Equal(Typography.PixelSize(13.5F, 600), Typography.PixelSize(13.5F, 4800));
+        Equal(Typography.PixelSize(48F, 96), Typography.PixelSize(400F, 96));
+
+        // The height the user's 1080p-class dashboard leaves each metric row of a four-limit
+        // provider. It is under the preferred row height but above what the full stack needs, so
+        // the row keeps its detail line and meter instead of dropping to the compressed layout.
+        foreach (var dpi in new[] { 96, 192, 288 })
+        {
+            var scale = new LayoutScale(dpi);
+            True(ProviderUsageCard.FitsFullLayout(scale[51], scale));
+            False(ProviderUsageCard.FitsFullLayout(scale[40], scale));
+            False(ProviderUsageCard.FitsTrend(scale[51], 0, scale));
+            True(ProviderUsageCard.FitsTrend(scale[72], 0, scale));
+            // A centred content block pushes the trend down with it, so the offset counts.
+            False(ProviderUsageCard.FitsTrend(scale[72], scale[8], scale));
+        }
+
+        var now = DateTimeOffset.Now;
+        var snapshot = new UsageSnapshot(
+            "Google AI Pro",
+            new UsageMetric[]
+            {
+                new("GEMINI MODELS (5-HOUR)", UsageMetricKind.Session, 12, now.AddHours(2)),
+                new("GEMINI MODELS (WEEKLY)", UsageMetricKind.Rolling, 30, now.AddDays(6)),
+                new("CLAUDE AND GPT MODELS (5-HOUR)", UsageMetricKind.Session, 44, now.AddHours(2)),
+                new("CLAUDE AND GPT MODELS (WEEKLY)", UsageMetricKind.Rolling, 61, now.AddDays(6)),
+            },
+            now,
+            "gemini",
+            "Google Gemini");
+        var status = new ProviderStatus("gemini", "Google Gemini", snapshot, null, false);
+        var history = snapshot.Metrics
+            .SelectMany(metric => new[]
+            {
+                new UsageSample(now.AddMinutes(-40), "gemini", $"{metric.Kind}:{metric.Name}", 5),
+                new UsageSample(now.AddMinutes(-20), "gemini", $"{metric.Kind}:{metric.Name}", 9),
+            })
+            .ToArray();
+
+        // Painting the same headline at two DPIs has to scale the text with the geometry. The value
+        // is right-aligned against a fixed inset, so how far left its ink reaches is exactly the
+        // width of the painted face: a face pinned to whichever DPI this machine runs at would
+        // measure the same on both cards instead of twice as wide on the larger one.
+        // One short-labelled metric, so the only ink on the right of the row is the headline itself.
+        var single = new ProviderStatus(
+            "codex",
+            "Codex",
+            new UsageSnapshot(
+                "Plus",
+                new UsageMetric[] { new("5-HOUR", UsageMetricKind.Session, 44, now.AddHours(2)) },
+                now,
+                "codex",
+                "Codex"),
+            null,
+            false);
+
+        var headlineWidth = new Dictionary<int, int>();
+        foreach (var dpi in new[] { 96, 192 })
+        {
+            var scale = new LayoutScale(dpi);
+            using var card = new ProviderUsageCard(
+                single,
+                expanded: true,
+                Array.Empty<UsageSample>(),
+                showTrend: false,
+                dpiOverride: dpi)
+            {
+                Width = scale[340],
+            };
+
+            using var bitmap = new Bitmap(card.Width, card.Height);
+            card.DrawToBitmap(bitmap, card.ClientRectangle);
+
+            // The row's headline band: below the header divider, above the detail line. The card
+            // surface is whatever colour fills most of that band, so the scan calibrates itself
+            // against the active theme rather than against a hard-coded colour or a border pixel.
+            var top = scale[46] + scale[6];
+            var bottom = scale[46] + scale[24];
+            var histogram = new Dictionary<int, int>();
+            for (var y = top; y < bottom; y++)
+            {
+                for (var x = bitmap.Width / 2; x < bitmap.Width; x++)
+                {
+                    var argb = bitmap.GetPixel(x, y).ToArgb();
+                    histogram[argb] = histogram.GetValueOrDefault(argb) + 1;
+                }
+            }
+
+            var surface = histogram.MaxBy(entry => entry.Value).Key;
+            var leftmost = bitmap.Width;
+            for (var y = top; y < bottom; y++)
+            {
+                for (var x = bitmap.Width / 2; x < bitmap.Width; x++)
+                {
+                    if (bitmap.GetPixel(x, y).ToArgb() != surface)
+                    {
+                        leftmost = Math.Min(leftmost, x);
+                        break;
+                    }
+                }
+            }
+
+            True(leftmost > bitmap.Width / 2 && leftmost < bitmap.Width);
+            headlineWidth[dpi] = bitmap.Width - leftmost;
+        }
+
+        var growth = headlineWidth[192] / (double)headlineWidth[96];
+        True(growth is > 1.8 and < 2.2);
+
+        foreach (var dpi in new[] { 96, 192 })
+        {
+            var scale = new LayoutScale(dpi);
+            using var quadCard = new ProviderUsageCard(
+                status,
+                expanded: true,
+                history,
+                showTrend: true,
+                dpiOverride: dpi)
+            {
+                Width = scale[340],
+            };
+            Equal(scale[46] + scale[8] + (4 * scale[72]), quadCard.NaturalHeight);
+        }
+
+        // A dashboard cell is never as tall as four trend rows want to be, so the squeezed card has
+        // to keep painting inside itself rather than run past the bottom edge.
+        using var squeezedCard = new ProviderUsageCard(
+            status,
+            expanded: true,
+            history,
+            showTrend: true,
+            dpiOverride: 96)
+        {
+            Width = 340,
+        };
+        // The real order: the dashboard grid assigns the cell height while the card is still
+        // handle-less, and the handle lands afterwards. Re-resolving the DPI there must not take
+        // the squeeze back, or the grid's bottom row ends up past a client area that never scrolls.
+        squeezedCard.Height = 252;
+        _ = squeezedCard.Handle;
+        Equal(252, squeezedCard.Height);
+        using var squeezed = new Bitmap(squeezedCard.Width, squeezedCard.Height);
+        squeezedCard.DrawToBitmap(squeezed, squeezedCard.ClientRectangle);
+
+        // A compact card carrying a height measured at another monitor's DPI is what clipped the
+        // popup's detail line and hid its meter: the card painted for the monitor it had moved to
+        // inside a box measured for the one the process started on. Every hook WinForms offers for
+        // that moment has to put the height back, and the card has to take its own measurement
+        // because the popup sizes itself by adding those heights up.
+        foreach (var hook in new[] { "OnHandleCreated", "OnDpiChangedAfterParent", "RescaleConstantsForDpi" })
+        {
+            using var compact = new ProviderUsageCard(
+                single,
+                expanded: false,
+                Array.Empty<UsageSample>(),
+                showTrend: false)
+            {
+                Width = 340,
+            };
+            Equal(new LayoutScale(compact.DeviceDpi)[98], compact.NaturalHeight);
+
+            // The height and faces a card measured before it knew which monitor it was going to.
+            SetPrivateField(compact, "_measuredDpi", compact.DeviceDpi * 2);
+            compact.Height = 10;
+            InvokeHook(compact, hook);
+            Equal(compact.NaturalHeight, compact.Height);
+        }
+
+        // An expanded card is the opposite case: the dashboard grid has already given it a cell
+        // height, and re-resolving the DPI has to carry that squeeze across rather than take the
+        // natural height back, which would push the grid's bottom row out of a view that never
+        // scrolls. Here the card was squeezed to 252 at twice the DPI, so it lands on half of it.
+        using var gridded = new ProviderUsageCard(
+            status,
+            expanded: true,
+            history,
+            showTrend: true)
+        {
+            Width = 340,
+        };
+        SetPrivateField(gridded, "_measuredDpi", gridded.DeviceDpi * 2);
+        gridded.Height = 252;
+        InvokeHook(gridded, "OnHandleCreated");
+        Equal(126, gridded.Height);
+        True(gridded.Height < gridded.NaturalHeight);
+
+        return Task.CompletedTask;
+    }
+
+    private static void InvokeHook(Control target, string name) =>
+        target.GetType()
+            .GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(
+                target,
+                name == "RescaleConstantsForDpi"
+                    ? new object?[] { target.DeviceDpi * 2, target.DeviceDpi }
+                    : new object?[] { EventArgs.Empty });
+
+    private static void SetPrivateField(object target, string name, object value) =>
+        target.GetType()
+            .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(target, value);
 
     private static Task TestHighContrastAndDpiAsync()
     {

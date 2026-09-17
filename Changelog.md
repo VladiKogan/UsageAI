@@ -43,16 +43,51 @@ The project follows [Semantic Versioning](https://semver.org/).
   releases exist, and the subheading names how many releases are being shown when there is more than
   one. Windows High Contrast still flattens every category colour to the system foreground, and the
   category name is always spelled out, so colour is never the only cue.
-- The desktop suite grew to 76 checks, adding the dashboard grid's scroll behaviour — including
-  that no provider card is ever laid out where nothing could reach it — and the whole
-  provider-list drag gesture, down to the boundaries that must do nothing: a right-click, a press
-  on the empty strip below the last row, and a move that would carry an entry past either end. The
-  drag is exercised with real mouse messages rather than by calling the handlers, because the tick
-  it has to suppress is applied by the native list box itself on button-up.
-  Coverage on the `UsageAI` package is 88.26% line and 82.13% branch, against a gate of 83% and 76%.
+- The desktop suite grew to 77 checks, adding the dashboard grid's scroll behaviour — including
+  that no provider card is ever laid out where nothing could reach it — the whole provider-list
+  drag gesture, down to the boundaries that must do nothing: a right-click, a press on the empty
+  strip below the last row, and a move that would carry an entry past either end, and the DPI a
+  provider card paints its own text at. The drag is exercised with real mouse messages rather than
+  by calling the handlers, because the tick it has to suppress is applied by the native list box
+  itself on button-up. The card's text is measured out of the painted pixels — how far left the
+  right-aligned headline reaches is exactly the width of the face it was drawn with — so the check
+  fails on any machine if the text stops tracking the geometry. The grid check also opens a
+  dashboard the way the tray does — cards built and squeezed into restored bounds while the form is
+  still handle-less, handles arriving only at `Show()` — because that ordering is the one where a
+  card re-measuring itself can put the bottom row past an edge that has no scrollbar to reach it.
+  Coverage on the `UsageAI` package is 88.20% line and 82.07% branch, against a gate of 83% and 76%.
 
 ### Fixed
 
+- Provider cards now paint their text at the DPI of the monitor they are on. The cards draw their
+  own type, and a font asked for in points is rasterised once at the DPI the process started on: on
+  a second monitor scaled differently from the primary, every pixel measurement followed the window
+  while the text stayed behind. At 200% next to a 125% primary that left the dashboard's headlines
+  and labels at two thirds of their size inside boxes built for the larger scale, which is where the
+  gaps came from, and it squeezed providers reporting four metered limits out of the full row layout
+  they had room for. The faces are now sized in pixels off the same DPI as the geometry and rebuilt
+  whenever the card's DPI resolves differently.
+- The tray popup no longer clips a provider's detail line and drop its meter. A card measured its
+  height in its constructor, before the handle existed — and until the handle exists a control still
+  reports the DPI the process started on, not the monitor it is about to appear on. WinForms updates
+  that value when the handle lands but re-measures nothing the card sizes for itself, so a popup
+  opened on a differently scaled monitor painted rows for the new scale inside a box measured for
+  the old one: on a 200% screen beside a 125% primary the cards were 122 pixels tall holding 196
+  pixels of content, so "100% left" was sliced in half by the card's own edge and the meter fell off
+  it entirely. The card now resolves its DPI from its parent before it has a handle and re-measures
+  on handle creation and on every later DPI change — but only for a DPI it has not already measured
+  at, and a card the full dashboard has sized into a grid cell carries that size across the change
+  rather than taking its natural height back. The dashboard never scrolls, so a card that
+  re-measured itself out of its cell would lay the bottom row of providers past the client edge
+  where nothing could reach it. That explicit cell height is also why the clipping was only ever
+  visible in the popup.
+- A metric row squeezed below its preferred height no longer drops to the stripped-back compressed
+  layout while it still has room for the full one. The preferred height carries breathing room the
+  painted stack does not need, and a provider reporting four metered limits lands a couple of pixels
+  short of it in a dashboard cell, so it was losing its detail line to a margin. The fallback now
+  triggers on what the stack actually occupies. The trend sparkline and forecast line are likewise
+  measured against the height the row was given rather than the height it asked for, so they appear
+  in any row that can hold them and never paint across the divider that starts the next one.
 - Removed the scrollbar from the full dashboard. Its provider cards are always resized to fill the
   window's client area, so there was never anything below the fold to scroll to, yet a vertical
   scrollbar still appeared at common window sizes with an empty scroll range — at a 760x620 client

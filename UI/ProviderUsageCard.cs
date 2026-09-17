@@ -37,21 +37,26 @@ internal sealed class ProviderUsageCard : Control
     private const int HeaderHeight = 46;
     private const int MetricRowHeight = 54;
     private const int MetricRowWithTrendHeight = 72;
+
+    // The natural heights above carry breathing room; these are what the painted stacks actually
+    // occupy. A squeezed row falls back to the compressed layout only once the full one genuinely
+    // stops fitting, rather than the moment it dips below its preferred height, and the trend block
+    // is drawn only when the row it lands in is tall enough to hold it.
+    private const int MetricRowMinimumHeight = 50;
+    private const int MetricTrendTop = 52;
+    private const int MetricTrendHeight = 16;
     private const int ConnectionBlockHeight = 78;
     private const int CardRadius = 12;
     private const int Gutter = 14;
 
-    private readonly Font _nameFont = Typography.Display(10F);
-    private readonly Font _bodyFont = Typography.Text(8.5F);
-    private readonly Font _smallFont = Typography.Text(7.8F);
-    private readonly Font _utilityFont = Typography.Mono(7.5F);
-    private readonly Font _valueFont = Typography.Mono(13.5F);
     private readonly bool _expanded;
     private readonly ProviderStatus _status;
     private readonly IReadOnlyList<UsageSample> _history;
     private readonly bool _showTrend;
     private readonly IReadOnlyList<UsageMetric> _metrics;
     private readonly int? _dpiOverride;
+    private CardFonts _fonts;
+    private int _measuredDpi;
     private Rectangle _actionBounds = Rectangle.Empty;
     private Rectangle _linkBounds = Rectangle.Empty;
 
@@ -73,6 +78,7 @@ internal sealed class ProviderUsageCard : Control
             ? metrics ?? status.Snapshot?.Metrics ?? Array.Empty<UsageMetric>()
             : status.Snapshot?.Metrics ?? Array.Empty<UsageMetric>();
         _dpiOverride = dpiOverride;
+        _fonts = new CardFonts(EffectiveDpi);
         DoubleBuffered = true;
         ResizeRedraw = true;
         TabStop = expanded;
@@ -88,14 +94,30 @@ internal sealed class ProviderUsageCard : Control
     protected override void OnParentChanged(EventArgs e)
     {
         base.OnParentChanged(e);
+        EnsureFonts();
         ApplyHeight();
+    }
+
+    // The handle is the first moment the card knows which monitor it is on: until then
+    // Control.DeviceDpi still reports the DPI the process started on. WinForms updates the value
+    // here but re-measures nothing the card painted for itself, so without this hook a card
+    // realised on a second monitor kept a height measured for the primary one.
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        ApplyDpiChange();
     }
 
     protected override void OnDpiChangedAfterParent(EventArgs e)
     {
         base.OnDpiChangedAfterParent(e);
-        ApplyHeight();
-        Invalidate();
+        ApplyDpiChange();
+    }
+
+    protected override void RescaleConstantsForDpi(int deviceDpiOld, int deviceDpiNew)
+    {
+        base.RescaleConstantsForDpi(deviceDpiOld, deviceDpiNew);
+        ApplyDpiChange();
     }
 
     protected override void OnMouseMove(MouseEventArgs e)
@@ -222,13 +244,13 @@ internal sealed class ProviderUsageCard : Control
         var valueText = metric is { HasQuota: true }
             ? Theme.UsageCue(metric.UsedPercent!.Value) + metric.DisplayUsed
             : metric?.DisplayUsed ?? (_status.IsLoading ? "..." : "--");
-        var valueWidth = MeasureWidth(graphics, valueText, _valueFont);
+        var valueWidth = MeasureWidth(graphics, valueText, _fonts.Value);
         var nameWidth = Math.Max(scale[40], Width - textLeft - valueWidth - scale[26]);
 
         DrawingHelpers.DrawText(
             graphics,
             _status.ProviderName,
-            _nameFont,
+            _fonts.Name,
             Theme.Text,
             new Rectangle(textLeft, scale[12], nameWidth, scale[20]),
             TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
@@ -237,7 +259,7 @@ internal sealed class ProviderUsageCard : Control
         DrawingHelpers.DrawText(
             graphics,
             subtitle,
-            _smallFont,
+            _fonts.Small,
             _status.IsConnected ? providerColor : Theme.Muted,
             new Rectangle(textLeft, scale[34], nameWidth, scale[16]),
             TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
@@ -247,14 +269,14 @@ internal sealed class ProviderUsageCard : Control
             scale[8],
             valueWidth,
             scale[26]);
-        DrawingHelpers.DrawText(graphics, valueText, _valueFont, severity, valueBounds, TextFormatFlags.Right);
+        DrawingHelpers.DrawText(graphics, valueText, _fonts.Value, severity, valueBounds, TextFormatFlags.Right);
 
         if (metric is not null)
         {
             DrawingHelpers.DrawText(
                 graphics,
                 metric.Name.ToUpperInvariant(),
-                _utilityFont,
+                _fonts.Utility,
                 Theme.Muted,
                 new Rectangle(Width - scale[Gutter] - scale[160], scale[36], scale[160], scale[14]),
                 TextFormatFlags.Right | TextFormatFlags.EndEllipsis);
@@ -266,7 +288,7 @@ internal sealed class ProviderUsageCard : Control
             detailBounds,
             DetailLeft(metric),
             DetailRight(metric),
-            _smallFont,
+            _fonts.Small,
             Theme.Muted,
             _status.IsStale ? Theme.Warning : Theme.Muted);
 
@@ -285,7 +307,7 @@ internal sealed class ProviderUsageCard : Control
             "Stale" => Theme.Warning,
             _ => Theme.Critical,
         };
-        var statusWidth = MeasureWidth(graphics, statusText, _smallFont) + scale[18];
+        var statusWidth = MeasureWidth(graphics, statusText, _fonts.Small) + scale[18];
         var nameWidth = Math.Max(scale[60], Width - scale[64] - statusWidth - scale[24]);
 
         var nameBounds = new Rectangle(scale[64], scale[10], nameWidth, scale[20]);
@@ -293,7 +315,7 @@ internal sealed class ProviderUsageCard : Control
         DrawingHelpers.DrawText(
             graphics,
             nameText,
-            _nameFont,
+            _fonts.Name,
             Theme.Text,
             nameBounds,
             TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
@@ -302,14 +324,14 @@ internal sealed class ProviderUsageCard : Control
             _linkBounds = new Rectangle(
                 nameBounds.X,
                 nameBounds.Y,
-                Math.Min(nameBounds.Width, MeasureWidth(graphics, nameText, _nameFont)),
+                Math.Min(nameBounds.Width, MeasureWidth(graphics, nameText, _fonts.Name)),
                 nameBounds.Height);
         }
 
         DrawingHelpers.DrawText(
             graphics,
             Identity(),
-            _smallFont,
+            _fonts.Small,
             _status.IsConnected ? providerColor : Theme.Muted,
             new Rectangle(scale[64], scale[32], nameWidth, scale[16]),
             TextFormatFlags.EndEllipsis | TextFormatFlags.VerticalCenter);
@@ -323,7 +345,7 @@ internal sealed class ProviderUsageCard : Control
         DrawingHelpers.DrawText(
             graphics,
             statusText,
-            _smallFont,
+            _fonts.Small,
             statusColor,
             new Rectangle(Width - scale[Gutter] - statusWidth + scale[11], scale[12], statusWidth - scale[11], scale[18]),
             TextFormatFlags.Right | TextFormatFlags.VerticalCenter);
@@ -334,7 +356,7 @@ internal sealed class ProviderUsageCard : Control
             DrawingHelpers.DrawText(
                 graphics,
                 _status.IsStale ? $"Last good {age}" : age,
-                _smallFont,
+                _fonts.Small,
                 Theme.Muted,
                 new Rectangle(Width - scale[Gutter] - scale[120], scale[32], scale[120], scale[16]),
                 TextFormatFlags.Right | TextFormatFlags.EndEllipsis);
@@ -370,7 +392,7 @@ internal sealed class ProviderUsageCard : Control
             DrawingHelpers.DrawText(
                 graphics,
                 staleError,
-                _smallFont,
+                _fonts.Small,
                 Theme.Warning,
                 new Rectangle(scale[18], top + scale[4], Width - scale[36], scale[16]),
                 TextFormatFlags.EndEllipsis);
@@ -395,10 +417,10 @@ internal sealed class ProviderUsageCard : Control
         var valueText = metric.HasQuota
             ? Theme.UsageCue(metric.UsedPercent!.Value) + metric.DisplayUsed
             : metric.DisplayUsed;
-        var valueWidth = MeasureWidth(graphics, valueText, _valueFont);
+        var valueWidth = MeasureWidth(graphics, valueText, _fonts.Value);
         var baseRowHeight = RowHeight(metric, scale);
 
-        if (rowHeight < scale[MetricRowHeight])
+        if (!FitsFullLayout(rowHeight, scale))
         {
             DrawCompressedMetricRow(
                 graphics,
@@ -419,7 +441,7 @@ internal sealed class ProviderUsageCard : Control
         DrawingHelpers.DrawText(
             graphics,
             metric.Name.ToUpperInvariant(),
-            _utilityFont,
+            _fonts.Utility,
             Theme.Muted,
             new Rectangle(scale[14], contentTop + scale[8], Math.Max(scale[40], Width - scale[28] - valueWidth - scale[8]), scale[16]),
             TextFormatFlags.EndEllipsis);
@@ -427,7 +449,7 @@ internal sealed class ProviderUsageCard : Control
         DrawingHelpers.DrawText(
             graphics,
             valueText,
-            _valueFont,
+            _fonts.Value,
             metric.IsUnlimited ? Theme.Muted : valueColor,
             new Rectangle(Width - scale[14] - valueWidth, contentTop + scale[4], valueWidth, scale[22]),
             TextFormatFlags.Right);
@@ -437,7 +459,7 @@ internal sealed class ProviderUsageCard : Control
             new Rectangle(scale[14], contentTop + scale[26], Width - scale[28], scale[16]),
             SecondaryText(metric),
             UsageFormatting.RelativeReset(metric.ResetsAt, DateTimeOffset.Now),
-            _smallFont,
+            _fonts.Small,
             Theme.Muted,
             Theme.Muted);
 
@@ -446,19 +468,24 @@ internal sealed class ProviderUsageCard : Control
             metric,
             new Rectangle(scale[14], contentTop + scale[44], Width - scale[28], scale[4]),
             providerColor);
-        if (baseRowHeight <= scale[MetricRowHeight])
+
+        // The trend is drawn against the space the row was actually given, not the space it asked
+        // for. A provider reporting four metered limits is squeezed well below its natural height
+        // on a two-row dashboard, and keying off the natural height instead both hid the sparkline
+        // from every squeezed row and let a barely-squeezed one paint over the divider below it.
+        if (baseRowHeight <= scale[MetricRowHeight] || !FitsTrend(rowHeight, contentOffset, scale))
         {
             return;
         }
 
-        var trendTop = contentTop + scale[52];
+        var trendTop = contentTop + scale[MetricTrendTop];
         var sparklineWidth = Math.Clamp((Width - scale[28]) / 3, scale[84], scale[220]);
         var trend = UsageForecast.Trend(_history, _status.ProviderId, metric);
         if (trend.Count >= 2)
         {
             DrawingHelpers.DrawSparkline(
                 graphics,
-                new Rectangle(Width - scale[14] - sparklineWidth, trendTop, sparklineWidth, scale[16]),
+                new Rectangle(Width - scale[14] - sparklineWidth, trendTop, sparklineWidth, scale[MetricTrendHeight]),
                 trend,
                 valueColor);
         }
@@ -472,7 +499,7 @@ internal sealed class ProviderUsageCard : Control
             DrawingHelpers.DrawText(
                 graphics,
                 text,
-                _smallFont,
+                _fonts.Small,
                 projection.BeforeReset ? Theme.Warning : Theme.Muted,
                 new Rectangle(scale[14], trendTop + scale[1], Math.Max(scale[40], Width - scale[28] - sparklineWidth - scale[8]), scale[16]),
                 TextFormatFlags.EndEllipsis);
@@ -496,7 +523,7 @@ internal sealed class ProviderUsageCard : Control
         DrawingHelpers.DrawText(
             graphics,
             metric.Name.ToUpperInvariant(),
-            _utilityFont,
+            _fonts.Utility,
             Theme.Muted,
             new Rectangle(
                 horizontalPadding,
@@ -507,7 +534,7 @@ internal sealed class ProviderUsageCard : Control
         DrawingHelpers.DrawText(
             graphics,
             valueText,
-            _valueFont,
+            _fonts.Value,
             metric.IsUnlimited ? Theme.Muted : valueColor,
             new Rectangle(
                 Width - horizontalPadding - valueWidth,
@@ -527,7 +554,7 @@ internal sealed class ProviderUsageCard : Control
                     scale[14]),
                 SecondaryText(metric),
                 UsageFormatting.RelativeReset(metric.ResetsAt, DateTimeOffset.Now),
-                _smallFont,
+                _fonts.Small,
                 Theme.Muted,
                 Theme.Muted);
         }
@@ -565,7 +592,7 @@ internal sealed class ProviderUsageCard : Control
         DrawingHelpers.DrawText(
             graphics,
             message,
-            _bodyFont,
+            _fonts.Body,
             _status.IsLoading ? Theme.Muted : Theme.Critical,
             new Rectangle(scale[18], top + scale[10], Width - scale[36], scale[34]),
             TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
@@ -576,7 +603,7 @@ internal sealed class ProviderUsageCard : Control
         }
 
         var label = $"Copy  {_status.SignInCommand}";
-        var width = MeasureWidth(graphics, label, _smallFont) + scale[22];
+        var width = MeasureWidth(graphics, label, _fonts.Small) + scale[22];
         _actionBounds = new Rectangle(scale[18], top + scale[48], width, scale[24]);
         DrawingHelpers.FillCard(
             graphics,
@@ -587,7 +614,7 @@ internal sealed class ProviderUsageCard : Control
         DrawingHelpers.DrawText(
             graphics,
             label,
-            _smallFont,
+            _fonts.Small,
             Theme.Text,
             _actionBounds,
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
@@ -742,16 +769,34 @@ internal sealed class ProviderUsageCard : Control
     private static int MeasureWidth(Graphics graphics, string text, Font font) =>
         string.IsNullOrEmpty(text) ? 0 : TextRenderer.MeasureText(graphics, text, font).Width;
 
+    /// <summary>
+    /// Whether a row of <paramref name="rowHeight"/> can still paint the full label, headline,
+    /// detail line and meter. The compressed row is the fallback for rows that genuinely cannot,
+    /// not for every row that dips below its preferred <see cref="MetricRowHeight"/>: on a
+    /// dashboard tall enough for two rows of cards, a provider reporting four metered limits lands
+    /// a couple of pixels short and used to lose its detail line for the sake of them.
+    /// </summary>
+    internal static bool FitsFullLayout(int rowHeight, LayoutScale scale) =>
+        rowHeight >= scale[MetricRowMinimumHeight];
+
+    /// <summary>
+    /// Whether the sparkline and forecast line land inside the row rather than across the divider
+    /// that starts the next one.
+    /// </summary>
+    internal static bool FitsTrend(int rowHeight, int contentOffset, LayoutScale scale) =>
+        contentOffset + scale[MetricTrendTop] + scale[MetricTrendHeight] <= rowHeight;
+
     private int RowHeight(UsageMetric metric, LayoutScale scale) =>
         _showTrend && metric.HasQuota ? scale[MetricRowWithTrendHeight] : scale[MetricRowHeight];
 
-    private void ApplyHeight()
+    /// <summary>Recomputes <see cref="NaturalHeight"/> for the card's current DPI.</summary>
+    private void MeasureNaturalHeight()
     {
         var scale = Scale();
+        _measuredDpi = EffectiveDpi;
         if (!_expanded)
         {
             NaturalHeight = scale[CompactHeight];
-            Height = NaturalHeight;
             return;
         }
 
@@ -759,7 +804,6 @@ internal sealed class ProviderUsageCard : Control
         if (metrics.Count == 0)
         {
             NaturalHeight = scale[HeaderHeight] + scale[ConnectionBlockHeight];
-            Height = NaturalHeight;
             return;
         }
 
@@ -775,13 +819,71 @@ internal sealed class ProviderUsageCard : Control
         }
 
         NaturalHeight = height;
-        if (Height < NaturalHeight)
+    }
+
+    private void ApplyHeight()
+    {
+        MeasureNaturalHeight();
+        if (!_expanded || _metrics.Count == 0 || Height < NaturalHeight)
         {
             Height = NaturalHeight;
         }
     }
 
-    private LayoutScale Scale() => _dpiOverride is { } dpi ? new LayoutScale(dpi) : new LayoutScale(this);
+    /// <summary>
+    /// The DPI both the pixel geometry and the painting faces resolve against. Before the handle
+    /// exists <see cref="Control.DeviceDpi"/> is still the DPI the process started on, so a card
+    /// built for a window on a differently scaled monitor would measure itself for the wrong one;
+    /// the parent it is being added to already knows the real value.
+    /// </summary>
+    private int EffectiveDpi =>
+        _dpiOverride ?? (IsHandleCreated ? DeviceDpi : Parent?.DeviceDpi ?? DeviceDpi);
+
+    private LayoutScale Scale() => new(EffectiveDpi);
+
+    /// <summary>
+    /// Rebuilds the painting faces when the card's DPI has moved out from under them. A point-sized
+    /// font is rasterised once at the process's start-up DPI, so reusing one would keep the primary
+    /// monitor's text size inside geometry that has already followed the card to another monitor.
+    /// </summary>
+    private void EnsureFonts()
+    {
+        var dpi = EffectiveDpi;
+        if (_fonts.Dpi == dpi)
+        {
+            return;
+        }
+
+        _fonts.Dispose();
+        _fonts = new CardFonts(dpi);
+    }
+
+    /// <summary>
+    /// Re-resolves the card against a DPI it has not measured itself at yet — which is every hook
+    /// WinForms offers for the moment a control learns which monitor it is really on.
+    /// </summary>
+    private void ApplyDpiChange()
+    {
+        var dpi = EffectiveDpi;
+        if (_fonts.Dpi == dpi && _measuredDpi == dpi)
+        {
+            return;
+        }
+
+        EnsureFonts();
+        var previousDpi = _measuredDpi;
+        var previousHeight = Height;
+        MeasureNaturalHeight();
+
+        // A card in the full dashboard is given its grid cell height, and that grid never scrolls,
+        // so taking the natural height back here would lay the bottom row past the client edge and
+        // out of reach. Carrying the height the card already had across the DPI change keeps a
+        // deliberate squeeze squeezed and still lands a self-measured card on its new natural size.
+        Height = _expanded && _metrics.Count > 0
+            ? Math.Max(1, LayoutScale.ScaleBetweenDpis(previousHeight, previousDpi, dpi))
+            : NaturalHeight;
+        Invalidate();
+    }
 
     /// <summary>
     /// Everything on the card is painted, so screen readers would otherwise see an empty
@@ -832,13 +934,48 @@ internal sealed class ProviderUsageCard : Control
     {
         if (disposing)
         {
-            _nameFont.Dispose();
-            _bodyFont.Dispose();
-            _smallFont.Dispose();
-            _utilityFont.Dispose();
-            _valueFont.Dispose();
+            _fonts.Dispose();
         }
 
         base.Dispose(disposing);
+    }
+
+    /// <summary>
+    /// The card's painting faces, realised for one monitor's DPI. Sized in pixels rather than
+    /// points so the text scales with <see cref="LayoutScale"/> instead of with whichever monitor
+    /// the process happened to start on.
+    /// </summary>
+    private sealed class CardFonts : IDisposable
+    {
+        internal CardFonts(int dpi)
+        {
+            Dpi = dpi;
+            Name = Typography.Display(10F, dpi);
+            Body = Typography.Text(8.5F, dpi);
+            Small = Typography.Text(7.8F, dpi);
+            Utility = Typography.Mono(7.5F, dpi);
+            Value = Typography.Mono(13.5F, dpi);
+        }
+
+        internal int Dpi { get; }
+
+        internal Font Name { get; }
+
+        internal Font Body { get; }
+
+        internal Font Small { get; }
+
+        internal Font Utility { get; }
+
+        internal Font Value { get; }
+
+        public void Dispose()
+        {
+            Name.Dispose();
+            Body.Dispose();
+            Small.Dispose();
+            Utility.Dispose();
+            Value.Dispose();
+        }
     }
 }

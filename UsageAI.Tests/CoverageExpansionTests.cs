@@ -2698,6 +2698,36 @@ internal static class CoverageExpansionTests
 
         popup.CloseForExit();
 
+        // First open is the ordering that catches a card re-measuring itself out of its cell: the
+        // form has no handle yet, so the cards are built and squeezed into the restored bounds
+        // before Show() gives any of them a handle. A card that took its natural height back at
+        // that point would lay the bottom row past a client area that has no scrollbar to reach it.
+        using (var firstOpen = new UsagePopupForm(new AppSettings(), 96)
+        {
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-10_000, -10_000),
+        })
+        {
+            firstOpen.SetStates(states, false, now, Array.Empty<UsageSample>());
+            firstOpen.SetMode(DashboardMode.Full);
+            False(firstOpen.IsHandleCreated);
+            var pending = GetPrivateField<FlowLayoutPanel>(firstOpen, "_content");
+            False(pending.Controls.OfType<ProviderUsageCard>().Any(card => card.IsHandleCreated));
+
+            // Bounds saved from a session that had more room than this one does.
+            SetPrivateField(firstOpen, "_dashboardBounds", new Rectangle(0, 0, 700, 340));
+            InvokePrivate(firstOpen, "ShowDashboard", new Rectangle(0, 0, 1_024, 768), false);
+            Application.DoEvents();
+
+            var opened = pending.Controls.OfType<ProviderUsageCard>().ToArray();
+            Equal(4, opened.Length);
+            True(opened.All(card => card.IsHandleCreated));
+            True(opened.Any(card => card.Height < card.NaturalHeight));
+            True(opened.All(card => card.Bottom <= pending.ClientSize.Height));
+            False(pending.VerticalScroll.Visible);
+            firstOpen.CloseForExit();
+        }
+
         // Four providers are the 2x2 the dashboard is designed around, but with no scrollbar a
         // fifth must earn a third row: laid out past the bottom edge it would be unreachable
         // rather than merely awkward, which is what the scrollbar used to paper over.
@@ -5279,6 +5309,11 @@ internal static class CoverageExpansionTests
             ?? throw new InvalidOperationException($"{name} returned no result.");
         return (T)resultProperty.GetValue(task)!;
     }
+
+    private static void SetPrivateField(object target, string name, object value) =>
+        target.GetType()
+            .GetField(name, BindingFlags.Instance | BindingFlags.NonPublic)!
+            .SetValue(target, value);
 
     private static T GetPrivateField<T>(object target, string name)
     {
