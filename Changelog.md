@@ -43,29 +43,29 @@ The project follows [Semantic Versioning](https://semver.org/).
   releases exist, and the subheading names how many releases are being shown when there is more than
   one. Windows High Contrast still flattens every category colour to the system foreground, and the
   category name is always spelled out, so colour is never the only cue.
-- The desktop suite grew to 76 checks, adding the dashboard grid's scroll behaviour and the whole
+- The desktop suite grew to 76 checks, adding the dashboard grid's scroll behaviour — including
+  that no provider card is ever laid out where nothing could reach it — and the whole
   provider-list drag gesture, down to the boundaries that must do nothing: a right-click, a press
   on the empty strip below the last row, and a move that would carry an entry past either end. The
   drag is exercised with real mouse messages rather than by calling the handlers, because the tick
   it has to suppress is applied by the native list box itself on button-up.
-  Coverage on the `UsageAI` package is 88.20% line and 81.90% branch, against a gate of 83% and 76%.
+  Coverage on the `UsageAI` package is 88.26% line and 82.04% branch, against a gate of 83% and 76%.
 
 ### Fixed
 
-- The dashboard grid now takes as many rows as it has providers instead of a fixed two. With the
-  scrollbar gone, a fifth provider was laid out immediately below the client area with no way to
-  reach it, and a sixth lost two cards; the four shipped providers are unaffected and still fill
-  the same 2x2 at the same size. The column count stays fixed at two, and the extra row makes the
-  cards shorter, which is what their metric spacing already compacts for.
-- Removed the scrollbar from the full dashboard. The grid is a fixed 2x2 of provider cards that are
-  always resized to the window's client area, so there was never anything below the fold to scroll
-  to, yet a vertical scrollbar still appeared at common window sizes with an empty scroll range —
-  at a 760x620 client area it showed up with `AutoScrollMinSize` at zero. Cards are built at their
-  natural height and only compacted to their grid cell a moment later, and that transient overflow
-  was enough to latch the scrollbar, which then cost the grid 49 pixels of width and left a dead
-  strip down the right-hand side for the rest of the session. The compact tray popup, which can
-  genuinely overflow, still scrolls. Card widths also no longer subtract the scrollbar a second
-  time: `ClientSize` already excludes it, so the deduction only narrowed the cards further.
+- Removed the scrollbar from the full dashboard. Its provider cards are always resized to fill the
+  window's client area, so there was never anything below the fold to scroll to, yet a vertical
+  scrollbar still appeared at common window sizes with an empty scroll range — at a 760x620 client
+  area it showed up with `AutoScrollMinSize` at zero. Cards are built at their natural height and
+  only compacted to their grid cell a moment later, and that transient overflow was enough to latch
+  the scrollbar, which then cost the grid 49 pixels of width and left a dead strip down the
+  right-hand side for the rest of the session. The compact tray popup, which can genuinely
+  overflow, still scrolls. With nothing left to scroll the grid also stopped assuming two rows: it
+  keeps two columns and takes as many rows as the provider count needs, so the four shipped
+  providers still fill the same 2x2 at the same size, and a fifth would earn a third row instead of
+  being laid out past the client edge where nothing could reach it. Card widths also no longer
+  subtract the scrollbar a second time: `ClientSize` already excludes it, so the deduction only
+  narrowed the cards further.
 
 ## [0.11.0] - 2026-09-16
 
