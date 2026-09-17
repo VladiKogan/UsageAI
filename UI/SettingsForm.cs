@@ -47,6 +47,7 @@ internal sealed class SettingsForm : Form
     private int _dragCandidate = -1;
     private int _dragIndex = -1;
     private Point _dragOrigin;
+    private bool _movingProvider;
     private HashSet<string> _dragChecks = new(StringComparer.OrdinalIgnoreCase);
     private List<ProviderEntry> _dragOrder = new();
 
@@ -185,7 +186,7 @@ internal sealed class SettingsForm : Form
         _providers.MouseDown += OnProvidersMouseDown;
         _providers.MouseMove += OnProvidersMouseMove;
         _providers.MouseUp += OnProvidersMouseUp;
-        _providers.KeyDown += OnProvidersKeyDown;
+        _providers.ItemCheck += OnProvidersItemCheck;
         foreach (var id in _settings.OrderProviders(providers.Select(provider => provider.Id).ToArray()))
         {
             var provider = providers.First(candidate =>
@@ -471,6 +472,7 @@ internal sealed class SettingsForm : Form
         var item = _providers.Items[from];
         var isChecked = _providers.GetItemChecked(from);
         _providers.BeginUpdate();
+        _movingProvider = true;
         try
         {
             _providers.Items.RemoveAt(from);
@@ -480,6 +482,7 @@ internal sealed class SettingsForm : Form
         }
         finally
         {
+            _movingProvider = false;
             _providers.EndUpdate();
         }
 
@@ -501,12 +504,22 @@ internal sealed class SettingsForm : Form
             return -1;
         }
 
-        var index = _providers.IndexFromPoint(point);
-        return index != ListBox.NoMatches ? index : point.Y <= 0 ? 0 : count - 1;
+        // IndexFromPoint rejects any point outside the client rectangle, horizontally included,
+        // and the list holds the mouse for the whole drag. A cursor that strays a few pixels to
+        // either side of this narrow list still means the row it is level with, so only a genuine
+        // above-or-below miss may fall back to an end.
+        var bounds = _providers.ClientRectangle;
+        var x = Math.Clamp(point.X, bounds.Left, Math.Max(bounds.Left, bounds.Right - 1));
+        var index = _providers.IndexFromPoint(new Point(x, point.Y));
+        return index != ListBox.NoMatches ? index : point.Y <= bounds.Top ? 0 : count - 1;
     }
 
     private void OnProvidersMouseDown(object? sender, MouseEventArgs eventArgs)
     {
+        // A drag can lose the mouse without ever seeing a button-up: Alt+Tab, a system dialog, a
+        // locked workstation. Clear it here or the next press would resume the stale entry with
+        // no threshold to pass and no snapshot behind it.
+        EndProviderDrag(cancel: false);
         _dragCandidate = -1;
         if (eventArgs.Button != MouseButtons.Left)
         {
@@ -519,8 +532,8 @@ internal sealed class SettingsForm : Form
             return;
         }
 
-        // Snapshot before anything moves: CheckOnClick has already toggled this item, and a drag
-        // that is cancelled has to put both the ticks and the original order back.
+        // Snapshot before anything moves, so a cancelled drag can put the original order and its
+        // ticks back.
         _dragCandidate = index;
         _dragOrigin = eventArgs.Location;
         _dragOrder = _providers.Items.Cast<ProviderEntry>().ToList();
@@ -556,9 +569,6 @@ internal sealed class SettingsForm : Form
 
             _dragIndex = _dragCandidate;
             _dragCandidate = -1;
-
-            // This gesture is a reorder, not a tick, so undo the toggle the mouse-down made.
-            RestoreProviderChecks();
             _providers.Cursor = Cursors.SizeNS;
         }
 
@@ -571,12 +581,16 @@ internal sealed class SettingsForm : Form
         EndProviderDrag(cancel: false);
     }
 
-    private void OnProvidersKeyDown(object? sender, KeyEventArgs eventArgs)
+    /// <summary>
+    /// CheckOnClick ticks the box on button-<em>up</em>, against whichever row is selected by
+    /// then, which after a drag is the entry that was just moved. Left alone, every reorder would
+    /// quietly show or hide a provider. The move's own tick transfer is let through.
+    /// </summary>
+    private void OnProvidersItemCheck(object? sender, ItemCheckEventArgs eventArgs)
     {
-        if (eventArgs.KeyCode == Keys.Escape && _dragIndex >= 0)
+        if (_dragIndex >= 0 && !_movingProvider)
         {
-            EndProviderDrag(cancel: true);
-            eventArgs.Handled = true;
+            eventArgs.NewValue = eventArgs.CurrentValue;
         }
     }
 
@@ -592,19 +606,6 @@ internal sealed class SettingsForm : Form
         if (cancel)
         {
             RestoreProviderOrder();
-        }
-    }
-
-    private void RestoreProviderChecks()
-    {
-        for (var index = 0; index < _providers.Items.Count; index++)
-        {
-            var entry = (ProviderEntry)_providers.Items[index]!;
-            var shouldCheck = _dragChecks.Contains(entry.Id);
-            if (_providers.GetItemChecked(index) != shouldCheck)
-            {
-                _providers.SetItemChecked(index, shouldCheck);
-            }
         }
     }
 
@@ -633,9 +634,18 @@ internal sealed class SettingsForm : Form
     /// <summary>
     /// Alt+Up and Alt+Down give the drag gesture a keyboard equal. The buttons alone only offer
     /// one by tabbing out of the list, which is where the selection context is easiest to lose.
+    /// Escape has to be claimed here rather than in a KeyDown handler: this form sets
+    /// <see cref="Form.CancelButton"/>, so a list box never sees it and it would close the dialog
+    /// and discard every edit in it instead of abandoning the drag.
     /// </summary>
     protected override bool ProcessCmdKey(ref Message message, Keys keyData)
     {
+        if (keyData == Keys.Escape && _dragIndex >= 0)
+        {
+            EndProviderDrag(cancel: true);
+            return true;
+        }
+
         if (_providers.Focused && keyData is (Keys.Alt | Keys.Up) or (Keys.Alt | Keys.Down))
         {
             MoveSelected(keyData == (Keys.Alt | Keys.Up) ? -1 : 1);

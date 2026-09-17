@@ -4,6 +4,7 @@ using System.Globalization;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Reflection;
+using System.Runtime.InteropServices;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -2412,8 +2413,9 @@ internal static class CoverageExpansionTests
     /// </summary>
     /// <summary>
     /// The provider list reorders by dragging an entry as well as by the buttons. The gesture is
-    /// driven through the real mouse handlers, which is possible precisely because it rides on the
-    /// list's own mouse capture instead of OLE drag-and-drop.
+    /// driven with real mouse messages rather than by invoking the handlers, because the bug it
+    /// guards against lives in what the native list box does on button-up: CheckOnClick ticks the
+    /// row that is selected by then, which after a drag is the entry that was just moved.
     /// </summary>
     public static Task TestProviderDragReorderAsync()
     {
@@ -2438,60 +2440,62 @@ internal static class CoverageExpansionTests
         Equal(4, list.Items.Count);
         var original = ProviderNames(list);
         Equal("Codex", original[0]);
+        True(list.GetItemChecked(0));
         False(list.GetItemChecked(2));
 
         // Press the first row and move onto the third: the entry follows the pointer, so the row
         // the user is looking at is the row that gets dropped.
-        DragProvider(dialog, list, 0, 2, release: true);
+        DragProvider(dialog, list, 0, 2);
         var reordered = ProviderNames(list);
         Equal("Claude Code", reordered[0]);
         Equal("GitHub Copilot", reordered[1]);
         Equal("Codex", reordered[2]);
         Equal(2, list.SelectedIndex);
 
-        // The tick belongs to the provider, not to the row it happens to sit on.
-        False(list.GetItemChecked(1));
+        // The whole point of the gesture: the ticks belong to the providers, and a reorder is not
+        // a click, so a full press-move-release must leave every one of them exactly as it was.
         True(list.GetItemChecked(2));
+        False(list.GetItemChecked(1));
+        Equal(3, list.CheckedItems.Count);
 
         // The drag is over, so a stray move must not keep dragging.
         MoveOver(dialog, list, 0);
         True(reordered.SequenceEqual(ProviderNames(list)));
 
-        // Escape abandons a drag in flight and puts the original order back.
-        DragProvider(dialog, list, 0, 3, release: false);
-        Equal("Claude Code", list.Items[3].ToString());
-        var ignored = new KeyEventArgs(Keys.Delete);
-        InvokePrivate(dialog, "OnProvidersKeyDown", null, ignored);
-        False(ignored.Handled);
-        True(GetPrivateFieldValue<int>(dialog, "_dragIndex") >= 0);
-        InvokePrivate(dialog, "OnProvidersKeyDown", null, new KeyEventArgs(Keys.Escape));
-        True(reordered.SequenceEqual(ProviderNames(list)));
-        Equal(-1, GetPrivateFieldValue<int>(dialog, "_dragIndex"));
-        Release(dialog, list, 0);
-
-        // CheckOnClick ticks the box on mouse-down, so a gesture that turns into a drag has to
-        // hand the tick back; otherwise reordering would silently show or hide a provider.
-        var ticked = list.GetItemChecked(0);
-        Press(dialog, list, 0);
-        list.SetItemChecked(0, !ticked);
-        MoveOver(dialog, list, 1);
-        Equal(ticked, list.GetItemChecked(1));
-        Release(dialog, list, 1);
-
-        // A press that never passes the drag threshold stays a click and reorders nothing.
+        // A press that never passes the drag threshold stays a click, and a click still ticks.
         var settled = ProviderNames(list);
-        Press(dialog, list, 0);
-        var centre = ProviderCentre(list, 0);
-        InvokePrivate(
-            dialog,
-            "OnProvidersMouseMove",
-            null,
-            new MouseEventArgs(MouseButtons.Left, 0, centre.X, centre.Y + 1, 0));
+        var ticked = list.GetItemChecked(0);
+        ClickProvider(list, 0);
         Equal(-1, GetPrivateFieldValue<int>(dialog, "_dragIndex"));
         True(settled.SequenceEqual(ProviderNames(list)));
-        Release(dialog, list, 0);
+        Equal(!ticked, list.GetItemChecked(0));
+        ClickProvider(list, 0);
+        Equal(ticked, list.GetItemChecked(0));
+
+        // Escape abandons a drag in flight. It has to be claimed by ProcessCmdKey: the form sets
+        // CancelButton, so a list box never sees the key, and letting it through would close
+        // Settings and discard every edit in it.
+        Press(list, 0);
+        MoveOver(dialog, list, 3);
+        Equal("Claude Code", list.Items[3].ToString());
+        True(InvokeProcessCmdKey(dialog, Keys.Escape));
+        True(settled.SequenceEqual(ProviderNames(list)));
+        Equal(-1, GetPrivateFieldValue<int>(dialog, "_dragIndex"));
+        Release(list, 0);
+
+        // With no drag running Escape is not ours, and must fall through to the Cancel button.
+        False(InvokeProcessCmdKey(dialog, Keys.Escape));
+
+        // A drag that lost the mouse without a button-up must not still be armed: the next press
+        // has to start from scratch rather than resume the stale entry.
+        SetPrivateField(dialog, "_dragIndex", 1);
+        Press(list, 0);
+        Equal(-1, GetPrivateFieldValue<int>(dialog, "_dragIndex"));
+        Equal(0, GetPrivateFieldValue<int>(dialog, "_dragCandidate"));
+        Release(list, 0);
 
         // Only the left button reorders, so a right-click never grabs a row.
+        var centre = ProviderCentre(list, 0);
         InvokePrivate(
             dialog,
             "OnProvidersMouseDown",
@@ -2507,6 +2511,17 @@ internal static class CoverageExpansionTests
             new MouseEventArgs(MouseButtons.Left, 1, centre.X, list.Height - 2, 0));
         Equal(-1, GetPrivateFieldValue<int>(dialog, "_dragCandidate"));
 
+        // Straying sideways still means the row the cursor is level with. IndexFromPoint rejects
+        // anything outside the client rectangle, so without clamping X the entry would jump to
+        // the end of the list the moment the pointer left the narrow column.
+        var row = ProviderCentre(list, 1);
+        Equal(1, InvokePrivate<int>(dialog, "ProviderIndexFromPoint", new Point(-50, row.Y)));
+        Equal(1, InvokePrivate<int>(dialog, "ProviderIndexFromPoint", new Point(list.Width + 50, row.Y)));
+
+        // Only a genuine miss above or below the rows falls back to an end.
+        Equal(3, InvokePrivate<int>(dialog, "ProviderIndexFromPoint", new Point(4, list.Height * 4)));
+        Equal(0, InvokePrivate<int>(dialog, "ProviderIndexFromPoint", new Point(4, -20)));
+
         // The ends hold: nothing climbs past the top or falls past the bottom, and an entry
         // dropped back where it started is left alone rather than removed and reinserted.
         var ends = ProviderNames(list);
@@ -2520,10 +2535,6 @@ internal static class CoverageExpansionTests
         list.ClearSelected();
         InvokePrivate(dialog, "MoveSelected", -1);
         True(ends.SequenceEqual(ProviderNames(list)));
-
-        // Dragging past either end lands at that end rather than being discarded.
-        Equal(3, InvokePrivate<int>(dialog, "ProviderIndexFromPoint", new Point(4, list.Height * 4)));
-        Equal(0, InvokePrivate<int>(dialog, "ProviderIndexFromPoint", new Point(4, -20)));
 
         // Alt+Down is the keyboard equal of the drag, and must not fire from anywhere else.
         list.SelectedIndex = 0;
@@ -2542,16 +2553,25 @@ internal static class CoverageExpansionTests
 
         False(InvokeProcessCmdKey(dialog, Keys.Alt | Keys.Right));
 
-        // Whatever the list shows at the end is what gets saved.
+        // Whatever the list shows at the end is what gets saved, ticks included.
         var saved = list.Items.Cast<object>()
             .Select(item => GetProperty<string>(item, "Id"))
             .ToArray();
         InvokePrivate(dialog, "Apply");
         True(saved.SequenceEqual(settings.ProviderOrder));
+        False(settings.IsProviderVisible("copilot"));
+        True(settings.IsProviderVisible("codex"));
 
         dialog.Hide();
         return Task.CompletedTask;
     }
+
+    private const int WmLButtonDown = 0x0201;
+    private const int WmLButtonUp = 0x0202;
+    private const int MkLButton = 0x0001;
+
+    [DllImport("user32.dll", CharSet = CharSet.Unicode)]
+    private static extern IntPtr SendMessageW(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
 
     private static string?[] ProviderNames(CheckedListBox list) =>
         list.Items.Cast<object>().Select(item => item.ToString()).ToArray();
@@ -2562,16 +2582,27 @@ internal static class CoverageExpansionTests
         return new Point(bounds.Left + (bounds.Width / 2), bounds.Top + (bounds.Height / 2));
     }
 
-    private static void Press(SettingsForm dialog, CheckedListBox list, int index)
+    /// <summary>
+    /// Posts a real mouse message to the list so the native control does its own work - taking
+    /// capture, moving the selection, and ticking on button-up - alongside the form's handlers.
+    /// </summary>
+    private static void SendMouse(CheckedListBox list, int message, int buttons, Point point)
     {
-        var centre = ProviderCentre(list, index);
-        InvokePrivate(
-            dialog,
-            "OnProvidersMouseDown",
-            null,
-            new MouseEventArgs(MouseButtons.Left, 1, centre.X, centre.Y, 0));
+        var lParam = (IntPtr)((point.Y << 16) | (point.X & 0xFFFF));
+        SendMessageW(list.Handle, message, (IntPtr)buttons, lParam);
+        Application.DoEvents();
     }
 
+    private static void Press(CheckedListBox list, int index) =>
+        SendMouse(list, WmLButtonDown, MkLButton, ProviderCentre(list, index));
+
+    /// <summary>
+    /// The move is the one step that cannot be a real message: WinForms builds the MouseMove
+    /// arguments from the physical mouse via <see cref="Control.MouseButtons"/> rather than from
+    /// the message's own wParam, so a synthetic WM_MOUSEMOVE always reports no button held. The
+    /// press and the release stay real, which is what matters - the tick this guards against is
+    /// applied by the native list on button-up.
+    /// </summary>
     private static void MoveOver(SettingsForm dialog, CheckedListBox list, int index)
     {
         var centre = ProviderCentre(list, index);
@@ -2582,29 +2613,21 @@ internal static class CoverageExpansionTests
             new MouseEventArgs(MouseButtons.Left, 0, centre.X, centre.Y, 0));
     }
 
-    private static void Release(SettingsForm dialog, CheckedListBox list, int index)
+    private static void Release(CheckedListBox list, int index) =>
+        SendMouse(list, WmLButtonUp, 0, ProviderCentre(list, index));
+
+    private static void DragProvider(SettingsForm dialog, CheckedListBox list, int from, int to)
     {
-        var centre = ProviderCentre(list, index);
-        InvokePrivate(
-            dialog,
-            "OnProvidersMouseUp",
-            null,
-            new MouseEventArgs(MouseButtons.Left, 1, centre.X, centre.Y, 0));
+        Press(list, from);
+        MoveOver(dialog, list, to);
+        Release(list, to);
     }
 
-    private static void DragProvider(
-        SettingsForm dialog,
-        CheckedListBox list,
-        int from,
-        int to,
-        bool release)
+    /// <summary>A press and release on one row, with no move in between.</summary>
+    private static void ClickProvider(CheckedListBox list, int index)
     {
-        Press(dialog, list, from);
-        MoveOver(dialog, list, to);
-        if (release)
-        {
-            Release(dialog, list, to);
-        }
+        Press(list, index);
+        Release(list, index);
     }
 
     private static bool InvokeProcessCmdKey(SettingsForm dialog, Keys keyData)

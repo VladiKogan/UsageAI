@@ -15,8 +15,13 @@ The project follows [Semantic Versioning](https://semver.org/).
   buys nothing for an entry that never leaves its own list. A `CheckedListBox` refuses every
   owner-draw mode, so the row moves under the cursor instead of a drawn insertion line, which also
   shows the result rather than a promise of it. A press that never passes the system drag threshold
-  is still a click, a drag hands back the tick that `CheckOnClick` applies on mouse-down, and
-  Escape abandons a drag in flight and restores the original order.
+  is still a click and still ticks the box; one that becomes a drag suppresses the tick
+  `CheckOnClick` would otherwise apply on button-up, against whichever row is selected by then —
+  which after a drag is the entry just moved — so reordering can never quietly show or hide a
+  provider. Straying sideways out of the narrow list keeps the entry level with the cursor instead
+  of dropping it at the end, a drag that loses the mouse without a button-up is not still armed
+  when the next press lands, and Escape abandons a drag in flight and restores the original order,
+  claimed before the dialog's Cancel button can close Settings and discard every edit in it.
 
 ### Changed
 
@@ -40,8 +45,10 @@ The project follows [Semantic Versioning](https://semver.org/).
   category name is always spelled out, so colour is never the only cue.
 - The desktop suite grew to 76 checks, adding the dashboard grid's scroll behaviour and the whole
   provider-list drag gesture, down to the boundaries that must do nothing: a right-click, a press
-  on the empty strip below the last row, and a move that would carry an entry past either end.
-  Coverage on the `UsageAI` package is 88.20% line and 81.90% branch, against a gate of 83% and 76%.
+  on the empty strip below the last row, and a move that would carry an entry past either end. The
+  drag is exercised with real mouse messages rather than by calling the handlers, because the tick
+  it has to suppress is applied by the native list box itself on button-up.
+  Coverage on the `UsageAI` package is 88.19% line and 81.90% branch, against a gate of 83% and 76%.
 
 ### Fixed
 
