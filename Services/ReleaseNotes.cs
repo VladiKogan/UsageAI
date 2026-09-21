@@ -33,7 +33,11 @@ internal sealed record WhatsNewSummary(
     public bool HasOlderSkipped => SkippedCount > 0;
 }
 
-/// <summary>Reads a bounded, intentionally small subset of the bundled changelog Markdown.</summary>
+/// <summary>
+/// Reads a bounded, intentionally small subset of the bundled changelog Markdown, keeping only
+/// each bullet's opening sentence so the What's New window reads as a summary rather than as the
+/// changelog's full prose.
+/// </summary>
 internal static partial class ReleaseNotes
 {
     internal const string ResourceName = "UsageAI.Changelog.md";
@@ -46,6 +50,10 @@ internal static partial class ReleaseNotes
     private static readonly HashSet<string> AllowedSections = new(StringComparer.OrdinalIgnoreCase)
     {
         "Added", "Changed", "Fixed", "Security",
+    };
+    private static readonly HashSet<string> Abbreviations = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "e.g", "i.e", "etc", "vs", "cf", "approx",
     };
 
     public static IReadOnlyList<ReleaseNotesVersion> LoadBundled() =>
@@ -93,7 +101,7 @@ internal static partial class ReleaseNotes
                 return;
             }
 
-            var text = bullet.ToString().Trim();
+            var text = Summarize(bullet.ToString().Trim());
             if (text.Length > 0 && current.BulletCount < MaximumBulletsPerVersion &&
                 outputCharacters + text.Length <= MaximumOutputCharacters)
             {
@@ -198,6 +206,93 @@ internal static partial class ReleaseNotes
             .ToArray();
         var shown = relevant.Take(MaximumShownReleases).ToArray();
         return new WhatsNewSummary(shown, currentVersion, relevant.Length - shown.Length);
+    }
+
+    /// <summary>
+    /// Reduces one changelog bullet to its opening sentence, which is what the What's New window
+    /// shows. The changelog itself stays as long as it needs to be: every bullet is written so its
+    /// first sentence stands alone as the headline, and the paragraph behind it is the record for
+    /// anyone reading the file. A sentence ends at <c>.</c>, <c>!</c> or <c>?</c> that is followed
+    /// by the end of the bullet or by whitespace and something that is not a lower-case letter, so
+    /// a version number, an abbreviation such as <c>e.g.</c>, a file name, or a dotted span inside
+    /// <c>`code`</c> never cuts the line short — in a version the dot is followed by a digit, not
+    /// by a space. A bullet with no such break is returned whole.
+    /// </summary>
+    internal static string Summarize(string bullet)
+    {
+        if (string.IsNullOrEmpty(bullet))
+        {
+            return string.Empty;
+        }
+
+        for (var index = 0; index < bullet.Length; index++)
+        {
+            if (bullet[index] == '`')
+            {
+                // A dot inside a code span belongs to the code, not to the prose around it.
+                var close = bullet.IndexOf('`', index + 1);
+                if (close < 0)
+                {
+                    break;
+                }
+                index = close;
+                continue;
+            }
+
+            if (bullet[index] is not ('.' or '!' or '?') || !EndsSentence(bullet, index))
+            {
+                continue;
+            }
+
+            var end = index + 1;
+            // Trailing markup closes with the sentence: "**done.**" keeps its delimiters paired.
+            while (end < bullet.Length && (bullet[end] == '*' || bullet[end] == '`'))
+            {
+                end++;
+            }
+            return bullet[..end].TrimEnd();
+        }
+
+        return bullet;
+    }
+
+    private static bool EndsSentence(string bullet, int index)
+    {
+        if (IsAbbreviation(bullet, index))
+        {
+            return false;
+        }
+
+        var next = index + 1;
+        while (next < bullet.Length && (bullet[next] == '*' || bullet[next] == '`'))
+        {
+            next++;
+        }
+        if (next >= bullet.Length)
+        {
+            return true;
+        }
+
+        if (!char.IsWhiteSpace(bullet[next]))
+        {
+            return false;
+        }
+
+        while (next < bullet.Length && char.IsWhiteSpace(bullet[next]))
+        {
+            next++;
+        }
+        return next >= bullet.Length || !char.IsLower(bullet[next]);
+    }
+
+    private static bool IsAbbreviation(string bullet, int index)
+    {
+        var start = index;
+        while (start > 0 && !char.IsWhiteSpace(bullet[start - 1]))
+        {
+            start--;
+        }
+        return Abbreviations.Contains(bullet[start..index]);
     }
 
     /// <summary>

@@ -54,6 +54,7 @@ internal static class Program
         ("painted card text and rows follow the monitor DPI", TestCardDpiTypographyAsync),
         ("dashboard metric mode UI and settings isolation", CoverageExpansionTests.TestDashboardMetricModeUiAsync),
         ("release notes parser boundary cases", CoverageExpansionTests.TestReleaseNotesBoundariesAsync),
+        ("release note bullet summaries", CoverageExpansionTests.TestReleaseNoteSummariesAsync),
         ("What's New first-interaction lifecycle", CoverageExpansionTests.TestWhatsNewLifecycleAsync),
         ("runtime High Contrast surface propagation", CoverageExpansionTests.TestRuntimeHighContrastAsync),
         ("owned-window extreme DPI geometry", CoverageExpansionTests.TestExtremeDpiGeometryAsync),

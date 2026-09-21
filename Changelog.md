@@ -8,9 +8,18 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- **Start with Windows** moved from the tray menu into **Settings ▸ System**, where it is saved with
-  every other preference, and it now reports whether Windows would really launch UsageAI rather than
-  whether a registry value exists. Two states used to make that tick lie. Switching UsageAI off in
+- The What's New window now shows one sentence per change instead of the changelog's full
+  paragraph. The changelog stays the long-form record — it is where a change is explained — but read
+  in a window that lists three releases at once, those paragraphs were more than anyone wants on an
+  upgrade. Every bullet is written so its opening sentence stands alone as the headline, and the
+  bundled parser keeps only that sentence. A sentence ends at a full stop, question mark, or
+  exclamation mark followed by the end of the bullet or by whitespace and something that is not a
+  lower-case letter, so a version number, a file name, an abbreviation such as `e.g.`, and a dotted
+  span inside `code` never cut a line short, and a bullet with no such break is still shown whole.
+  **View complete changelog** still opens the full text.
+- **Start with Windows** moved into **Settings ▸ System** and now reports whether Windows really
+  launches UsageAI. It is saved with every other preference, and it no longer merely reports whether
+  a registry value exists. Two states used to make that tick lie. Switching UsageAI off in
   Task Manager or Settings ▸ Startup Apps leaves the Run entry in place and records the veto beside
   it, so the entry outlives its own effect; and an entry written by a copy of UsageAI that has since
   been moved, deleted, or replaced by an install elsewhere keeps pointing at that path. Both now read
@@ -26,7 +35,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- The provider list in Settings can now be reordered by dragging an entry, which is the gesture
+- The provider list in Settings can now be reordered by dragging an entry. That is the gesture
   people try first; the Move up and Move down buttons stay, and Alt+Up and Alt+Down do the same
   from the keyboard without leaving the list. The drag rides on the mouse capture the list already
   takes rather than OLE drag-and-drop, because registering a drop target needs an STA thread and
@@ -61,9 +70,9 @@ The project follows [Semantic Versioning](https://semver.org/).
   releases exist, and the subheading names how many releases are being shown when there is more than
   one. Windows High Contrast still flattens every category colour to the system foreground, and the
   category name is always spelled out, so colour is never the only cue.
-- The desktop suite grew to 77 checks, adding the dashboard grid's scroll behaviour — including
-  that no provider card is ever laid out where nothing could reach it — the whole provider-list
-  drag gesture, down to the boundaries that must do nothing: a right-click, a press on the empty
+- The desktop suite grew to 77 checks. The new ones cover the dashboard grid's scroll behaviour —
+  including that no provider card is ever laid out where nothing could reach it — the whole
+  provider-list drag gesture, down to the boundaries that must do nothing: a right-click, a press on the empty
   strip below the last row, and a move that would carry an entry past either end, and the DPI a
   provider card paints its own text at. The drag is exercised with real mouse messages rather than
   by calling the handlers, because the tick it has to suppress is applied by the native list box
@@ -124,21 +133,21 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
-- Expanded risk-focused coverage for provider parsing, authentication and protocol failures,
-  Antigravity hub fallbacks, update metadata validation, font fallbacks, startup registration, and
-  single-instance messaging. Desktop coverage is now 88.12% line and 81.76% branch; the editor's 48
+- Expanded risk-focused coverage across the provider, update, and startup paths. The new checks
+  cover provider parsing, authentication and protocol failures, Antigravity hub fallbacks, update
+  metadata validation, font fallbacks, startup registration, and single-instance messaging. Desktop coverage is now 88.12% line and 81.76% branch; the editor's 48
   checks reach 79.89% line, 80.10% branch, and 81.41% function coverage.
 - Provider readings now reach the cards as each one lands rather than after the slowest provider in
-  the refresh returns, so a provider that answered in 0.6 seconds no longer appears to take as long
-  as one that needs 4. The tray spinner still turns until the last provider is in, and history, the
+  the refresh returns. A provider that answered in 0.6 seconds no longer appears to take as long as
+  one that needs 4 seconds. The tray spinner still turns until the last provider is in, and history, the
   snapshot cache, and alerts are still written once per refresh rather than once per provider.
 - Refreshes now wake for a quota window that has reset instead of waiting out the whole refresh
-  interval, so the tray stops showing a spent quota long after it rolled over — up to two hours at
-  the maximum refresh setting — and reset notifications arrive on time. A window costs at most three
+  interval. The tray used to show a spent quota long after it rolled over — up to two hours at the
+  maximum refresh setting — and reset notifications now arrive on time. A window costs at most three
   polls, spaced a minute apart, because a provider whose counters trail its own published reset
   instant needs asking again; a provider serving out a failure backoff keeps it either way.
-- Google Gemini now goes straight to a serving `agy` hub instead of running the Antigravity IDE probe
-  ahead of it, which is what the editor extension already did. The probe itself no longer starts
+- Google Gemini now goes straight to a serving `agy` hub instead of running the Antigravity IDE
+  probe ahead of it, which is what the editor extension already did. The probe itself no longer starts
   PowerShell to map a process id to its listening ports, reading them through the IP Helper API
   instead: the two discovery steps measured 0.65 seconds and 1.2 seconds per call and now cost about
   10 milliseconds and under a millisecond. Command lines are still read through PowerShell, but only
@@ -152,12 +161,12 @@ The project follows [Semantic Versioning](https://semver.org/).
   short-lived `agy -p /usage` read, which boots MCP servers through `cmd.exe` and flashes a console
   window. The token is now also supplied as `--csrf_token`, the way the Antigravity IDE provisions
   the language server it starts, which both older and newer builds accept.
-- Held off further Antigravity hub starts for 30 minutes after one fails to become ready, so a future
-  change to the CLI costs one 20-second attempt per half hour rather than an extra child process and
-  a 20-second stall on every poll.
-- Cleared the Antigravity hub and `agy` probe backoffs when the user asks for a refresh, so a single
-  missed hub start cannot hold a provider on the degraded per-refresh path until the window expires.
-  The existing immediate-`agy` retry after both paths go stale now releases the hub backoff too.
+- Held off further Antigravity hub starts for 30 minutes after one fails to become ready. A future
+  change to the CLI then costs one 20-second attempt per half hour rather than an extra child
+  process and a 20-second stall on every poll.
+- Cleared the Antigravity hub and `agy` probe backoffs when the user asks for a refresh. A single
+  missed hub start can no longer hold a provider on the degraded per-refresh path until the window
+  expires. The existing immediate-`agy` retry after both paths go stale now releases the hub backoff too.
 - Capped the full dashboard's scaled minimum size to the active monitor's working area so compact
   displays remain usable at 200% and 300% scaling.
 - Ignored malformed GitHub release assets whose size is not numeric instead of allowing update
@@ -214,8 +223,8 @@ The project follows [Semantic Versioning](https://semver.org/).
 - Warning and critical quota states now include visible symbolic cues, while stale, disconnected,
   and refreshing states remain stated in text rather than depending on color alone.
 - Popup, dashboard, Settings, and What's New layout metrics now reapply during per-monitor DPI
-  transitions, preserve practical scroll and logical sizing state, and constrain windows to the
-  destination monitor's working area.
+  transitions. They also preserve practical scroll and logical sizing state, and constrain windows
+  to the destination monitor's working area.
 - Expanded the desktop regression harness to 70 registered checks. New coverage exercises
   metric filtering and settings isolation, release-note bounds and lifecycle behavior, runtime High
   Contrast propagation, native dialog reopening, successful bitmap painting, responsive 2×2

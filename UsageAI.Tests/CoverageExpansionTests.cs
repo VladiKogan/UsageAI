@@ -5012,6 +5012,57 @@ internal static class CoverageExpansionTests
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// The window shows one sentence per change, so the parser has to find the end of that sentence
+    /// without cutting a version number, a file name, an abbreviation, or a code span in half.
+    /// </summary>
+    public static Task TestReleaseNoteSummariesAsync()
+    {
+        Equal(string.Empty, ReleaseNotes.Summarize(string.Empty));
+        Equal("A headline.", ReleaseNotes.Summarize("A headline. The paragraph behind it explains."));
+        Equal("Does it?", ReleaseNotes.Summarize("Does it? Yes, since 0.9.0."));
+        Equal("Ends the bullet", ReleaseNotes.Summarize("Ends the bullet"));
+        // A version's dot is followed by a digit, and a file name's by a lower-case letter.
+        Equal(
+            "Upgrading from 0.12.0 rewrites settings.json in place.",
+            ReleaseNotes.Summarize("Upgrading from 0.12.0 rewrites settings.json in place. More follows."));
+        Equal(
+            "Some providers, e.g. Gemini, need a hub.",
+            ReleaseNotes.Summarize("Some providers, e.g. Gemini, need a hub. The hub answers over loopback."));
+        Equal(
+            "Run `codex.cmd -p /usage` first.",
+            ReleaseNotes.Summarize("Run `codex.cmd -p /usage` first. Never `codex.ps1`."));
+        // Markup closing after the stop stays paired with the text it wraps.
+        Equal("**Start with Windows** moved.", ReleaseNotes.Summarize("**Start with Windows** moved. It is saved."));
+        Equal("It is **done.**", ReleaseNotes.Summarize("It is **done.** The rest is detail."));
+        // An unclosed code span has no end to skip to, so the bullet is left whole.
+        Equal("An unclosed ` span. Stays whole.", ReleaseNotes.Summarize("An unclosed ` span. Stays whole."));
+
+        var summarised = ReleaseNotes.Parse("""
+            ## [4.0.0] - 2026-09-20
+            ### Changed
+            - The headline sentence. The paragraph behind it is
+              the record, and it is not shown in the window.
+            """);
+        Equal("The headline sentence.", summarised.Single().Sections.Single().Bullets.Single());
+
+        // Every bullet the window can reach has to read as a headline on its own. Only the three
+        // newest releases are ever shown, and entries older than that predate the convention.
+        foreach (var bullet in ReleaseNotes.LoadBundled()
+            .OrderByDescending(release => release.Version)
+            .Take(3)
+            .SelectMany(release => release.Sections)
+            .SelectMany(section => section.Bullets))
+        {
+            if (bullet.Length > 220)
+            {
+                throw new InvalidOperationException(
+                    $"Changelog bullet opens with {bullet.Length} characters: {bullet}");
+            }
+        }
+        return Task.CompletedTask;
+    }
+
     public static Task TestWhatsNewLifecycleAsync()
     {
         if (File.Exists(AppPaths.SettingsFile))
