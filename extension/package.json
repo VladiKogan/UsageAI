@@ -7,7 +7,7 @@
   "license": "MIT",
   "engines": {
     "vscode": "^1.90.0",
-    "node": ">=20"
+    "node": ">=22"
   },
   "categories": [
     "Other",
