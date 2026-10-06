@@ -36,6 +36,11 @@ jobs:
       - name: Check desktop coverage
         run: .\scripts\verify-coverage.ps1
 
+      - name: Set up Node.js
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
       - name: Restore extension tools
         working-directory: extension
         run: npm ci
@@ -43,3 +48,7 @@ jobs:
       - name: Build and test extension
         working-directory: extension
         run: npm run test:coverage
+
+      - name: Smoke-test extension packaging
+        working-directory: extension
+        run: npm run package:vsix

@@ -96,6 +96,8 @@ Cached snapshots may contain usage information, reset times, plan names, and acc
 
 ## Development
 
+Building and packaging the extension requires Node.js 22 or newer.
+
 ```powershell
 cd extension
 npm.cmd install

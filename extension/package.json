@@ -7,7 +7,7 @@
   "license": "MIT",
   "engines": {
     "vscode": "^1.90.0",
-    "node": ">=20"
+    "node": ">=22"
   },
   "categories": [
     "Other",
@@ -306,7 +306,7 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "~1.90.0",
-    "@vscode/vsce": "^3.6.0",
+    "@vscode/vsce": "^4.0.0",
     "ovsx": "^1.2.0",
     "typescript": "^7.0.2"
   }
