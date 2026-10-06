@@ -127,7 +127,8 @@ UsageAI reads the login your tools already made, and nothing else:
 - 🚫 **Never prints your credentials.** UsageAI never submits Claude's shared refresh token or rewrites
   `.credentials.json`. When Claude's short-lived access token expires—or the first usage request
   indicates that a seemingly current login is stale—UsageAI briefly runs the official
-  `claude auth status --json` command. Claude Code may refresh its own login, after which UsageAI
+  `claude auth status --json` command and, while the stored token is still expired,
+  `claude mcp list`, which makes Claude Code refresh its own login, after which UsageAI
   rereads the access token and retries usage once. Explicit environment-token overrides remain
   authoritative and are never replaced through this fallback.
 - 🏠 **No telemetry or tracking.** Network access is limited to provider usage requests and

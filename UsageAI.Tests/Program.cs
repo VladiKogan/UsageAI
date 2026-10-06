@@ -109,14 +109,27 @@ internal static class Program
             return await RunFakeCodexAppServerAsync();
         }
 
+        // Mirrors the real Claude CLI: `auth status` only reports the login and never refreshes an
+        // expired token, while `mcp list` needs a live token and so refreshes the credential store.
         if (args.Length >= 2 &&
             args[0] == "auth" &&
             args[1] == "status")
         {
             var configDirectory = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
+            var loggedIn = !string.IsNullOrWhiteSpace(configDirectory) && Path.IsPathFullyQualified(configDirectory);
+            await Console.Out.WriteLineAsync(loggedIn
+                ? "{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}"
+                : "{\"loggedIn\":false}");
+            return loggedIn ? 0 : 1;
+        }
+
+        if (args.Length >= 2 &&
+            args[0] == "mcp" &&
+            args[1] == "list")
+        {
+            var configDirectory = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
             if (string.IsNullOrWhiteSpace(configDirectory) || !Path.IsPathFullyQualified(configDirectory))
             {
-                await Console.Out.WriteLineAsync("{\"loggedIn\":false}");
                 return 1;
             }
 
@@ -133,7 +146,7 @@ internal static class Program
                 }
                 """;
             await File.WriteAllTextAsync(credentialPath, refreshed);
-            await Console.Out.WriteLineAsync("{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}");
+            await Console.Out.WriteLineAsync("No MCP servers configured.");
             return 0;
         }
 

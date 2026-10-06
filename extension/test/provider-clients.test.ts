@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import test, { mock } from "node:test";
 import { UsageProviderError } from "../src/errors";
-import { ClaudeUsageClient, runClaudeAuthStatus } from "../src/providers/claude";
+import { ClaudeUsageClient, runClaudeAuthRecovery, runClaudeAuthStatus } from "../src/providers/claude";
 import { CodexUsageClient } from "../src/providers/codex";
 import { CopilotUsageClient } from "../src/providers/copilot";
 import {
@@ -478,7 +478,7 @@ test("netstat listening ports stay bound to the owning process", () => {
   // netstat localizes the state word, so discovery must not depend on reading "LISTENING".
   const german = [
     "  Proto  Lokale Adresse         Remoteadresse          Status          PID",
-    "  TCP    127.0.0.1:5005         0.0.0.0:0              ABHÖREN         42",
+    "  TCP    127.0.0.1:5005         0.0.0.0:0              ABHֳ–REN         42",
     "  TCP    127.0.0.1:5006         127.0.0.1:5007         HERGESTELLT     42",
   ].join("\r\n");
   assert.deepEqual(parseNetstatListeningPorts(german, 42), [5005]);
@@ -645,6 +645,62 @@ test("Claude auth-status probe accepts valid CLI output and contains failures", 
   }
 });
 
+test("Claude recovery makes the CLI refresh an expired login that auth status only reports", async () => {
+  const directory = await mkdtemp(path.join(os.tmpdir(), "usageai-claude-refresh-"));
+  const configDirectory = path.join(directory, "config");
+  const credentialPath = path.join(configDirectory, ".credentials.json");
+  const mcpMarker = path.join(directory, "mcp-ran");
+  const names = ["CLAUDE_PATH", "PATH", "CLAUDE_CONFIG_DIR"];
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  const credentials = (accessToken: string, expiresAt: number): string => JSON.stringify({
+    claudeAiOauth: { accessToken, expiresAt, scopes: ["user:profile"], subscriptionType: "pro" },
+  });
+  try {
+    await mkdir(configDirectory, { recursive: true });
+    let scriptPath: string;
+    if (process.platform === "win32") {
+      const commandPath = path.join(directory, "claude.cmd");
+      scriptPath = path.join(directory, "node_modules", "@anthropic-ai", "claude-code", "cli.js");
+      await mkdir(path.dirname(scriptPath), { recursive: true });
+      await writeFile(commandPath, "@echo off\r\n", "utf8");
+      process.env.CLAUDE_PATH = commandPath;
+      process.env.PATH = `${path.dirname(process.execPath)}${path.delimiter}${previous.get("PATH") ?? ""}`;
+    } else {
+      scriptPath = path.join(directory, "claude");
+      process.env.CLAUDE_PATH = scriptPath;
+    }
+    process.env.CLAUDE_CONFIG_DIR = configDirectory;
+    // Mirrors the real CLI: `auth status` never refreshes, `mcp list` needs a live token and does.
+    const source = `
+      const fs = require("node:fs");
+      const args = process.argv.slice(2);
+      if (args[0] === "auth") {
+        process.stdout.write(JSON.stringify({ loggedIn: true }));
+      } else if (args[0] === "mcp") {
+        fs.writeFileSync(${JSON.stringify(mcpMarker)}, "1");
+        fs.writeFileSync(${JSON.stringify(credentialPath)}, ${JSON.stringify(
+          credentials("cli-refreshed-access", Date.now() + 8 * 3_600_000),
+        )});
+      }
+    `;
+    await writeFile(scriptPath, process.platform === "win32" ? source : `#!${process.execPath}\n${source}`, "utf8");
+    if (process.platform !== "win32") await chmod(scriptPath, 0o755);
+
+    const fresh = credentials("still-fresh-access", Date.now() + 3_600_000);
+    await writeFile(credentialPath, fresh, "utf8");
+    assert.equal(await runClaudeAuthRecovery(), true);
+    assert.equal(await readFile(credentialPath, "utf8"), fresh);
+    await assert.rejects(() => readFile(mcpMarker, "utf8"));
+
+    await writeFile(credentialPath, credentials("expired-access", Date.now() - 60_000), "utf8");
+    assert.equal(await runClaudeAuthRecovery(), true);
+    assert.match(await readFile(credentialPath, "utf8"), /cli-refreshed-access/);
+  } finally {
+    for (const name of names) restoreEnvironment(name, previous.get(name));
+    await rm(directory, { recursive: true, force: true });
+  }
+});
+
 test("Gemini cloud and refresh failures retain safe provider errors", async () => {
   const oldClientId = process.env.GEMINI_CLIENT_ID;
   const oldClientSecret = process.env.GEMINI_CLIENT_SECRET;
@@ -731,7 +787,7 @@ test("Gemini cloud and refresh failures retain safe provider errors", async () =
 
 test("a failed agy hub start is negatively cached instead of retried every refresh", () => {
   // CLI builds from 2026-09 onwards reject the environment-supplied CSRF token, so every hub call
-  // fails and the probe falls back to `agy -p /usage` — a child process per refresh, which flashes a
+  // fails and the probe falls back to `agy -p /usage` ג€” a child process per refresh, which flashes a
   // console on Windows. Retrying the dead hub each poll pays a 20s stall on top of that.
   clearHubStartBackoff();
   const failedAt = Date.now();
@@ -754,8 +810,8 @@ test("the agy hub is started with the CSRF token on its command line", () => {
 });
 
 test("a refresh the user asked for clears both agy backoffs", async () => {
-  // Without this, one missed hub start keeps the per-refresh `agy -p /usage` fallback — and its
-  // console flash — in place for the whole 30-minute window, however often the user hits Refresh.
+  // Without this, one missed hub start keeps the per-refresh `agy -p /usage` fallback ג€” and its
+  // console flash ג€” in place for the whole 30-minute window, however often the user hits Refresh.
   let cleared = 0;
   const client = new GeminiUsageClient({
     fetchAntigravity: async () => undefined,

@@ -16,13 +16,14 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan AuthProbeTimeout = TimeSpan.FromSeconds(12);
     private static readonly TimeSpan CredentialObservationWindow = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan RefreshNudgeTimeout = TimeSpan.FromSeconds(20);
     private static readonly HttpClient SharedClient = SecureHttp.CreateClient(RequestTimeout);
     private readonly HttpClient _client;
     private readonly Func<IReadOnlyList<string>> _keyringPasswords;
     private readonly Func<CancellationToken, Task<bool>> _claudeAuthProbe;
 
     public ClaudeCodeUsageClient()
-        : this(SharedClient, null, RunClaudeAuthStatusAsync)
+        : this(SharedClient, null, RunClaudeAuthRecoveryAsync)
     {
     }
 
@@ -330,17 +331,35 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         return null;
     }
 
-    internal static async Task<bool> RunClaudeAuthStatusAsync(CancellationToken cancellationToken)
+    /// <summary>
+    /// Asks the official CLI to validate, and if needed refresh, Claude Code's login. `auth status`
+    /// only reports whether a login exists and never refreshes an expired access token, so while the
+    /// stored token is still expired a command that needs a live token (`mcp list`) makes the CLI
+    /// refresh it through its own credential store. UsageAI never touches the refresh token itself.
+    /// </summary>
+    internal static async Task<bool> RunClaudeAuthRecoveryAsync(CancellationToken cancellationToken)
     {
         var launch = FindClaudeLaunch();
-        if (launch is null)
+        if (launch is null || !await RunClaudeAuthStatusAsync(launch, cancellationToken))
         {
             return false;
         }
 
+        if (!HasFreshStoredCredential())
+        {
+            await NudgeClaudeCredentialRefreshAsync(launch, cancellationToken);
+        }
+
+        return true;
+    }
+
+    private static async Task<bool> RunClaudeAuthStatusAsync(
+        ClaudeLaunch launch,
+        CancellationToken cancellationToken)
+    {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(AuthProbeTimeout);
-        using var process = StartClaudeAuthProbe(launch);
+        using var process = StartClaudeCli(launch, "auth", "status", "--json");
         var stdoutTask = ProcessSecurity.DrainTextAsync(
             process.StandardOutput,
             MaxAuthProbeOutputCharacters,
@@ -380,7 +399,62 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         }
     }
 
-    private static Process StartClaudeAuthProbe(ClaudeLaunch launch)
+    private static async Task NudgeClaudeCredentialRefreshAsync(
+        ClaudeLaunch launch,
+        CancellationToken cancellationToken)
+    {
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        timeout.CancelAfter(RefreshNudgeTimeout);
+        using var process = StartClaudeCli(launch, "mcp", "list");
+        var stdoutTask = ProcessSecurity.DrainTextAsync(
+            process.StandardOutput,
+            MaxAuthProbeOutputCharacters,
+            timeout.Token);
+        var stderrTask = ProcessSecurity.DrainTextAsync(
+            process.StandardError,
+            MaxAuthProbeOutputCharacters,
+            timeout.Token);
+
+        try
+        {
+            process.StandardInput.Close();
+            var exited = process.WaitForExitAsync(timeout.Token);
+
+            // The refresh lands in the first seconds; the MCP health checks after it are not needed.
+            while (!exited.IsCompleted && !HasFreshStoredCredential())
+            {
+                await Task.WhenAny(exited, Task.Delay(TimeSpan.FromMilliseconds(100), timeout.Token));
+            }
+        }
+        catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+        {
+            // Out of time; the caller's observation window decides whether the refresh landed.
+        }
+        finally
+        {
+            ProcessSecurity.TryKill(process);
+            await TryDrainProbeErrorAsync(stdoutTask);
+            await TryDrainProbeErrorAsync(stderrTask);
+        }
+
+        cancellationToken.ThrowIfCancellationRequested();
+    }
+
+    private static bool HasFreshStoredCredential()
+    {
+        try
+        {
+            var credentialPath = GetCredentialPath();
+            return File.Exists(credentialPath) &&
+                   !ParseCredentials(SecureLocalFile.ReadAllText(credentialPath)).IsExpired;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or ClaudeCodeUsageException)
+        {
+            return false;
+        }
+    }
+
+    private static Process StartClaudeCli(ClaudeLaunch launch, params string[] arguments)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -405,9 +479,11 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             startInfo.ArgumentList.Add(launch.Script);
         }
 
-        startInfo.ArgumentList.Add("auth");
-        startInfo.ArgumentList.Add("status");
-        startInfo.ArgumentList.Add("--json");
+        foreach (var argument in arguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
+
         return Process.Start(startInfo)
             ?? throw new ClaudeCodeUsageException("Windows could not start the Claude CLI.");
     }

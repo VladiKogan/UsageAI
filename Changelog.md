@@ -31,6 +31,20 @@ The project follows [Semantic Versioning](https://semver.org/).
   one. A registry the account cannot write is reported rather than thrown, and every other
   preference is still saved when that write fails.
 
+### Fixed
+
+- Claude Code no longer stays stale once its access token expires while no Claude Code session is
+  running. The token lasts about eight hours, and the recovery path relied on `claude auth status`,
+  which only reports that a login exists and never refreshes an expired token — so after a night's
+  sleep, or a day spent in the Claude desktop app, Claude for Chrome, or a terminal on another
+  `CLAUDE_CONFIG_DIR`, none of which refresh that credential file, the card kept its last snapshot
+  until a Claude Code session happened to start on the default profile. While the stored token is
+  still expired, recovery now also runs `claude mcp list`, which needs a live token and makes the
+  CLI refresh it through its own credential store; measured on an expired login it rewrote the file
+  with a fresh eight-hour token. UsageAI stops that child as soon as the new token lands, bounds it at
+  20 seconds, skips it whenever the stored token is still valid, and still never reads, exchanges, or
+  writes Claude's refresh token.
+
 ## [0.12.0] - 2026-09-17
 
 ### Added

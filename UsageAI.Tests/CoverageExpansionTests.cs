@@ -777,7 +777,7 @@ internal static class CoverageExpansionTests
             var snapshot = await new ClaudeCodeUsageClient(
                 http,
                 () => Array.Empty<string>(),
-                ClaudeCodeUsageClient.RunClaudeAuthStatusAsync).GetUsageAsync();
+                ClaudeCodeUsageClient.RunClaudeAuthRecoveryAsync).GetUsageAsync();
             Equal(12, snapshot.Primary!.UsedPercent);
             Equal(1, requests);
 
@@ -820,6 +820,25 @@ internal static class CoverageExpansionTests
                 Equal(27, recovered.Primary!.UsedPercent);
                 Equal(2, recoveryRequests);
                 Equal(1, recoveryProbes);
+                Equal(freshCredentials, File.ReadAllText(credentialPath));
+            }
+
+            // A login that is still fresh on disk is not "refreshed" by starting MCP servers.
+            var freshProbeRequests = 0;
+            using (var freshProbeHttp = new HttpClient(new StubHttpHandler((_, _, _) =>
+                   {
+                       freshProbeRequests++;
+                       return Task.FromResult(freshProbeRequests == 1
+                           ? new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                           : JsonResponse(HttpStatusCode.OK, """{"five_hour":{"utilization":33}}"""));
+                   })))
+            {
+                var recovered = await new ClaudeCodeUsageClient(
+                    freshProbeHttp,
+                    () => Array.Empty<string>(),
+                    ClaudeCodeUsageClient.RunClaudeAuthRecoveryAsync).GetUsageAsync();
+                Equal(33, recovered.Primary!.UsedPercent);
+                Equal(2, freshProbeRequests);
                 Equal(freshCredentials, File.ReadAllText(credentialPath));
             }
 

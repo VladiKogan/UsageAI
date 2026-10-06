@@ -17,7 +17,8 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
 - Provider secrets originate only from explicit environment variables or the provider's existing local credential location.
 - Claude Code credentials are read-only to UsageAI: it never submits Claude's shared refresh token or
   writes the credential file. When the access token expires, UsageAI may invoke the official
-  `claude auth status --json` command with bounded runtime and output. Claude Code remains the sole
+  `claude auth status --json` command with bounded runtime and output and, while the stored token is
+  still expired, `claude mcp list`, which makes the CLI refresh the login. Claude Code remains the sole
   owner of any resulting token exchange and credential update; UsageAI waits briefly and rereads the
   access token afterward.
 - Browser storage is never scanned.

@@ -1,5 +1,24 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Expanded the suite to 49 checks with a Claude CLI fixture that, like the real CLI, refreshes an
+  expired login only through `mcp list` and never through `auth status`. Aggregate coverage is now
+  80.27% line, 79.85% branch, and 80.93% function coverage.
+
+### Fixed
+
+- Fixed Claude Code staying stale once its access token expired while no Claude Code session was
+  running. Recovery relied on `claude auth status`, which only reports that a login exists and never
+  refreshes an expired token, so after about eight hours without a Claude Code session on the
+  default profile the card kept its last snapshot until one happened to start. While the stored
+  token is still expired, recovery now also runs `claude mcp list`, which needs a live token and
+  makes the CLI refresh it through its own credential store. The extension returns as soon as the
+  new token lands, bounds the child at 20 seconds, skips it whenever the stored token is still
+  valid, and still never reads, exchanges, or writes Claude's refresh token.
+
 ## 0.1.15
 
 ### Changed

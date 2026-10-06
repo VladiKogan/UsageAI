@@ -18,6 +18,7 @@ const usageEndpoint = "https://api.anthropic.com/api/oauth/usage";
 const oauthBeta = "oauth-2025-04-20";
 const authProbeTimeoutMs = 12_000;
 const credentialObservationMs = 5_000;
+const refreshNudgeTimeoutMs = 20_000;
 
 export interface ClaudeCredentials {
   readonly accessToken: string;
@@ -40,7 +41,7 @@ export class ClaudeUsageClient implements UsageClient {
   public readonly signInCommand = "claude";
   public readonly accountUrl = "https://claude.ai/settings/usage";
 
-  public constructor(private readonly claudeAuthProbe: ClaudeAuthProbe = runClaudeAuthStatus) {}
+  public constructor(private readonly claudeAuthProbe: ClaudeAuthProbe = runClaudeAuthRecovery) {}
 
   public async getUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
     if (getClaudeSessionKey()) {
@@ -106,11 +107,7 @@ export class ClaudeUsageClient implements UsageClient {
       };
     }
 
-    const configuredDirectory = process.env.CLAUDE_CONFIG_DIR?.trim().replace(/^"|"$/g, "");
-    if (configuredDirectory && !path.isAbsolute(configuredDirectory)) {
-      throw new UsageProviderError("CLAUDE_CONFIG_DIR must be an absolute path.");
-    }
-    const credentialPath = path.join(configuredDirectory || path.join(userHome(), ".claude"), ".credentials.json");
+    const credentialPath = claudeCredentialPath();
     try {
       return parseClaudeCredentials(await readBoundedText(credentialPath));
     } catch (error) {
@@ -229,15 +226,68 @@ class RecoverableClaudeUsageError extends UsageProviderError {
   }
 }
 
-export async function runClaudeAuthStatus(signal?: AbortSignal): Promise<boolean> {
-  const launch = await findClaudeLaunch();
-  if (!launch) {
+function claudeCredentialPath(): string {
+  const configuredDirectory = process.env.CLAUDE_CONFIG_DIR?.trim().replace(/^"|"$/g, "");
+  if (configuredDirectory && !path.isAbsolute(configuredDirectory)) {
+    throw new UsageProviderError("CLAUDE_CONFIG_DIR must be an absolute path.");
+  }
+  return path.join(configuredDirectory || path.join(userHome(), ".claude"), ".credentials.json");
+}
+
+async function hasFreshStoredClaudeCredential(): Promise<boolean> {
+  try {
+    const credentials = parseClaudeCredentials(await readBoundedText(claudeCredentialPath()));
+    return credentials.expiresAt === undefined || credentials.expiresAt > Date.now();
+  } catch {
     return false;
   }
+}
 
-  const child = spawnSecure(
+/**
+ * Asks the official CLI to validate, and if needed refresh, Claude Code's login. `auth status`
+ * only reports whether a login exists and never refreshes an expired access token, so while the
+ * stored token is still expired a command that needs a live token (`mcp list`) makes the CLI
+ * refresh it through its own credential store. UsageAI never touches the refresh token itself.
+ */
+export async function runClaudeAuthRecovery(signal?: AbortSignal): Promise<boolean> {
+  if (!await runClaudeAuthStatus(signal)) {
+    return false;
+  }
+  if (!await hasFreshStoredClaudeCredential()) {
+    await nudgeClaudeCredentialRefresh(signal);
+  }
+  return true;
+}
+
+async function nudgeClaudeCredentialRefresh(signal?: AbortSignal): Promise<void> {
+  const launch = await findClaudeLaunch();
+  if (!launch) {
+    return;
+  }
+
+  const child = spawnClaudeCli(launch, ["mcp", "list"]);
+  child.stdin.end();
+  // Output is discarded; the child keeps running its MCP health checks after the refresh lands
+  // and exits on its own, with this bound as the backstop.
+  const exited = collectProcessOutput(child, refreshNudgeTimeoutMs, 16_384).then(() => true, () => true);
+  const abort = () => child.kill();
+  signal?.addEventListener("abort", abort, { once: true });
+  try {
+    const deadline = Date.now() + refreshNudgeTimeoutMs;
+    while (Date.now() < deadline && !await hasFreshStoredClaudeCredential()) {
+      if (await Promise.race([exited, abortableDelay(100, signal).then(() => false)])) {
+        return;
+      }
+    }
+  } finally {
+    signal?.removeEventListener("abort", abort);
+  }
+}
+
+function spawnClaudeCli(launch: ClaudeLaunch, args: readonly string[]) {
+  return spawnSecure(
     launch.executable,
-    [...launch.argsPrefix, "auth", "status", "--json"],
+    [...launch.argsPrefix, ...args],
     [
       "CLAUDE_CONFIG_DIR",
       "CLAUDE_CODE_GIT_BASH_PATH",
@@ -247,6 +297,15 @@ export async function runClaudeAuthStatus(signal?: AbortSignal): Promise<boolean
     ],
     { DISABLE_AUTOUPDATER: "1" },
   );
+}
+
+export async function runClaudeAuthStatus(signal?: AbortSignal): Promise<boolean> {
+  const launch = await findClaudeLaunch();
+  if (!launch) {
+    return false;
+  }
+
+  const child = spawnClaudeCli(launch, ["auth", "status", "--json"]);
   child.stdin.end();
   const abort = () => child.kill();
   signal?.addEventListener("abort", abort, { once: true });
