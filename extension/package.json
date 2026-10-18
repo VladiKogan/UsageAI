@@ -2,7 +2,7 @@
   "name": "usageai",
   "displayName": "UsageAI",
   "description": "Keep Codex, Claude Code, GitHub Copilot, and Gemini usage visible while you code.",
-  "version": "0.1.15",
+  "version": "0.1.16",
   "publisher": "vladikogan",
   "license": "MIT",
   "engines": {
@@ -322,7 +322,7 @@
     "@types/node": "^20.0.0",
     "@types/vscode": "~1.90.0",
     "@vscode/vsce": "^4.0.0",
-    "ovsx": "^1.2.0",
+    "ovsx": "^1.3.0",
     "typescript": "^7.0.2"
   }
 }

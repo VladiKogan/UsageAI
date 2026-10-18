@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.16
 
 ### Added
 
@@ -18,6 +18,10 @@
   expired login only through `mcp list` and never through `auth status`, and with used and remaining
   Quota Display rendering in the Status Bar and dashboard. Aggregate coverage is now 80.46% line,
   80.17% branch, and 81.18% function coverage.
+- Updated the Open VSX publishing tool to `ovsx` 1.3.0, clearing a high-severity advisory in the
+  build tooling. `ovsx` 1.2.0 bundled its own `@vscode/vsce` 3.9.2, whose `secretlint` chain pulls
+  in `braces` 3.0.3 (GHSA-vfj7-8cjw-p6xm, which has no patched release); 1.3.0 shares the
+  `@vscode/vsce` 4.0.0 already used for packaging. Nothing in the published VSIX changes.
 
 ### Fixed
 

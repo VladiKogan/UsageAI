@@ -37,14 +37,14 @@ You're mid-refactor and the model stops. Weekly limit. Nobody told you it was cl
 
 ## ⚡ Get it
 
-Current release: **UsageAI for Windows 0.12.0** and **UsageAI editor extension 0.1.15**.
+Current release: **UsageAI for Windows 0.12.0** and **UsageAI editor extension 0.1.16**.
 You can also browse the complete **[Releases page](https://github.com/VladiKogan/UsageAI/releases)**.
 
 | | |
 | --- | --- |
 | 🚀 **[UsageAI-0.12.0-Setup.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.12.0/UsageAI-0.12.0-Setup.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.12.0/UsageAI-0.12.0-Setup.exe.sha256)) | The easy one. Start Menu shortcut, clean uninstall, and it installs the .NET 10 Desktop Runtime for you if you don't have it. |
 | 🎒 **[UsageAI-0.12.0-portable.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.12.0/UsageAI-0.12.0-portable.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.12.0/UsageAI-0.12.0-portable.exe.sha256)) | One file. No install. Drop it anywhere and double-click — it uses the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) if you already have it. |
-| 🧩 **[usageai-0.1.15.vsix](https://github.com/VladiKogan/UsageAI/releases/download/v0.12.0/usageai-0.1.15.vsix)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.12.0/usageai-0.1.15.vsix.sha256)) | The VS Code and Antigravity extension. Install it from the editor's **Extensions: Install from VSIX...** command. |
+| 🧩 **[usageai-0.1.16.vsix](https://open-vsx.org/api/vladikogan/usageai/0.1.16/file/vladikogan.usageai-0.1.16.vsix)** | The VS Code and Antigravity extension. Install it from the editor's **Extensions: Install from VSIX...** command. |
 
 Windows 10 or 11 (x64), plus at least one AI tool you're already signed in to. That's the whole setup — UsageAI reuses the login you already have, so there's nothing new to create, paste, or remember.
 
@@ -58,7 +58,7 @@ and Antigravity; marketplace publication is kept separate for Visual Studio Mark
 
 Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai)
 or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai). For manual installation, download
-the VSIX from the GitHub release and select **Extensions: Install from VSIX...** in VS Code or
+the VSIX from Open VSX and select **Extensions: Install from VSIX...** in VS Code or
 Antigravity. To build it from source instead:
 
 ```powershell
