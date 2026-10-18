@@ -1,5 +1,6 @@
 export type UsageMetricKind = "session" | "rolling" | "monthly" | "balance";
 export type MetricDisplayMode = "all" | "metered" | "important";
+export type QuotaDisplay = "used" | "remaining";
 
 export interface UsageMetric {
   readonly name: string;
@@ -96,6 +97,20 @@ export function hasQuota(metric: UsageMetric): boolean {
 
 export function normalizeMetricDisplayMode(value: unknown): MetricDisplayMode {
   return value === "metered" || value === "important" ? value : "all";
+}
+
+export function normalizeQuotaDisplay(value: unknown): QuotaDisplay {
+  return value === "remaining" ? "remaining" : "used";
+}
+
+/**
+ * The percentage a meter shows and fills to. Selection, ordering, and warning levels keep working
+ * from `usedPercent`; only the presented number and the bar flip, and always together. Kept free of
+ * other helpers because the dashboard webview inlines it with `toString()`.
+ */
+export function displayedPercent(usedPercent: number, display: QuotaDisplay): number {
+  const used = Math.max(0, Math.min(100, Math.round(usedPercent)));
+  return display === "remaining" ? 100 - used : used;
 }
 
 /** Selects full-dashboard rows without changing the provider snapshot or Status Bar selection. */

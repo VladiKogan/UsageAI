@@ -20,9 +20,9 @@ Choose one or more providers for compact Status Bar readings. Hover over a readi
 
 ## Install
 
-The current extension release is **0.1.15**. Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai) or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai).
+The current extension release is **0.1.16**. Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai) or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai).
 
-For a manual installation, download [`usageai-0.1.15.vsix`](https://open-vsx.org/api/vladikogan/usageai/0.1.15/file/vladikogan.usageai-0.1.15.vsix), then run **Extensions: Install from VSIX...** in VS Code or Antigravity.
+For a manual installation, download [`usageai-0.1.16.vsix`](https://open-vsx.org/api/vladikogan/usageai/0.1.16/file/vladikogan.usageai-0.1.16.vsix), then run **Extensions: Install from VSIX...** in VS Code or Antigravity.
 
 ## Get started
 
@@ -53,7 +53,11 @@ Open **UsageAI: Open Settings** to personalize the extension:
 - **UsageAI: Providers** enables providers and sets their order in both the dashboard and Status Bar.
 - The **UsageAI: Status Bar** checkboxes give each selected provider its own compact reading.
 - If no provider checkbox is selected, **Hottest When None Selected** shows the connected provider with the highest current usage. Turn it off to hide UsageAI from the Status Bar.
-- **Warning Percent** and **Critical Percent** control when usage meters change color.
+- **Quota Display** chooses whether meters and percentages show the quota **used** (the default)
+  or the quota **remaining**, in both the dashboard and the Status Bar. Warning and critical colors
+  keep their meaning either way.
+- **Warning Percent** and **Critical Percent** control when usage meters change color. Both are
+  always measured as quota used, so the default 72% warning is the same as 28% remaining.
 - **Metric Display Mode** chooses all dashboard metrics, every metered percentage limit, or the
   highest-used Session, Rolling, and Monthly limit. It does not change Status Bar readings.
 - The foreground and background refresh intervals control how often readings update while the dashboard is open or hidden.
@@ -62,8 +66,10 @@ For GitHub Copilot, **Enable GitHub CLI Fallback** lets UsageAI run `gh auth tok
 
 ## Reading the dashboard
 
-- Percentages and meter fill show how much quota has been **used**.
-- The text under each meter shows what remains and when that limit resets.
+- Percentages and meter fill show how much quota has been **used**, or how much is **left** when
+  **Quota Display** is set to remaining. The number and the meter always agree.
+- The text under each meter shows the other side, what remains or what has been used, and when
+  that limit resets.
 - Providers can report more than one limit, such as a session window and a weekly window; UsageAI shows each one separately.
 - Select anywhere on a provider header to collapse or expand it, or use **Collapse all** and
   **Expand all**. The preference follows the editor installation across workspaces. Stale and
@@ -116,8 +122,8 @@ npm.cmd run package:vsix
 The resulting VSIX can be installed manually in both VS Code and Antigravity. Marketplace publication uses the same artifact:
 
 ```powershell
-npm.cmd run publish:vscode -- --packagePath usageai-0.1.15.vsix
-npm.cmd run publish:openvsx -- usageai-0.1.15.vsix
+npm.cmd run publish:vscode -- --packagePath usageai-0.1.16.vsix
+npm.cmd run publish:openvsx -- usageai-0.1.16.vsix
 ```
 
 Publishing requires separate publisher identities and credentials for Visual Studio Marketplace and Open VSX.

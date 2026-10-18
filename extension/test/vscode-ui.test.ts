@@ -219,6 +219,43 @@ test("status bar renders hottest, stale, error, and selection lifecycle states",
   assert.equal(statusItems[2]?.disposed, true);
 });
 
+test("status bar shows remaining quota with one trailing unit when asked", () => {
+  statusItems.length = 0;
+  const provider = (id: string, displayName: string, metrics: UsageSnapshot["metrics"]): ProviderState => ({
+    id,
+    displayName,
+    signInCommand: id,
+    accountUrl: `https://example.com/${id}`,
+    snapshot: { ...snapshot(id, 0), metrics },
+    stale: false,
+    refreshing: false,
+  });
+  const states: ProviderState[] = [
+    provider("codex", "Codex", snapshot("codex", 45).metrics),
+    provider("claude", "Claude Code", snapshot("claude", 82).metrics),
+    provider("gemini", "Gemini", [{ name: "Credits", kind: "balance", usedPercent: null, remainingText: "$5" }]),
+  ];
+  const controller = new StatusBarController();
+
+  controller.update(states, ["hottest"]);
+  assert.match(statusItems[0]?.text ?? "", /Claude 82% \| 72%$/);
+
+  // Hottest still means most used, which is the provider with the least left.
+  controller.update(states, ["hottest"], "remaining");
+  assert.match(statusItems[0]?.text ?? "", /Claude 18% \| 28% left$/);
+  const tooltip = statusItems[0]?.tooltip;
+  assert.ok(tooltip instanceof FakeMarkdownString);
+  assert.match(tooltip.value, /5-hour {2}■ ■ □ □ □ □ □ □ □ □ {2}18% left/);
+  assert.match(tooltip.value, /Weekly {2}■ ■ ■ □ □ □ □ □ □ □ {2}28% left/);
+
+  controller.update(states, ["codex", "gemini"], "remaining");
+  assert.match(statusItems[1]?.text ?? "", /Codex 55% \| 65% left$/);
+  assert.match(statusItems[2]?.text ?? "", /Gemini —$/);
+  controller.update(states, ["codex", "gemini"], "used");
+  assert.match(statusItems[2]?.text ?? "", /Gemini 0%$/);
+  controller.dispose();
+});
+
 test("dashboard wires visibility, safe messages, state posting, and CSP", async () => {
   executedCommands.length = 0;
   openedUris.length = 0;
@@ -361,6 +398,55 @@ test("dashboard wires visibility, safe messages, state posting, and CSP", async 
   }));
   const runtimeProviders = runtimeElements.get("providers");
   assert.equal(runtimeProviders?.children[0]?.children[1]?.children[0]?.children.length, 4);
+
+  const renderCard = (quotaDisplay: unknown, expanded: boolean, state: ProviderState = filterState) => {
+    stateMessage?.({
+      data: {
+        type: "states",
+        states: [state],
+        warningPercent: 72,
+        criticalPercent: 90,
+        metricDisplayMode: "all",
+        quotaDisplay,
+        expandedProviders: expanded ? ["codex"] : [],
+      },
+    });
+    const card = runtimeElements.get("providers")?.children[0];
+    const [, providerColumn, headline] = card?.children[0]?.children ?? [];
+    const metric = card?.children[1]?.children[0]?.children[1];
+    const [metricHead, rail, foot] = metric?.children ?? [];
+    return {
+      headline: headline?.children.map((child) => child.textContent),
+      summary: providerColumn?.children[2]?.textContent,
+      level: card?.dataset.level,
+      metricValue: metricHead?.children[1]?.textContent,
+      rail: rail?.value as unknown,
+      foot: foot?.children[0]?.textContent,
+    };
+  };
+  // Session higher is 80% used: the card headline, summary, and level follow it in both modes.
+  const usedCard = renderCard(undefined, true);
+  assert.deepEqual(usedCard.headline, ["80%"]);
+  assert.equal(usedCard.level, "warning");
+  assert.equal(usedCard.metricValue, "20% used");
+  assert.equal(usedCard.rail, 20);
+  assert.equal(usedCard.foot, "80% left");
+  assert.equal(renderCard("used", false).summary, "Session higher · 80% · Reset not reported");
+
+  const remainingCard = renderCard("remaining", true);
+  assert.deepEqual(remainingCard.headline, ["20%", "left"]);
+  assert.equal(remainingCard.level, "warning");
+  assert.equal(remainingCard.metricValue, "80% left");
+  assert.equal(remainingCard.rail, 80);
+  assert.equal(remainingCard.foot, "20% used");
+  assert.equal(renderCard("remaining", false).summary, "Session higher · 20% left · Reset not reported");
+  assert.deepEqual(renderCard("unexpected", true).headline, ["80%"]);
+  const unmetered: ProviderState = {
+    ...filterState,
+    snapshot: { ...filterSnapshot, metrics: [{ name: "Balance", kind: "balance", usedPercent: null }] },
+  };
+  assert.deepEqual(renderCard("remaining", true, unmetered).headline, ["—"]);
+  assert.deepEqual(renderCard("used", true, unmetered).headline, ["0%"]);
   assert.equal(visibility.at(-1), true);
   assert.ok(posted.length >= 1);
   assert.deepEqual(posted[0], {
@@ -369,6 +455,7 @@ test("dashboard wires visibility, safe messages, state posting, and CSP", async 
     warningPercent: 72,
     criticalPercent: 90,
     metricDisplayMode: "important",
+    quotaDisplay: "used",
     expandedProviders: ["codex"],
   });
 
@@ -477,6 +564,7 @@ test("activation helpers sanitize configuration and activation registers its sur
   configurationValues.set("statusBarProviders.codex", true);
   inspectedConfiguration.add("statusBarProviders.codex");
   assert.deepEqual(extensionModule.getStatusBarProviderSelection(configuration as never, ["codex"]), ["codex"]);
+  configurationValues.set("quotaDisplay", "remaining");
 
   const subscriptions: Array<{ dispose(): unknown }> = [];
   const updates: unknown[] = [];
@@ -519,6 +607,10 @@ test("activation helpers sanitize configuration and activation registers its sur
       onDidDispose() { return { dispose() {} }; },
     } as never);
     assert.deepEqual((posted[0] as { expandedProviders: string[] }).expandedProviders, ["claude"]);
+    assert.equal((posted[0] as { quotaDisplay?: string }).quotaDisplay, "remaining");
+    configurationValues.set("quotaDisplay", "inverted");
+    configurationListener?.({ affectsConfiguration: (section) => section === "usageai" });
+    assert.equal((posted.at(-1) as { quotaDisplay?: string }).quotaDisplay, "used");
     await dashboardMessage?.({ type: "setProviderExpanded", providerId: "claude", expanded: false });
     await dashboardMessage?.({ type: "setMetricDisplayMode", mode: "important" });
     assert.ok(updates.some((value) => Array.isArray(value) && value.length === 0));

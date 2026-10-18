@@ -1,11 +1,14 @@
 import * as vscode from "vscode";
 import {
+  displayedPercent,
   formatResetCountdown,
   hasQuota,
   normalizeMetricDisplayMode,
+  normalizeQuotaDisplay,
   selectDashboardMetrics,
   type MetricDisplayMode,
   type ProviderState,
+  type QuotaDisplay,
   type UsageMetric,
 } from "./model";
 import type { UsageRefreshService } from "./refresh-service";
@@ -18,6 +21,7 @@ export interface DashboardViewOptions {
   readonly saveExpandedProviders?: (providerIds: readonly string[]) => void | PromiseLike<void>;
   readonly metricDisplayMode?: () => unknown;
   readonly setMetricDisplayMode?: (mode: MetricDisplayMode) => void | PromiseLike<void>;
+  readonly quotaDisplay?: () => unknown;
 }
 
 export function sanitizeExpandedProviderIds(
@@ -66,6 +70,7 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
   private readonly removeUpdateListener: () => void;
   private readonly expandedProviders: Set<string>;
   private metricDisplayMode: MetricDisplayMode;
+  private quotaDisplay: QuotaDisplay;
 
   public constructor(
     private readonly refreshService: UsageRefreshService,
@@ -75,6 +80,7 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
   ) {
     this.expandedProviders = new Set(sanitizeExpandedProviderIds(options.loadExpandedProviders?.()));
     this.metricDisplayMode = normalizeMetricDisplayMode(options.metricDisplayMode?.());
+    this.quotaDisplay = normalizeQuotaDisplay(options.quotaDisplay?.());
     this.removeUpdateListener = refreshService.onDidUpdate((states) => this.postStates(states));
   }
 
@@ -99,6 +105,7 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
 
   public configurationChanged(): void {
     this.metricDisplayMode = normalizeMetricDisplayMode(this.options.metricDisplayMode?.());
+    this.quotaDisplay = normalizeQuotaDisplay(this.options.quotaDisplay?.());
     this.postStates(this.refreshService.getStates());
   }
 
@@ -114,6 +121,7 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
       warningPercent: this.warningPercent(),
       criticalPercent: this.criticalPercent(),
       metricDisplayMode: this.metricDisplayMode,
+      quotaDisplay: this.quotaDisplay,
       expandedProviders: [...this.expandedProviders],
     });
   }
@@ -232,6 +240,7 @@ function dashboardHtml(webview: vscode.Webview): string {
     .plan, .collapsed-summary { display: block; color: var(--vscode-descriptionForeground); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .collapsed-summary { margin-top: 3px; }
     .headline { display: inline-flex; min-height: 25px; align-items: center; gap: 6px; font-family: var(--vscode-editor-font-family); font-size: 18px; font-weight: 650; letter-spacing: -.04em; white-space: nowrap; }
+    .headline-unit { color: var(--vscode-descriptionForeground); font-size: 11px; font-weight: 600; letter-spacing: 0; }
     .spinner { display: inline-block; width: 13px; height: 13px; flex: 0 0 auto; border: 2px solid color-mix(in srgb, var(--vscode-progressBar-background) 26%, transparent); border-top-color: var(--vscode-progressBar-background); border-radius: 50%; animation: refresh-spin .8s linear infinite; }
     .stamp .spinner { width: 10px; height: 10px; border-width: 1.5px; }
     @keyframes refresh-spin { to { transform: rotate(360deg); } }
@@ -285,17 +294,20 @@ function dashboardHtml(webview: vscode.Webview): string {
     const dashboardNeedsAttention = ${dashboardNeedsAttention.toString()};
     const effectiveDashboardExpansion = ${effectiveDashboardExpansion.toString()};
     const collapsedDashboardMetric = ${collapsedDashboardMetric.toString()};
-    const renderMetric = (metric, warning, critical) => {
+    const displayed = ${displayedPercent.toString()};
+    const renderMetric = (metric, warning, critical, quota) => {
       if (!hasQuota(metric)) { const row = el('div', 'balance'); row.append(el('span', '', metric.name), el('strong', '', metric.remainingText || (metric.isUnlimited ? 'UNLIMITED' : metric.usageText || 'Not reported'))); return row; }
       const metricLevel = level(metric.usedPercent, warning, critical); const root = el('section', 'metric'); root.dataset.level = metricLevel;
-      const head = el('div', 'metric-head'); head.append(el('span', 'metric-name', metric.name), el('span', 'metric-value', metric.usedPercent + '% used'));
-      const rail = el('progress', 'rail'); rail.setAttribute('aria-label', metric.name + ' usage'); rail.max = 100; rail.value = metric.usedPercent;
-      const foot = el('div', 'metric-foot'); foot.append(el('span', '', metric.usageText || (100 - metric.usedPercent) + '% left'), el('span', '', countdown(metric.resetsAt))); root.append(head, rail, foot); return root;
+      const remaining = quota === 'remaining'; const used = displayed(metric.usedPercent, 'used'); const left = displayed(metric.usedPercent, 'remaining');
+      const head = el('div', 'metric-head'); head.append(el('span', 'metric-name', metric.name), el('span', 'metric-value', remaining ? left + '% left' : used + '% used'));
+      const rail = el('progress', 'rail'); rail.setAttribute('aria-label', metric.name + (remaining ? ' remaining' : ' usage')); rail.max = 100; rail.value = remaining ? left : used;
+      const foot = el('div', 'metric-foot'); foot.append(el('span', '', metric.usageText || (remaining ? used + '% used' : left + '% left')), el('span', '', countdown(metric.resetsAt))); root.append(head, rail, foot); return root;
     };
     const render = (payload) => {
       latestPayload = payload;
       providers.replaceChildren(); const warning = payload.warningPercent ?? 72; const critical = payload.criticalPercent ?? 90;
       const mode = ['metered', 'important'].includes(payload.metricDisplayMode) ? payload.metricDisplayMode : 'all'; metricMode.value = mode;
+      const quota = payload.quotaDisplay === 'remaining' ? 'remaining' : 'used';
       const remembered = new Set(Array.isArray(payload.expandedProviders) ? payload.expandedProviders : []);
       if (!payload.states.length) { const empty = el('div', 'empty'); empty.append(el('strong', '', 'No providers selected'), el('span', '', 'Choose providers in UsageAI settings.')); empty.append(button('Open settings', 'settings')); providers.append(empty); return; }
       let newest = 0;
@@ -308,13 +320,15 @@ function dashboardHtml(webview: vscode.Webview): string {
         head.addEventListener('click', () => vscode.postMessage({ type: 'setProviderExpanded', providerId: state.id, expanded: !expanded }));
         const chevron = el('span', 'chevron', '⌄'); chevron.setAttribute('aria-hidden', 'true'); const provider = el('div', 'provider');
         const planParts = state.snapshot ? [state.snapshot.plan, state.snapshot.accountName] : ['Not connected']; if (state.stale) planParts.push('Stale'); provider.append(el('span', 'provider-name', state.displayName), el('span', 'plan', planParts.filter(Boolean).join(' · ')));
-        if (!expanded) provider.append(el('span', 'collapsed-summary', highestMetric ? highestMetric.name + ' · ' + highestMetric.usedPercent + '% · ' + countdown(highestMetric.resetsAt) : 'No metered limit'));
+        if (!expanded) provider.append(el('span', 'collapsed-summary', highestMetric ? highestMetric.name + ' · ' + displayed(highest, quota) + (quota === 'remaining' ? '% left · ' : '% · ') + countdown(highestMetric.resetsAt) : 'No metered limit'));
         const headline = el('div', 'headline'); if (state.refreshing) { const spinner = el('span', 'spinner'); spinner.setAttribute('aria-hidden', 'true'); headline.append(spinner); }
-        if (state.snapshot) headline.append(el('span', '', highest + '%')); else if (!state.refreshing) headline.append(el('span', '', '—')); head.append(chevron, provider, headline); card.append(head);
+        // Remaining mode never shows a provider without a metered limit as "100% left".
+        if (state.snapshot && quota === 'remaining') { if (highestMetric) headline.append(el('span', '', displayed(highest, quota) + '%'), el('span', 'headline-unit', 'left')); else headline.append(el('span', '', '—')); }
+        else if (state.snapshot) headline.append(el('span', '', highest + '%')); else if (!state.refreshing) headline.append(el('span', '', '—')); head.append(chevron, provider, headline); card.append(head);
         const body = el('div', 'card-body'); body.id = contentId; body.hidden = !expanded;
         if (state.snapshot) {
           newest = Math.max(newest, new Date(state.snapshot.fetchedAt).getTime()); const metrics = el('div', 'metrics'); const visibleMetrics = selectedMetrics(state.snapshot.metrics, mode);
-          if (!visibleMetrics.length) metrics.append(el('div', 'filtered-empty', 'No metered limits reported')); else for (const metric of visibleMetrics) metrics.append(renderMetric(metric, warning, critical)); body.append(metrics);
+          if (!visibleMetrics.length) metrics.append(el('div', 'filtered-empty', 'No metered limits reported')); else for (const metric of visibleMetrics) metrics.append(renderMetric(metric, warning, critical, quota)); body.append(metrics);
           if (state.stale) { const details = []; const fetchedAt = localTime(state.snapshot.fetchedAt); const checkedAt = localTime(state.lastAttemptedAt); const retryAt = localTime(state.nextRefreshAt); if (fetchedAt) details.push('Last good ' + fetchedAt); if (checkedAt) details.push('Checked ' + checkedAt); if (retryAt) details.push('Retry at ' + retryAt); if (details.length) body.append(el('div', 'state-meta', details.join(' · '))); }
         }
         if (state.error) { const error = el('div', 'error'); error.append(el('div', '', state.error)); const actions = el('div', 'actions'); actions.append(button('Copy sign-in', 'copySignIn', state.id), button('Refresh', 'refresh', state.id)); error.append(actions); body.append(error); }
