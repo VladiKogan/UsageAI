@@ -2,11 +2,22 @@
 
 ## Unreleased
 
+### Added
+
+- Added a Quota Display setting that shows remaining quota instead of used quota. With
+  `usageai.quotaDisplay` set to `remaining`, dashboard meters fill by what is left, the card
+  headline, metric rows, and collapsed summaries read `72% left`, and the Status Bar reads
+  `Codex 72% | 59% left` with matching tooltip meters. Warning and critical colors, Hottest
+  provider selection, and Important Only filtering still follow the quota used, so a nearly
+  exhausted limit is flagged the same way in both modes. The default stays `used`, so nothing
+  changes until the setting is switched.
+
 ### Changed
 
-- Expanded the suite to 49 checks with a Claude CLI fixture that, like the real CLI, refreshes an
-  expired login only through `mcp list` and never through `auth status`. Aggregate coverage is now
-  80.27% line, 79.85% branch, and 80.93% function coverage.
+- Expanded the suite to 51 checks with a Claude CLI fixture that, like the real CLI, refreshes an
+  expired login only through `mcp list` and never through `auth status`, and with used and remaining
+  Quota Display rendering in the Status Bar and dashboard. Aggregate coverage is now 80.46% line,
+  80.17% branch, and 81.18% function coverage.
 
 ### Fixed
 

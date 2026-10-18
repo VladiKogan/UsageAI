@@ -4,10 +4,12 @@ import { resolve } from "node:path";
 import test from "node:test";
 import { UsageProviderError } from "../src/errors";
 import {
+  displayedPercent,
   highestUsedPercent,
   formatResetCountdown,
   normalizeStatusBarProviders,
   normalizeMetricDisplayMode,
+  normalizeQuotaDisplay,
   primaryMetric,
   segmentedUsageBar,
   statusBarMetrics,
@@ -117,6 +119,22 @@ test("status bar prioritizes session and weekly windows", () => {
   assert.deepEqual(statusBarMetrics(windows).map((metric) => metric.name), ["5-hour", "Weekly"]);
   assert.equal(segmentedUsageBar(24), "■ ■ □ □ □ □ □ □ □ □");
   assert.equal(segmentedUsageBar(39), "■ ■ ■ ■ □ □ □ □ □ □");
+});
+
+test("quota display flips the shown percentage and keeps used as the fallback", () => {
+  assert.equal(normalizeQuotaDisplay("remaining"), "remaining");
+  assert.equal(normalizeQuotaDisplay("used"), "used");
+  assert.equal(normalizeQuotaDisplay("REMAINING"), "used");
+  assert.equal(normalizeQuotaDisplay(undefined), "used");
+  assert.equal(displayedPercent(28, "used"), 28);
+  assert.equal(displayedPercent(28, "remaining"), 72);
+  assert.equal(displayedPercent(0, "remaining"), 100);
+  assert.equal(displayedPercent(100, "remaining"), 0);
+  assert.equal(displayedPercent(140, "remaining"), 0);
+  assert.equal(displayedPercent(-5, "used"), 0);
+  assert.equal(displayedPercent(27.6, "remaining"), 72);
+  // The bar and the number come from the same displayed value, so they never disagree.
+  assert.equal(segmentedUsageBar(displayedPercent(24, "remaining")), "■ ■ ■ ■ ■ ■ ■ ■ □ □");
 });
 
 test("status bar provider selection supports legacy and multiple values", () => {

@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { dashboardExpandedProvidersKey, UsageDashboardViewProvider } from "./dashboard-view";
 import {
+  normalizeQuotaDisplay,
   statusBarProvidersFromCheckboxes,
   type ProviderState,
   type StatusBarProviderId,
@@ -46,6 +47,7 @@ export function activate(context: vscode.ExtensionContext): void {
         [...providerIds],
       ),
       metricDisplayMode: () => configuration().get<unknown>("metricDisplayMode", "all"),
+      quotaDisplay: () => configuration().get<unknown>("quotaDisplay", "used"),
       setMetricDisplayMode: (mode) => configuration().update(
         "metricDisplayMode",
         mode,
@@ -63,7 +65,11 @@ export function activate(context: vscode.ExtensionContext): void {
   );
 
   const updateUi = (states: readonly ProviderState[]) => {
-    statusBars.update(states, getStatusBarProviderSelection(configuration(), enabledProviderIds()));
+    statusBars.update(
+      states,
+      getStatusBarProviderSelection(configuration(), enabledProviderIds()),
+      normalizeQuotaDisplay(configuration().get<unknown>("quotaDisplay", "used")),
+    );
     const snapshots = Object.fromEntries(
       states.filter((state) => state.snapshot).map((state) => [state.id, state.snapshot]),
     ) as Record<string, UsageSnapshot>;

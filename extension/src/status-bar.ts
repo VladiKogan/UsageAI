@@ -1,10 +1,12 @@
 import * as vscode from "vscode";
 import {
+  displayedPercent,
   highestUsedPercent,
   normalizeStatusBarProviders,
   segmentedUsageBar,
   statusBarMetrics,
   type ProviderState,
+  type QuotaDisplay,
   type StatusBarProviderId,
   type UsageMetric,
   type UsageSnapshot,
@@ -28,7 +30,7 @@ export class StatusBarController implements vscode.Disposable {
   private readonly items = new Map<StatusBarProviderId, vscode.StatusBarItem>();
   private selectionSignature = "";
 
-  update(states: readonly ProviderState[], rawSelection: unknown): void {
+  update(states: readonly ProviderState[], rawSelection: unknown, quotaDisplay: QuotaDisplay = "used"): void {
     const selectedProviders = normalizeStatusBarProviders(rawSelection);
     const nextSignature = selectedProviders.join(",");
     if (nextSignature !== this.selectionSignature) {
@@ -38,7 +40,7 @@ export class StatusBarController implements vscode.Disposable {
 
     selectedProviders.forEach((providerId, index) => {
       const item = this.getOrCreateItem(providerId, index);
-      this.updateItem(item, providerId, states);
+      this.updateItem(item, providerId, states, quotaDisplay);
       item.show();
     });
   }
@@ -64,6 +66,7 @@ export class StatusBarController implements vscode.Disposable {
     item: vscode.StatusBarItem,
     providerId: StatusBarProviderId,
     states: readonly ProviderState[],
+    quotaDisplay: QuotaDisplay,
   ): void {
     if (providerId === "hottest") {
       const withSnapshots = states.filter(hasSnapshot);
@@ -75,6 +78,7 @@ export class StatusBarController implements vscode.Disposable {
           item,
           hottest,
           shortProviderName(hottest),
+          quotaDisplay,
           states.some((state) => state.refreshing),
         );
         return;
@@ -86,7 +90,12 @@ export class StatusBarController implements vscode.Disposable {
 
     const state = states.find((candidate) => candidate.id === providerId);
     if (state?.snapshot) {
-      renderSnapshot(item, state as ProviderState & { snapshot: UsageSnapshot }, providerLabels[providerId]);
+      renderSnapshot(
+        item,
+        state as ProviderState & { snapshot: UsageSnapshot },
+        providerLabels[providerId],
+        quotaDisplay,
+      );
       return;
     }
 
@@ -109,20 +118,36 @@ function renderSnapshot(
   item: vscode.StatusBarItem,
   state: ProviderState & { snapshot: UsageSnapshot },
   label: string,
+  quotaDisplay: QuotaDisplay,
   refreshing = state.refreshing,
 ): void {
   const metrics = statusBarMetrics(state.snapshot);
-  const readings = metrics.length > 0
-    ? metrics.map((metric) => `${metric.usedPercent ?? 0}%`).join(" | ")
-    : `${highestUsedPercent(state.snapshot)}%`;
   const icon = refreshing ? "$(sync~spin)" : providerIcon(state.id);
-  item.text = `${icon} ${label} ${readings}`;
-  item.tooltip = snapshotTooltip(state, metrics, refreshing);
+  item.text = `${icon} ${label} ${statusBarReadings(state.snapshot, metrics, quotaDisplay)}`;
+  item.tooltip = snapshotTooltip(state, metrics, quotaDisplay, refreshing);
+}
+
+function statusBarReadings(
+  snapshot: UsageSnapshot,
+  metrics: readonly UsageMetric[],
+  quotaDisplay: QuotaDisplay,
+): string {
+  if (quotaDisplay === "used") {
+    return metrics.length > 0
+      ? metrics.map((metric) => `${metric.usedPercent ?? 0}%`).join(" | ")
+      : `${highestUsedPercent(snapshot)}%`;
+  }
+  // A bare remaining percentage reads as usage at a glance, so it carries one trailing unit, and a
+  // provider with no metered limit shows no reading rather than a full "100% left".
+  return metrics.length > 0
+    ? `${metrics.map((metric) => `${displayedPercent(metric.usedPercent ?? 0, quotaDisplay)}%`).join(" | ")} left`
+    : "—";
 }
 
 function snapshotTooltip(
   state: ProviderState & { snapshot: UsageSnapshot },
   metrics: readonly UsageMetric[],
+  quotaDisplay: QuotaDisplay,
   refreshing: boolean,
 ): vscode.MarkdownString {
   const tooltip = new vscode.MarkdownString(undefined, true);
@@ -137,7 +162,7 @@ function snapshotTooltip(
 
   if (metrics.length > 0) {
     tooltip.appendMarkdown("\n\n");
-    tooltip.appendCodeblock(formatMeterRows(metrics), "text");
+    tooltip.appendCodeblock(formatMeterRows(metrics, quotaDisplay), "text");
   }
 
   const fetchedAt = new Date(state.snapshot.fetchedAt);
@@ -168,11 +193,12 @@ function appendTimestamp(tooltip: vscode.MarkdownString, label: string, value: s
   tooltip.appendText(timestamp.toLocaleTimeString());
 }
 
-function formatMeterRows(metrics: readonly UsageMetric[]): string {
+function formatMeterRows(metrics: readonly UsageMetric[], quotaDisplay: QuotaDisplay): string {
   const labelWidth = Math.max(...metrics.map((metric) => metric.name.length));
+  const unit = quotaDisplay === "remaining" ? " left" : "";
   return metrics.map((metric) => {
-    const percent = metric.usedPercent ?? 0;
-    return `${metric.name.padEnd(labelWidth)}  ${segmentedUsageBar(percent)}  ${percent}%`;
+    const percent = displayedPercent(metric.usedPercent ?? 0, quotaDisplay);
+    return `${metric.name.padEnd(labelWidth)}  ${segmentedUsageBar(percent)}  ${percent}%${unit}`;
   }).join("\n");
 }
 
