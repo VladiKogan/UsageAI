@@ -1,6 +1,7 @@
 import { access } from "node:fs/promises";
 import * as path from "node:path";
 import * as readline from "node:readline";
+import { codexBundledPath, findBundledExecutable } from "../bundled-cli";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
 import { findExecutable, spawnSecure } from "../security";
@@ -9,8 +10,9 @@ import { getNumber, getObject, getString, isObject } from "./json";
 const requestTimeoutMs = 20_000;
 const maxProtocolLineCharacters = 131_072;
 const maxProtocolMessages = 512;
+const codexExtensionId = "openai.chatgpt";
 
-interface CodexLaunch {
+export interface CodexLaunch {
   readonly executable: string;
   readonly args: readonly string[];
 }
@@ -254,7 +256,7 @@ function formatPlan(plan: string): string {
   return known[normalized] ?? normalized.replace(/\b\w/g, (value) => value.toUpperCase());
 }
 
-async function findCodexLaunch(): Promise<CodexLaunch> {
+export async function findCodexLaunch(): Promise<CodexLaunch> {
   const configured = process.env.CODEX_PATH?.trim();
   let command: string | undefined;
   if (configured) {
@@ -283,9 +285,13 @@ async function findCodexLaunch(): Promise<CodexLaunch> {
         // Report the normal not-found error below.
       }
     }
+    // Last, so a standalone install keeps priority: the binary the Codex extension ships for itself.
+    command ??= await findBundledExecutable(codexExtensionId, codexBundledPath());
   }
   if (!command) {
-    throw new UsageProviderError("Codex CLI was not found. Install Codex or set CODEX_PATH, then refresh.");
+    throw new UsageProviderError(
+      "Codex CLI was not found. Install Codex or the Codex extension, or set CODEX_PATH, then refresh.",
+    );
   }
   if (!command.toLowerCase().endsWith(".cmd")) {
     return { executable: command, args: [] };

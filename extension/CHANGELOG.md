@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Added
+
+- Added support for the Codex and Claude Code CLIs bundled inside their official VS Code
+  extensions. With only OpenAI's Codex extension or Anthropic's Claude Code extension installed and
+  signed in, UsageAI now finds the CLI that extension ships, so no separate CLI install is needed.
+  `CODEX_PATH` / `CLAUDE_PATH`, a CLI on `PATH`, and standalone install folders still come first.
+  Only one fixed path inside the extension folder VS Code reports is checked, never a search, and
+  only for an extension running in the same extension host as UsageAI.
 ### Changed
 
 - Renamed the sidebar view to UsageAI and its dashboard heading to Usage limits. The view title

@@ -44,6 +44,11 @@ You only need one of these sign-in methods:
 | GitHub Copilot | A supported local Copilot credential, `COPILOT_GITHUB_TOKEN`, or the optional GitHub CLI fallback |
 | Google Gemini | A sign-in through Google's Antigravity VS Code extension or `agy` (recommended), a Gemini CLI sign-in, or a running Antigravity language server |
 
+For Codex and Claude Code, UsageAI runs the provider's CLI. It uses `CODEX_PATH` or `CLAUDE_PATH`
+when set, then a CLI on `PATH` or in its standard install folder, and finally the CLI that ships
+inside OpenAI's Codex extension or Anthropic's Claude Code extension. So having just the provider's
+VS Code extension installed and signed in is enough.
+
 UsageAI requires VS Code 1.90 or newer, or a compatible Antigravity IDE build. It is a desktop extension because it needs access to local provider files and commands; it does not run in vscode.dev or github.dev.
 
 ## Choose what appears

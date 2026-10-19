@@ -1,5 +1,6 @@
 import { access } from "node:fs/promises";
 import * as path from "node:path";
+import { claudeBundledPath, findBundledExecutable } from "../bundled-cli";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
 import {
@@ -19,6 +20,7 @@ const oauthBeta = "oauth-2025-04-20";
 const authProbeTimeoutMs = 12_000;
 const credentialObservationMs = 5_000;
 const refreshNudgeTimeoutMs = 20_000;
+const claudeExtensionId = "anthropic.claude-code";
 
 export interface ClaudeCredentials {
   readonly accessToken: string;
@@ -30,7 +32,7 @@ export interface ClaudeCredentials {
 
 export type ClaudeAuthProbe = (signal?: AbortSignal) => Promise<boolean>;
 
-interface ClaudeLaunch {
+export interface ClaudeLaunch {
   readonly executable: string;
   readonly argsPrefix: readonly string[];
 }
@@ -332,7 +334,7 @@ export async function runClaudeAuthStatus(signal?: AbortSignal): Promise<boolean
   }
 }
 
-async function findClaudeLaunch(): Promise<ClaudeLaunch | undefined> {
+export async function findClaudeLaunch(): Promise<ClaudeLaunch | undefined> {
   const configured = process.env.CLAUDE_PATH?.trim().replace(/^"|"$/g, "");
   const candidates: string[] = [];
   if (configured && path.isAbsolute(configured)) {
@@ -358,6 +360,11 @@ async function findClaudeLaunch(): Promise<ClaudeLaunch | undefined> {
       "/opt/homebrew/bin/claude",
       "/usr/local/bin/claude",
     );
+  }
+  // Last, so a standalone install keeps priority: the binary the Claude Code extension ships for itself.
+  const bundled = await findBundledExecutable(claudeExtensionId, claudeBundledPath());
+  if (bundled) {
+    candidates.push(bundled);
   }
 
   for (const candidate of [...new Set(candidates)]) {

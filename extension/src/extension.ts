@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { sameHostExtensionPath, setExtensionPathResolver } from "./bundled-cli";
 import { dashboardExpandedProvidersKey, UsageDashboardViewProvider } from "./dashboard-view";
 import {
   normalizeQuotaDisplay,
@@ -18,6 +19,9 @@ const cacheKey = "usageai.cachedSnapshots.v1";
 type UsageProviderId = Exclude<StatusBarProviderId, "hottest">;
 
 export function activate(context: vscode.ExtensionContext): void {
+  // Read lazily: provider extensions can be installed or updated while UsageAI keeps running.
+  const ownKind = (context.extension as vscode.Extension<unknown> | undefined)?.extensionKind;
+  setExtensionPathResolver((extensionId) => sameHostExtensionPath(vscode.extensions.getExtension(extensionId), ownKind));
   const configuration = () => vscode.workspace.getConfiguration("usageai");
   const clients = [
     new CodexUsageClient(),
