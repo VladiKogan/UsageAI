@@ -49,7 +49,24 @@ when set, then a CLI on `PATH` or in its standard install folder, and finally th
 inside OpenAI's Codex extension or Anthropic's Claude Code extension. So having just the provider's
 VS Code extension installed and signed in is enough.
 
-UsageAI requires VS Code 1.90 or newer, or a compatible Antigravity IDE build. It is a desktop extension because it needs access to local provider files and commands; it does not run in vscode.dev or github.dev.
+UsageAI requires VS Code 1.90 or newer, or a compatible Antigravity IDE build. It needs access to provider files and commands, so it does not run in vscode.dev or github.dev.
+
+## Remote-SSH and other remote windows
+
+In a Remote-SSH, WSL, or dev container window, UsageAI runs on your local machine by default and
+shows the providers you are signed in to there. If your providers are installed and signed in on
+the remote host instead, have UsageAI run there by adding this to your local user settings:
+
+```json
+"remote.extensionKind": {
+  "vladikogan.usageai": ["workspace"]
+}
+```
+
+Then reload the window. UsageAI reads the remote host's sign-ins and CLIs, including the CLIs
+bundled with the Codex and Claude Code extensions installed on that host. Running remotely is
+community-tested rather than covered by the maintainer's own testing, and GitHub Copilot may show
+as not signed in there because its sign-in usually stays with your local VS Code.
 
 ## Choose what appears
 

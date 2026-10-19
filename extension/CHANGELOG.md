@@ -10,6 +10,11 @@
   `CODEX_PATH` / `CLAUDE_PATH`, a CLI on `PATH`, and standalone install folders still come first.
   Only one fixed path inside the extension folder VS Code reports is checked, never a search, and
   only for an extension running in the same extension host as UsageAI.
+- Added opt-in support for running on a remote host. The extension now declares
+  `["ui", "workspace"]`, so it still runs locally by default in Remote-SSH, WSL, and dev container
+  windows, and `remote.extensionKind` can move it to the remote host where providers are signed in
+  there. The README explains the setting; remote use is community-tested.
+
 ### Changed
 
 - Renamed the sidebar view to UsageAI and its dashboard heading to Usage limits. The view title

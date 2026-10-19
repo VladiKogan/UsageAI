@@ -38,7 +38,8 @@
   "homepage": "https://github.com/VladiKogan/UsageAI#readme",
   "main": "./dist/src/extension.js",
   "extensionKind": [
-    "ui"
+    "ui",
+    "workspace"
   ],
   "activationEvents": [
     "onStartupFinished",
