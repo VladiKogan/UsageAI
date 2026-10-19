@@ -174,12 +174,14 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         var expired = geminiCliMessage == SignInAgainMessage;
         if (expired || geminiCliMessage == NotSignedInMessage)
         {
-            var headline = expired ? "Google Gemini sign-in has expired." : "Google Gemini is not signed in.";
+            // Only the Gemini CLI is known to be signed out: agy may be signed in but slow or backing
+            // off, and the Antigravity IDE may be installed without the standalone CLI. So the
+            // headline blames no sign-in and asks for a check rather than an install.
             var action = agyInstalled
-                ? "Run `agy` to sign in, then refresh."
-                : "Install Antigravity, sign in with `agy`, then refresh.";
+                ? "Check that `agy` is signed in, then refresh."
+                : "Sign in to Antigravity or install `agy`, then refresh.";
             var cli = expired ? "the Gemini CLI sign-in has expired" : "the Gemini CLI is not signed in";
-            return $"{headline} {action} {tried}, and {cli}.";
+            return $"Google Gemini usage is unavailable. {action} {tried}, and {cli}.";
         }
 
         var cliMessage = geminiCliMessage.EndsWith('.') || geminiCliMessage.EndsWith('!') || geminiCliMessage.EndsWith('?')

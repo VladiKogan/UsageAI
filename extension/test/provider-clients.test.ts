@@ -454,14 +454,15 @@ test("Gemini retries agy when a cached cold-start failure and CLI fallback are b
 });
 
 test("Gemini names every failed path once the CLI fallback fails too", async () => {
-  // The actionable sentence comes first, because the desktop card shows only that much.
+  // The actionable sentence comes first, because the desktop card shows only that much. It blames
+  // no sign-in: agy may be signed in but slow, and the IDE may be installed without agy.
   assert.equal(
     combinedGeminiError(true, "Google Gemini is not signed in. Run `agy` to sign in, then refresh."),
-    "Google Gemini is not signed in. Run `agy` to sign in, then refresh. The Antigravity IDE and `agy` returned no usage, and the Gemini CLI is not signed in.",
+    "Google Gemini usage is unavailable. Check that `agy` is signed in, then refresh. The Antigravity IDE and `agy` returned no usage, and the Gemini CLI is not signed in.",
   );
   assert.equal(
     combinedGeminiError(false, "Google Gemini sign-in has expired. Run `agy` to sign in again, then refresh."),
-    "Google Gemini sign-in has expired. Install Antigravity, sign in with `agy`, then refresh. The Antigravity IDE returned no usage and `agy` is not installed, and the Gemini CLI sign-in has expired.",
+    "Google Gemini usage is unavailable. Sign in to Antigravity or install `agy`, then refresh. The Antigravity IDE returned no usage and `agy` is not installed, and the Gemini CLI sign-in has expired.",
   );
   // A failure that is not about sign-in keeps its own message and gets no sign-in hint.
   assert.equal(

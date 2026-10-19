@@ -7,13 +7,12 @@ import test from "node:test";
 import {
   claudeBundledPaths,
   codexBundledPaths,
-  executableAccessMode,
   findBundledExecutable,
-  otherHostExtension,
-  sameHostExtensionPath,
+  localExtensionPath,
   type ExtensionPathResolver,
 } from "../src/bundled-cli";
 import { findClaudeLaunch } from "../src/providers/claude";
+import { executableAccessMode } from "../src/security";
 import { findCodexLaunch } from "../src/providers/codex";
 
 function restoreEnvironment(name: string, value: string | undefined): void {
@@ -48,21 +47,13 @@ test("bundled CLI paths follow each official extension's own lookup", () => {
   assert.equal(executableAccessMode("linux"), fsConstants.X_OK);
 });
 
-test("bundled CLI lookup trusts only a local extension in this extension host", () => {
+test("bundled CLI lookup only launches from a local, absolute extension folder", () => {
   const root = path.resolve(os.tmpdir(), "provider-extension");
-  const local = { extensionPath: root, extensionKind: 2, extensionUri: { scheme: "file" } };
-  assert.equal(sameHostExtensionPath(local, 2), root);
-  assert.equal(sameHostExtensionPath(local, undefined), undefined);
-  assert.equal(sameHostExtensionPath(undefined, 2), undefined);
-  assert.equal(sameHostExtensionPath(local, 1), undefined);
-  assert.equal(sameHostExtensionPath({ ...local, extensionUri: { scheme: "vscode-remote" } }, 2), undefined);
-  assert.equal(sameHostExtensionPath({ ...local, extensionPath: "relative/folder" }, 2), undefined);
-
-  assert.equal(otherHostExtension(local, 2), false);
-  assert.equal(otherHostExtension(local, 1), true);
-  assert.equal(otherHostExtension({ ...local, extensionUri: { scheme: "vscode-remote" } }, 2), true);
-  assert.equal(otherHostExtension(undefined, 2), false);
-  assert.equal(otherHostExtension(local, undefined), false);
+  const local = { extensionPath: root, extensionUri: { scheme: "file" } };
+  assert.equal(localExtensionPath(local), root);
+  assert.equal(localExtensionPath(undefined), undefined);
+  assert.equal(localExtensionPath({ ...local, extensionUri: { scheme: "vscode-remote" } }), undefined);
+  assert.equal(localExtensionPath({ ...local, extensionPath: "relative/folder" }), undefined);
 });
 
 test("bundled CLI lookup tries its fixed paths in order and only returns existing files", async () => {
@@ -109,9 +100,9 @@ test("Codex and Claude use the extension-bundled CLI only after standalone insta
 
     await assert.rejects(() => findCodexLaunch(resolve), /Install Codex or the Codex extension/);
     assert.equal(await findClaudeLaunch(resolve), undefined);
-    // Installed, but on the other side of a remote window: point at running UsageAI there instead.
-    const elsewhere: ExtensionPathResolver = Object.assign(() => undefined, { onOtherHost: (id: string) => id === "openai.chatgpt" });
-    await assert.rejects(() => findCodexLaunch(elsewhere), /runs on the other host.*remote.extensionKind/);
+    // Running locally in a remote window, UsageAI cannot see the remote host: point at running there.
+    const remoteWindow: ExtensionPathResolver = Object.assign(() => undefined, { runsLocallyInRemoteWindow: true });
+    await assert.rejects(() => findCodexLaunch(remoteWindow), /not found on this computer.*remote.extensionKind/);
 
     await touch(bundledCodex);
     await touch(bundledClaude);

@@ -183,6 +183,14 @@ export function minimalEnvironment(...additionalNames: readonly string[]): NodeJ
   return result;
 }
 
+/**
+ * Windows has no execute bit, so existence is the check there; elsewhere a file without its execute
+ * bit would only fail later, at spawn, with a less useful error than "not found".
+ */
+export function executableAccessMode(platform: NodeJS.Platform = process.platform): number {
+  return platform === "win32" ? fsConstants.F_OK : fsConstants.X_OK;
+}
+
 export async function findExecutable(names: readonly string[]): Promise<string | undefined> {
   const pathValue = process.env.PATH ?? "";
   for (const directory of pathValue.split(path.delimiter)) {
@@ -193,7 +201,7 @@ export async function findExecutable(names: readonly string[]): Promise<string |
     for (const name of names) {
       const candidate = path.resolve(cleanDirectory, name);
       try {
-        await access(candidate, fsConstants.F_OK);
+        await access(candidate, executableAccessMode());
         return candidate;
       } catch {
         // Try the next candidate.

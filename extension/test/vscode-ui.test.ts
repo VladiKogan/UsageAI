@@ -101,6 +101,7 @@ class FakeDomElement {
 }
 
 const installedExtensions = new Map<string, unknown>();
+let remoteName: string | undefined;
 
 const vscodeStub = {
   StatusBarAlignment: { Left: 1 },
@@ -117,7 +118,9 @@ const vscodeStub = {
       return { dispose() { registeredCommands.delete(command); } };
     },
   },
+  ExtensionKind: { UI: 1, Workspace: 2 },
   env: {
+    get remoteName() { return remoteName; },
     async openExternal(uri: { toString(): string }) { openedUris.push(uri.toString()); },
     clipboard: { async writeText(value: string) { clipboardWrites.push(value); } },
   },
@@ -663,24 +666,22 @@ test("a metric-mode change that cannot be saved reverts the dashboard's cached m
   assert.equal(posted.at(-1)?.metricDisplayMode, "all");
 });
 
-test("the bundled-CLI resolver lends only extensions in UsageAI's own extension host", () => {
+test("the bundled-CLI resolver lends local extension folders and knows a remote window", () => {
   const root = process.cwd();
-  installedExtensions.set("openai.chatgpt", { extensionPath: root, extensionKind: 1, extensionUri: { scheme: "file" } });
+  installedExtensions.set("openai.chatgpt", { extensionPath: root, extensionUri: { scheme: "file" } });
   try {
     const local = extensionModule.bundledCliResolver({ extension: { extensionKind: 1 } } as never);
     assert.equal(local("openai.chatgpt"), root);
     assert.equal(local("anthropic.claude-code"), undefined);
-    assert.equal(local.onOtherHost?.("openai.chatgpt"), false);
-    assert.equal(local.onOtherHost?.("anthropic.claude-code"), false);
+    assert.equal(local.runsLocallyInRemoteWindow, false);
 
-    // UsageAI moved to the remote host while the provider extension stayed local, or the reverse.
-    const otherHost = extensionModule.bundledCliResolver({ extension: { extensionKind: 2 } } as never);
-    assert.equal(otherHost("openai.chatgpt"), undefined);
-    assert.equal(otherHost.onOtherHost?.("openai.chatgpt"), true);
-
-    // Without its own kind UsageAI cannot tell which side an extension runs on, so it lends nothing.
-    assert.equal(extensionModule.bundledCliResolver({} as never)("openai.chatgpt"), undefined);
+    // Connected to a remote host: running locally, UsageAI cannot see what is installed there.
+    remoteName = "ssh-remote";
+    assert.equal(extensionModule.bundledCliResolver({ extension: { extensionKind: 1 } } as never).runsLocallyInRemoteWindow, true);
+    // Already running on the remote host, it sees that side's extensions itself.
+    assert.equal(extensionModule.bundledCliResolver({ extension: { extensionKind: 2 } } as never).runsLocallyInRemoteWindow, false);
   } finally {
+    remoteName = undefined;
     installedExtensions.clear();
   }
 });

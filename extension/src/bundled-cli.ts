@@ -1,12 +1,16 @@
-import { constants as fsConstants } from "node:fs";
 import { access } from "node:fs/promises";
 import * as path from "node:path";
+import { executableAccessMode } from "./security";
 
 /** Returns the install folder of another extension running in this extension host, or nothing. */
 export interface ExtensionPathResolver {
   (extensionId: string): string | undefined;
-  /** Whether the extension is installed but runs in the other host of a remote window. */
-  readonly onOtherHost?: (extensionId: string) => boolean;
+  /**
+   * UsageAI runs on this computer while the window is connected to a remote host. VS Code's stable
+   * API only reports extensions in UsageAI's own host, so a provider extension installed on the
+   * remote side cannot be seen; this is what lets an error point there anyway.
+   */
+  readonly runsLocallyInRemoteWindow?: boolean;
 }
 
 /** The default outside VS Code, and in tests that don't exercise bundled CLIs: no extensions. */
@@ -15,39 +19,19 @@ export const noExtensions: ExtensionPathResolver = () => undefined;
 /** The parts of a `vscode.Extension` this module reads, so tests need no VS Code host. */
 export interface ExtensionLocation {
   readonly extensionPath: string;
-  readonly extensionKind: number;
   readonly extensionUri: { readonly scheme: string };
 }
 
 /**
- * `getExtension` also reports extensions running in the other host of a remote window, whose path
- * names a folder on the other machine. Only an extension in this host, on the local file system, can
- * lend its binary.
+ * The stable `getExtension` only reports extensions in UsageAI's own extension host, so the folder
+ * is on this machine already; a file-scheme absolute path is what remains to check before launching
+ * anything from it.
  */
-export function sameHostExtensionPath(
-  extension: ExtensionLocation | undefined,
-  ownKind: number | undefined,
-): string | undefined {
+export function localExtensionPath(extension: ExtensionLocation | undefined): string | undefined {
   if (!extension || extension.extensionUri.scheme !== "file") {
     return undefined;
   }
-  if (ownKind === undefined || extension.extensionKind !== ownKind) {
-    return undefined;
-  }
   return path.isAbsolute(extension.extensionPath) ? extension.extensionPath : undefined;
-}
-
-/** True for an installed extension that `sameHostExtensionPath` turns down for running elsewhere. */
-export function otherHostExtension(extension: ExtensionLocation | undefined, ownKind: number | undefined): boolean {
-  return extension !== undefined && ownKind !== undefined && sameHostExtensionPath(extension, ownKind) === undefined;
-}
-
-/**
- * Windows has no execute bit, so existence is the check there; elsewhere a binary unpacked without
- * its execute bit would only fail later, at spawn, with a less useful error than "not found".
- */
-export function executableAccessMode(platform: NodeJS.Platform = process.platform): number {
-  return platform === "win32" ? fsConstants.F_OK : fsConstants.X_OK;
 }
 
 /**

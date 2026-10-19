@@ -64,7 +64,7 @@ export class ClaudeUsageClient implements UsageClient {
     assertClaudeCredentialsUsable(credentials);
     if (credentials.scopes.length > 0 && !credentials.scopes.includes("user:profile")) {
       throw new UsageProviderError(
-        "Claude Code's OAuth token is missing the user:profile scope. Run `claude` to sign in again.",
+        "Claude Code's OAuth token is missing the user:profile scope. Run `claude` or use the Claude Code extension to sign in again.",
       );
     }
 
@@ -87,7 +87,7 @@ export class ClaudeUsageClient implements UsageClient {
       assertClaudeCredentialsUsable(recovered);
       if (recovered.scopes.length > 0 && !recovered.scopes.includes("user:profile")) {
         throw new UsageProviderError(
-          "Claude Code's OAuth token is missing the user:profile scope. Run `claude` to sign in again.",
+          "Claude Code's OAuth token is missing the user:profile scope. Run `claude` or use the Claude Code extension to sign in again.",
         );
       }
       return requestClaudeUsage(recovered, signal);
@@ -197,7 +197,7 @@ async function requestClaudeUsage(
     }
     if (response.status === 403) {
       throw new RecoverableClaudeUsageError(
-        "Claude Code's login cannot read account usage. Run `claude` to sign in again.",
+        "Claude Code's login cannot read account usage. Run `claude` or use the Claude Code extension to sign in again.",
       );
     }
     if (response.status === 429) {
@@ -255,21 +255,18 @@ export async function runClaudeAuthRecovery(
   signal?: AbortSignal,
   resolveExtensionPath: ExtensionPathResolver = noExtensions,
 ): Promise<boolean> {
-  if (!await runClaudeAuthStatus(signal, resolveExtensionPath)) {
+  // Resolved once: both commands below run the same CLI.
+  const launch = await findClaudeLaunch(resolveExtensionPath);
+  if (!launch || !await claudeAuthStatus(launch, signal)) {
     return false;
   }
   if (!await hasFreshStoredClaudeCredential()) {
-    await nudgeClaudeCredentialRefresh(signal, resolveExtensionPath);
+    await nudgeClaudeCredentialRefresh(launch, signal);
   }
   return true;
 }
 
-async function nudgeClaudeCredentialRefresh(signal: AbortSignal | undefined, resolveExtensionPath: ExtensionPathResolver): Promise<void> {
-  const launch = await findClaudeLaunch(resolveExtensionPath);
-  if (!launch) {
-    return;
-  }
-
+async function nudgeClaudeCredentialRefresh(launch: ClaudeLaunch, signal: AbortSignal | undefined): Promise<void> {
   const child = spawnClaudeCli(launch, ["mcp", "list"]);
   child.stdin.end();
   // Output is discarded; the child keeps running its MCP health checks after the refresh lands
@@ -309,10 +306,10 @@ export async function runClaudeAuthStatus(
   resolveExtensionPath: ExtensionPathResolver = noExtensions,
 ): Promise<boolean> {
   const launch = await findClaudeLaunch(resolveExtensionPath);
-  if (!launch) {
-    return false;
-  }
+  return launch ? claudeAuthStatus(launch, signal) : false;
+}
 
+async function claudeAuthStatus(launch: ClaudeLaunch, signal: AbortSignal | undefined): Promise<boolean> {
   const child = spawnClaudeCli(launch, ["auth", "status", "--json"]);
   child.stdin.end();
   const abort = () => child.kill();

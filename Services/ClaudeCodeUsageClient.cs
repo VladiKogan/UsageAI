@@ -96,7 +96,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             !credentials.Scopes.Contains("user:profile", StringComparer.Ordinal))
         {
             throw new ClaudeCodeUsageException(
-                "Claude Code's OAuth token is missing the user:profile scope. Run `claude` to sign in again.");
+                "Claude Code's OAuth token is missing the user:profile scope. Run `claude` or use the Claude Code extension to sign in again.");
         }
     }
 
@@ -129,7 +129,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             if (response.StatusCode == HttpStatusCode.Forbidden)
             {
                 throw new ClaudeCodeUsageException(
-                    "Claude Code's login cannot read account usage. Run `claude` to sign in again.")
+                    "Claude Code's login cannot read account usage. Run `claude` or use the Claude Code extension to sign in again.")
                 {
                     CanRetryAfterAuthProbe = true,
                 };
@@ -266,7 +266,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         if (fileError is not null)
         {
             throw new ClaudeCodeUsageException(
-                "Claude Code's saved login could not be read. Run `claude` to sign in again.",
+                "Claude Code's saved login could not be read. Run `claude` or use the Claude Code extension to sign in again.",
                 fileError);
         }
 
@@ -534,94 +534,8 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 
         // Last, so a standalone install keeps priority: the binary the Claude Code editor extension
         // ships for itself, as the editor extension's own recovery uses.
-        var bundled = FindEditorBundledClaude(userProfile, RuntimeInformation.OSArchitecture);
+        var bundled = EditorExtensionBinaries.FindClaude(userProfile, RuntimeInformation.OSArchitecture);
         return bundled is null ? null : new ClaudeLaunch(bundled, null);
-    }
-
-    private static readonly string[] EditorDataFolders = [".vscode", ".vscode-insiders", ".antigravity"];
-
-    /// <summary>
-    /// The Claude CLI bundled in an installed Claude Code editor extension. Each editor's
-    /// <c>extensions.json</c> names the folder of the version it actually loads, so stale folders of
-    /// older versions are never picked and no directory is searched; inside that folder only the
-    /// fixed paths the extension itself uses are tried.
-    /// </summary>
-    internal static string? FindEditorBundledClaude(string userProfile, Architecture architecture)
-    {
-        if (!Path.IsPathFullyQualified(userProfile))
-        {
-            return null;
-        }
-
-        var platformFolders = architecture == Architecture.Arm64
-            ? new[] { "win32-arm64", "win32-x64" }
-            : new[] { "win32-x64" };
-        foreach (var editor in EditorDataFolders)
-        {
-            var extensionsDirectory = Path.Combine(userProfile, editor, "extensions");
-            var folder = FindInstalledExtensionFolder(extensionsDirectory, "anthropic.claude-code");
-            if (folder is null)
-            {
-                continue;
-            }
-
-            var candidates = platformFolders
-                .Select(platform => Path.Combine(folder, "resources", "native-binaries", platform, "claude.exe"))
-                .Append(Path.Combine(folder, "resources", "native-binary", "claude.exe"));
-            if (candidates.FirstOrDefault(File.Exists) is { } executable)
-            {
-                return executable;
-            }
-        }
-
-        return null;
-    }
-
-    private static string? FindInstalledExtensionFolder(string extensionsDirectory, string extensionId)
-    {
-        var manifest = Path.Combine(extensionsDirectory, "extensions.json");
-        if (!File.Exists(manifest))
-        {
-            return null;
-        }
-
-        try
-        {
-            using var document = JsonDocument.Parse(SecureLocalFile.ReadAllText(manifest, 4_194_304));
-            if (document.RootElement.ValueKind != JsonValueKind.Array)
-            {
-                return null;
-            }
-
-            foreach (var entry in document.RootElement.EnumerateArray())
-            {
-                if (entry.ValueKind != JsonValueKind.Object ||
-                    !entry.TryGetProperty("identifier", out var identifier) ||
-                    identifier.ValueKind != JsonValueKind.Object ||
-                    !identifier.TryGetProperty("id", out var id) ||
-                    !string.Equals(id.GetString(), extensionId, StringComparison.OrdinalIgnoreCase) ||
-                    !entry.TryGetProperty("relativeLocation", out var relative) ||
-                    relative.GetString() is not { Length: > 0 } folderName)
-                {
-                    continue;
-                }
-
-                // A bare folder name only: nothing in the manifest may point outside the extensions folder.
-                if (folderName is "." or ".." || Path.GetFileName(folderName) != folderName)
-                {
-                    return null;
-                }
-
-                var folder = Path.Combine(extensionsDirectory, folderName);
-                return Directory.Exists(folder) ? folder : null;
-            }
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidDataException or InvalidOperationException)
-        {
-            // An unreadable manifest only means this editor lends no binary.
-        }
-
-        return null;
     }
 
     private static ClaudeLaunch? CreateClaudeLaunch(string command)
@@ -689,7 +603,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         if (accessToken is null)
         {
             throw new ClaudeCodeUsageException(
-                "Claude Code's saved login has no OAuth access token. Run `claude` to sign in again.");
+                "Claude Code's saved login has no OAuth access token. Run `claude` or use the Claude Code extension to sign in again.");
         }
 
         var scopes = Array.Empty<string>();

@@ -292,10 +292,9 @@ export async function findCodexLaunch(resolveExtensionPath: ExtensionPathResolve
     command ??= await findBundledExecutable(resolveExtensionPath, codexExtensionId, codexBundledPaths());
   }
   if (!command) {
-    throw new UsageProviderError(resolveExtensionPath.onOtherHost?.(codexExtensionId)
-      // The extension the user installed runs on the other side of a remote window, so installing
-      // it again would not help; running UsageAI on that side would.
-      ? "Codex CLI was not found here. The Codex extension runs on the other host of this remote window; set `remote.extensionKind` to run UsageAI there too, then reload."
+    throw new UsageProviderError(resolveExtensionPath.runsLocallyInRemoteWindow
+      // Codex may well be installed on the remote host, where this copy of UsageAI cannot look.
+      ? "Codex CLI was not found on this computer. If Codex is installed on the remote host, set `remote.extensionKind` to run UsageAI there, then reload."
       : "Codex CLI was not found. Install Codex or the Codex extension, or set CODEX_PATH, then refresh.");
   }
   if (!command.toLowerCase().endsWith(".cmd")) {

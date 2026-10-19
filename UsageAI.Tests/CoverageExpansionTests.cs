@@ -1083,10 +1083,10 @@ internal static class CoverageExpansionTests
     {
         // The actionable sentence comes first, because the card's single stale-error line shows only that much.
         Equal(
-            "Google Gemini is not signed in. Run `agy` to sign in, then refresh. The Antigravity IDE and `agy` returned no usage, and the Gemini CLI is not signed in.",
+            "Google Gemini usage is unavailable. Check that `agy` is signed in, then refresh. The Antigravity IDE and `agy` returned no usage, and the Gemini CLI is not signed in.",
             GeminiUsageClient.CombinedError(true, "Google Gemini is not signed in. Run `agy` to sign in, then refresh."));
         Equal(
-            "Google Gemini sign-in has expired. Install Antigravity, sign in with `agy`, then refresh. The Antigravity IDE returned no usage and `agy` is not installed, and the Gemini CLI sign-in has expired.",
+            "Google Gemini usage is unavailable. Sign in to Antigravity or install `agy`, then refresh. The Antigravity IDE returned no usage and `agy` is not installed, and the Gemini CLI sign-in has expired.",
             GeminiUsageClient.CombinedError(false, "Google Gemini sign-in has expired. Run `agy` to sign in again, then refresh."));
         // A failure that is not about sign-in keeps its own message and gets no sign-in hint.
         Equal(
@@ -1106,7 +1106,7 @@ internal static class CoverageExpansionTests
                 throw new InvalidOperationException("HTTP should not be reached.")));
             var client = new GeminiUsageClient(http, NoLocalGeminiSnapshot, hasAgyCli: () => false);
             var exception = await ThrowsAsync<GeminiUsageException>(() => client.GetUsageAsync());
-            True(exception.Message.StartsWith("Google Gemini is not signed in. Install Antigravity", StringComparison.Ordinal));
+            True(exception.Message.StartsWith("Google Gemini usage is unavailable. Sign in to Antigravity", StringComparison.Ordinal));
             True(exception.InnerException is GeminiUsageException);
 
             // A cancelled refresh keeps the CLI's own error and never looks for agy.
@@ -1137,7 +1137,7 @@ internal static class CoverageExpansionTests
         }
     }
 
-    public static Task TestEditorBundledClaudeAsync()
+    public static Task TestEditorBundledClisAsync()
     {
         var profile = Path.Combine(AppPaths.DataDirectory, $"editor-profile-{Guid.NewGuid():N}");
         var extensions = Path.Combine(profile, ".vscode", "extensions");
@@ -1155,38 +1155,60 @@ internal static class CoverageExpansionTests
 
         try
         {
-            Equal(null, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.X64));
-            Equal(null, ClaudeCodeUsageClient.FindEditorBundledClaude("relative", Architecture.X64));
+            Equal(null, EditorExtensionBinaries.FindClaude(profile, Architecture.X64));
+            Equal(null, EditorExtensionBinaries.FindClaude("relative", Architecture.X64));
 
             // Only the version the editor's manifest names is used, never a leftover older folder.
             Touch(Path.Combine(stale, "resources", "native-binary", "claude.exe"));
             WriteManifest("anthropic.claude-code-2.1.301-win32-x64");
             Directory.CreateDirectory(current);
-            Equal(null, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.X64));
+            Equal(null, EditorExtensionBinaries.FindClaude(profile, Architecture.X64));
 
             var single = Path.Combine(current, "resources", "native-binary", "claude.exe");
             Touch(single);
-            Equal(single, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.X64));
+            Equal(single, EditorExtensionBinaries.FindClaude(profile, Architecture.X64));
 
             // A multi-platform package wins, and Windows on ARM prefers its own build.
             var x64 = Path.Combine(current, "resources", "native-binaries", "win32-x64", "claude.exe");
             Touch(x64);
-            Equal(x64, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.X64));
-            Equal(x64, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.Arm64));
+            Equal(x64, EditorExtensionBinaries.FindClaude(profile, Architecture.X64));
+            Equal(x64, EditorExtensionBinaries.FindClaude(profile, Architecture.Arm64));
             var arm64 = Path.Combine(current, "resources", "native-binaries", "win32-arm64", "claude.exe");
             Touch(arm64);
-            Equal(arm64, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.Arm64));
+            Equal(arm64, EditorExtensionBinaries.FindClaude(profile, Architecture.Arm64));
 
             // The manifest can never point outside the extensions folder.
             WriteManifest(Path.Combine("..", "anthropic.claude-code-2.1.301-win32-x64"));
-            Equal(null, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.X64));
+            Equal(null, EditorExtensionBinaries.FindClaude(profile, Architecture.X64));
             WriteManifest("..");
-            Equal(null, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.X64));
+            Equal(null, EditorExtensionBinaries.FindClaude(profile, Architecture.X64));
 
             File.WriteAllText(Path.Combine(extensions, "extensions.json"), "{ not json");
-            Equal(null, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.X64));
+            Equal(null, EditorExtensionBinaries.FindClaude(profile, Architecture.X64));
             File.WriteAllText(Path.Combine(extensions, "extensions.json"), "{}");
-            Equal(null, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.X64));
+            Equal(null, EditorExtensionBinaries.FindClaude(profile, Architecture.X64));
+
+            // An entry whose folder an interrupted update removed is skipped for a later valid one.
+            File.WriteAllText(
+                Path.Combine(extensions, "extensions.json"),
+                """[{"identifier":{"id":"anthropic.claude-code"},"relativeLocation":"anthropic.claude-code-9.9.9-win32-x64"},{"identifier":{"id":"anthropic.claude-code"},"relativeLocation":"anthropic.claude-code-2.1.301-win32-x64"}]""");
+            Equal(arm64, EditorExtensionBinaries.FindClaude(profile, Architecture.Arm64));
+
+            // Codex follows its extension's bin/windows-<arch> layout, in any VS Code-based editor.
+            Equal(null, EditorExtensionBinaries.FindCodex(profile, Architecture.X64));
+            var cursorExtensions = Path.Combine(profile, ".cursor", "extensions");
+            var codexFolder = Path.Combine(cursorExtensions, "openai.chatgpt-26.1007.21434-win32-x64");
+            Directory.CreateDirectory(cursorExtensions);
+            File.WriteAllText(
+                Path.Combine(cursorExtensions, "extensions.json"),
+                """[{"identifier":{"id":"openai.chatgpt"},"relativeLocation":"openai.chatgpt-26.1007.21434-win32-x64"}]""");
+            var codexX64 = Path.Combine(codexFolder, "bin", "windows-x86_64", "codex.exe");
+            Touch(codexX64);
+            Equal(codexX64, EditorExtensionBinaries.FindCodex(profile, Architecture.X64));
+            Equal(codexX64, EditorExtensionBinaries.FindCodex(profile, Architecture.Arm64));
+            var codexArm64 = Path.Combine(codexFolder, "bin", "windows-aarch64", "codex.exe");
+            Touch(codexArm64);
+            Equal(codexArm64, EditorExtensionBinaries.FindCodex(profile, Architecture.Arm64));
         }
         finally
         {
