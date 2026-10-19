@@ -104,15 +104,20 @@
     "commands": [
       {
         "command": "usageai.show",
-        "title": "UsageAI: Show Usage"
+        "title": "Show Usage",
+        "category": "UsageAI"
       },
       {
         "command": "usageai.refresh",
-        "title": "UsageAI: Refresh"
+        "title": "Refresh",
+        "category": "UsageAI",
+        "icon": "$(refresh)"
       },
       {
         "command": "usageai.openSettings",
-        "title": "UsageAI: Open Settings"
+        "title": "Open Settings",
+        "category": "UsageAI",
+        "icon": "$(gear)"
       }
     ],
     "menus": {

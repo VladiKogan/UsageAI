@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- Fixed the Usage view's toolbar buttons overlapping the view title in a narrow sidebar. Refresh
+  and Open Settings now show as the native `refresh` and `gear` icons, following the active product
+  icon theme, with "Refresh" and "Open Settings" as their tooltips, and VS Code moves them into its
+  overflow menu when space runs out. The Command Palette still lists them as **UsageAI: Refresh**
+  and **UsageAI: Open Settings**, and the command IDs are unchanged.
+
 ## 0.1.16
 
 ### Added
