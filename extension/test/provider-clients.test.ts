@@ -492,6 +492,21 @@ test("Gemini names every failed path once the CLI fallback fails too", async () 
   });
   (crashing as unknown as { getGeminiCliUsage: () => Promise<never> }).getGeminiCliUsage = async () => { throw unexpected; };
   await assert.rejects(crashing.getUsage(), (error: unknown) => error === unexpected);
+
+  // A cancelled refresh keeps the CLI's own error and never looks for agy.
+  let agyLookups = 0;
+  const wrapped = new UsageProviderError("Could not read Gemini usage because the provider returned invalid or unavailable data.");
+  const cancelled = new GeminiUsageClient({
+    fetchAntigravity: async () => undefined,
+    fetchAgy: async () => undefined,
+    loadCredentials: async () => ({ accessToken: "token", sourcePath: "fixture" }),
+    hasAgyCli: async () => { agyLookups++; return true; },
+  });
+  (cancelled as unknown as { getGeminiCliUsage: () => Promise<never> }).getGeminiCliUsage = async () => { throw wrapped; };
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(cancelled.getUsage(controller.signal), (error: unknown) => error === wrapped);
+  assert.equal(agyLookups, 0);
 });
 
 test("netstat listening ports stay bound to the owning process", () => {

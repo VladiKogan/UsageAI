@@ -1,7 +1,7 @@
 import { access } from "node:fs/promises";
 import * as path from "node:path";
 import * as readline from "node:readline";
-import { codexBundledPath, findBundledExecutable, noExtensions, type ExtensionPathResolver } from "../bundled-cli";
+import { codexBundledPaths, findBundledExecutable, noExtensions, type ExtensionPathResolver } from "../bundled-cli";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
 import { findExecutable, spawnSecure } from "../security";
@@ -65,7 +65,7 @@ export class CodexUsageClient implements UsageClient {
         throw signal.reason;
       }
       if (/login|auth/i.test(stderr)) {
-        throw new UsageProviderError("Codex is not signed in. Run `codex login`, then refresh.", 0, { cause: error });
+        throw new UsageProviderError("Codex is not signed in. Run `codex login` or sign in through the Codex extension, then refresh.", 0, { cause: error });
       }
       if (error instanceof UsageProviderError) {
         throw error;
@@ -115,7 +115,7 @@ async function readResponse(
       const message = getString(root.error, "message");
       throw new UsageProviderError(
         message && /login|auth/i.test(message)
-          ? "Codex is not signed in. Run `codex login`, then refresh."
+          ? "Codex is not signed in. Run `codex login` or sign in through the Codex extension, then refresh."
           : "Codex could not read the account rate limits.",
       );
     }
@@ -289,12 +289,14 @@ export async function findCodexLaunch(resolveExtensionPath: ExtensionPathResolve
       }
     }
     // Last, so a standalone install keeps priority: the binary the Codex extension ships for itself.
-    command ??= await findBundledExecutable(resolveExtensionPath, codexExtensionId, codexBundledPath());
+    command ??= await findBundledExecutable(resolveExtensionPath, codexExtensionId, codexBundledPaths());
   }
   if (!command) {
-    throw new UsageProviderError(
-      "Codex CLI was not found. Install Codex or the Codex extension, or set CODEX_PATH, then refresh.",
-    );
+    throw new UsageProviderError(resolveExtensionPath.onOtherHost?.(codexExtensionId)
+      // The extension the user installed runs on the other side of a remote window, so installing
+      // it again would not help; running UsageAI on that side would.
+      ? "Codex CLI was not found here. The Codex extension runs on the other host of this remote window; set `remote.extensionKind` to run UsageAI there too, then reload."
+      : "Codex CLI was not found. Install Codex or the Codex extension, or set CODEX_PATH, then refresh.");
   }
   if (!command.toLowerCase().endsWith(".cmd")) {
     return { executable: command, args: [] };

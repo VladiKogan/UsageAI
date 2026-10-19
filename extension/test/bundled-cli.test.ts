@@ -1,12 +1,15 @@
 import assert from "node:assert/strict";
-import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
+import { constants as fsConstants } from "node:fs";
+import { chmod, mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import * as os from "node:os";
 import * as path from "node:path";
 import test from "node:test";
 import {
-  claudeBundledPath,
-  codexBundledPath,
+  claudeBundledPaths,
+  codexBundledPaths,
+  executableAccessMode,
   findBundledExecutable,
+  otherHostExtension,
   sameHostExtensionPath,
   type ExtensionPathResolver,
 } from "../src/bundled-cli";
@@ -21,17 +24,28 @@ function restoreEnvironment(name: string, value: string | undefined): void {
 async function touch(file: string): Promise<void> {
   await mkdir(path.dirname(file), { recursive: true });
   await writeFile(file, "", "utf8");
+  // The lookup requires the execute bit outside Windows, as a real unpacked binary has.
+  if (process.platform !== "win32") await chmod(file, 0o755);
 }
 
-test("bundled CLI paths follow each official extension's layout", () => {
-  assert.equal(codexBundledPath("win32", "x64"), path.join("bin", "windows-x86_64", "codex.exe"));
-  assert.equal(codexBundledPath("linux", "x64"), path.join("bin", "linux-x86_64", "codex"));
-  assert.equal(codexBundledPath("linux", "arm64"), path.join("bin", "linux-aarch64", "codex"));
-  assert.equal(codexBundledPath("darwin", "arm64"), path.join("bin", "macos-aarch64", "codex"));
-  assert.equal(codexBundledPath("linux", "ia32"), undefined);
-  assert.equal(codexBundledPath("freebsd", "x64"), undefined);
-  assert.equal(claudeBundledPath("win32"), path.join("resources", "native-binary", "claude.exe"));
-  assert.equal(claudeBundledPath("linux"), path.join("resources", "native-binary", "claude"));
+test("bundled CLI paths follow each official extension's own lookup", () => {
+  assert.deepEqual(codexBundledPaths("win32", "x64"), [path.join("bin", "windows-x86_64", "codex.exe")]);
+  assert.deepEqual(codexBundledPaths("linux", "x64"), [path.join("bin", "linux-x86_64", "codex")]);
+  assert.deepEqual(codexBundledPaths("linux", "arm64"), [path.join("bin", "linux-aarch64", "codex")]);
+  assert.deepEqual(codexBundledPaths("darwin", "arm64"), [path.join("bin", "macos-aarch64", "codex")]);
+  assert.deepEqual(codexBundledPaths("linux", "ia32"), []);
+  assert.deepEqual(codexBundledPaths("freebsd", "x64"), []);
+  assert.deepEqual(claudeBundledPaths("linux", "x64"), [
+    path.join("resources", "native-binaries", "linux-x64", "claude"),
+    path.join("resources", "native-binary", "claude"),
+  ]);
+  assert.deepEqual(claudeBundledPaths("win32", "arm64"), [
+    path.join("resources", "native-binaries", "win32-arm64", "claude.exe"),
+    path.join("resources", "native-binaries", "win32-x64", "claude.exe"),
+    path.join("resources", "native-binary", "claude.exe"),
+  ]);
+  assert.equal(executableAccessMode("win32"), fsConstants.F_OK);
+  assert.equal(executableAccessMode("linux"), fsConstants.X_OK);
 });
 
 test("bundled CLI lookup trusts only a local extension in this extension host", () => {
@@ -43,21 +57,34 @@ test("bundled CLI lookup trusts only a local extension in this extension host", 
   assert.equal(sameHostExtensionPath(local, 1), undefined);
   assert.equal(sameHostExtensionPath({ ...local, extensionUri: { scheme: "vscode-remote" } }, 2), undefined);
   assert.equal(sameHostExtensionPath({ ...local, extensionPath: "relative/folder" }, 2), undefined);
+
+  assert.equal(otherHostExtension(local, 2), false);
+  assert.equal(otherHostExtension(local, 1), true);
+  assert.equal(otherHostExtension({ ...local, extensionUri: { scheme: "vscode-remote" } }, 2), true);
+  assert.equal(otherHostExtension(undefined, 2), false);
+  assert.equal(otherHostExtension(local, undefined), false);
 });
 
-test("bundled CLI lookup returns one fixed path only when the file exists", async () => {
+test("bundled CLI lookup tries its fixed paths in order and only returns existing files", async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), "usageai-bundled-"));
-  const relative = path.join("bin", "tool.exe");
+  const preferred = path.join("multi", "tool.exe");
+  const fallback = path.join("single", "tool.exe");
   try {
     const resolve: ExtensionPathResolver = (id) => (id === "publisher.tool" ? root : undefined);
-    assert.equal(await findBundledExecutable(resolve, "publisher.tool", relative), undefined);
-    await touch(path.join(root, relative));
-    assert.equal(await findBundledExecutable(resolve, "publisher.tool", relative), path.join(root, relative));
-    assert.equal(await findBundledExecutable(resolve, "publisher.other", relative), undefined);
-    assert.equal(await findBundledExecutable(resolve, "publisher.tool", undefined), undefined);
+    assert.equal(await findBundledExecutable(resolve, "publisher.tool", [preferred, fallback]), undefined);
+    await touch(path.join(root, fallback));
+    assert.equal(await findBundledExecutable(resolve, "publisher.tool", [preferred, fallback]), path.join(root, fallback));
+    await touch(path.join(root, preferred));
+    assert.equal(await findBundledExecutable(resolve, "publisher.tool", [preferred, fallback]), path.join(root, preferred));
+    assert.equal(await findBundledExecutable(resolve, "publisher.other", [preferred]), undefined);
+    assert.equal(await findBundledExecutable(resolve, "publisher.tool", []), undefined);
     await touch(path.join(path.dirname(root), "outside.exe"));
-    assert.equal(await findBundledExecutable(resolve, "publisher.tool", path.join("..", "outside.exe")), undefined);
-    assert.equal(await findBundledExecutable(() => "relative/root", "publisher.tool", relative), undefined);
+    assert.equal(await findBundledExecutable(resolve, "publisher.tool", [path.join("..", "outside.exe")]), undefined);
+    assert.equal(await findBundledExecutable(() => "relative/root", "publisher.tool", [preferred]), undefined);
+    if (process.platform !== "win32") {
+      await chmod(path.join(root, preferred), 0o644);
+      assert.equal(await findBundledExecutable(resolve, "publisher.tool", [preferred]), undefined);
+    }
   } finally {
     await rm(path.join(path.dirname(root), "outside.exe"), { force: true });
     await rm(root, { recursive: true, force: true });
@@ -71,8 +98,8 @@ test("Codex and Claude use the extension-bundled CLI only after standalone insta
   const pathDirectory = path.join(directory, "path");
   const codexRoot = path.join(directory, "openai.chatgpt");
   const claudeRoot = path.join(directory, "anthropic.claude-code");
-  const bundledCodex = path.join(codexRoot, codexBundledPath() ?? "unsupported");
-  const bundledClaude = path.join(claudeRoot, claudeBundledPath());
+  const bundledCodex = path.join(codexRoot, codexBundledPaths()[0] ?? "unsupported");
+  const bundledClaude = path.join(claudeRoot, claudeBundledPaths().at(-1)!);
   try {
     await mkdir(pathDirectory, { recursive: true });
     for (const name of ["CODEX_PATH", "CLAUDE_PATH"]) delete process.env[name];
@@ -80,8 +107,11 @@ test("Codex and Claude use the extension-bundled CLI only after standalone insta
     for (const name of ["APPDATA", "LOCALAPPDATA", "USERPROFILE", "HOME"]) process.env[name] = path.join(directory, "home");
     const resolve: ExtensionPathResolver = (id) => ({ "openai.chatgpt": codexRoot, "anthropic.claude-code": claudeRoot })[id];
 
-    await assert.rejects(() => findCodexLaunch(resolve), /Codex extension/);
+    await assert.rejects(() => findCodexLaunch(resolve), /Install Codex or the Codex extension/);
     assert.equal(await findClaudeLaunch(resolve), undefined);
+    // Installed, but on the other side of a remote window: point at running UsageAI there instead.
+    const elsewhere: ExtensionPathResolver = Object.assign(() => undefined, { onOtherHost: (id: string) => id === "openai.chatgpt" });
+    await assert.rejects(() => findCodexLaunch(elsewhere), /runs on the other host.*remote.extensionKind/);
 
     await touch(bundledCodex);
     await touch(bundledClaude);

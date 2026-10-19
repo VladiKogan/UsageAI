@@ -142,6 +142,12 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
                 }
             }
 
+            // A cancelled refresh reports nothing, so it skips the agy lookup the combined error needs.
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+
             // The Gemini CLI is only the last fallback, so its error alone would hide why the
             // Antigravity paths, usually the ones that matter, returned nothing.
             throw new GeminiUsageException(CombinedError(_hasAgyCli(), exception.Message), exception)

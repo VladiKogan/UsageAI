@@ -65,7 +65,7 @@ internal sealed class CodexUsageClient : IUsageClient
                 stderr.Contains("auth", StringComparison.OrdinalIgnoreCase))
             {
                 throw new CodexUsageException(
-                    "Codex is not signed in. Run `codex login`, then refresh.",
+                    "Codex is not signed in. Run `codex login` or sign in through the Codex extension, then refresh.",
                     exception);
             }
 
@@ -391,7 +391,7 @@ internal sealed class CodexUsageClient : IUsageClient
 
         return message.Contains("login", StringComparison.OrdinalIgnoreCase) ||
                message.Contains("auth", StringComparison.OrdinalIgnoreCase)
-            ? "Codex is not signed in. Run `codex login`, then refresh."
+            ? "Codex is not signed in. Run `codex login` or sign in through the Codex extension, then refresh."
             : "Codex could not read the account rate limits.";
     }
 

@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import * as path from "node:path";
-import { claudeBundledPath, findBundledExecutable, noExtensions, type ExtensionPathResolver } from "../bundled-cli";
+import { claudeBundledPaths, findBundledExecutable, noExtensions, type ExtensionPathResolver } from "../bundled-cli";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
 import {
@@ -114,7 +114,7 @@ export class ClaudeUsageClient implements UsageClient {
       return parseClaudeCredentials(await readBoundedText(credentialPath));
     } catch (error) {
       throw new UsageProviderError(
-        "Claude Code is not signed in, or its saved login could not be read. Run `claude` to sign in, then refresh.",
+        "Claude Code is not signed in, or its saved login could not be read. Run `claude` or sign in through the Claude Code extension, then refresh.",
         0,
         { cause: error },
       );
@@ -192,7 +192,7 @@ async function requestClaudeUsage(
     });
     if (response.status === 401) {
       throw new RecoverableClaudeUsageError(
-        "Claude Code's login has expired. Run `claude` to sign in again, then refresh.",
+        "Claude Code's login has expired. Run `claude` or use the Claude Code extension to sign in again, then refresh.",
       );
     }
     if (response.status === 403) {
@@ -385,7 +385,7 @@ export async function findClaudeLaunch(
   }
   // Last, and only when nothing above worked, so a standalone install keeps priority: the binary the
   // Claude Code extension ships for itself. findBundledExecutable has already checked that it exists.
-  const bundled = await findBundledExecutable(resolveExtensionPath, claudeExtensionId, claudeBundledPath());
+  const bundled = await findBundledExecutable(resolveExtensionPath, claudeExtensionId, claudeBundledPaths());
   return bundled ? createClaudeLaunch(bundled) : undefined;
 }
 

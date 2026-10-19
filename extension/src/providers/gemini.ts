@@ -146,7 +146,8 @@ export class GeminiUsageClient implements UsageClient {
           return recovered;
         }
       }
-      if (!(error instanceof UsageProviderError)) {
+      // A cancelled refresh reports nothing, so it skips the agy lookup the combined error needs.
+      if (signal?.aborted || !(error instanceof UsageProviderError)) {
         throw error;
       }
       // The Gemini CLI is only the last fallback, so its error alone would hide why the Antigravity

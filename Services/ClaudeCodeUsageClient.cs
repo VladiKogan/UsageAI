@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -119,7 +120,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 throw new ClaudeCodeUsageException(
-                    "Claude Code's login has expired. Run `claude` to sign in again, then refresh.")
+                    "Claude Code's login has expired. Run `claude` or use the Claude Code extension to sign in again, then refresh.")
                 {
                     CanRetryAfterAuthProbe = true,
                 };
@@ -270,7 +271,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         }
 
         throw new ClaudeCodeUsageException(
-            "Claude Code is not signed in. Run `claude` to sign in, then refresh.");
+            "Claude Code is not signed in. Run `claude` or sign in through the Claude Code extension, then refresh.");
     }
 
     private async Task<ClaudeCredentials> RefreshExpiredCredentialsThroughClaudeAsync(
@@ -529,6 +530,95 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             {
                 return launch;
             }
+        }
+
+        // Last, so a standalone install keeps priority: the binary the Claude Code editor extension
+        // ships for itself, as the editor extension's own recovery uses.
+        var bundled = FindEditorBundledClaude(userProfile, RuntimeInformation.OSArchitecture);
+        return bundled is null ? null : new ClaudeLaunch(bundled, null);
+    }
+
+    private static readonly string[] EditorDataFolders = [".vscode", ".vscode-insiders", ".antigravity"];
+
+    /// <summary>
+    /// The Claude CLI bundled in an installed Claude Code editor extension. Each editor's
+    /// <c>extensions.json</c> names the folder of the version it actually loads, so stale folders of
+    /// older versions are never picked and no directory is searched; inside that folder only the
+    /// fixed paths the extension itself uses are tried.
+    /// </summary>
+    internal static string? FindEditorBundledClaude(string userProfile, Architecture architecture)
+    {
+        if (!Path.IsPathFullyQualified(userProfile))
+        {
+            return null;
+        }
+
+        var platformFolders = architecture == Architecture.Arm64
+            ? new[] { "win32-arm64", "win32-x64" }
+            : new[] { "win32-x64" };
+        foreach (var editor in EditorDataFolders)
+        {
+            var extensionsDirectory = Path.Combine(userProfile, editor, "extensions");
+            var folder = FindInstalledExtensionFolder(extensionsDirectory, "anthropic.claude-code");
+            if (folder is null)
+            {
+                continue;
+            }
+
+            var candidates = platformFolders
+                .Select(platform => Path.Combine(folder, "resources", "native-binaries", platform, "claude.exe"))
+                .Append(Path.Combine(folder, "resources", "native-binary", "claude.exe"));
+            if (candidates.FirstOrDefault(File.Exists) is { } executable)
+            {
+                return executable;
+            }
+        }
+
+        return null;
+    }
+
+    private static string? FindInstalledExtensionFolder(string extensionsDirectory, string extensionId)
+    {
+        var manifest = Path.Combine(extensionsDirectory, "extensions.json");
+        if (!File.Exists(manifest))
+        {
+            return null;
+        }
+
+        try
+        {
+            using var document = JsonDocument.Parse(SecureLocalFile.ReadAllText(manifest, 4_194_304));
+            if (document.RootElement.ValueKind != JsonValueKind.Array)
+            {
+                return null;
+            }
+
+            foreach (var entry in document.RootElement.EnumerateArray())
+            {
+                if (entry.ValueKind != JsonValueKind.Object ||
+                    !entry.TryGetProperty("identifier", out var identifier) ||
+                    identifier.ValueKind != JsonValueKind.Object ||
+                    !identifier.TryGetProperty("id", out var id) ||
+                    !string.Equals(id.GetString(), extensionId, StringComparison.OrdinalIgnoreCase) ||
+                    !entry.TryGetProperty("relativeLocation", out var relative) ||
+                    relative.GetString() is not { Length: > 0 } folderName)
+                {
+                    continue;
+                }
+
+                // A bare folder name only: nothing in the manifest may point outside the extensions folder.
+                if (folderName is "." or ".." || Path.GetFileName(folderName) != folderName)
+                {
+                    return null;
+                }
+
+                var folder = Path.Combine(extensionsDirectory, folderName);
+                return Directory.Exists(folder) ? folder : null;
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or InvalidDataException or InvalidOperationException)
+        {
+            // An unreadable manifest only means this editor lends no binary.
         }
 
         return null;

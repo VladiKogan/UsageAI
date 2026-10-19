@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { sameHostExtensionPath, type ExtensionPathResolver } from "./bundled-cli";
+import { otherHostExtension, sameHostExtensionPath, type ExtensionPathResolver } from "./bundled-cli";
 import { dashboardExpandedProvidersKey, UsageDashboardViewProvider } from "./dashboard-view";
 import {
   normalizeQuotaDisplay,
@@ -24,7 +24,10 @@ type UsageProviderId = Exclude<StatusBarProviderId, "hottest">;
  */
 export function bundledCliResolver(context: Pick<vscode.ExtensionContext, "extension">): ExtensionPathResolver {
   const ownKind = (context.extension as vscode.Extension<unknown> | undefined)?.extensionKind;
-  return (extensionId) => sameHostExtensionPath(vscode.extensions.getExtension(extensionId), ownKind);
+  return Object.assign(
+    (extensionId: string) => sameHostExtensionPath(vscode.extensions.getExtension(extensionId), ownKind),
+    { onOtherHost: (extensionId: string) => otherHostExtension(vscode.extensions.getExtension(extensionId), ownKind) },
+  );
 }
 
 export function activate(context: vscode.ExtensionContext): void {

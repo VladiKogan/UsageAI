@@ -1108,12 +1108,95 @@ internal static class CoverageExpansionTests
             var exception = await ThrowsAsync<GeminiUsageException>(() => client.GetUsageAsync());
             True(exception.Message.StartsWith("Google Gemini is not signed in. Install Antigravity", StringComparison.Ordinal));
             True(exception.InnerException is GeminiUsageException);
+
+            // A cancelled refresh keeps the CLI's own error and never looks for agy.
+            var agyLookups = 0;
+            var cancelled = new GeminiUsageClient(http, NoLocalGeminiSnapshot, hasAgyCli: () =>
+            {
+                agyLookups++;
+                return true;
+            });
+            using var cancellation = new CancellationTokenSource();
+            await cancellation.CancelAsync();
+            try
+            {
+                await cancelled.GetUsageAsync(cancellation.Token);
+                throw new InvalidOperationException("Expected the cancelled refresh to fail.");
+            }
+            catch (Exception failure) when (failure is GeminiUsageException or OperationCanceledException)
+            {
+                False(failure.Message.Contains("returned no usage", StringComparison.Ordinal));
+            }
+
+            Equal(0, agyLookups);
         }
         finally
         {
             RestoreEnvironment(environment);
             Directory.Delete(directory, recursive: true);
         }
+    }
+
+    public static Task TestEditorBundledClaudeAsync()
+    {
+        var profile = Path.Combine(AppPaths.DataDirectory, $"editor-profile-{Guid.NewGuid():N}");
+        var extensions = Path.Combine(profile, ".vscode", "extensions");
+        var current = Path.Combine(extensions, "anthropic.claude-code-2.1.301-win32-x64");
+        var stale = Path.Combine(extensions, "anthropic.claude-code-2.1.300-win32-x64");
+        void Touch(string file)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            File.WriteAllText(file, string.Empty);
+        }
+
+        void WriteManifest(string relativeLocation) => File.WriteAllText(
+            Path.Combine(extensions, "extensions.json"),
+            $$"""[{"identifier":{"id":"other.extension"},"relativeLocation":"other"},{"identifier":{"id":"Anthropic.Claude-Code"},"relativeLocation":{{JsonSerializer.Serialize(relativeLocation)}}}]""");
+
+        try
+        {
+            Equal(null, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.X64));
+            Equal(null, ClaudeCodeUsageClient.FindEditorBundledClaude("relative", Architecture.X64));
+
+            // Only the version the editor's manifest names is used, never a leftover older folder.
+            Touch(Path.Combine(stale, "resources", "native-binary", "claude.exe"));
+            WriteManifest("anthropic.claude-code-2.1.301-win32-x64");
+            Directory.CreateDirectory(current);
+            Equal(null, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.X64));
+
+            var single = Path.Combine(current, "resources", "native-binary", "claude.exe");
+            Touch(single);
+            Equal(single, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.X64));
+
+            // A multi-platform package wins, and Windows on ARM prefers its own build.
+            var x64 = Path.Combine(current, "resources", "native-binaries", "win32-x64", "claude.exe");
+            Touch(x64);
+            Equal(x64, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.X64));
+            Equal(x64, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.Arm64));
+            var arm64 = Path.Combine(current, "resources", "native-binaries", "win32-arm64", "claude.exe");
+            Touch(arm64);
+            Equal(arm64, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.Arm64));
+
+            // The manifest can never point outside the extensions folder.
+            WriteManifest(Path.Combine("..", "anthropic.claude-code-2.1.301-win32-x64"));
+            Equal(null, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.X64));
+            WriteManifest("..");
+            Equal(null, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.X64));
+
+            File.WriteAllText(Path.Combine(extensions, "extensions.json"), "{ not json");
+            Equal(null, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.X64));
+            File.WriteAllText(Path.Combine(extensions, "extensions.json"), "{}");
+            Equal(null, ClaudeCodeUsageClient.FindEditorBundledClaude(profile, Architecture.X64));
+        }
+        finally
+        {
+            if (Directory.Exists(profile))
+            {
+                Directory.Delete(profile, recursive: true);
+            }
+        }
+
+        return Task.CompletedTask;
     }
 
     public static async Task TestCodexProtocolAsync()

@@ -8,8 +8,10 @@
   extensions. With only OpenAI's Codex extension or Anthropic's Claude Code extension installed and
   signed in, UsageAI now finds the CLI that extension ships, so no separate CLI install is needed.
   `CODEX_PATH` / `CLAUDE_PATH`, a CLI on `PATH`, and standalone install folders still come first.
-  Only one fixed path inside the extension folder VS Code reports is checked, never a search, and
-  only for an extension running in the same extension host as UsageAI.
+  Only the extension's own fixed binary paths inside the folder VS Code reports are checked, never a
+  search, and only for an extension running in the same extension host as UsageAI. In a remote
+  window where the Codex extension runs on the other host, the error now points to
+  `remote.extensionKind` instead of asking to install it again.
 - Added opt-in support for running on a remote host. The extension now declares
   `["ui", "workspace"]`, so it still runs locally by default in Remote-SSH, WSL, and dev container
   windows, and `remote.extensionKind` can move it to the remote host where providers are signed in
@@ -17,6 +19,8 @@
 
 ### Changed
 
+- Codex and Claude Code sign-in messages now mention signing in through the provider's extension.
+  Someone using only the extension has no `codex` or `claude` command to run.
 - Google Gemini now says which sign-in paths it tried when all of them fail. Because the Gemini CLI
   fallback runs last, its own "not signed in" used to be the only error shown, even when the
   Antigravity paths were the ones that mattered. The error still opens with what to do, then

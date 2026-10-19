@@ -670,10 +670,13 @@ test("the bundled-CLI resolver lends only extensions in UsageAI's own extension 
     const local = extensionModule.bundledCliResolver({ extension: { extensionKind: 1 } } as never);
     assert.equal(local("openai.chatgpt"), root);
     assert.equal(local("anthropic.claude-code"), undefined);
+    assert.equal(local.onOtherHost?.("openai.chatgpt"), false);
+    assert.equal(local.onOtherHost?.("anthropic.claude-code"), false);
 
     // UsageAI moved to the remote host while the provider extension stayed local, or the reverse.
     const otherHost = extensionModule.bundledCliResolver({ extension: { extensionKind: 2 } } as never);
     assert.equal(otherHost("openai.chatgpt"), undefined);
+    assert.equal(otherHost.onOtherHost?.("openai.chatgpt"), true);
 
     // Without its own kind UsageAI cannot tell which side an extension runs on, so it lends nothing.
     assert.equal(extensionModule.bundledCliResolver({} as never)("openai.chatgpt"), undefined);

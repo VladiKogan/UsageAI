@@ -6,7 +6,18 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Claude Code login recovery can now use the CLI bundled in the Claude Code editor extension. With
+  only that VS Code, VS Code Insiders, or Antigravity extension installed, an expired login used to
+  stay stale because no `claude` CLI was found. The tray app now reads the editor's
+  `extensions.json` to find the extension version it actually loads and checks the extension's own
+  fixed binary paths inside it, after `CLAUDE_PATH`, `PATH`, and the standalone install folders.
+
 ### Changed
+
+- Codex and Claude Code sign-in messages now mention signing in through the provider's editor
+  extension. Someone using only the extension has no `codex` or `claude` command to run.
 
 - Google Gemini now says which sign-in paths it tried when all of them fail. Because the Gemini CLI
   fallback runs last, its own "not signed in" used to be the only error shown, even when the
