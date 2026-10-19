@@ -11,6 +11,7 @@ import { CopilotUsageClient } from "../src/providers/copilot";
 import {
   agyHubArguments,
   clearHubStartBackoff,
+  combinedGeminiError,
   GeminiUsageClient,
   hubRetryIntervalMs,
   parseAntigravityProcessLines,
@@ -452,6 +453,43 @@ test("Gemini retries agy when a cached cold-start failure and CLI fallback are b
   );
 });
 
+test("Gemini names every failed path once the CLI fallback fails too", async () => {
+  assert.equal(
+    combinedGeminiError(true, "Google Gemini is not signed in. Run `agy` to sign in, then refresh."),
+    "Google Gemini usage could not be read. Antigravity IDE: not found. agy: returned no usage, so it may not be signed in. Gemini CLI: not signed in. Run `agy` to sign in, then refresh.",
+  );
+  assert.match(
+    combinedGeminiError(false, "Google Gemini sign-in has expired. Run `agy` to sign in again, then refresh."),
+    /agy: not installed\. Gemini CLI: sign-in expired\. Install Antigravity, sign in with `agy`, then refresh\.$/,
+  );
+  assert.match(
+    combinedGeminiError(true, "Google Cloud API rate-limited the quota request."),
+    /Gemini CLI: Google Cloud API rate-limited the quota request\. Run/,
+  );
+
+  const throttled = new UsageProviderError("Google Cloud API rate-limited the quota request.", 90_000);
+  const client = new GeminiUsageClient({
+    fetchAntigravity: async () => undefined,
+    fetchAgy: async () => undefined,
+    loadCredentials: async () => ({ accessToken: "token", sourcePath: "fixture" }),
+    hasAgyCli: async () => false,
+  });
+  (client as unknown as { getGeminiCliUsage: () => Promise<never> }).getGeminiCliUsage = async () => { throw throttled; };
+  await assert.rejects(client.getUsage(), (error: unknown) => error instanceof UsageProviderError
+    && error.retryAfterMs === 90_000
+    && error.cause === throttled
+    && /agy: not installed/.test(error.message));
+
+  const unexpected = new TypeError("internal detail");
+  const crashing = new GeminiUsageClient({
+    fetchAntigravity: async () => undefined,
+    fetchAgy: async () => undefined,
+    loadCredentials: async () => ({ accessToken: "token", sourcePath: "fixture" }),
+  });
+  (crashing as unknown as { getGeminiCliUsage: () => Promise<never> }).getGeminiCliUsage = async () => { throw unexpected; };
+  await assert.rejects(crashing.getUsage(), (error: unknown) => error === unexpected);
+});
+
 test("netstat listening ports stay bound to the owning process", () => {
   const stdout = [
     "",
@@ -723,8 +761,8 @@ test("Gemini cloud and refresh failures retain safe provider errors", async () =
   });
   try {
     for (const [status, pattern] of [
-      [401, /sign-in has expired/i],
-      [403, /sign-in has expired/i],
+      [401, /Gemini CLI: sign-in expired/i],
+      [403, /Gemini CLI: sign-in expired/i],
       [500, /HTTP 500/i],
     ] as const) {
       mock.restoreAll();
@@ -763,7 +801,7 @@ test("Gemini cloud and refresh failures retain safe provider errors", async () =
           expiresAt: Date.now() - 1,
           sourcePath: "fixture",
         }).getUsage(),
-        /sign-in has expired|empty access token/i,
+        /Gemini CLI: sign-in expired|empty access token/i,
       );
     }
 
@@ -776,7 +814,7 @@ test("Gemini cloud and refresh failures retain safe provider errors", async () =
         expiresAt: Date.now() - 1,
         sourcePath: "fixture",
       }).getUsage(),
-      /sign-in has expired/i,
+      /Gemini CLI: sign-in expired/i,
     );
   } finally {
     mock.restoreAll();

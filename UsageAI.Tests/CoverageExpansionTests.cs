@@ -1079,6 +1079,37 @@ internal static class CoverageExpansionTests
         }
     }
 
+    public static async Task TestGeminiCombinedErrorAsync()
+    {
+        Equal(
+            "Google Gemini usage could not be read. Antigravity IDE: not found. agy: returned no usage, so it may not be signed in. Gemini CLI: not signed in. Run `agy` to sign in, then refresh.",
+            GeminiUsageClient.CombinedError(true, "Google Gemini is not signed in. Run `agy` to sign in, then refresh."));
+        True(GeminiUsageClient.CombinedError(false, "Google Gemini sign-in has expired. Run `agy` to sign in again, then refresh.")
+            .EndsWith("agy: not installed. Gemini CLI: sign-in expired. Install Antigravity, sign in with `agy`, then refresh.", StringComparison.Ordinal));
+        True(GeminiUsageClient.CombinedError(true, "Google Cloud API rate-limited the quota request.")
+            .Contains("Gemini CLI: Google Cloud API rate-limited the quota request. Run", StringComparison.Ordinal));
+
+        var environment = SaveEnvironment("GEMINI_CONFIG_DIR");
+        var directory = Path.Combine(AppPaths.DataDirectory, $"gemini-combined-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            // No Gemini CLI credentials, so the last fallback fails with its own "not signed in".
+            Environment.SetEnvironmentVariable("GEMINI_CONFIG_DIR", directory);
+            using var http = new HttpClient(new StubHttpHandler((_, _, _) =>
+                throw new InvalidOperationException("HTTP should not be reached.")));
+            var client = new GeminiUsageClient(http, NoLocalGeminiSnapshot, hasAgyCli: () => false);
+            var exception = await ThrowsAsync<GeminiUsageException>(() => client.GetUsageAsync());
+            True(exception.Message.Contains("agy: not installed. Gemini CLI: not signed in.", StringComparison.Ordinal));
+            True(exception.InnerException is GeminiUsageException);
+        }
+        finally
+        {
+            RestoreEnvironment(environment);
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     public static async Task TestCodexProtocolAsync()
     {
         var environment = SaveEnvironment("CODEX_PATH", "CODEX_HOME");
@@ -3616,7 +3647,7 @@ internal static class CoverageExpansionTests
             {
                 var exception = await ThrowsAsync<GeminiUsageException>(
                     () => new GeminiUsageClient(http, NoLocalGeminiSnapshot).GetUsageAsync());
-                True(exception.InnerException is JsonException);
+                True(exception.InnerException?.InnerException is JsonException);
             }
 
             using (var http = new HttpClient(new StubHttpHandler((request, _, _) =>

@@ -422,6 +422,9 @@ internal static class AgyUsageProbe
         return startInfo;
     }
 
+    /// <summary>Whether the official CLI is present, for the error shown once every Gemini path failed.</summary>
+    internal static bool IsInstalled() => FindExecutable() is not null;
+
     private static string? FindExecutable()
     {
         var configured = Environment.GetEnvironmentVariable("ANTIGRAVITY_CLI_PATH")?.Trim().Trim('"');

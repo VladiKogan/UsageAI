@@ -17,6 +17,11 @@
 
 ### Changed
 
+- Google Gemini now says which sign-in paths it tried when all of them fail. Because the Gemini CLI
+  fallback runs last, its own "not signed in" used to be the only error shown, even when the
+  Antigravity paths were the ones that mattered. The error now names the Antigravity IDE, `agy`
+  (including whether it is installed), and the Gemini CLI, each with its result.
+
 - Renamed the sidebar view to UsageAI and its dashboard heading to Usage limits. The view title
   now reads **UsageAI** instead of **UsageAI: Usage**, and the heading above the provider cards
   says what they show instead of "Quota instruments".

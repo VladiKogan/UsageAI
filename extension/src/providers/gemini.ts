@@ -39,6 +39,26 @@ interface GeminiUsageDependencies {
   readonly hasAgyHub?: () => boolean;
   readonly resetAgyBackoff?: () => void;
   readonly loadCredentials: () => Promise<GeminiCredentials>;
+  /** Only for the error shown once every path failed: tells "not installed" from "not answering". */
+  readonly hasAgyCli?: () => Promise<boolean>;
+}
+
+/**
+ * The error shown once every Gemini path failed. It names each path, because the Gemini CLI fallback
+ * runs last and its own "not signed in" would otherwise blame the wrong sign-in. Shared wording with
+ * the desktop app's `GeminiUsageClient.CombinedError`.
+ */
+export function combinedGeminiError(agyInstalled: boolean, geminiCliMessage: string): string {
+  const cli = geminiCliMessage === notSignedInMessage
+    ? "not signed in"
+    : geminiCliMessage === signInAgainMessage
+      ? "sign-in expired"
+      : geminiCliMessage.replace(/\.$/, "");
+  const agy = agyInstalled ? "returned no usage, so it may not be signed in" : "not installed";
+  const hint = agyInstalled
+    ? "Run `agy` to sign in, then refresh."
+    : "Install Antigravity, sign in with `agy`, then refresh.";
+  return `Google Gemini usage could not be read. Antigravity IDE: not found. agy: ${agy}. Gemini CLI: ${cli}. ${hint}`;
 }
 
 export interface AntigravityProcess {
@@ -68,6 +88,7 @@ export class GeminiUsageClient implements UsageClient {
     hasAgyHub: hasActiveAgyHub,
     resetAgyBackoff: clearHubStartBackoff,
     loadCredentials,
+    hasAgyCli,
   }) {}
 
   /**
@@ -118,7 +139,13 @@ export class GeminiUsageClient implements UsageClient {
           return recovered;
         }
       }
-      throw error;
+      if (!(error instanceof UsageProviderError)) {
+        throw error;
+      }
+      // The Gemini CLI is only the last fallback, so its error alone would hide why the Antigravity
+      // paths, usually the ones that matter, returned nothing.
+      const agyInstalled = await (this.dependencies.hasAgyCli ?? (async () => true))();
+      throw new UsageProviderError(combinedGeminiError(agyInstalled, error.message), error.retryAfterMs, { cause: error });
     }
   }
 
@@ -633,6 +660,10 @@ async function tryFetchAgyPrintSnapshot(signal?: AbortSignal): Promise<UsageSnap
   }
 
   return parseAgyUsageOutput(stdout);
+}
+
+async function hasAgyCli(): Promise<boolean> {
+  return (await findAgyExecutable()) !== undefined;
 }
 
 async function findAgyExecutable(): Promise<string | undefined> {
