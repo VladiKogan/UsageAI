@@ -95,7 +95,7 @@
         {
           "type": "webview",
           "id": "usageai.dashboard",
-          "name": "Usage",
+          "name": "UsageAI",
           "icon": "media/activity.svg",
           "contextualTitle": "UsageAI"
         }
