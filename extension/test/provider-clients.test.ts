@@ -454,18 +454,22 @@ test("Gemini retries agy when a cached cold-start failure and CLI fallback are b
 });
 
 test("Gemini names every failed path once the CLI fallback fails too", async () => {
+  // The actionable sentence comes first, because the desktop card shows only that much.
   assert.equal(
     combinedGeminiError(true, "Google Gemini is not signed in. Run `agy` to sign in, then refresh."),
-    "Google Gemini usage could not be read. Antigravity IDE: not found. agy: returned no usage, so it may not be signed in. Gemini CLI: not signed in. Run `agy` to sign in, then refresh.",
+    "Google Gemini is not signed in. Run `agy` to sign in, then refresh. The Antigravity IDE and `agy` returned no usage, and the Gemini CLI is not signed in.",
   );
-  assert.match(
+  assert.equal(
     combinedGeminiError(false, "Google Gemini sign-in has expired. Run `agy` to sign in again, then refresh."),
-    /agy: not installed\. Gemini CLI: sign-in expired\. Install Antigravity, sign in with `agy`, then refresh\.$/,
+    "Google Gemini sign-in has expired. Install Antigravity, sign in with `agy`, then refresh. The Antigravity IDE returned no usage and `agy` is not installed, and the Gemini CLI sign-in has expired.",
   );
-  assert.match(
+  // A failure that is not about sign-in keeps its own message and gets no sign-in hint.
+  assert.equal(
     combinedGeminiError(true, "Google Cloud API rate-limited the quota request."),
-    /Gemini CLI: Google Cloud API rate-limited the quota request\. Run/,
+    "Google Cloud API rate-limited the quota request. The Antigravity IDE and `agy` returned no usage before the Gemini CLI fallback.",
   );
+  assert.match(combinedGeminiError(true, "Google Gemini API returned HTTP 500"), /HTTP 500\. The Antigravity/);
+  assert.doesNotMatch(combinedGeminiError(true, "Gemini usage request timed out."), /sign in|not found/i);
 
   const throttled = new UsageProviderError("Google Cloud API rate-limited the quota request.", 90_000);
   const client = new GeminiUsageClient({
@@ -478,7 +482,7 @@ test("Gemini names every failed path once the CLI fallback fails too", async () 
   await assert.rejects(client.getUsage(), (error: unknown) => error instanceof UsageProviderError
     && error.retryAfterMs === 90_000
     && error.cause === throttled
-    && /agy: not installed/.test(error.message));
+    && /^Google Cloud API rate-limited the quota request. .*`agy` is not installed/.test(error.message));
 
   const unexpected = new TypeError("internal detail");
   const crashing = new GeminiUsageClient({
@@ -761,8 +765,8 @@ test("Gemini cloud and refresh failures retain safe provider errors", async () =
   });
   try {
     for (const [status, pattern] of [
-      [401, /Gemini CLI: sign-in expired/i],
-      [403, /Gemini CLI: sign-in expired/i],
+      [401, /sign-in has expired/i],
+      [403, /sign-in has expired/i],
       [500, /HTTP 500/i],
     ] as const) {
       mock.restoreAll();
@@ -801,7 +805,7 @@ test("Gemini cloud and refresh failures retain safe provider errors", async () =
           expiresAt: Date.now() - 1,
           sourcePath: "fixture",
         }).getUsage(),
-        /Gemini CLI: sign-in expired|empty access token/i,
+        /sign-in has expired|empty access token/i,
       );
     }
 
@@ -814,7 +818,7 @@ test("Gemini cloud and refresh failures retain safe provider errors", async () =
         expiresAt: Date.now() - 1,
         sourcePath: "fixture",
       }).getUsage(),
-      /Gemini CLI: sign-in expired/i,
+      /sign-in has expired/i,
     );
   } finally {
     mock.restoreAll();

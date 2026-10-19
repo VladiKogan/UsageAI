@@ -8,7 +8,7 @@ import {
   codexBundledPath,
   findBundledExecutable,
   sameHostExtensionPath,
-  setExtensionPathResolver,
+  type ExtensionPathResolver,
 } from "../src/bundled-cli";
 import { findClaudeLaunch } from "../src/providers/claude";
 import { findCodexLaunch } from "../src/providers/codex";
@@ -38,7 +38,7 @@ test("bundled CLI lookup trusts only a local extension in this extension host", 
   const root = path.resolve(os.tmpdir(), "provider-extension");
   const local = { extensionPath: root, extensionKind: 2, extensionUri: { scheme: "file" } };
   assert.equal(sameHostExtensionPath(local, 2), root);
-  assert.equal(sameHostExtensionPath(local, undefined), root);
+  assert.equal(sameHostExtensionPath(local, undefined), undefined);
   assert.equal(sameHostExtensionPath(undefined, 2), undefined);
   assert.equal(sameHostExtensionPath(local, 1), undefined);
   assert.equal(sameHostExtensionPath({ ...local, extensionUri: { scheme: "vscode-remote" } }, 2), undefined);
@@ -49,18 +49,16 @@ test("bundled CLI lookup returns one fixed path only when the file exists", asyn
   const root = await mkdtemp(path.join(os.tmpdir(), "usageai-bundled-"));
   const relative = path.join("bin", "tool.exe");
   try {
-    setExtensionPathResolver((id) => (id === "publisher.tool" ? root : undefined));
-    assert.equal(await findBundledExecutable("publisher.tool", relative), undefined);
+    const resolve: ExtensionPathResolver = (id) => (id === "publisher.tool" ? root : undefined);
+    assert.equal(await findBundledExecutable(resolve, "publisher.tool", relative), undefined);
     await touch(path.join(root, relative));
-    assert.equal(await findBundledExecutable("publisher.tool", relative), path.join(root, relative));
-    assert.equal(await findBundledExecutable("publisher.other", relative), undefined);
-    assert.equal(await findBundledExecutable("publisher.tool", undefined), undefined);
+    assert.equal(await findBundledExecutable(resolve, "publisher.tool", relative), path.join(root, relative));
+    assert.equal(await findBundledExecutable(resolve, "publisher.other", relative), undefined);
+    assert.equal(await findBundledExecutable(resolve, "publisher.tool", undefined), undefined);
     await touch(path.join(path.dirname(root), "outside.exe"));
-    assert.equal(await findBundledExecutable("publisher.tool", path.join("..", "outside.exe")), undefined);
-    setExtensionPathResolver(() => "relative/root");
-    assert.equal(await findBundledExecutable("publisher.tool", relative), undefined);
+    assert.equal(await findBundledExecutable(resolve, "publisher.tool", path.join("..", "outside.exe")), undefined);
+    assert.equal(await findBundledExecutable(() => "relative/root", "publisher.tool", relative), undefined);
   } finally {
-    setExtensionPathResolver(() => undefined);
     await rm(path.join(path.dirname(root), "outside.exe"), { force: true });
     await rm(root, { recursive: true, force: true });
   }
@@ -80,25 +78,27 @@ test("Codex and Claude use the extension-bundled CLI only after standalone insta
     for (const name of ["CODEX_PATH", "CLAUDE_PATH"]) delete process.env[name];
     process.env.PATH = pathDirectory;
     for (const name of ["APPDATA", "LOCALAPPDATA", "USERPROFILE", "HOME"]) process.env[name] = path.join(directory, "home");
-    setExtensionPathResolver((id) => ({ "openai.chatgpt": codexRoot, "anthropic.claude-code": claudeRoot })[id]);
+    const resolve: ExtensionPathResolver = (id) => ({ "openai.chatgpt": codexRoot, "anthropic.claude-code": claudeRoot })[id];
 
-    await assert.rejects(() => findCodexLaunch(), /Codex extension/);
-    assert.equal(await findClaudeLaunch(), undefined);
+    await assert.rejects(() => findCodexLaunch(resolve), /Codex extension/);
+    assert.equal(await findClaudeLaunch(resolve), undefined);
 
     await touch(bundledCodex);
     await touch(bundledClaude);
-    assert.deepEqual(await findCodexLaunch(), { executable: bundledCodex, args: [] });
-    assert.deepEqual(await findClaudeLaunch(), { executable: bundledClaude, argsPrefix: [] });
+    assert.deepEqual(await findCodexLaunch(resolve), { executable: bundledCodex, args: [] });
+    assert.deepEqual(await findClaudeLaunch(resolve), { executable: bundledClaude, argsPrefix: [] });
+    // Without a resolver, as outside VS Code, the bundled binaries are never considered.
+    await assert.rejects(() => findCodexLaunch(), /Codex CLI was not found/);
+    assert.equal(await findClaudeLaunch(), undefined);
 
     const windows = process.platform === "win32";
     const standaloneCodex = path.join(pathDirectory, windows ? "codex.exe" : "codex");
     const standaloneClaude = path.join(pathDirectory, windows ? "claude.exe" : "claude");
     await touch(standaloneCodex);
     await touch(standaloneClaude);
-    assert.deepEqual(await findCodexLaunch(), { executable: standaloneCodex, args: [] });
-    assert.deepEqual(await findClaudeLaunch(), { executable: standaloneClaude, argsPrefix: [] });
+    assert.deepEqual(await findCodexLaunch(resolve), { executable: standaloneCodex, args: [] });
+    assert.deepEqual(await findClaudeLaunch(resolve), { executable: standaloneClaude, argsPrefix: [] });
   } finally {
-    setExtensionPathResolver(() => undefined);
     for (const name of names) restoreEnvironment(name, previous.get(name));
     await rm(directory, { recursive: true, force: true });
   }

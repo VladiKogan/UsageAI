@@ -47,7 +47,9 @@ You only need one of these sign-in methods:
 For Codex and Claude Code, UsageAI runs the provider's CLI. It uses `CODEX_PATH` or `CLAUDE_PATH`
 when set, then a CLI on `PATH` or in its standard install folder, and finally the CLI that ships
 inside OpenAI's Codex extension or Anthropic's Claude Code extension. So having just the provider's
-VS Code extension installed and signed in is enough.
+VS Code extension installed and signed in is enough, with one exception: on macOS, Claude Code
+keeps its login in the Keychain, which UsageAI does not read, so Claude Code usage there still
+needs `USAGEAI_CLAUDE_OAUTH_TOKEN` or a login saved in `~/.claude/.credentials.json`.
 
 UsageAI requires VS Code 1.90 or newer, or a compatible Antigravity IDE build. It needs access to provider files and commands, so it does not run in vscode.dev or github.dev.
 

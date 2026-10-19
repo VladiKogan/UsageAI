@@ -1081,13 +1081,19 @@ internal static class CoverageExpansionTests
 
     public static async Task TestGeminiCombinedErrorAsync()
     {
+        // The actionable sentence comes first, because the card's single stale-error line shows only that much.
         Equal(
-            "Google Gemini usage could not be read. Antigravity IDE: not found. agy: returned no usage, so it may not be signed in. Gemini CLI: not signed in. Run `agy` to sign in, then refresh.",
+            "Google Gemini is not signed in. Run `agy` to sign in, then refresh. The Antigravity IDE and `agy` returned no usage, and the Gemini CLI is not signed in.",
             GeminiUsageClient.CombinedError(true, "Google Gemini is not signed in. Run `agy` to sign in, then refresh."));
-        True(GeminiUsageClient.CombinedError(false, "Google Gemini sign-in has expired. Run `agy` to sign in again, then refresh.")
-            .EndsWith("agy: not installed. Gemini CLI: sign-in expired. Install Antigravity, sign in with `agy`, then refresh.", StringComparison.Ordinal));
-        True(GeminiUsageClient.CombinedError(true, "Google Cloud API rate-limited the quota request.")
-            .Contains("Gemini CLI: Google Cloud API rate-limited the quota request. Run", StringComparison.Ordinal));
+        Equal(
+            "Google Gemini sign-in has expired. Install Antigravity, sign in with `agy`, then refresh. The Antigravity IDE returned no usage and `agy` is not installed, and the Gemini CLI sign-in has expired.",
+            GeminiUsageClient.CombinedError(false, "Google Gemini sign-in has expired. Run `agy` to sign in again, then refresh."));
+        // A failure that is not about sign-in keeps its own message and gets no sign-in hint.
+        Equal(
+            "Google Cloud API rate-limited the quota request. The Antigravity IDE and `agy` returned no usage before the Gemini CLI fallback.",
+            GeminiUsageClient.CombinedError(true, "Google Cloud API rate-limited the quota request."));
+        True(GeminiUsageClient.CombinedError(true, "Google Gemini API returned HTTP 500")
+            .StartsWith("Google Gemini API returned HTTP 500. The Antigravity", StringComparison.Ordinal));
 
         var environment = SaveEnvironment("GEMINI_CONFIG_DIR");
         var directory = Path.Combine(AppPaths.DataDirectory, $"gemini-combined-{Guid.NewGuid():N}");
@@ -1100,7 +1106,7 @@ internal static class CoverageExpansionTests
                 throw new InvalidOperationException("HTTP should not be reached.")));
             var client = new GeminiUsageClient(http, NoLocalGeminiSnapshot, hasAgyCli: () => false);
             var exception = await ThrowsAsync<GeminiUsageException>(() => client.GetUsageAsync());
-            True(exception.Message.Contains("agy: not installed. Gemini CLI: not signed in.", StringComparison.Ordinal));
+            True(exception.Message.StartsWith("Google Gemini is not signed in. Install Antigravity", StringComparison.Ordinal));
             True(exception.InnerException is GeminiUsageException);
         }
         finally

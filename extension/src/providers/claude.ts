@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import * as path from "node:path";
-import { claudeBundledPath, findBundledExecutable } from "../bundled-cli";
+import { claudeBundledPath, findBundledExecutable, noExtensions, type ExtensionPathResolver } from "../bundled-cli";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
 import {
@@ -251,18 +251,21 @@ async function hasFreshStoredClaudeCredential(): Promise<boolean> {
  * stored token is still expired a command that needs a live token (`mcp list`) makes the CLI
  * refresh it through its own credential store. UsageAI never touches the refresh token itself.
  */
-export async function runClaudeAuthRecovery(signal?: AbortSignal): Promise<boolean> {
-  if (!await runClaudeAuthStatus(signal)) {
+export async function runClaudeAuthRecovery(
+  signal?: AbortSignal,
+  resolveExtensionPath: ExtensionPathResolver = noExtensions,
+): Promise<boolean> {
+  if (!await runClaudeAuthStatus(signal, resolveExtensionPath)) {
     return false;
   }
   if (!await hasFreshStoredClaudeCredential()) {
-    await nudgeClaudeCredentialRefresh(signal);
+    await nudgeClaudeCredentialRefresh(signal, resolveExtensionPath);
   }
   return true;
 }
 
-async function nudgeClaudeCredentialRefresh(signal?: AbortSignal): Promise<void> {
-  const launch = await findClaudeLaunch();
+async function nudgeClaudeCredentialRefresh(signal: AbortSignal | undefined, resolveExtensionPath: ExtensionPathResolver): Promise<void> {
+  const launch = await findClaudeLaunch(resolveExtensionPath);
   if (!launch) {
     return;
   }
@@ -301,8 +304,11 @@ function spawnClaudeCli(launch: ClaudeLaunch, args: readonly string[]) {
   );
 }
 
-export async function runClaudeAuthStatus(signal?: AbortSignal): Promise<boolean> {
-  const launch = await findClaudeLaunch();
+export async function runClaudeAuthStatus(
+  signal?: AbortSignal,
+  resolveExtensionPath: ExtensionPathResolver = noExtensions,
+): Promise<boolean> {
+  const launch = await findClaudeLaunch(resolveExtensionPath);
   if (!launch) {
     return false;
   }
@@ -334,7 +340,9 @@ export async function runClaudeAuthStatus(signal?: AbortSignal): Promise<boolean
   }
 }
 
-export async function findClaudeLaunch(): Promise<ClaudeLaunch | undefined> {
+export async function findClaudeLaunch(
+  resolveExtensionPath: ExtensionPathResolver = noExtensions,
+): Promise<ClaudeLaunch | undefined> {
   const configured = process.env.CLAUDE_PATH?.trim().replace(/^"|"$/g, "");
   const candidates: string[] = [];
   if (configured && path.isAbsolute(configured)) {
@@ -361,12 +369,6 @@ export async function findClaudeLaunch(): Promise<ClaudeLaunch | undefined> {
       "/usr/local/bin/claude",
     );
   }
-  // Last, so a standalone install keeps priority: the binary the Claude Code extension ships for itself.
-  const bundled = await findBundledExecutable(claudeExtensionId, claudeBundledPath());
-  if (bundled) {
-    candidates.push(bundled);
-  }
-
   for (const candidate of [...new Set(candidates)]) {
     if (!candidate || !path.isAbsolute(candidate)) {
       continue;
@@ -381,7 +383,10 @@ export async function findClaudeLaunch(): Promise<ClaudeLaunch | undefined> {
       return launch;
     }
   }
-  return undefined;
+  // Last, and only when nothing above worked, so a standalone install keeps priority: the binary the
+  // Claude Code extension ships for itself. findBundledExecutable has already checked that it exists.
+  const bundled = await findBundledExecutable(resolveExtensionPath, claudeExtensionId, claudeBundledPath());
+  return bundled ? createClaudeLaunch(bundled) : undefined;
 }
 
 async function createClaudeLaunch(command: string): Promise<ClaudeLaunch | undefined> {

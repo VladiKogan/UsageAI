@@ -44,21 +44,28 @@ interface GeminiUsageDependencies {
 }
 
 /**
- * The error shown once every Gemini path failed. It names each path, because the Gemini CLI fallback
- * runs last and its own "not signed in" would otherwise blame the wrong sign-in. Shared wording with
- * the desktop app's `GeminiUsageClient.CombinedError`.
+ * The error shown once every Gemini path failed. The Gemini CLI fallback runs last, so its message
+ * alone would hide that the Antigravity paths returned nothing too. The first sentence stays the
+ * actionable one, because the desktop card shows only that much. Only a sign-in failure gets a
+ * sign-in hint: a rate limit or an outage keeps its own message. "Returned no usage" rather than "not
+ * found", because a running IDE whose port or token could not be used ends up here as well. Shared
+ * wording with the desktop app's `GeminiUsageClient.CombinedError`.
  */
 export function combinedGeminiError(agyInstalled: boolean, geminiCliMessage: string): string {
-  const cli = geminiCliMessage === notSignedInMessage
-    ? "not signed in"
-    : geminiCliMessage === signInAgainMessage
-      ? "sign-in expired"
-      : geminiCliMessage.replace(/\.$/, "");
-  const agy = agyInstalled ? "returned no usage, so it may not be signed in" : "not installed";
-  const hint = agyInstalled
-    ? "Run `agy` to sign in, then refresh."
-    : "Install Antigravity, sign in with `agy`, then refresh.";
-  return `Google Gemini usage could not be read. Antigravity IDE: not found. agy: ${agy}. Gemini CLI: ${cli}. ${hint}`;
+  const tried = agyInstalled
+    ? "The Antigravity IDE and `agy` returned no usage"
+    : "The Antigravity IDE returned no usage and `agy` is not installed";
+  const expired = geminiCliMessage === signInAgainMessage;
+  if (expired || geminiCliMessage === notSignedInMessage) {
+    const headline = expired ? "Google Gemini sign-in has expired." : "Google Gemini is not signed in.";
+    const action = agyInstalled
+      ? "Run `agy` to sign in, then refresh."
+      : "Install Antigravity, sign in with `agy`, then refresh.";
+    const cli = expired ? "the Gemini CLI sign-in has expired" : "the Gemini CLI is not signed in";
+    return `${headline} ${action} ${tried}, and ${cli}.`;
+  }
+  const cliMessage = /[.!?]$/.test(geminiCliMessage) ? geminiCliMessage : `${geminiCliMessage}.`;
+  return `${cliMessage} ${tried} before the Gemini CLI fallback.`;
 }
 
 export interface AntigravityProcess {

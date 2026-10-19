@@ -4,18 +4,14 @@ import * as path from "node:path";
 /** Returns the install folder of another extension running in this extension host, or nothing. */
 export type ExtensionPathResolver = (extensionId: string) => string | undefined;
 
+/** The default outside VS Code, and in tests that don't exercise bundled CLIs: no extensions. */
+export const noExtensions: ExtensionPathResolver = () => undefined;
+
 /** The parts of a `vscode.Extension` this module reads, so tests need no VS Code host. */
 export interface ExtensionLocation {
   readonly extensionPath: string;
   readonly extensionKind: number;
   readonly extensionUri: { readonly scheme: string };
-}
-
-let resolveExtensionPath: ExtensionPathResolver = () => undefined;
-
-/** Installed by activation; providers stay free of the `vscode` module. */
-export function setExtensionPathResolver(resolver: ExtensionPathResolver): void {
-  resolveExtensionPath = resolver;
 }
 
 /**
@@ -30,7 +26,7 @@ export function sameHostExtensionPath(
   if (!extension || extension.extensionUri.scheme !== "file") {
     return undefined;
   }
-  if (ownKind !== undefined && extension.extensionKind !== ownKind) {
+  if (ownKind === undefined || extension.extensionKind !== ownKind) {
     return undefined;
   }
   return path.isAbsolute(extension.extensionPath) ? extension.extensionPath : undefined;
@@ -41,6 +37,7 @@ export function sameHostExtensionPath(
  * folder VS Code reports for that extension id can be launched.
  */
 export async function findBundledExecutable(
+  resolveExtensionPath: ExtensionPathResolver,
   extensionId: string,
   relativePath: string | undefined,
 ): Promise<string | undefined> {

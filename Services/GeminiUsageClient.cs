@@ -152,24 +152,34 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
     }
 
     /// <summary>
-    /// The error shown once every Gemini path failed. It names each path, because the Gemini CLI
-    /// fallback runs last and its own "not signed in" would otherwise blame the wrong sign-in. Shared
-    /// wording with the editor extension's <c>combinedGeminiError</c>.
+    /// The error shown once every Gemini path failed. The Gemini CLI fallback runs last, so its
+    /// message alone would hide that the Antigravity paths returned nothing too. The first sentence
+    /// stays the actionable one, because the card's single stale-error line shows only that much.
+    /// Only a sign-in failure gets a sign-in hint: a rate limit or an outage keeps its own message.
+    /// "Returned no usage" rather than "not found", because a running IDE whose port or token could
+    /// not be used ends up here as well. Shared wording with the editor extension's
+    /// <c>combinedGeminiError</c>.
     /// </summary>
     internal static string CombinedError(bool agyInstalled, string geminiCliMessage)
     {
-        var cli = geminiCliMessage switch
+        var tried = agyInstalled
+            ? "The Antigravity IDE and `agy` returned no usage"
+            : "The Antigravity IDE returned no usage and `agy` is not installed";
+        var expired = geminiCliMessage == SignInAgainMessage;
+        if (expired || geminiCliMessage == NotSignedInMessage)
         {
-            NotSignedInMessage => "not signed in",
-            SignInAgainMessage => "sign-in expired",
-            _ when geminiCliMessage.EndsWith('.') => geminiCliMessage[..^1],
-            _ => geminiCliMessage,
-        };
-        var agy = agyInstalled ? "returned no usage, so it may not be signed in" : "not installed";
-        var hint = agyInstalled
-            ? "Run `agy` to sign in, then refresh."
-            : "Install Antigravity, sign in with `agy`, then refresh.";
-        return $"Google Gemini usage could not be read. Antigravity IDE: not found. agy: {agy}. Gemini CLI: {cli}. {hint}";
+            var headline = expired ? "Google Gemini sign-in has expired." : "Google Gemini is not signed in.";
+            var action = agyInstalled
+                ? "Run `agy` to sign in, then refresh."
+                : "Install Antigravity, sign in with `agy`, then refresh.";
+            var cli = expired ? "the Gemini CLI sign-in has expired" : "the Gemini CLI is not signed in";
+            return $"{headline} {action} {tried}, and {cli}.";
+        }
+
+        var cliMessage = geminiCliMessage.EndsWith('.') || geminiCliMessage.EndsWith('!') || geminiCliMessage.EndsWith('?')
+            ? geminiCliMessage
+            : geminiCliMessage + ".";
+        return $"{cliMessage} {tried} before the Gemini CLI fallback.";
     }
 
     private async Task<UsageSnapshot> GetGeminiCliUsageAsync(CancellationToken cancellationToken)

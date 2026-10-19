@@ -100,6 +100,8 @@ class FakeDomElement {
   }
 }
 
+const installedExtensions = new Map<string, unknown>();
+
 const vscodeStub = {
   StatusBarAlignment: { Left: 1 },
   ProgressLocation: { Window: 1 },
@@ -137,6 +139,9 @@ const vscodeStub = {
     },
     withProgress<T>(_options: unknown, task: () => T): T { return task(); },
     showInformationMessage(message: string) { informationMessages.push(message); },
+  },
+  extensions: {
+    getExtension: (id: string) => installedExtensions.get(id),
   },
   workspace: {
     getConfiguration: () => configuration,
@@ -656,4 +661,23 @@ test("a metric-mode change that cannot be saved reverts the dashboard's cached m
   // Applied immediately, then rolled back once the write failed.
   assert.equal(posted.at(-2)?.metricDisplayMode, "important");
   assert.equal(posted.at(-1)?.metricDisplayMode, "all");
+});
+
+test("the bundled-CLI resolver lends only extensions in UsageAI's own extension host", () => {
+  const root = process.cwd();
+  installedExtensions.set("openai.chatgpt", { extensionPath: root, extensionKind: 1, extensionUri: { scheme: "file" } });
+  try {
+    const local = extensionModule.bundledCliResolver({ extension: { extensionKind: 1 } } as never);
+    assert.equal(local("openai.chatgpt"), root);
+    assert.equal(local("anthropic.claude-code"), undefined);
+
+    // UsageAI moved to the remote host while the provider extension stayed local, or the reverse.
+    const otherHost = extensionModule.bundledCliResolver({ extension: { extensionKind: 2 } } as never);
+    assert.equal(otherHost("openai.chatgpt"), undefined);
+
+    // Without its own kind UsageAI cannot tell which side an extension runs on, so it lends nothing.
+    assert.equal(extensionModule.bundledCliResolver({} as never)("openai.chatgpt"), undefined);
+  } finally {
+    installedExtensions.clear();
+  }
 });

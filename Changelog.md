@@ -10,8 +10,9 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 - Google Gemini now says which sign-in paths it tried when all of them fail. Because the Gemini CLI
   fallback runs last, its own "not signed in" used to be the only error shown, even when the
-  Antigravity paths were the ones that mattered. The error now names the Antigravity IDE, `agy`
-  (including whether it is installed), and the Gemini CLI, each with its result.
+  Antigravity paths were the ones that mattered. The error still opens with what to do, then
+  says that the Antigravity IDE and `agy` (or that `agy` is not installed) returned no usage. A
+  rate limit or outage on the Gemini CLI path keeps its own message instead of a sign-in hint.
 
 - The What's New window now shows one sentence per change instead of the changelog's full
   paragraph. The changelog stays the long-form record — it is where a change is explained — but read

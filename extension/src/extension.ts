@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { sameHostExtensionPath, setExtensionPathResolver } from "./bundled-cli";
+import { sameHostExtensionPath, type ExtensionPathResolver } from "./bundled-cli";
 import { dashboardExpandedProvidersKey, UsageDashboardViewProvider } from "./dashboard-view";
 import {
   normalizeQuotaDisplay,
@@ -8,7 +8,7 @@ import {
   type StatusBarProviderId,
   type UsageSnapshot,
 } from "./model";
-import { ClaudeUsageClient } from "./providers/claude";
+import { ClaudeUsageClient, runClaudeAuthRecovery } from "./providers/claude";
 import { CodexUsageClient } from "./providers/codex";
 import { CopilotUsageClient } from "./providers/copilot";
 import { disposeAgyHub, GeminiUsageClient } from "./providers/gemini";
@@ -18,14 +18,21 @@ import { StatusBarController } from "./status-bar";
 const cacheKey = "usageai.cachedSnapshots.v1";
 type UsageProviderId = Exclude<StatusBarProviderId, "hottest">;
 
-export function activate(context: vscode.ExtensionContext): void {
-  // Read lazily: provider extensions can be installed or updated while UsageAI keeps running.
+/**
+ * Finds provider extensions for their bundled CLIs. Each lookup asks VS Code again, because provider
+ * extensions can be installed or updated while UsageAI keeps running.
+ */
+export function bundledCliResolver(context: Pick<vscode.ExtensionContext, "extension">): ExtensionPathResolver {
   const ownKind = (context.extension as vscode.Extension<unknown> | undefined)?.extensionKind;
-  setExtensionPathResolver((extensionId) => sameHostExtensionPath(vscode.extensions.getExtension(extensionId), ownKind));
+  return (extensionId) => sameHostExtensionPath(vscode.extensions.getExtension(extensionId), ownKind);
+}
+
+export function activate(context: vscode.ExtensionContext): void {
+  const extensionPath = bundledCliResolver(context);
   const configuration = () => vscode.workspace.getConfiguration("usageai");
   const clients = [
-    new CodexUsageClient(),
-    new ClaudeUsageClient(),
+    new CodexUsageClient(extensionPath),
+    new ClaudeUsageClient((signal) => runClaudeAuthRecovery(signal, extensionPath)),
     new CopilotUsageClient(() => configuration().get("enableGitHubCliFallback", false)),
     new GeminiUsageClient(),
   ];

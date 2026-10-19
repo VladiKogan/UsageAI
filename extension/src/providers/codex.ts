@@ -1,7 +1,7 @@
 import { access } from "node:fs/promises";
 import * as path from "node:path";
 import * as readline from "node:readline";
-import { codexBundledPath, findBundledExecutable } from "../bundled-cli";
+import { codexBundledPath, findBundledExecutable, noExtensions, type ExtensionPathResolver } from "../bundled-cli";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
 import { findExecutable, spawnSecure } from "../security";
@@ -23,8 +23,11 @@ export class CodexUsageClient implements UsageClient {
   public readonly signInCommand = "codex login";
   public readonly accountUrl = "https://chatgpt.com/codex/settings/usage";
 
+  /** `resolveExtensionPath` lets the CLI bundled in OpenAI's Codex extension serve as a last resort. */
+  public constructor(private readonly resolveExtensionPath: ExtensionPathResolver = noExtensions) {}
+
   public async getUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
-    const launch = await findCodexLaunch();
+    const launch = await findCodexLaunch(this.resolveExtensionPath);
     const child = spawnSecure(
       launch.executable,
       [...launch.args, "app-server", "--listen", "stdio://"],
@@ -256,7 +259,7 @@ function formatPlan(plan: string): string {
   return known[normalized] ?? normalized.replace(/\b\w/g, (value) => value.toUpperCase());
 }
 
-export async function findCodexLaunch(): Promise<CodexLaunch> {
+export async function findCodexLaunch(resolveExtensionPath: ExtensionPathResolver = noExtensions): Promise<CodexLaunch> {
   const configured = process.env.CODEX_PATH?.trim();
   let command: string | undefined;
   if (configured) {
@@ -286,7 +289,7 @@ export async function findCodexLaunch(): Promise<CodexLaunch> {
       }
     }
     // Last, so a standalone install keeps priority: the binary the Codex extension ships for itself.
-    command ??= await findBundledExecutable(codexExtensionId, codexBundledPath());
+    command ??= await findBundledExecutable(resolveExtensionPath, codexExtensionId, codexBundledPath());
   }
   if (!command) {
     throw new UsageProviderError(
