@@ -271,7 +271,7 @@ function dashboardHtml(webview: vscode.Webview): string {
   </style>
 </head>
 <body>
-  <header class="masthead"><h1>Quota instruments</h1><span id="stamp" class="stamp">Waiting for first reading</span></header>
+  <header class="masthead"><h1>Usage limits</h1><span id="stamp" class="stamp">Waiting for first reading</span></header>
   <div class="toolbar" aria-label="Dashboard controls">
     <select id="metric-mode" aria-label="Dashboard metrics"><option value="all">All metrics</option><option value="metered">Metered only</option><option value="important">Important only</option></select>
     <button id="collapse-all" class="action" type="button">Collapse all</button><button id="expand-all" class="action" type="button">Expand all</button>

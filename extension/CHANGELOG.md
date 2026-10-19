@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- Renamed the sidebar view to UsageAI and its dashboard heading to Usage limits. The view title
+  now reads **UsageAI** instead of **UsageAI: Usage**, and the heading above the provider cards
+  says what they show instead of "Quota instruments".
+
+### Fixed
+
+- Fixed the view's toolbar buttons overlapping the view title in a narrow sidebar. Refresh and
+  Open Settings now show as the native `refresh` and `gear` icons, following the active product
+  icon theme, with "Refresh" and "Open Settings" as their tooltips; a narrow sidebar now shortens
+  the title instead of covering it. The Command Palette still lists them as **UsageAI: Refresh**
+  and **UsageAI: Open Settings**, and the command IDs are unchanged.
+
 ## 0.1.16
 
 ### Added
