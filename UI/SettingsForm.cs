@@ -269,7 +269,7 @@ internal sealed class SettingsForm : Form
             AutoSize = true,
             ForeColor = Theme.Muted,
             Margin = scale.Pad(0, 0, 0, 8),
-            Text = "Remaining shows what is left on meters, headlines, and the tray icon. Colours and alerts still follow usage.",
+            Text = "Remaining shows what is left on meters, headlines, the tray icon, and alerts. Colours and alert thresholds still follow usage.",
         });
         AddRow("Warning colour from (% used)", _warningPercent);
         AddRow("Critical colour from (% used)", _criticalPercent);

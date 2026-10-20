@@ -78,6 +78,7 @@ internal static class Program
           UsageAI.exe --diagnose <provider>  Print one provider's usage as JSON.
                                              Providers: codex, claude, copilot, gemini.
           UsageAI.exe --render-preview [path] [--full] [--dpi 96|192|288]
+                                    [--quota-display used|remaining]
                                              Render a preview image of the popup.
           UsageAI.exe --version              Print the application version.
           UsageAI.exe --help                 Show this help.

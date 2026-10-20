@@ -67,13 +67,19 @@ internal sealed class NotificationCoordinator
                 continue;
             }
 
+            // Thresholds always fire on used; only the wording follows the quota display, with the
+            // body stating the opposite side of the title just as a card's secondary line does.
+            var remaining = settings.QuotaDisplay == QuotaDisplay.Remaining;
+            var detail = remaining ? metric.DisplaySecondaryFor(QuotaDisplay.Remaining) : metric.DisplayRemaining;
             var reset = UsageFormatting.RelativeReset(metric.ResetsAt, now);
             var message = string.IsNullOrEmpty(reset)
-                ? metric.DisplayRemaining
-                : $"{metric.DisplayRemaining}, {reset}.";
+                ? detail
+                : $"{detail}, {reset}.";
             alerts.Add(new UsageAlert(
                 snapshot.ProviderId,
-                $"{snapshot.ProviderName}: {metric.Name} {crossed}% used",
+                remaining
+                    ? $"{snapshot.ProviderName}: {metric.Name} {100 - crossed}% left"
+                    : $"{snapshot.ProviderName}: {metric.Name} {crossed}% used",
                 message,
                 crossed >= settings.CriticalPercent ? AlertLevel.Critical : AlertLevel.Warning));
         }

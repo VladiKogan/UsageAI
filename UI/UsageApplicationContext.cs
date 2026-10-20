@@ -1,5 +1,6 @@
 using Microsoft.Win32;
 using System.Diagnostics;
+using System.Globalization;
 using UsageAI.Models;
 using UsageAI.Services;
 
@@ -285,6 +286,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private void OpenSettings()
     {
         ShowPendingWhatsNew();
+        var pollingBefore = PollingInputs(_settings);
         using var dialog = new SettingsForm(
             _settings,
             _clients.Select(client => (client.Id, client.DisplayName)).ToArray(),
@@ -295,14 +297,36 @@ internal sealed class UsageApplicationContext : ApplicationContext
             return;
         }
 
+        // A presentation-only change — theme, colours, metric or quota display — re-renders from
+        // the cached snapshots. Only a change to which providers are polled, or how often, polls.
+        var pollingChanged = !PollingInputs(_settings).Equals(pollingBefore, StringComparison.Ordinal);
         Theme.Apply(_settings.Theme, _settings.WarningPercent, _settings.CriticalPercent);
         ApplyHotkeySetting();
-        _service.ApplySettings();
+        if (pollingChanged)
+        {
+            _service.ApplySettings();
+        }
+
         PushStateToPopup();
         UpdateTray();
-        _ = RefreshAsync(force: false);
+        if (pollingChanged)
+        {
+            _ = RefreshAsync(force: false);
+        }
+
         _ = CheckForUpdatesIfDueAsync();
     }
+
+    /// <summary>The settings that decide which providers are fetched and how often.</summary>
+    internal static string PollingInputs(AppSettings settings) => string.Join(
+        '|',
+        settings.RefreshIntervalMinutes.ToString(CultureInfo.InvariantCulture),
+        settings.SlowRefreshWhenHidden ? "slow" : "steady",
+        string.Join(
+            ',',
+            settings.HiddenProviders
+                .Select(id => id.ToUpperInvariant())
+                .Order(StringComparer.Ordinal)));
 
     private void ShowPendingWhatsNew()
     {

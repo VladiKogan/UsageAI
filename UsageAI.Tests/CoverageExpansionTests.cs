@@ -5538,12 +5538,146 @@ internal static class CoverageExpansionTests
             Equal(1, GetPrivateField<ComboBox>(reopened, "_quotaDisplay").SelectedIndex);
         }
 
-        // Alerts are worded and triggered from usage whatever the display.
+        // Alerts still fire on the used threshold in both modes; only their wording flips.
         var usedAlerts = QuotaAlerts(QuotaDisplay.Used, now);
         var remainingAlerts = QuotaAlerts(QuotaDisplay.Remaining, now);
         Equal(1, usedAlerts.Count);
-        True(usedAlerts.SequenceEqual(remainingAlerts));
-        Equal("Claude Code: Weekly 95% used", remainingAlerts[0].Title);
+        Equal(1, remainingAlerts.Count);
+        Equal(usedAlerts[0].Level, remainingAlerts[0].Level);
+        Equal(AlertLevel.Critical, remainingAlerts[0].Level);
+        Equal("Claude Code: Weekly 95% used", usedAlerts[0].Title);
+        Equal("4% LEFT", usedAlerts[0].Message);
+        Equal("Claude Code: Weekly 5% left", remainingAlerts[0].Title);
+        Equal("96% USED", remainingAlerts[0].Message);
+
+        // Edges: a full and an empty quota, and a metric without a percentage keeps its text path.
+        var fresh = new UsageMetric("Fresh", UsageMetricKind.Session, 0);
+        Equal("100% LEFT", fresh.DisplayPrimary(QuotaDisplay.Remaining));
+        Equal(100, fresh.DisplayedPercent(QuotaDisplay.Remaining));
+        var spent = new UsageMetric("Spent", UsageMetricKind.Session, 100);
+        Equal("0% LEFT", spent.DisplayPrimary(QuotaDisplay.Remaining));
+        Equal(0, spent.DisplayedPercent(QuotaDisplay.Remaining));
+        var unreported = new UsageMetric("Unreported", UsageMetricKind.Monthly, null, RemainingText: "12 left");
+        Equal(unreported.DisplayUsed, unreported.DisplayPrimary(QuotaDisplay.Remaining));
+        Equal(unreported.DisplaySecondary, unreported.DisplaySecondaryFor(QuotaDisplay.Remaining));
+
+        // A missing settings file loads the default.
+        File.Delete(AppPaths.SettingsFile);
+        Equal(QuotaDisplay.Used, AppSettings.Load().QuotaDisplay);
+
+        // An empty remaining quota draws an empty ring, not the minimum-sweep sliver; a full one
+        // draws more ring than a half-full one. 16px has no glyph, so only the ring is counted.
+        using (var emptyRing = TrayIconFactory.Create(100, "A", size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 0))
+        {
+            Equal(0, OpaquePixels(emptyRing, Theme.ForUsage(100)));
+        }
+
+        var success = Theme.ForUsage(0);
+        using (var fullRing = TrayIconFactory.Create(0, "A", size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 100))
+        using (var halfRing = TrayIconFactory.Create(0, "A", size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 50))
+        {
+            True(OpaquePixels(halfRing, success) > 0);
+            True(OpaquePixels(fullRing, success) > OpaquePixels(halfRing, success));
+        }
+
+        // Only a change to what is polled, or how often, re-polls after Settings is saved.
+        var polling = new AppSettings { HiddenProviders = new[] { "gemini", "Codex" } };
+        var pollingBefore = UsageApplicationContext.PollingInputs(polling);
+        polling.QuotaDisplay = QuotaDisplay.Remaining;
+        polling.Theme = ThemeMode.Light;
+        polling.MetricDisplayMode = MetricDisplayMode.ImportantOnly;
+        polling.WarningPercent = 60;
+        polling.HiddenProviders = new[] { "CODEX", "gemini" };
+        Equal(pollingBefore, UsageApplicationContext.PollingInputs(polling));
+        polling.RefreshIntervalMinutes = 15;
+        False(pollingBefore == UsageApplicationContext.PollingInputs(polling));
+        polling.RefreshIntervalMinutes = new AppSettings().RefreshIntervalMinutes;
+        polling.SlowRefreshWhenHidden = false;
+        False(pollingBefore == UsageApplicationContext.PollingInputs(polling));
+        polling.SlowRefreshWhenHidden = true;
+        polling.HiddenProviders = new[] { "gemini" };
+        False(pollingBefore == UsageApplicationContext.PollingInputs(polling));
+
+        // Switching the display re-renders the popup from the states it already holds — the popup
+        // owns no provider client — and the header keeps its severity colour in both modes.
+        var switching = new AppSettings { GlobalHotkeyEnabled = false };
+        using (var popup = new UsagePopupForm(switching, 96))
+        {
+            popup.StartPosition = FormStartPosition.Manual;
+            popup.Location = new Point(-10_000, -10_000);
+            popup.SetStates(statuses, false, now, Array.Empty<UsageSample>());
+            var summary = GetPrivateField<Label>(popup, "_summaryLabel");
+            Equal("CLAUDE CODE 95% USED", summary.Text);
+            var usedColour = summary.ForeColor;
+            switching.QuotaDisplay = QuotaDisplay.Remaining;
+            popup.SetStates(statuses, false, now, Array.Empty<UsageSample>());
+            Equal("CLAUDE CODE 5% LEFT", summary.Text);
+            Equal(usedColour, summary.ForeColor);
+        }
+
+        // Every DPI the app ships for, in both modes, with and without High Contrast.
+        var highContrast = false;
+        Theme.SetHighContrastProbe(() => highContrast);
+        try
+        {
+            foreach (var contrast in new[] { false, true })
+            {
+                highContrast = contrast;
+                Theme.Apply(ThemeMode.Dark, 72, 90);
+                foreach (var dpi in new[] { 96, 192, 288 })
+                {
+                    foreach (var display in new[] { QuotaDisplay.Used, QuotaDisplay.Remaining })
+                    {
+                        foreach (var expanded in new[] { false, true })
+                        {
+                            using var card = new ProviderUsageCard(
+                                hotStatus,
+                                expanded,
+                                Array.Empty<UsageSample>(),
+                                showTrend: false,
+                                dpiOverride: dpi,
+                                quotaDisplay: display)
+                            {
+                                Width = new LayoutScale(dpi)[420],
+                            };
+                            DrawControl(card);
+                        }
+
+                        using var popup = new UsagePopupForm(
+                            new AppSettings { QuotaDisplay = display, GlobalHotkeyEnabled = false },
+                            dpi);
+                        popup.StartPosition = FormStartPosition.Manual;
+                        popup.Location = new Point(-10_000, -10_000);
+                        popup.SetStates(statuses, false, now, Array.Empty<UsageSample>());
+                        popup.SetMode(DashboardMode.Full);
+                        popup.Show();
+                        Application.DoEvents();
+                        DrawControl(popup);
+                        popup.Hide();
+                    }
+                }
+            }
+        }
+        finally
+        {
+            Theme.SetHighContrastProbe(null);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+        }
+
+        // The README preview can show the remaining view.
+        var previewDirectory = Path.Combine(AppPaths.DataDirectory, $"quota-preview-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(previewDirectory);
+        try
+        {
+            var previewPath = Path.Combine(previewDirectory, "remaining.png");
+            PreviewRenderer.Render(new[] { "--render-preview", previewPath, "--full", "--dpi", "96", "--quota-display", "remaining" });
+            True(new FileInfo(previewPath).Length > 1_000);
+        }
+        finally
+        {
+            Directory.Delete(previewDirectory, recursive: true);
+        }
+
         return Task.CompletedTask;
     }
 
