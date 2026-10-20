@@ -28,8 +28,9 @@ internal sealed class ProviderCardActionEventArgs : EventArgs
 /// <summary>
 /// One provider's card. Compact and expanded modes share the same grammar: a label on the
 /// left, the headline value on the right, supporting detail beneath, and a consumption meter
-/// across the bottom. The meter fill and the headline both encode what is used, so they
-/// never move in opposite directions.
+/// across the bottom. The meter fill and the headline encode the same quantity — used, or
+/// remaining when the quota display asks for it — so they never move in opposite directions.
+/// Severity colour and cues always follow the used percentage.
 /// </summary>
 internal sealed class ProviderUsageCard : Control
 {
@@ -55,6 +56,7 @@ internal sealed class ProviderUsageCard : Control
     private readonly bool _showTrend;
     private readonly IReadOnlyList<UsageMetric> _metrics;
     private readonly int? _dpiOverride;
+    private readonly QuotaDisplay _quotaDisplay;
     private CardFonts _fonts;
     private int _measuredDpi;
     private Rectangle _actionBounds = Rectangle.Empty;
@@ -68,9 +70,11 @@ internal sealed class ProviderUsageCard : Control
         IReadOnlyList<UsageSample> history,
         bool showTrend,
         IReadOnlyList<UsageMetric>? metrics = null,
-        int? dpiOverride = null)
+        int? dpiOverride = null,
+        QuotaDisplay quotaDisplay = QuotaDisplay.Used)
     {
         _status = status;
+        _quotaDisplay = quotaDisplay;
         _expanded = expanded;
         _history = history;
         _showTrend = showTrend && expanded;
@@ -242,7 +246,7 @@ internal sealed class ProviderUsageCard : Control
         var textLeft = scale[58];
         var metric = _status.Snapshot?.Primary;
         var valueText = metric is { HasQuota: true }
-            ? Theme.UsageCue(metric.UsedPercent!.Value) + metric.DisplayUsed
+            ? Theme.UsageCue(metric.UsedPercent!.Value) + metric.DisplayPrimary(_quotaDisplay)
             : metric?.DisplayUsed ?? (_status.IsLoading ? "..." : "--");
         var valueWidth = MeasureWidth(graphics, valueText, _fonts.Value);
         var nameWidth = Math.Max(scale[40], Width - textLeft - valueWidth - scale[26]);
@@ -415,7 +419,7 @@ internal sealed class ProviderUsageCard : Control
 
         var valueColor = metric.HasQuota ? Theme.ForUsage(metric.UsedPercent!.Value) : severity;
         var valueText = metric.HasQuota
-            ? Theme.UsageCue(metric.UsedPercent!.Value) + metric.DisplayUsed
+            ? Theme.UsageCue(metric.UsedPercent!.Value) + metric.DisplayPrimary(_quotaDisplay)
             : metric.DisplayUsed;
         var valueWidth = MeasureWidth(graphics, valueText, _fonts.Value);
         var baseRowHeight = RowHeight(metric, scale);
@@ -620,7 +624,7 @@ internal sealed class ProviderUsageCard : Control
             TextFormatFlags.HorizontalCenter | TextFormatFlags.VerticalCenter);
     }
 
-    private static void DrawMeter(Graphics graphics, UsageMetric? metric, Rectangle bounds, Color providerColor)
+    private void DrawMeter(Graphics graphics, UsageMetric? metric, Rectangle bounds, Color providerColor)
     {
         if (metric is null)
         {
@@ -643,7 +647,7 @@ internal sealed class ProviderUsageCard : Control
         DrawingHelpers.DrawCapacityMeter(
             graphics,
             bounds,
-            metric.UsedPercent!.Value,
+            metric.DisplayedPercent(_quotaDisplay),
             Theme.ForUsage(metric.UsedPercent!.Value),
             Theme.Track);
     }
@@ -720,7 +724,7 @@ internal sealed class ProviderUsageCard : Control
         return metric is null ? string.Empty : UsageFormatting.RelativeReset(metric.ResetsAt, DateTimeOffset.Now);
     }
 
-    private static string SecondaryText(UsageMetric metric) => metric.DisplaySecondary;
+    private string SecondaryText(UsageMetric metric) => metric.DisplaySecondaryFor(_quotaDisplay);
 
     private string Identity()
     {
@@ -904,7 +908,7 @@ internal sealed class ProviderUsageCard : Control
             {
                 var reset = UsageFormatting.RelativeReset(metric.ResetsAt, DateTimeOffset.Now);
                 var values = metric.HasQuota
-                    ? $"{metric.DisplayUsed}, {metric.DisplaySecondary}"
+                    ? $"{metric.DisplayPrimary(_quotaDisplay)}, {metric.DisplaySecondaryFor(_quotaDisplay)}"
                     : $"{metric.DisplayRemaining}, {metric.DisplayUsage}";
                 parts.Add(string.IsNullOrEmpty(reset)
                     ? $"{metric.Name}: {values}"

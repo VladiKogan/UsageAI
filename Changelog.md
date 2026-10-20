@@ -6,6 +6,18 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Settings ▸ Appearance ▸ Quota display** can show how much quota is left instead of how much is
+  used. In **Remaining** mode the card headlines, metric rows, meters, popup header, tray tooltip,
+  and tray ring all read as what is left, such as `28% LEFT`, and each meter fills to the same
+  number its headline states, so the bar and the figure never disagree. Only presentation flips:
+  warning and critical colours, High Contrast cues, alerts, forecasts, which provider drives the
+  tray and popup header, and **Important only** filtering all keep working from the used
+  percentage, so a nearly exhausted limit is flagged the same way in both modes. A provider with no
+  metered limit is never shown as 100% left. **Used** stays the default, and this matches the
+  editor extension's `usageai.quotaDisplay` setting.
+
 ### Changed
 
 - The What's New window now shows one sentence per change instead of the changelog's full

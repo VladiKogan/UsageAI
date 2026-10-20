@@ -226,8 +226,9 @@ internal sealed class UsageApplicationContext : ApplicationContext
         ReplaceIcon(TrayIconFactory.Create(
             usedPercent,
             ProviderGlyph(trayStatus.ProviderId),
-            identityColor: Theme.ForProvider(trayStatus.ProviderId)));
-        _trayIcon.Text = TrayTooltip(trayStatus);
+            identityColor: Theme.ForProvider(trayStatus.ProviderId),
+            fillPercent: TrayDisplayedPercent(trayStatus, _settings.QuotaDisplay) ?? 0));
+        _trayIcon.Text = TrayTooltip(trayStatus, _settings.QuotaDisplay);
     }
 
     private void UpdateRefreshingTrayIcon()
@@ -533,13 +534,31 @@ internal sealed class UsageApplicationContext : ApplicationContext
         base.Dispose(disposing);
     }
 
-    internal static string TrayTooltip(ProviderStatus status) => Trim(
+    internal static string TrayTooltip(ProviderStatus status, QuotaDisplay display = QuotaDisplay.Used) => Trim(
         $"UsageAI - {ShortProviderName(status.ProviderName)}: " +
-        $"{TrayUsedPercent(status)}% used",
+        (TrayDisplayedPercent(status, display) is { } percent
+            ? $"{percent}% {(display == QuotaDisplay.Remaining ? "left" : "used")}"
+            : "no metered limit"),
         MaximumTooltipLength);
 
+    /// <summary>Drives tray selection and gauge colour, so both stay on what is used.</summary>
     internal static int TrayUsedPercent(ProviderStatus status) =>
         status.Snapshot?.Primary?.UsedPercent ?? status.Snapshot?.HighestUsedPercent ?? 0;
+
+    /// <summary>
+    /// The number the tray tooltip states and the gauge ring fills to. Remaining mode returns
+    /// null for a provider without a metered limit rather than claiming it has 100% left.
+    /// </summary>
+    internal static int? TrayDisplayedPercent(ProviderStatus status, QuotaDisplay display)
+    {
+        var used = Math.Clamp(TrayUsedPercent(status), 0, 100);
+        if (display != QuotaDisplay.Remaining)
+        {
+            return used;
+        }
+
+        return status.Snapshot?.Metrics.Any(metric => metric.HasQuota) == true ? 100 - used : null;
+    }
 
     /// <summary>
     /// Resolves the provider represented by the tray gauge. An unavailable pinned provider

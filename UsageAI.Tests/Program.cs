@@ -53,6 +53,7 @@ internal static class Program
         ("High Contrast palette and extreme DPI scale", TestHighContrastAndDpiAsync),
         ("painted card text and rows follow the monitor DPI", TestCardDpiTypographyAsync),
         ("dashboard metric mode UI and settings isolation", CoverageExpansionTests.TestDashboardMetricModeUiAsync),
+        ("quota display flips presentation only", CoverageExpansionTests.TestQuotaDisplayAsync),
         ("release notes parser boundary cases", CoverageExpansionTests.TestReleaseNotesBoundariesAsync),
         ("release note bullet summaries", CoverageExpansionTests.TestReleaseNoteSummariesAsync),
         ("What's New first-interaction lifecycle", CoverageExpansionTests.TestWhatsNewLifecycleAsync),

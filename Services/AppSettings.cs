@@ -103,6 +103,9 @@ internal sealed class AppSettings
 
     public MetricDisplayMode MetricDisplayMode { get; set; } = MetricDisplayMode.All;
 
+    /// <summary>Whether meters and headlines show quota used or quota remaining.</summary>
+    public QuotaDisplay QuotaDisplay { get; set; } = QuotaDisplay.Used;
+
     public bool HistoryEnabled { get; set; } = true;
 
     public bool ForecastEnabled { get; set; } = true;
@@ -222,6 +225,12 @@ internal sealed class AppSettings
         {
             MetricDisplayMode = MetricDisplayMode.All;
         }
+
+        if (!Enum.IsDefined(QuotaDisplay))
+        {
+            QuotaDisplay = QuotaDisplay.Used;
+        }
+
         NotifyAtPercent = NotifyAtPercent is { Length: > 0 } thresholds
             ? thresholds
                 .Where(percent => percent is > 0 and <= 100)

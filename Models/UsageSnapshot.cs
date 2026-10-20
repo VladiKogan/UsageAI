@@ -56,6 +56,28 @@ internal sealed record UsageMetric(
     public string DisplayRemaining =>
         RemainingText ?? (IsUnlimited ? "UNLIMITED" : $"{RemainingPercent}% LEFT");
 
+    /// <summary>
+    /// The percentage a meter fills to and its headline states. The two always come from here
+    /// together, so in remaining mode the number and the bar flip as one.
+    /// </summary>
+    public int DisplayedPercent(QuotaDisplay display) =>
+        display == QuotaDisplay.Remaining ? RemainingPercent : Math.Clamp(UsedPercent ?? 0, 0, 100);
+
+    /// <summary>The headline value in the chosen quota display.</summary>
+    public string DisplayPrimary(QuotaDisplay display) =>
+        display == QuotaDisplay.Remaining && HasQuota
+            ? $"{RemainingPercent}% LEFT"
+            : DisplayUsed;
+
+    /// <summary>
+    /// Supporting text in the chosen quota display: the opposite side of the headline, so a row
+    /// never repeats the same number twice.
+    /// </summary>
+    public string DisplaySecondaryFor(QuotaDisplay display) =>
+        display == QuotaDisplay.Remaining && HasQuota
+            ? UsageText ?? $"{Math.Clamp(UsedPercent!.Value, 0, 100)}% USED"
+            : DisplaySecondary;
+
     [JsonIgnore]
     public string DisplayUsage =>
         UsageText ?? (IsUnlimited

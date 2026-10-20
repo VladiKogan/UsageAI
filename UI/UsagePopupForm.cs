@@ -559,7 +559,8 @@ internal sealed class UsagePopupForm : Form
                         _history,
                         _settings.ForecastEnabled && _settings.HistoryEnabled,
                         selectedMetrics,
-                        _dpiOverride);
+                        _dpiOverride,
+                        _settings.QuotaDisplay);
                     card.ActionInvoked += OnCardActionInvoked;
                     _content.Controls.Add(card);
                 }
@@ -651,7 +652,7 @@ internal sealed class UsagePopupForm : Form
             _summaryLabel.ForeColor = headline.HasQuota
                 ? Theme.ForUsage(headline.UsedPercent!.Value)
                 : Theme.Muted;
-            _summaryLabel.Text = $"{ShortName(headlineStatus.ProviderName)} {headline.DisplayUsed}".ToUpperInvariant();
+            _summaryLabel.Text = $"{ShortName(headlineStatus.ProviderName)} {headline.DisplayPrimary(_settings.QuotaDisplay)}".ToUpperInvariant();
         }
         else if (_isRefreshing)
         {
