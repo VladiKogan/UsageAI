@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.1.17
 
 ### Added
 
@@ -27,10 +27,12 @@
   unavailable" and what to check, then says that the Antigravity IDE and `agy` (or that `agy` is
   not installed) returned no usage. It no longer claims a sign-out it cannot know about, and a rate
   limit or outage on the Gemini CLI path keeps its own message instead of a sign-in hint.
-
 - Renamed the sidebar view to UsageAI and its dashboard heading to Usage limits. The view title
   now reads **UsageAI** instead of **UsageAI: Usage**, and the heading above the provider cards
   says what they show instead of "Quota instruments".
+- Expanded the suite to 58 checks covering bundled-CLI lookup, the remote-window hint, the combined
+  Gemini error, and a manifest guard for the hosting order and view toolbar. Aggregate coverage is
+  now 81.84% line, 81.42% branch, and 81.01% function coverage.
 
 ### Fixed
 
