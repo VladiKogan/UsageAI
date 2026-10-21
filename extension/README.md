@@ -39,8 +39,8 @@ You only need one of these sign-in methods:
 
 | Provider | What UsageAI looks for |
 | --- | --- |
-| Codex | A Codex CLI sign-in created by `codex login` |
-| Claude Code | A Claude Code sign-in created by running `claude`, or the optional `USAGEAI_CLAUDE_SESSION_KEY` environment variable |
+| Codex | A Codex sign-in created by `codex login` or OpenAI's Codex extension |
+| Claude Code | A Claude Code sign-in created by running `claude` or Anthropic's Claude Code extension, or the optional `USAGEAI_CLAUDE_SESSION_KEY` environment variable |
 | GitHub Copilot | A supported local Copilot credential, `COPILOT_GITHUB_TOKEN`, or the optional GitHub CLI fallback |
 | Google Gemini | A sign-in through Google's Antigravity VS Code extension or `agy` (recommended), a Gemini CLI sign-in, or a running Antigravity language server |
 

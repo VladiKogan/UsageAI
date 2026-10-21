@@ -24,6 +24,14 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
 - Browser storage is never scanned.
 - Claude web sessions are opt-in, memory-only, and never persisted by UsageAI.
 - Secrets are not forwarded to provider CLI child processes or included in diagnostic output.
+- Codex and Claude Code CLIs are launched from an explicit `CODEX_PATH` / `CLAUDE_PATH`, then `PATH`
+  and the providers' standard install folders, and only after those from the copy bundled in the
+  provider's official editor extension (OpenAI's Codex extension, Anthropic's Claude Code extension).
+  The tray app finds that copy through each editor's own `extensions.json`, which names the version
+  the editor actually loads as a bare folder inside its extensions folder; the editor extension asks
+  VS Code for the provider extension's folder in its own extension host. Either way only the
+  extension's own fixed binary paths are tried, never a search, and outside Windows the file must be
+  executable. The child gets the same minimal environment as any other provider CLI.
 - Network destinations and redirects are constrained by the provider clients.
 - Antigravity credentials remain owned by Google's official `agy` CLI. UsageAI starts it only as a
   `--hub` server bound to a loopback port, or on older builds through its read-only `/usage` path,

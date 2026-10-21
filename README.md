@@ -112,12 +112,14 @@ The dashboard is a normal Windows window: move it, resize it, maximize it, or cl
 
 | Provider | You need |
 | --- | --- |
-| **Codex** | Codex CLI signed in (`codex login`) |
-| **Claude Code** | Claude Code signed in (`claude`), or a Claude web session key you supply yourself |
+| **Codex** | Codex signed in through the Codex CLI (`codex login`) or OpenAI's Codex editor extension |
+| **Claude Code** | Claude Code signed in through the CLI (`claude`) or Anthropic's Claude Code editor extension, or a Claude web session key you supply yourself |
 | **GitHub Copilot** | Signed in through a Copilot IDE extension or Copilot CLI |
 | **Google Gemini** | Signed in through Google's Antigravity VS Code extension, `agy` (recommended), the `gemini` CLI, or Antigravity IDE |
 
 One is enough to get going. Connect the rest whenever you like — cards appear as providers show up.
+
+Codex and Claude Code don't need a separate CLI install: if only their editor extension is installed in VS Code, VS Code Insiders, VSCodium, Cursor, Windsurf, or Antigravity, UsageAI uses the CLI that extension ships.
 
 ## 🔒 Your credentials stay yours
 
@@ -207,9 +209,10 @@ restart it automatically.
 <details>
 <summary><b>Something's not showing up</b></summary>
 
-- **"Codex CLI was not found"** — make sure `codex.cmd` is on your `PATH`, or set `CODEX_PATH` to its full path. (UsageAI intentionally uses `codex.cmd` rather than `codex.ps1`, so it works with the default Windows PowerShell execution policy.)
-- **"Codex is not signed in"** — run `codex login` in a terminal, then hit **Refresh**.
-- **"Claude Code is not signed in"** — run `claude` and finish signing in, or use the session-key method above, then hit **Refresh**.
+- **"Codex CLI was not found"** — install the Codex CLI so `codex.cmd` is on your `PATH`, set `CODEX_PATH` to its full path, or install OpenAI's Codex extension in a supported editor; UsageAI then uses the CLI it ships. (UsageAI intentionally uses `codex.cmd` rather than `codex.ps1`, so it works with the default Windows PowerShell execution policy.)
+- **"Codex is not signed in"** — run `codex login` in a terminal or sign in through the Codex extension, then hit **Refresh**.
+- **"Claude Code is not signed in"** — run `claude` or sign in through the Claude Code extension, or use the session-key method above, then hit **Refresh**.
+- **"Google Gemini usage is unavailable"** — UsageAI tried the Antigravity IDE, the `agy` CLI, and the Gemini CLI, and the message says which of them returned nothing. Run `agy` to check that it is signed in, then hit **Refresh**.
 - **"Copilot is not signed in"** — sign in through a Copilot IDE extension or Copilot CLI, then hit **Refresh**.
 - **A card says "stale"** — the provider's latest check failed, so you're looking at its previous good reading. The card shows when that reading succeeded, the provider's error, and when UsageAI will retry automatically. The retry runs independently as soon as its backoff or provider-supplied wait time expires; **Refresh** remains available for an immediate manual check.
 - **The hotkey does nothing** — another app already owns Win+Alt+U. Turn it off in **Settings...** to release it.
