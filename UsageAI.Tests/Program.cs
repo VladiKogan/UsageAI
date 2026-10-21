@@ -91,6 +91,8 @@ internal static class Program
         ("preview and command-line entry points", CoverageExpansionTests.TestPreviewAndEntryPointsAsync),
         ("provider credential refresh and discovery branches", CoverageExpansionTests.TestProviderCredentialBranchesAsync),
         ("Gemini local probe and fallback branches", CoverageExpansionTests.TestGeminiDeepBranchesAsync),
+        ("Gemini names every failed path", CoverageExpansionTests.TestGeminiCombinedErrorAsync),
+        ("Codex and Claude CLIs bundled in an editor extension", CoverageExpansionTests.TestEditorBundledClisAsync),
         ("remaining UI interaction branches", CoverageExpansionTests.TestRemainingUiBranchesAsync),
         ("stale and retry presentation edge cases", CoverageExpansionTests.TestStalePresentationEdgesAsync),
         ("bounded stream branches", CoverageExpansionTests.TestLimitedReadStreamBranchesAsync),

@@ -11,6 +11,7 @@ import { CopilotUsageClient } from "../src/providers/copilot";
 import {
   agyHubArguments,
   clearHubStartBackoff,
+  combinedGeminiError,
   GeminiUsageClient,
   hubRetryIntervalMs,
   parseAntigravityProcessLines,
@@ -450,6 +451,63 @@ test("Gemini retries agy when a cached cold-start failure and CLI fallback are b
     disconnected.getUsage(),
     (error: unknown) => error instanceof Error && /`agy`/.test(error.message) && !/`gemini`/.test(error.message),
   );
+});
+
+test("Gemini names every failed path once the CLI fallback fails too", async () => {
+  // The actionable sentence comes first, because the desktop card shows only that much. It blames
+  // no sign-in: agy may be signed in but slow, and the IDE may be installed without agy.
+  assert.equal(
+    combinedGeminiError(true, "Google Gemini is not signed in. Run `agy` to sign in, then refresh."),
+    "Google Gemini usage is unavailable. Check that `agy` is signed in, then refresh. The Antigravity IDE and `agy` returned no usage, and the Gemini CLI is not signed in.",
+  );
+  assert.equal(
+    combinedGeminiError(false, "Google Gemini sign-in has expired. Run `agy` to sign in again, then refresh."),
+    "Google Gemini usage is unavailable. Sign in to Antigravity or install `agy`, then refresh. The Antigravity IDE returned no usage and `agy` is not installed, and the Gemini CLI sign-in has expired.",
+  );
+  // A failure that is not about sign-in keeps its own message and gets no sign-in hint.
+  assert.equal(
+    combinedGeminiError(true, "Google Cloud API rate-limited the quota request."),
+    "Google Cloud API rate-limited the quota request. The Antigravity IDE and `agy` returned no usage before the Gemini CLI fallback.",
+  );
+  assert.match(combinedGeminiError(true, "Google Gemini API returned HTTP 500"), /HTTP 500\. The Antigravity/);
+  assert.doesNotMatch(combinedGeminiError(true, "Gemini usage request timed out."), /sign in|not found/i);
+
+  const throttled = new UsageProviderError("Google Cloud API rate-limited the quota request.", 90_000);
+  const client = new GeminiUsageClient({
+    fetchAntigravity: async () => undefined,
+    fetchAgy: async () => undefined,
+    loadCredentials: async () => ({ accessToken: "token", sourcePath: "fixture" }),
+    hasAgyCli: async () => false,
+  });
+  (client as unknown as { getGeminiCliUsage: () => Promise<never> }).getGeminiCliUsage = async () => { throw throttled; };
+  await assert.rejects(client.getUsage(), (error: unknown) => error instanceof UsageProviderError
+    && error.retryAfterMs === 90_000
+    && error.cause === throttled
+    && /^Google Cloud API rate-limited the quota request. .*`agy` is not installed/.test(error.message));
+
+  const unexpected = new TypeError("internal detail");
+  const crashing = new GeminiUsageClient({
+    fetchAntigravity: async () => undefined,
+    fetchAgy: async () => undefined,
+    loadCredentials: async () => ({ accessToken: "token", sourcePath: "fixture" }),
+  });
+  (crashing as unknown as { getGeminiCliUsage: () => Promise<never> }).getGeminiCliUsage = async () => { throw unexpected; };
+  await assert.rejects(crashing.getUsage(), (error: unknown) => error === unexpected);
+
+  // A cancelled refresh keeps the CLI's own error and never looks for agy.
+  let agyLookups = 0;
+  const wrapped = new UsageProviderError("Could not read Gemini usage because the provider returned invalid or unavailable data.");
+  const cancelled = new GeminiUsageClient({
+    fetchAntigravity: async () => undefined,
+    fetchAgy: async () => undefined,
+    loadCredentials: async () => ({ accessToken: "token", sourcePath: "fixture" }),
+    hasAgyCli: async () => { agyLookups++; return true; },
+  });
+  (cancelled as unknown as { getGeminiCliUsage: () => Promise<never> }).getGeminiCliUsage = async () => { throw wrapped; };
+  const controller = new AbortController();
+  controller.abort();
+  await assert.rejects(cancelled.getUsage(controller.signal), (error: unknown) => error === wrapped);
+  assert.equal(agyLookups, 0);
 });
 
 test("netstat listening ports stay bound to the owning process", () => {

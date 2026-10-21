@@ -1,6 +1,7 @@
 import { access } from "node:fs/promises";
 import * as path from "node:path";
 import * as readline from "node:readline";
+import { codexBundledPaths, findBundledExecutable, noExtensions, type ExtensionPathResolver } from "../bundled-cli";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
 import { findExecutable, spawnSecure } from "../security";
@@ -9,8 +10,9 @@ import { getNumber, getObject, getString, isObject } from "./json";
 const requestTimeoutMs = 20_000;
 const maxProtocolLineCharacters = 131_072;
 const maxProtocolMessages = 512;
+const codexExtensionId = "openai.chatgpt";
 
-interface CodexLaunch {
+export interface CodexLaunch {
   readonly executable: string;
   readonly args: readonly string[];
 }
@@ -21,8 +23,11 @@ export class CodexUsageClient implements UsageClient {
   public readonly signInCommand = "codex login";
   public readonly accountUrl = "https://chatgpt.com/codex/settings/usage";
 
+  /** `resolveExtensionPath` lets the CLI bundled in OpenAI's Codex extension serve as a last resort. */
+  public constructor(private readonly resolveExtensionPath: ExtensionPathResolver = noExtensions) {}
+
   public async getUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
-    const launch = await findCodexLaunch();
+    const launch = await findCodexLaunch(this.resolveExtensionPath);
     const child = spawnSecure(
       launch.executable,
       [...launch.args, "app-server", "--listen", "stdio://"],
@@ -60,7 +65,7 @@ export class CodexUsageClient implements UsageClient {
         throw signal.reason;
       }
       if (/login|auth/i.test(stderr)) {
-        throw new UsageProviderError("Codex is not signed in. Run `codex login`, then refresh.", 0, { cause: error });
+        throw new UsageProviderError("Codex is not signed in. Run `codex login` or sign in through the Codex extension, then refresh.", 0, { cause: error });
       }
       if (error instanceof UsageProviderError) {
         throw error;
@@ -110,7 +115,7 @@ async function readResponse(
       const message = getString(root.error, "message");
       throw new UsageProviderError(
         message && /login|auth/i.test(message)
-          ? "Codex is not signed in. Run `codex login`, then refresh."
+          ? "Codex is not signed in. Run `codex login` or sign in through the Codex extension, then refresh."
           : "Codex could not read the account rate limits.",
       );
     }
@@ -254,7 +259,7 @@ function formatPlan(plan: string): string {
   return known[normalized] ?? normalized.replace(/\b\w/g, (value) => value.toUpperCase());
 }
 
-async function findCodexLaunch(): Promise<CodexLaunch> {
+export async function findCodexLaunch(resolveExtensionPath: ExtensionPathResolver = noExtensions): Promise<CodexLaunch> {
   const configured = process.env.CODEX_PATH?.trim();
   let command: string | undefined;
   if (configured) {
@@ -283,9 +288,14 @@ async function findCodexLaunch(): Promise<CodexLaunch> {
         // Report the normal not-found error below.
       }
     }
+    // Last, so a standalone install keeps priority: the binary the Codex extension ships for itself.
+    command ??= await findBundledExecutable(resolveExtensionPath, codexExtensionId, codexBundledPaths());
   }
   if (!command) {
-    throw new UsageProviderError("Codex CLI was not found. Install Codex or set CODEX_PATH, then refresh.");
+    throw new UsageProviderError(resolveExtensionPath.runsLocallyInRemoteWindow
+      // Codex may well be installed on the remote host, where this copy of UsageAI cannot look.
+      ? "Codex CLI was not found on this computer. If Codex is installed on the remote host, set `remote.extensionKind` to run UsageAI there, then reload."
+      : "Codex CLI was not found. Install Codex or the Codex extension, or set CODEX_PATH, then refresh.");
   }
   if (!command.toLowerCase().endsWith(".cmd")) {
     return { executable: command, args: [] };
