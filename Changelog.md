@@ -8,6 +8,17 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
+- **Settings ▸ Appearance ▸ Quota display** can show how much quota is left instead of how much is
+  used. In **Remaining** mode the card headlines, metric rows, meters, popup header, tray tooltip,
+  tray ring, and alert wording all read as what is left, such as `28% LEFT`, and each meter fills
+  to the same number its headline states, so the bar and the figure never disagree. Only
+  presentation flips: warning and critical colours, High Contrast cues, the alert thresholds
+  themselves, forecasts, which provider drives the tray and popup header, and **Important only**
+  filtering all keep working from the used percentage, so a nearly exhausted limit is flagged the
+  same way in both modes. A provider with no metered limit is never shown as 100% left. Switching
+  it re-renders from the last readings without polling any provider. **Used** stays the default,
+  and this matches the editor extension's `usageai.quotaDisplay` setting.
+- `--render-preview` accepts `--quota-display remaining` to render the remaining-quota view.
 - Codex and Claude Code can now use the CLIs bundled in their editor extensions. With only OpenAI's
   Codex extension or Anthropic's Claude Code extension installed, Codex reported "Codex CLI was not
   found" and an expired Claude login stayed stale. The tray app now reads the `extensions.json` of

@@ -22,12 +22,18 @@ internal static class TrayIconFactory
         }
     }
 
+    /// <summary>
+    /// Draws the gauge. Colour and fill intensity always follow <paramref name="usedPercent"/>;
+    /// the ring sweeps to <paramref name="fillPercent"/> when the quota display shows what is
+    /// left, so the ring and the tooltip number encode the same quantity.
+    /// </summary>
     public static Icon Create(
         int usedPercent,
         string glyph = "C",
         bool hasError = false,
         int size = 0,
-        Color? identityColor = null)
+        Color? identityColor = null,
+        int? fillPercent = null)
     {
         var pixels = Math.Clamp(size <= 0 ? PreferredSize : size, 16, 64);
         using var bitmap = new Bitmap(pixels, pixels, PixelFormat.Format32bppArgb);
@@ -54,9 +60,10 @@ internal static class TrayIconFactory
             }
 
             var normalizedUsage = Math.Clamp(usedPercent, 0, 100);
-            if (hasError || normalizedUsage > 0)
+            var normalizedFill = Math.Clamp(fillPercent ?? usedPercent, 0, 100);
+            if (hasError || normalizedFill > 0)
             {
-                var sweep = hasError ? 360F : Math.Max(10F, 360F * normalizedUsage / 100F);
+                var sweep = hasError ? 360F : Math.Max(10F, 360F * normalizedFill / 100F);
                 var fillAlpha = Math.Clamp((int)(55 + normalizedUsage * 0.85), 55, 160);
                 using (var fillBrush = new SolidBrush(Theme.IsHighContrast ? color : Color.FromArgb(fillAlpha, color)))
                 {
@@ -71,7 +78,7 @@ internal static class TrayIconFactory
                 graphics.DrawArc(arc, circle, -90, sweep);
             }
 
-            if (!hasError && normalizedUsage == 0)
+            if (!hasError && normalizedFill == 0)
             {
                 // At 16px there is no room for a readable glyph. A solid identity marker
                 // prevents an empty gauge from collapsing visually into the taskbar.

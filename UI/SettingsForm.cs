@@ -11,6 +11,7 @@ internal sealed class SettingsForm : Form
 {
     private static readonly object[] ThemeChoices = { "Follow Windows", "Dark", "Light" };
     private static readonly object[] MetricChoices = { "All", "Metered only", "Important only" };
+    private static readonly object[] QuotaChoices = { "Used", "Remaining" };
 
     private readonly List<Font> _ownedFonts = new();
     private readonly CancellationTokenSource _lifetime = new();
@@ -31,6 +32,7 @@ internal sealed class SettingsForm : Form
     private readonly NumericUpDown _criticalPercent;
     private readonly ComboBox _theme;
     private readonly ComboBox _metricDisplayMode;
+    private readonly ComboBox _quotaDisplay;
     private readonly ComboBox _trayProvider;
     private readonly CheckBox _historyEnabled;
     private readonly CheckBox _forecastEnabled;
@@ -175,6 +177,18 @@ internal sealed class SettingsForm : Form
         };
         _metricDisplayMode.Items.AddRange(MetricChoices);
 
+        _quotaDisplay = new ComboBox
+        {
+            AccessibleName = "Quota display",
+            BackColor = Theme.SurfaceRaised,
+            Dock = DockStyle.Fill,
+            DropDownStyle = ComboBoxStyle.DropDownList,
+            FlatStyle = FlatStyle.Flat,
+            ForeColor = Theme.Text,
+            Margin = scale.Pad(0, 4, 0, 4),
+        };
+        _quotaDisplay.Items.AddRange(QuotaChoices);
+
         _trayProvider = new ComboBox
         {
             BackColor = Theme.SurfaceRaised,
@@ -248,6 +262,14 @@ internal sealed class SettingsForm : Form
             ForeColor = Theme.Muted,
             Margin = scale.Pad(0, 0, 0, 8),
             Text = "Metered shows every percentage limit. Important shows the highest Session, Rolling, and Monthly limit.",
+        });
+        AddRow("Quota display", _quotaDisplay);
+        AddSpan(new Label
+        {
+            AutoSize = true,
+            ForeColor = Theme.Muted,
+            Margin = scale.Pad(0, 0, 0, 8),
+            Text = "Remaining shows what is left on meters, headlines, the tray icon, and alerts. Colours and alert thresholds still follow usage.",
         });
         AddRow("Warning colour from (% used)", _warningPercent);
         AddRow("Critical colour from (% used)", _criticalPercent);
@@ -390,6 +412,7 @@ internal sealed class SettingsForm : Form
         _criticalPercent.Value = _settings.CriticalPercent;
         _theme.SelectedIndex = (int)_settings.Theme;
         _metricDisplayMode.SelectedIndex = (int)_settings.MetricDisplayMode;
+        _quotaDisplay.SelectedIndex = (int)_settings.QuotaDisplay;
         _historyEnabled.Checked = _settings.HistoryEnabled;
         _forecastEnabled.Checked = _settings.ForecastEnabled;
         _hotkeyEnabled.Checked = _settings.GlobalHotkeyEnabled;
@@ -430,6 +453,9 @@ internal sealed class SettingsForm : Form
             2 => MetricDisplayMode.ImportantOnly,
             _ => MetricDisplayMode.All,
         };
+        _settings.QuotaDisplay = _quotaDisplay.SelectedIndex == 1
+            ? QuotaDisplay.Remaining
+            : QuotaDisplay.Used;
         _settings.HistoryEnabled = _historyEnabled.Checked;
         _settings.ForecastEnabled = _forecastEnabled.Checked;
         _settings.GlobalHotkeyEnabled = _hotkeyEnabled.Checked;

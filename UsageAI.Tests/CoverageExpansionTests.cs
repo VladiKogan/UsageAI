@@ -5510,6 +5510,376 @@ internal static class CoverageExpansionTests
         }
     }
 
+    internal static Task TestQuotaDisplayAsync()
+    {
+        var now = DateTimeOffset.UtcNow;
+
+        // The model flips only the presented number; the used percentage and its clamping stay put.
+        var session = new UsageMetric("Session", UsageMetricKind.Session, 72, now.AddHours(2));
+        Equal(72, session.DisplayedPercent(QuotaDisplay.Used));
+        Equal(28, session.DisplayedPercent(QuotaDisplay.Remaining));
+        Equal("72% USED", session.DisplayPrimary(QuotaDisplay.Used));
+        Equal("28% LEFT", session.DisplayPrimary(QuotaDisplay.Remaining));
+        Equal("28% LEFT", session.DisplaySecondaryFor(QuotaDisplay.Used));
+        Equal("72% USED", session.DisplaySecondaryFor(QuotaDisplay.Remaining));
+        var detailed = session with { UsageText = "216 of 300 used", RemainingText = "84 requests" };
+        Equal("28% LEFT", detailed.DisplayPrimary(QuotaDisplay.Remaining));
+        Equal("216 of 300 used", detailed.DisplaySecondaryFor(QuotaDisplay.Remaining));
+        var overspent = new UsageMetric("Overspent", UsageMetricKind.Rolling, 130);
+        Equal(100, overspent.DisplayedPercent(QuotaDisplay.Used));
+        Equal(0, overspent.DisplayedPercent(QuotaDisplay.Remaining));
+        Equal("100% USED", overspent.DisplaySecondaryFor(QuotaDisplay.Remaining));
+        Equal(0, new UsageMetric("Negative", UsageMetricKind.Rolling, -5).DisplayedPercent(QuotaDisplay.Used));
+        var balance = new UsageMetric("Credits", UsageMetricKind.Balance, null, RemainingText: "$9.50", UsageText: "Available balance");
+        Equal("$9.50", balance.DisplayPrimary(QuotaDisplay.Remaining));
+        Equal("Available balance", balance.DisplaySecondaryFor(QuotaDisplay.Remaining));
+        var unlimited = new UsageMetric("Unlimited", UsageMetricKind.Monthly, 40, IsUnlimited: true);
+        Equal("UNLIMITED", unlimited.DisplayPrimary(QuotaDisplay.Remaining));
+
+        // The preference defaults to used, persists, and falls back on anything unknown.
+        Equal(QuotaDisplay.Used, new AppSettings().QuotaDisplay);
+        new AppSettings { QuotaDisplay = QuotaDisplay.Remaining }.Save();
+        Equal(QuotaDisplay.Remaining, AppSettings.Load().QuotaDisplay);
+        AppPaths.WriteAllTextAtomic(AppPaths.SettingsFile, """{"quotaDisplay":"remaining"}""");
+        Equal(QuotaDisplay.Remaining, AppSettings.Load().QuotaDisplay);
+        AppPaths.WriteAllTextAtomic(AppPaths.SettingsFile, """{"RefreshIntervalMinutes":12,"QuotaDisplay":7}""");
+        var numericInvalid = AppSettings.Load();
+        Equal(12, numericInvalid.RefreshIntervalMinutes);
+        Equal(QuotaDisplay.Used, numericInvalid.QuotaDisplay);
+        AppPaths.WriteAllTextAtomic(AppPaths.SettingsFile, """{"QuotaDisplay":"future"}""");
+        Equal(QuotaDisplay.Used, AppSettings.Load().QuotaDisplay);
+
+        // The card's meter fill follows the displayed number while its colour still follows usage:
+        // a 95%-used limit keeps its critical colour, but in remaining mode the bar is a sliver.
+        var hot = new UsageMetric("Weekly", UsageMetricKind.Rolling, 95, now.AddDays(2));
+        var hotSnapshot = new UsageSnapshot("Pro", new[] { hot }, now, "claude", "Claude Code");
+        var hotStatus = new ProviderStatus("claude", "Claude Code", hotSnapshot, null, false);
+        var critical = Theme.ForUsage(95);
+        var usedPixels = CardPixels(hotStatus, QuotaDisplay.Used, critical);
+        var remainingPixels = CardPixels(hotStatus, QuotaDisplay.Remaining, critical);
+        True(remainingPixels > 0);
+        True(remainingPixels * 2 < usedPixels);
+
+        using (var remainingCard = new ProviderUsageCard(
+                   hotStatus,
+                   expanded: true,
+                   Array.Empty<UsageSample>(),
+                   showTrend: false,
+                   dpiOverride: 96,
+                   quotaDisplay: QuotaDisplay.Remaining))
+        {
+            True(remainingCard.AccessibleDescription!.Contains("Weekly: 5% LEFT, 95% USED", StringComparison.Ordinal));
+        }
+
+        using (var usedCard = new ProviderUsageCard(
+                   hotStatus,
+                   expanded: true,
+                   Array.Empty<UsageSample>(),
+                   showTrend: false,
+                   dpiOverride: 96))
+        {
+            True(usedCard.AccessibleDescription!.Contains("Weekly: 95% USED, 5% LEFT", StringComparison.Ordinal));
+        }
+
+        using (var compactCard = new ProviderUsageCard(
+                   hotStatus,
+                   expanded: false,
+                   Array.Empty<UsageSample>(),
+                   showTrend: false,
+                   dpiOverride: 96,
+                   quotaDisplay: QuotaDisplay.Remaining)
+               {
+                   Width = 360,
+               })
+        {
+            DrawControl(compactCard);
+        }
+
+        // The popup header flips with the cards, while the hottest provider is still chosen by usage.
+        var cool = new UsageSnapshot(
+            "Plus",
+            new[] { new UsageMetric("5-hour", UsageMetricKind.Session, 10, now.AddHours(1)) },
+            now,
+            "codex",
+            "Codex");
+        var coolStatus = new ProviderStatus("codex", "Codex", cool, null, false);
+        var statuses = new[] { coolStatus, hotStatus };
+        Equal("claude", UsagePopupForm.SelectHeadlineStatus(statuses)!.ProviderId);
+        var settings = new AppSettings { QuotaDisplay = QuotaDisplay.Remaining, GlobalHotkeyEnabled = false };
+        using (var popup = new UsagePopupForm(settings, 96))
+        {
+            popup.StartPosition = FormStartPosition.Manual;
+            popup.Location = new Point(-10_000, -10_000);
+            popup.SetStates(statuses, false, now, Array.Empty<UsageSample>());
+            var summary = GetPrivateField<Label>(popup, "_summaryLabel");
+            Equal("CLAUDE CODE 5% LEFT", summary.Text);
+            Equal(critical, summary.ForeColor);
+            popup.SetMode(DashboardMode.Full);
+            popup.Show();
+            Application.DoEvents();
+            var cards = GetPrivateField<FlowLayoutPanel>(popup, "_content").Controls.OfType<ProviderUsageCard>().ToArray();
+            Equal(2, cards.Length);
+            True(cards.All(card => GetPrivateField<QuotaDisplay>(card, "_quotaDisplay") == QuotaDisplay.Remaining));
+            popup.Hide();
+        }
+
+        // The tray keeps selecting by usage; only its tooltip number and ring fill flip.
+        Equal("claude", UsageApplicationContext.SelectTrayStatus(statuses, null)!.ProviderId);
+        Equal(95, UsageApplicationContext.TrayUsedPercent(hotStatus));
+        Equal(95, UsageApplicationContext.TrayDisplayedPercent(hotStatus, QuotaDisplay.Used));
+        Equal(5, UsageApplicationContext.TrayDisplayedPercent(hotStatus, QuotaDisplay.Remaining));
+        Equal("UsageAI - Claude Code: 95% used", UsageApplicationContext.TrayTooltip(hotStatus));
+        Equal("UsageAI - Claude Code: 5% left", UsageApplicationContext.TrayTooltip(hotStatus, QuotaDisplay.Remaining));
+        var balanceOnly = new ProviderStatus(
+            "copilot",
+            "GitHub Copilot",
+            new UsageSnapshot("Free", new[] { balance }, now, "copilot", "GitHub Copilot"),
+            null,
+            false);
+        Null(UsageApplicationContext.TrayDisplayedPercent(balanceOnly, QuotaDisplay.Remaining));
+        Equal("UsageAI - Copilot: no metered limit", UsageApplicationContext.TrayTooltip(balanceOnly, QuotaDisplay.Remaining));
+        Equal("UsageAI - Copilot: 0% used", UsageApplicationContext.TrayTooltip(balanceOnly));
+
+        using (var usedRing = TrayIconFactory.Create(95, "A", size: 32, identityColor: Theme.ForProvider("claude")))
+        using (var remainingRing = TrayIconFactory.Create(
+                   95,
+                   "A",
+                   size: 32,
+                   identityColor: Theme.ForProvider("claude"),
+                   fillPercent: 5))
+        {
+            var usedArc = OpaquePixels(usedRing, critical);
+            var remainingArc = OpaquePixels(remainingRing, critical);
+            True(remainingArc > 0);
+            True(remainingArc * 2 < usedArc);
+        }
+
+        // Settings round-trips the choice through its combo box.
+        var dialogSettings = new AppSettings();
+        using (var dialog = new SettingsForm(
+                   dialogSettings,
+                   new[] { ("claude", "Claude Code") },
+                   _ => Task.FromResult(new UpdateCheckResult(true, null)),
+                   _ => Task.CompletedTask,
+                   96))
+        {
+            var combo = GetPrivateField<ComboBox>(dialog, "_quotaDisplay");
+            Equal(0, combo.SelectedIndex);
+            combo.SelectedIndex = 1;
+            InvokePrivate(dialog, "Apply");
+            Equal(QuotaDisplay.Remaining, dialogSettings.QuotaDisplay);
+        }
+
+        using (var reopened = new SettingsForm(
+                   dialogSettings,
+                   new[] { ("claude", "Claude Code") },
+                   _ => Task.FromResult(new UpdateCheckResult(true, null)),
+                   _ => Task.CompletedTask,
+                   96))
+        {
+            Equal(1, GetPrivateField<ComboBox>(reopened, "_quotaDisplay").SelectedIndex);
+        }
+
+        // Alerts still fire on the used threshold in both modes; only their wording flips.
+        var usedAlerts = QuotaAlerts(QuotaDisplay.Used, now);
+        var remainingAlerts = QuotaAlerts(QuotaDisplay.Remaining, now);
+        Equal(1, usedAlerts.Count);
+        Equal(1, remainingAlerts.Count);
+        Equal(usedAlerts[0].Level, remainingAlerts[0].Level);
+        Equal(AlertLevel.Critical, remainingAlerts[0].Level);
+        Equal("Claude Code: Weekly 95% used", usedAlerts[0].Title);
+        Equal("4% LEFT", usedAlerts[0].Message);
+        Equal("Claude Code: Weekly 5% left", remainingAlerts[0].Title);
+        Equal("96% USED", remainingAlerts[0].Message);
+
+        // Edges: a full and an empty quota, and a metric without a percentage keeps its text path.
+        var fresh = new UsageMetric("Fresh", UsageMetricKind.Session, 0);
+        Equal("100% LEFT", fresh.DisplayPrimary(QuotaDisplay.Remaining));
+        Equal(100, fresh.DisplayedPercent(QuotaDisplay.Remaining));
+        var spent = new UsageMetric("Spent", UsageMetricKind.Session, 100);
+        Equal("0% LEFT", spent.DisplayPrimary(QuotaDisplay.Remaining));
+        Equal(0, spent.DisplayedPercent(QuotaDisplay.Remaining));
+        var unreported = new UsageMetric("Unreported", UsageMetricKind.Monthly, null, RemainingText: "12 left");
+        Equal(unreported.DisplayUsed, unreported.DisplayPrimary(QuotaDisplay.Remaining));
+        Equal(unreported.DisplaySecondary, unreported.DisplaySecondaryFor(QuotaDisplay.Remaining));
+
+        // A missing settings file loads the default.
+        File.Delete(AppPaths.SettingsFile);
+        Equal(QuotaDisplay.Used, AppSettings.Load().QuotaDisplay);
+
+        // An empty remaining quota draws an empty ring, not the minimum-sweep sliver; a full one
+        // draws more ring than a half-full one. 16px has no glyph, so only the ring is counted.
+        using (var emptyRing = TrayIconFactory.Create(100, "A", size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 0))
+        {
+            Equal(0, OpaquePixels(emptyRing, Theme.ForUsage(100)));
+        }
+
+        var success = Theme.ForUsage(0);
+        using (var fullRing = TrayIconFactory.Create(0, "A", size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 100))
+        using (var halfRing = TrayIconFactory.Create(0, "A", size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 50))
+        {
+            True(OpaquePixels(halfRing, success) > 0);
+            True(OpaquePixels(fullRing, success) > OpaquePixels(halfRing, success));
+        }
+
+        // Only a change to what is polled, or how often, re-polls after Settings is saved.
+        var polling = new AppSettings { HiddenProviders = new[] { "gemini", "Codex" } };
+        var pollingBefore = UsageApplicationContext.PollingInputs(polling);
+        polling.QuotaDisplay = QuotaDisplay.Remaining;
+        polling.Theme = ThemeMode.Light;
+        polling.MetricDisplayMode = MetricDisplayMode.ImportantOnly;
+        polling.WarningPercent = 60;
+        polling.HiddenProviders = new[] { "CODEX", "gemini" };
+        Equal(pollingBefore, UsageApplicationContext.PollingInputs(polling));
+        polling.RefreshIntervalMinutes = 15;
+        False(pollingBefore == UsageApplicationContext.PollingInputs(polling));
+        polling.RefreshIntervalMinutes = new AppSettings().RefreshIntervalMinutes;
+        polling.SlowRefreshWhenHidden = false;
+        False(pollingBefore == UsageApplicationContext.PollingInputs(polling));
+        polling.SlowRefreshWhenHidden = true;
+        polling.HiddenProviders = new[] { "gemini" };
+        False(pollingBefore == UsageApplicationContext.PollingInputs(polling));
+
+        // Switching the display re-renders the popup from the states it already holds — the popup
+        // owns no provider client — and the header keeps its severity colour in both modes.
+        var switching = new AppSettings { GlobalHotkeyEnabled = false };
+        using (var popup = new UsagePopupForm(switching, 96))
+        {
+            popup.StartPosition = FormStartPosition.Manual;
+            popup.Location = new Point(-10_000, -10_000);
+            popup.SetStates(statuses, false, now, Array.Empty<UsageSample>());
+            var summary = GetPrivateField<Label>(popup, "_summaryLabel");
+            Equal("CLAUDE CODE 95% USED", summary.Text);
+            var usedColour = summary.ForeColor;
+            switching.QuotaDisplay = QuotaDisplay.Remaining;
+            popup.SetStates(statuses, false, now, Array.Empty<UsageSample>());
+            Equal("CLAUDE CODE 5% LEFT", summary.Text);
+            Equal(usedColour, summary.ForeColor);
+        }
+
+        // Every DPI the app ships for, in both modes, with and without High Contrast.
+        var highContrast = false;
+        Theme.SetHighContrastProbe(() => highContrast);
+        try
+        {
+            foreach (var contrast in new[] { false, true })
+            {
+                highContrast = contrast;
+                Theme.Apply(ThemeMode.Dark, 72, 90);
+                foreach (var dpi in new[] { 96, 192, 288 })
+                {
+                    foreach (var display in new[] { QuotaDisplay.Used, QuotaDisplay.Remaining })
+                    {
+                        foreach (var expanded in new[] { false, true })
+                        {
+                            using var card = new ProviderUsageCard(
+                                hotStatus,
+                                expanded,
+                                Array.Empty<UsageSample>(),
+                                showTrend: false,
+                                dpiOverride: dpi,
+                                quotaDisplay: display)
+                            {
+                                Width = new LayoutScale(dpi)[420],
+                            };
+                            DrawControl(card);
+                        }
+
+                        using var popup = new UsagePopupForm(
+                            new AppSettings { QuotaDisplay = display, GlobalHotkeyEnabled = false },
+                            dpi);
+                        popup.StartPosition = FormStartPosition.Manual;
+                        popup.Location = new Point(-10_000, -10_000);
+                        popup.SetStates(statuses, false, now, Array.Empty<UsageSample>());
+                        popup.SetMode(DashboardMode.Full);
+                        popup.Show();
+                        Application.DoEvents();
+                        DrawControl(popup);
+                        popup.Hide();
+                    }
+                }
+            }
+        }
+        finally
+        {
+            Theme.SetHighContrastProbe(null);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+        }
+
+        // The README preview can show the remaining view.
+        var previewDirectory = Path.Combine(AppPaths.DataDirectory, $"quota-preview-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(previewDirectory);
+        try
+        {
+            var previewPath = Path.Combine(previewDirectory, "remaining.png");
+            PreviewRenderer.Render(new[] { "--render-preview", previewPath, "--full", "--dpi", "96", "--quota-display", "remaining" });
+            True(new FileInfo(previewPath).Length > 1_000);
+        }
+        finally
+        {
+            Directory.Delete(previewDirectory, recursive: true);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    private static int CardPixels(ProviderStatus status, QuotaDisplay display, Color color)
+    {
+        using var card = new ProviderUsageCard(
+            status,
+            expanded: true,
+            Array.Empty<UsageSample>(),
+            showTrend: false,
+            dpiOverride: 96,
+            quotaDisplay: display)
+        {
+            Width = 520,
+        };
+        card.CreateControl();
+        using var bitmap = new Bitmap(card.Width, card.Height);
+        card.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+        return CountPixels(bitmap, color);
+    }
+
+    private static int OpaquePixels(Icon icon, Color color)
+    {
+        using var bitmap = icon.ToBitmap();
+        return CountPixels(bitmap, color);
+    }
+
+    private static int CountPixels(Bitmap bitmap, Color color)
+    {
+        var count = 0;
+        for (var y = 0; y < bitmap.Height; y++)
+        {
+            for (var x = 0; x < bitmap.Width; x++)
+            {
+                var pixel = bitmap.GetPixel(x, y);
+                if (pixel.A == 255 && pixel.R == color.R && pixel.G == color.G && pixel.B == color.B)
+                {
+                    count++;
+                }
+            }
+        }
+
+        return count;
+    }
+
+    private static IReadOnlyList<UsageAlert> QuotaAlerts(QuotaDisplay display, DateTimeOffset at)
+    {
+        var coordinator = new NotificationCoordinator();
+        var settings = new AppSettings { QuotaDisplay = display };
+        var before = new UsageSnapshot(
+            "Pro",
+            new[] { new UsageMetric("Weekly", UsageMetricKind.Rolling, 70) },
+            at,
+            "claude",
+            "Claude Code");
+        coordinator.Evaluate(before, settings, at);
+        var after = before with { Metrics = new[] { new UsageMetric("Weekly", UsageMetricKind.Rolling, 96) } };
+        return coordinator.Evaluate(after, settings, at.AddMinutes(5));
+    }
+
     private static void DrawControl(Control control)
     {
         if (control.Width <= 0)

@@ -177,6 +177,8 @@ The key is kept in memory, is never forwarded to provider CLI child processes, a
 - How often it refreshes — and whether to ease off while no window is open
 - Alert thresholds, and whether resets get announced
 - Theme, and where the warning and critical colours kick in
+- Whether meters, headlines, the tray icon, and alert wording show quota **used** (the default) or
+  **remaining** — colours and alert thresholds always follow usage
 - Which metrics the full dashboard shows: all reported metrics, metered limits only, or the most
   important Session, Rolling, and Monthly limit
 - Whether history is recorded, and whether the trend and forecast are shown
@@ -267,6 +269,8 @@ dotnet run --project .\UsageAI.csproj -- --diagnose gemini
 dotnet run --project .\UsageAI.csproj -- --render-preview .\usageai-preview.png
 dotnet run --project .\UsageAI.csproj -- --render-preview .\usageai-dashboard-preview.png --full
 ```
+
+Add `--quota-display remaining` to either command to render the remaining-quota view.
 
 **Build the portable executable:**
 

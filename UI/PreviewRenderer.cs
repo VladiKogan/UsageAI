@@ -25,7 +25,7 @@ internal static class PreviewRenderer
         var outputPath = ResolveOutputPath(args);
         var previewDpi = ResolveDpi(args);
         var now = DateTimeOffset.Now;
-        var settings = new AppSettings();
+        var settings = new AppSettings { QuotaDisplay = ResolveQuotaDisplay(args) };
         Theme.Apply(settings.Theme, settings.WarningPercent, settings.CriticalPercent);
 
         var lastRefreshed = now.AddMinutes(-7);
@@ -290,6 +290,16 @@ internal static class PreviewRenderer
                dpi is 96 or 192 or 288
             ? dpi
             : 192;
+    }
+
+    private static QuotaDisplay ResolveQuotaDisplay(string[] args)
+    {
+        var flagIndex = Array.FindIndex(args, argument =>
+            argument.Equals("--quota-display", StringComparison.OrdinalIgnoreCase));
+        return flagIndex >= 0 && flagIndex + 1 < args.Length &&
+               args[flagIndex + 1].Equals("remaining", StringComparison.OrdinalIgnoreCase)
+            ? QuotaDisplay.Remaining
+            : QuotaDisplay.Used;
     }
 
     /// <summary>
