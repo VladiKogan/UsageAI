@@ -4,7 +4,7 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.13.0] - 2026-10-21
 
 ### Added
 
@@ -60,6 +60,10 @@ The project follows [Semantic Versioning](https://semver.org/).
   a startup entry disappears — running a second copy of UsageAI once cannot unregister the installed
   one. A registry the account cannot write is reported rather than thrown, and every other
   preference is still saved when that write fails.
+- The desktop suite grew to 82 checks. The new ones cover remaining-quota rendering and alert
+  wording, the editor-extension CLI lookup for Codex and Claude Code (including stale manifest
+  entries and paths outside the extensions folder), and the combined Gemini error. Coverage on the
+  `UsageAI` package is 88.61% line and 82.89% branch, against a gate of 83% and 76%.
 
 ### Fixed
 
