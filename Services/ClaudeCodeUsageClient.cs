@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Globalization;
+using System.Runtime.InteropServices;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Text.Json;
@@ -95,7 +96,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             !credentials.Scopes.Contains("user:profile", StringComparer.Ordinal))
         {
             throw new ClaudeCodeUsageException(
-                "Claude Code's OAuth token is missing the user:profile scope. Run `claude` to sign in again.");
+                "Claude Code's OAuth token is missing the user:profile scope. Run `claude` or use the Claude Code extension to sign in again.");
         }
     }
 
@@ -119,7 +120,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
                 throw new ClaudeCodeUsageException(
-                    "Claude Code's login has expired. Run `claude` to sign in again, then refresh.")
+                    "Claude Code's login has expired. Run `claude` or use the Claude Code extension to sign in again, then refresh.")
                 {
                     CanRetryAfterAuthProbe = true,
                 };
@@ -128,7 +129,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             if (response.StatusCode == HttpStatusCode.Forbidden)
             {
                 throw new ClaudeCodeUsageException(
-                    "Claude Code's login cannot read account usage. Run `claude` to sign in again.")
+                    "Claude Code's login cannot read account usage. Run `claude` or use the Claude Code extension to sign in again.")
                 {
                     CanRetryAfterAuthProbe = true,
                 };
@@ -265,12 +266,12 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         if (fileError is not null)
         {
             throw new ClaudeCodeUsageException(
-                "Claude Code's saved login could not be read. Run `claude` to sign in again.",
+                "Claude Code's saved login could not be read. Run `claude` or use the Claude Code extension to sign in again.",
                 fileError);
         }
 
         throw new ClaudeCodeUsageException(
-            "Claude Code is not signed in. Run `claude` to sign in, then refresh.");
+            "Claude Code is not signed in. Run `claude` or sign in through the Claude Code extension, then refresh.");
     }
 
     private async Task<ClaudeCredentials> RefreshExpiredCredentialsThroughClaudeAsync(
@@ -531,7 +532,10 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             }
         }
 
-        return null;
+        // Last, so a standalone install keeps priority: the binary the Claude Code editor extension
+        // ships for itself, as the editor extension's own recovery uses.
+        var bundled = EditorExtensionBinaries.FindClaude(userProfile, RuntimeInformation.OSArchitecture);
+        return bundled is null ? null : new ClaudeLaunch(bundled, null);
     }
 
     private static ClaudeLaunch? CreateClaudeLaunch(string command)
@@ -599,7 +603,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         if (accessToken is null)
         {
             throw new ClaudeCodeUsageException(
-                "Claude Code's saved login has no OAuth access token. Run `claude` to sign in again.");
+                "Claude Code's saved login has no OAuth access token. Run `claude` or use the Claude Code extension to sign in again.");
         }
 
         var scopes = Array.Empty<string>();

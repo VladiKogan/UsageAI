@@ -39,6 +39,35 @@ interface GeminiUsageDependencies {
   readonly hasAgyHub?: () => boolean;
   readonly resetAgyBackoff?: () => void;
   readonly loadCredentials: () => Promise<GeminiCredentials>;
+  /** Only for the error shown once every path failed: tells "not installed" from "not answering". */
+  readonly hasAgyCli?: () => Promise<boolean>;
+}
+
+/**
+ * The error shown once every Gemini path failed. The Gemini CLI fallback runs last, so its message
+ * alone would hide that the Antigravity paths returned nothing too. The first sentence stays the
+ * actionable one, because the desktop card shows only that much. Only a sign-in failure gets a
+ * sign-in hint: a rate limit or an outage keeps its own message. "Returned no usage" rather than "not
+ * found", because a running IDE whose port or token could not be used ends up here as well. Shared
+ * wording with the desktop app's `GeminiUsageClient.CombinedError`.
+ */
+export function combinedGeminiError(agyInstalled: boolean, geminiCliMessage: string): string {
+  const tried = agyInstalled
+    ? "The Antigravity IDE and `agy` returned no usage"
+    : "The Antigravity IDE returned no usage and `agy` is not installed";
+  const expired = geminiCliMessage === signInAgainMessage;
+  if (expired || geminiCliMessage === notSignedInMessage) {
+    // Only the Gemini CLI is known to be signed out: agy may be signed in but slow or backing off,
+    // and the Antigravity IDE may be installed without the standalone CLI. So the headline blames no
+    // sign-in and asks for a check rather than an install.
+    const action = agyInstalled
+      ? "Check that `agy` is signed in, then refresh."
+      : "Sign in to Antigravity or install `agy`, then refresh.";
+    const cli = expired ? "the Gemini CLI sign-in has expired" : "the Gemini CLI is not signed in";
+    return `Google Gemini usage is unavailable. ${action} ${tried}, and ${cli}.`;
+  }
+  const cliMessage = /[.!?]$/.test(geminiCliMessage) ? geminiCliMessage : `${geminiCliMessage}.`;
+  return `${cliMessage} ${tried} before the Gemini CLI fallback.`;
 }
 
 export interface AntigravityProcess {
@@ -68,6 +97,7 @@ export class GeminiUsageClient implements UsageClient {
     hasAgyHub: hasActiveAgyHub,
     resetAgyBackoff: clearHubStartBackoff,
     loadCredentials,
+    hasAgyCli,
   }) {}
 
   /**
@@ -118,7 +148,14 @@ export class GeminiUsageClient implements UsageClient {
           return recovered;
         }
       }
-      throw error;
+      // A cancelled refresh reports nothing, so it skips the agy lookup the combined error needs.
+      if (signal?.aborted || !(error instanceof UsageProviderError)) {
+        throw error;
+      }
+      // The Gemini CLI is only the last fallback, so its error alone would hide why the Antigravity
+      // paths, usually the ones that matter, returned nothing.
+      const agyInstalled = await (this.dependencies.hasAgyCli ?? (async () => true))();
+      throw new UsageProviderError(combinedGeminiError(agyInstalled, error.message), error.retryAfterMs, { cause: error });
     }
   }
 
@@ -633,6 +670,10 @@ async function tryFetchAgyPrintSnapshot(signal?: AbortSignal): Promise<UsageSnap
   }
 
   return parseAgyUsageOutput(stdout);
+}
+
+async function hasAgyCli(): Promise<boolean> {
+  return (await findAgyExecutable()) !== undefined;
 }
 
 async function findAgyExecutable(): Promise<string | undefined> {

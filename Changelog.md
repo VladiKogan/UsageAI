@@ -6,7 +6,26 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- Codex and Claude Code can now use the CLIs bundled in their editor extensions. With only OpenAI's
+  Codex extension or Anthropic's Claude Code extension installed, Codex reported "Codex CLI was not
+  found" and an expired Claude login stayed stale. The tray app now reads the `extensions.json` of
+  VS Code, VS Code Insiders, VSCodium, Cursor, Windsurf, and Antigravity to find the extension
+  version each editor actually loads, and checks the extension's own fixed binary paths inside it,
+  after `CODEX_PATH` / `CLAUDE_PATH`, `PATH`, and the standalone install folders.
+
 ### Changed
+
+- Codex and Claude Code sign-in messages now mention signing in through the provider's editor
+  extension. Someone using only the extension has no `codex` or `claude` command to run.
+
+- Google Gemini now says which sign-in paths it tried when all of them fail. Because the Gemini CLI
+  fallback runs last, its own "not signed in" used to be the only error shown, even when the
+  Antigravity paths were the ones that mattered. The error now opens with "Google Gemini usage is
+  unavailable" and what to check, then says that the Antigravity IDE and `agy` (or that `agy` is
+  not installed) returned no usage. It no longer claims a sign-out it cannot know about, and a rate
+  limit or outage on the Gemini CLI path keeps its own message instead of a sign-in hint.
 
 - The What's New window now shows one sentence per change instead of the changelog's full
   paragraph. The changelog stays the long-form record — it is where a change is explained — but read

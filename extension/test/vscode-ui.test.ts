@@ -100,6 +100,9 @@ class FakeDomElement {
   }
 }
 
+const installedExtensions = new Map<string, unknown>();
+let remoteName: string | undefined;
+
 const vscodeStub = {
   StatusBarAlignment: { Left: 1 },
   ProgressLocation: { Window: 1 },
@@ -115,7 +118,9 @@ const vscodeStub = {
       return { dispose() { registeredCommands.delete(command); } };
     },
   },
+  ExtensionKind: { UI: 1, Workspace: 2 },
   env: {
+    get remoteName() { return remoteName; },
     async openExternal(uri: { toString(): string }) { openedUris.push(uri.toString()); },
     clipboard: { async writeText(value: string) { clipboardWrites.push(value); } },
   },
@@ -137,6 +142,9 @@ const vscodeStub = {
     },
     withProgress<T>(_options: unknown, task: () => T): T { return task(); },
     showInformationMessage(message: string) { informationMessages.push(message); },
+  },
+  extensions: {
+    getExtension: (id: string) => installedExtensions.get(id),
   },
   workspace: {
     getConfiguration: () => configuration,
@@ -656,4 +664,24 @@ test("a metric-mode change that cannot be saved reverts the dashboard's cached m
   // Applied immediately, then rolled back once the write failed.
   assert.equal(posted.at(-2)?.metricDisplayMode, "important");
   assert.equal(posted.at(-1)?.metricDisplayMode, "all");
+});
+
+test("the bundled-CLI resolver lends local extension folders and knows a remote window", () => {
+  const root = process.cwd();
+  installedExtensions.set("openai.chatgpt", { extensionPath: root, extensionUri: { scheme: "file" } });
+  try {
+    const local = extensionModule.bundledCliResolver({ extension: { extensionKind: 1 } } as never);
+    assert.equal(local("openai.chatgpt"), root);
+    assert.equal(local("anthropic.claude-code"), undefined);
+    assert.equal(local.runsLocallyInRemoteWindow, false);
+
+    // Connected to a remote host: running locally, UsageAI cannot see what is installed there.
+    remoteName = "ssh-remote";
+    assert.equal(extensionModule.bundledCliResolver({ extension: { extensionKind: 1 } } as never).runsLocallyInRemoteWindow, true);
+    // Already running on the remote host, it sees that side's extensions itself.
+    assert.equal(extensionModule.bundledCliResolver({ extension: { extensionKind: 2 } } as never).runsLocallyInRemoteWindow, false);
+  } finally {
+    remoteName = undefined;
+    installedExtensions.clear();
+  }
 });

@@ -2,7 +2,31 @@
 
 ## Unreleased
 
+### Added
+
+- Added support for the Codex and Claude Code CLIs bundled inside their official VS Code
+  extensions. With only OpenAI's Codex extension or Anthropic's Claude Code extension installed and
+  signed in, UsageAI now finds the CLI that extension ships, so no separate CLI install is needed.
+  `CODEX_PATH` / `CLAUDE_PATH`, a CLI on `PATH`, and standalone install folders still come first.
+  Only the extension's own fixed binary paths inside the folder VS Code reports are checked, never a
+  search, and only for an extension in UsageAI's own extension host. When UsageAI runs locally in a
+  remote window and finds no Codex CLI, the error now points to `remote.extensionKind`, since Codex
+  may be installed on the remote host, where a local UsageAI cannot look.
+- Added opt-in support for running on a remote host. The extension now declares
+  `["ui", "workspace"]`, so it still runs locally by default in Remote-SSH, WSL, and dev container
+  windows, and `remote.extensionKind` can move it to the remote host where providers are signed in
+  there. The README explains the setting; remote use is community-tested.
+
 ### Changed
+
+- Codex and Claude Code sign-in messages now mention signing in through the provider's extension.
+  Someone using only the extension has no `codex` or `claude` command to run.
+- Google Gemini now says which sign-in paths it tried when all of them fail. Because the Gemini CLI
+  fallback runs last, its own "not signed in" used to be the only error shown, even when the
+  Antigravity paths were the ones that mattered. The error now opens with "Google Gemini usage is
+  unavailable" and what to check, then says that the Antigravity IDE and `agy` (or that `agy` is
+  not installed) returned no usage. It no longer claims a sign-out it cannot know about, and a rate
+  limit or outage on the Gemini CLI path keeps its own message instead of a sign-in hint.
 
 - Renamed the sidebar view to UsageAI and its dashboard heading to Usage limits. The view title
   now reads **UsageAI** instead of **UsageAI: Usage**, and the heading above the provider cards

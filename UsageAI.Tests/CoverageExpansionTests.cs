@@ -1079,6 +1079,148 @@ internal static class CoverageExpansionTests
         }
     }
 
+    public static async Task TestGeminiCombinedErrorAsync()
+    {
+        // The actionable sentence comes first, because the card's single stale-error line shows only that much.
+        Equal(
+            "Google Gemini usage is unavailable. Check that `agy` is signed in, then refresh. The Antigravity IDE and `agy` returned no usage, and the Gemini CLI is not signed in.",
+            GeminiUsageClient.CombinedError(true, "Google Gemini is not signed in. Run `agy` to sign in, then refresh."));
+        Equal(
+            "Google Gemini usage is unavailable. Sign in to Antigravity or install `agy`, then refresh. The Antigravity IDE returned no usage and `agy` is not installed, and the Gemini CLI sign-in has expired.",
+            GeminiUsageClient.CombinedError(false, "Google Gemini sign-in has expired. Run `agy` to sign in again, then refresh."));
+        // A failure that is not about sign-in keeps its own message and gets no sign-in hint.
+        Equal(
+            "Google Cloud API rate-limited the quota request. The Antigravity IDE and `agy` returned no usage before the Gemini CLI fallback.",
+            GeminiUsageClient.CombinedError(true, "Google Cloud API rate-limited the quota request."));
+        True(GeminiUsageClient.CombinedError(true, "Google Gemini API returned HTTP 500")
+            .StartsWith("Google Gemini API returned HTTP 500. The Antigravity", StringComparison.Ordinal));
+
+        var environment = SaveEnvironment("GEMINI_CONFIG_DIR");
+        var directory = Path.Combine(AppPaths.DataDirectory, $"gemini-combined-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            // No Gemini CLI credentials, so the last fallback fails with its own "not signed in".
+            Environment.SetEnvironmentVariable("GEMINI_CONFIG_DIR", directory);
+            using var http = new HttpClient(new StubHttpHandler((_, _, _) =>
+                throw new InvalidOperationException("HTTP should not be reached.")));
+            var client = new GeminiUsageClient(http, NoLocalGeminiSnapshot, hasAgyCli: () => false);
+            var exception = await ThrowsAsync<GeminiUsageException>(() => client.GetUsageAsync());
+            True(exception.Message.StartsWith("Google Gemini usage is unavailable. Sign in to Antigravity", StringComparison.Ordinal));
+            True(exception.InnerException is GeminiUsageException);
+
+            // A cancelled refresh keeps the CLI's own error and never looks for agy.
+            var agyLookups = 0;
+            var cancelled = new GeminiUsageClient(http, NoLocalGeminiSnapshot, hasAgyCli: () =>
+            {
+                agyLookups++;
+                return true;
+            });
+            using var cancellation = new CancellationTokenSource();
+            await cancellation.CancelAsync();
+            try
+            {
+                await cancelled.GetUsageAsync(cancellation.Token);
+                throw new InvalidOperationException("Expected the cancelled refresh to fail.");
+            }
+            catch (Exception failure) when (failure is GeminiUsageException or OperationCanceledException)
+            {
+                False(failure.Message.Contains("returned no usage", StringComparison.Ordinal));
+            }
+
+            Equal(0, agyLookups);
+        }
+        finally
+        {
+            RestoreEnvironment(environment);
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    public static Task TestEditorBundledClisAsync()
+    {
+        var profile = Path.Combine(AppPaths.DataDirectory, $"editor-profile-{Guid.NewGuid():N}");
+        var extensions = Path.Combine(profile, ".vscode", "extensions");
+        var current = Path.Combine(extensions, "anthropic.claude-code-2.1.301-win32-x64");
+        var stale = Path.Combine(extensions, "anthropic.claude-code-2.1.300-win32-x64");
+        void Touch(string file)
+        {
+            Directory.CreateDirectory(Path.GetDirectoryName(file)!);
+            File.WriteAllText(file, string.Empty);
+        }
+
+        void WriteManifest(string relativeLocation) => File.WriteAllText(
+            Path.Combine(extensions, "extensions.json"),
+            $$"""[{"identifier":{"id":"other.extension"},"relativeLocation":"other"},{"identifier":{"id":"Anthropic.Claude-Code"},"relativeLocation":{{JsonSerializer.Serialize(relativeLocation)}}}]""");
+
+        try
+        {
+            Equal(null, EditorExtensionBinaries.FindClaude(profile, Architecture.X64));
+            Equal(null, EditorExtensionBinaries.FindClaude("relative", Architecture.X64));
+
+            // Only the version the editor's manifest names is used, never a leftover older folder.
+            Touch(Path.Combine(stale, "resources", "native-binary", "claude.exe"));
+            WriteManifest("anthropic.claude-code-2.1.301-win32-x64");
+            Directory.CreateDirectory(current);
+            Equal(null, EditorExtensionBinaries.FindClaude(profile, Architecture.X64));
+
+            var single = Path.Combine(current, "resources", "native-binary", "claude.exe");
+            Touch(single);
+            Equal(single, EditorExtensionBinaries.FindClaude(profile, Architecture.X64));
+
+            // A multi-platform package wins, and Windows on ARM prefers its own build.
+            var x64 = Path.Combine(current, "resources", "native-binaries", "win32-x64", "claude.exe");
+            Touch(x64);
+            Equal(x64, EditorExtensionBinaries.FindClaude(profile, Architecture.X64));
+            Equal(x64, EditorExtensionBinaries.FindClaude(profile, Architecture.Arm64));
+            var arm64 = Path.Combine(current, "resources", "native-binaries", "win32-arm64", "claude.exe");
+            Touch(arm64);
+            Equal(arm64, EditorExtensionBinaries.FindClaude(profile, Architecture.Arm64));
+
+            // The manifest can never point outside the extensions folder.
+            WriteManifest(Path.Combine("..", "anthropic.claude-code-2.1.301-win32-x64"));
+            Equal(null, EditorExtensionBinaries.FindClaude(profile, Architecture.X64));
+            WriteManifest("..");
+            Equal(null, EditorExtensionBinaries.FindClaude(profile, Architecture.X64));
+
+            File.WriteAllText(Path.Combine(extensions, "extensions.json"), "{ not json");
+            Equal(null, EditorExtensionBinaries.FindClaude(profile, Architecture.X64));
+            File.WriteAllText(Path.Combine(extensions, "extensions.json"), "{}");
+            Equal(null, EditorExtensionBinaries.FindClaude(profile, Architecture.X64));
+
+            // An entry whose folder an interrupted update removed is skipped for a later valid one.
+            File.WriteAllText(
+                Path.Combine(extensions, "extensions.json"),
+                """[{"identifier":{"id":"anthropic.claude-code"},"relativeLocation":"anthropic.claude-code-9.9.9-win32-x64"},{"identifier":{"id":"anthropic.claude-code"},"relativeLocation":"anthropic.claude-code-2.1.301-win32-x64"}]""");
+            Equal(arm64, EditorExtensionBinaries.FindClaude(profile, Architecture.Arm64));
+
+            // Codex follows its extension's bin/windows-<arch> layout, in any VS Code-based editor.
+            Equal(null, EditorExtensionBinaries.FindCodex(profile, Architecture.X64));
+            var cursorExtensions = Path.Combine(profile, ".cursor", "extensions");
+            var codexFolder = Path.Combine(cursorExtensions, "openai.chatgpt-26.1007.21434-win32-x64");
+            Directory.CreateDirectory(cursorExtensions);
+            File.WriteAllText(
+                Path.Combine(cursorExtensions, "extensions.json"),
+                """[{"identifier":{"id":"openai.chatgpt"},"relativeLocation":"openai.chatgpt-26.1007.21434-win32-x64"}]""");
+            var codexX64 = Path.Combine(codexFolder, "bin", "windows-x86_64", "codex.exe");
+            Touch(codexX64);
+            Equal(codexX64, EditorExtensionBinaries.FindCodex(profile, Architecture.X64));
+            Equal(codexX64, EditorExtensionBinaries.FindCodex(profile, Architecture.Arm64));
+            var codexArm64 = Path.Combine(codexFolder, "bin", "windows-aarch64", "codex.exe");
+            Touch(codexArm64);
+            Equal(codexArm64, EditorExtensionBinaries.FindCodex(profile, Architecture.Arm64));
+        }
+        finally
+        {
+            if (Directory.Exists(profile))
+            {
+                Directory.Delete(profile, recursive: true);
+            }
+        }
+
+        return Task.CompletedTask;
+    }
+
     public static async Task TestCodexProtocolAsync()
     {
         var environment = SaveEnvironment("CODEX_PATH", "CODEX_HOME");
@@ -3616,7 +3758,7 @@ internal static class CoverageExpansionTests
             {
                 var exception = await ThrowsAsync<GeminiUsageException>(
                     () => new GeminiUsageClient(http, NoLocalGeminiSnapshot).GetUsageAsync());
-                True(exception.InnerException is JsonException);
+                True(exception.InnerException?.InnerException is JsonException);
             }
 
             using (var http = new HttpClient(new StubHttpHandler((request, _, _) =>

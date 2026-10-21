@@ -1,5 +1,6 @@
 import { access } from "node:fs/promises";
 import * as path from "node:path";
+import { claudeBundledPaths, findBundledExecutable, noExtensions, type ExtensionPathResolver } from "../bundled-cli";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
 import {
@@ -19,6 +20,7 @@ const oauthBeta = "oauth-2025-04-20";
 const authProbeTimeoutMs = 12_000;
 const credentialObservationMs = 5_000;
 const refreshNudgeTimeoutMs = 20_000;
+const claudeExtensionId = "anthropic.claude-code";
 
 export interface ClaudeCredentials {
   readonly accessToken: string;
@@ -30,7 +32,7 @@ export interface ClaudeCredentials {
 
 export type ClaudeAuthProbe = (signal?: AbortSignal) => Promise<boolean>;
 
-interface ClaudeLaunch {
+export interface ClaudeLaunch {
   readonly executable: string;
   readonly argsPrefix: readonly string[];
 }
@@ -62,7 +64,7 @@ export class ClaudeUsageClient implements UsageClient {
     assertClaudeCredentialsUsable(credentials);
     if (credentials.scopes.length > 0 && !credentials.scopes.includes("user:profile")) {
       throw new UsageProviderError(
-        "Claude Code's OAuth token is missing the user:profile scope. Run `claude` to sign in again.",
+        "Claude Code's OAuth token is missing the user:profile scope. Run `claude` or use the Claude Code extension to sign in again.",
       );
     }
 
@@ -85,7 +87,7 @@ export class ClaudeUsageClient implements UsageClient {
       assertClaudeCredentialsUsable(recovered);
       if (recovered.scopes.length > 0 && !recovered.scopes.includes("user:profile")) {
         throw new UsageProviderError(
-          "Claude Code's OAuth token is missing the user:profile scope. Run `claude` to sign in again.",
+          "Claude Code's OAuth token is missing the user:profile scope. Run `claude` or use the Claude Code extension to sign in again.",
         );
       }
       return requestClaudeUsage(recovered, signal);
@@ -112,7 +114,7 @@ export class ClaudeUsageClient implements UsageClient {
       return parseClaudeCredentials(await readBoundedText(credentialPath));
     } catch (error) {
       throw new UsageProviderError(
-        "Claude Code is not signed in, or its saved login could not be read. Run `claude` to sign in, then refresh.",
+        "Claude Code is not signed in, or its saved login could not be read. Run `claude` or sign in through the Claude Code extension, then refresh.",
         0,
         { cause: error },
       );
@@ -190,12 +192,12 @@ async function requestClaudeUsage(
     });
     if (response.status === 401) {
       throw new RecoverableClaudeUsageError(
-        "Claude Code's login has expired. Run `claude` to sign in again, then refresh.",
+        "Claude Code's login has expired. Run `claude` or use the Claude Code extension to sign in again, then refresh.",
       );
     }
     if (response.status === 403) {
       throw new RecoverableClaudeUsageError(
-        "Claude Code's login cannot read account usage. Run `claude` to sign in again.",
+        "Claude Code's login cannot read account usage. Run `claude` or use the Claude Code extension to sign in again.",
       );
     }
     if (response.status === 429) {
@@ -249,22 +251,22 @@ async function hasFreshStoredClaudeCredential(): Promise<boolean> {
  * stored token is still expired a command that needs a live token (`mcp list`) makes the CLI
  * refresh it through its own credential store. UsageAI never touches the refresh token itself.
  */
-export async function runClaudeAuthRecovery(signal?: AbortSignal): Promise<boolean> {
-  if (!await runClaudeAuthStatus(signal)) {
+export async function runClaudeAuthRecovery(
+  signal?: AbortSignal,
+  resolveExtensionPath: ExtensionPathResolver = noExtensions,
+): Promise<boolean> {
+  // Resolved once: both commands below run the same CLI.
+  const launch = await findClaudeLaunch(resolveExtensionPath);
+  if (!launch || !await claudeAuthStatus(launch, signal)) {
     return false;
   }
   if (!await hasFreshStoredClaudeCredential()) {
-    await nudgeClaudeCredentialRefresh(signal);
+    await nudgeClaudeCredentialRefresh(launch, signal);
   }
   return true;
 }
 
-async function nudgeClaudeCredentialRefresh(signal?: AbortSignal): Promise<void> {
-  const launch = await findClaudeLaunch();
-  if (!launch) {
-    return;
-  }
-
+async function nudgeClaudeCredentialRefresh(launch: ClaudeLaunch, signal: AbortSignal | undefined): Promise<void> {
   const child = spawnClaudeCli(launch, ["mcp", "list"]);
   child.stdin.end();
   // Output is discarded; the child keeps running its MCP health checks after the refresh lands
@@ -299,12 +301,15 @@ function spawnClaudeCli(launch: ClaudeLaunch, args: readonly string[]) {
   );
 }
 
-export async function runClaudeAuthStatus(signal?: AbortSignal): Promise<boolean> {
-  const launch = await findClaudeLaunch();
-  if (!launch) {
-    return false;
-  }
+export async function runClaudeAuthStatus(
+  signal?: AbortSignal,
+  resolveExtensionPath: ExtensionPathResolver = noExtensions,
+): Promise<boolean> {
+  const launch = await findClaudeLaunch(resolveExtensionPath);
+  return launch ? claudeAuthStatus(launch, signal) : false;
+}
 
+async function claudeAuthStatus(launch: ClaudeLaunch, signal: AbortSignal | undefined): Promise<boolean> {
   const child = spawnClaudeCli(launch, ["auth", "status", "--json"]);
   child.stdin.end();
   const abort = () => child.kill();
@@ -332,7 +337,9 @@ export async function runClaudeAuthStatus(signal?: AbortSignal): Promise<boolean
   }
 }
 
-async function findClaudeLaunch(): Promise<ClaudeLaunch | undefined> {
+export async function findClaudeLaunch(
+  resolveExtensionPath: ExtensionPathResolver = noExtensions,
+): Promise<ClaudeLaunch | undefined> {
   const configured = process.env.CLAUDE_PATH?.trim().replace(/^"|"$/g, "");
   const candidates: string[] = [];
   if (configured && path.isAbsolute(configured)) {
@@ -359,7 +366,6 @@ async function findClaudeLaunch(): Promise<ClaudeLaunch | undefined> {
       "/usr/local/bin/claude",
     );
   }
-
   for (const candidate of [...new Set(candidates)]) {
     if (!candidate || !path.isAbsolute(candidate)) {
       continue;
@@ -374,7 +380,10 @@ async function findClaudeLaunch(): Promise<ClaudeLaunch | undefined> {
       return launch;
     }
   }
-  return undefined;
+  // Last, and only when nothing above worked, so a standalone install keeps priority: the binary the
+  // Claude Code extension ships for itself. findBundledExecutable has already checked that it exists.
+  const bundled = await findBundledExecutable(resolveExtensionPath, claudeExtensionId, claudeBundledPaths());
+  return bundled ? createClaudeLaunch(bundled) : undefined;
 }
 
 async function createClaudeLaunch(command: string): Promise<ClaudeLaunch | undefined> {

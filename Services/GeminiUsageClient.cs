@@ -28,6 +28,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
     private readonly Func<CancellationToken, Task<UsageSnapshot?>> _agyHubProbe;
     private readonly Func<bool> _hasAgyHub;
     private readonly Action _resetAgyBackoff;
+    private readonly Func<bool> _hasAgyCli;
     private GeminiCredentials? _refreshedCredentials;
     private DateTimeOffset _agyRetryAfterUtc;
 
@@ -38,7 +39,8 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             AgyUsageProbe.TryFetchAsync,
             AgyUsageProbe.ClearHubStartBackoff,
             AgyUsageProbe.HasActiveHub,
-            AgyUsageProbe.TryFetchFromServingHubAsync)
+            AgyUsageProbe.TryFetchFromServingHubAsync,
+            AgyUsageProbe.IsInstalled)
     {
     }
 
@@ -48,7 +50,8 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         Func<CancellationToken, Task<UsageSnapshot?>>? agyProbe = null,
         Action? resetAgyBackoff = null,
         Func<bool>? hasAgyHub = null,
-        Func<CancellationToken, Task<UsageSnapshot?>>? agyHubProbe = null)
+        Func<CancellationToken, Task<UsageSnapshot?>>? agyHubProbe = null,
+        Func<bool>? hasAgyCli = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
         _localProbe = localProbe ?? TryFetchAntigravityLocalSnapshotAsync;
@@ -60,6 +63,8 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         // Defaults to the full agy probe only when a test supplies neither; the public
         // constructor always wires the hub-only path for the short cut.
         _agyHubProbe = agyHubProbe ?? _agyProbe;
+        // Only shapes the error shown once every path failed, so tests default to an installed CLI.
+        _hasAgyCli = hasAgyCli ?? (() => true);
     }
 
     /// <summary>
@@ -124,7 +129,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         {
             return await GetGeminiCliUsageAsync(cancellationToken);
         }
-        catch (GeminiUsageException)
+        catch (GeminiUsageException exception)
         {
             _agyRetryAfterUtc = default;
             _resetAgyBackoff();
@@ -137,8 +142,52 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
                 }
             }
 
-            throw;
+            // A cancelled refresh reports nothing, so it skips the agy lookup the combined error needs.
+            if (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+
+            // The Gemini CLI is only the last fallback, so its error alone would hide why the
+            // Antigravity paths, usually the ones that matter, returned nothing.
+            throw new GeminiUsageException(CombinedError(_hasAgyCli(), exception.Message), exception)
+            {
+                RetryAfter = exception.RetryAfter,
+            };
         }
+    }
+
+    /// <summary>
+    /// The error shown once every Gemini path failed. The Gemini CLI fallback runs last, so its
+    /// message alone would hide that the Antigravity paths returned nothing too. The first sentence
+    /// stays the actionable one, because the card's single stale-error line shows only that much.
+    /// Only a sign-in failure gets a sign-in hint: a rate limit or an outage keeps its own message.
+    /// "Returned no usage" rather than "not found", because a running IDE whose port or token could
+    /// not be used ends up here as well. Shared wording with the editor extension's
+    /// <c>combinedGeminiError</c>.
+    /// </summary>
+    internal static string CombinedError(bool agyInstalled, string geminiCliMessage)
+    {
+        var tried = agyInstalled
+            ? "The Antigravity IDE and `agy` returned no usage"
+            : "The Antigravity IDE returned no usage and `agy` is not installed";
+        var expired = geminiCliMessage == SignInAgainMessage;
+        if (expired || geminiCliMessage == NotSignedInMessage)
+        {
+            // Only the Gemini CLI is known to be signed out: agy may be signed in but slow or backing
+            // off, and the Antigravity IDE may be installed without the standalone CLI. So the
+            // headline blames no sign-in and asks for a check rather than an install.
+            var action = agyInstalled
+                ? "Check that `agy` is signed in, then refresh."
+                : "Sign in to Antigravity or install `agy`, then refresh.";
+            var cli = expired ? "the Gemini CLI sign-in has expired" : "the Gemini CLI is not signed in";
+            return $"Google Gemini usage is unavailable. {action} {tried}, and {cli}.";
+        }
+
+        var cliMessage = geminiCliMessage.EndsWith('.') || geminiCliMessage.EndsWith('!') || geminiCliMessage.EndsWith('?')
+            ? geminiCliMessage
+            : geminiCliMessage + ".";
+        return $"{cliMessage} {tried} before the Gemini CLI fallback.";
     }
 
     private async Task<UsageSnapshot> GetGeminiCliUsageAsync(CancellationToken cancellationToken)

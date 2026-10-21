@@ -70,6 +70,45 @@ test("extension manifest exposes the dashboard metric mode contract", async () =
   assert.equal(properties["usageai.metricDisplayMode"]?.scope, "application");
 });
 
+test("extension manifest keeps local hosting and a compact view toolbar", async () => {
+  const packageJson = JSON.parse(
+    await readFile(resolve(__dirname, "../../package.json"), "utf8"),
+  ) as {
+    extensionKind?: string[];
+    contributes?: {
+      commands?: Array<{ command: string; title: string; category?: string; icon?: string }>;
+      menus?: { "view/title"?: Array<{ command: string; when?: string; group?: string }> };
+      views?: Record<string, Array<{ id: string; name: string }>>;
+    };
+  };
+
+  // Local first: putting "workspace" first would silently move every Remote-SSH, WSL, and dev
+  // container user to the remote host, where their providers are often not signed in.
+  assert.deepEqual(packageJson.extensionKind, ["ui", "workspace"]);
+
+  // The category keeps "UsageAI: Refresh" in the Command Palette while toolbar tooltips stay short.
+  const commands = new Map((packageJson.contributes?.commands ?? []).map((entry) => [entry.command, entry]));
+  for (const command of commands.values()) {
+    assert.equal(command.category, "UsageAI", command.command);
+    assert.doesNotMatch(command.title, /^UsageAI:/, command.command);
+  }
+
+  // A view-title command without an icon renders as a text button, which overlapped the view
+  // title in a narrow sidebar.
+  const toolbar = (packageJson.contributes?.menus?.["view/title"] ?? [])
+    .filter((entry) => entry.when === "view == usageai.dashboard");
+  assert.deepEqual(toolbar.map((entry) => entry.command), ["usageai.refresh", "usageai.openSettings"]);
+  for (const entry of toolbar) {
+    assert.match(entry.group ?? "", /^navigation/, entry.command);
+    assert.match(commands.get(entry.command)?.icon ?? "", /^\$\([a-z-]+\)$/, entry.command);
+  }
+  assert.equal(commands.get("usageai.refresh")?.icon, "$(refresh)");
+  assert.equal(commands.get("usageai.openSettings")?.icon, "$(gear)");
+
+  // Named like its container, so VS Code titles the single-view sidebar "UsageAI", not "UsageAI: Usage".
+  assert.equal(packageJson.contributes?.views?.["usageai"]?.find((view) => view.id === "usageai.dashboard")?.name, "UsageAI");
+});
+
 test("model selects real quota before balance", () => {
   assert.equal(primaryMetric(snapshot)?.name, "Weekly");
   assert.equal(highestUsedPercent(snapshot), 74);

@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using UsageAI.Models;
 
@@ -65,7 +66,7 @@ internal sealed class CodexUsageClient : IUsageClient
                 stderr.Contains("auth", StringComparison.OrdinalIgnoreCase))
             {
                 throw new CodexUsageException(
-                    "Codex is not signed in. Run `codex login`, then refresh.",
+                    "Codex is not signed in. Run `codex login` or sign in through the Codex extension, then refresh.",
                     exception);
             }
 
@@ -391,7 +392,7 @@ internal sealed class CodexUsageClient : IUsageClient
 
         return message.Contains("login", StringComparison.OrdinalIgnoreCase) ||
                message.Contains("auth", StringComparison.OrdinalIgnoreCase)
-            ? "Codex is not signed in. Run `codex login`, then refresh."
+            ? "Codex is not signed in. Run `codex login` or sign in through the Codex extension, then refresh."
             : "Codex could not read the account rate limits.";
     }
 
@@ -432,9 +433,14 @@ internal sealed class CodexUsageClient : IUsageClient
             "npm",
             "codex.cmd"));
 
+        // Last, so a standalone install keeps priority: the binary the Codex editor extension ships
+        // for itself, as the editor extension uses.
         var command = candidates.FirstOrDefault(File.Exists)
+            ?? EditorExtensionBinaries.FindCodex(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                RuntimeInformation.OSArchitecture)
             ?? throw new CodexUsageException(
-                "Codex CLI was not found. Install Codex or set CODEX_PATH to codex.cmd, then refresh.");
+                "Codex CLI was not found. Install Codex or the Codex extension, or set CODEX_PATH to codex.cmd, then refresh.");
 
         return CreateLaunch(command);
     }
