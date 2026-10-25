@@ -34,6 +34,67 @@ internal static class AgyUsageProbe
     private static ushort _hubPort;
     private static string _hubToken = string.Empty;
 
+    /// <summary>
+    /// A hub fetches the quota summary from Google on its first request and caches it: against an
+    /// editor extension's cold hub that first call took 1.4 s once and passed 5 s once, then 1-2 ms.
+    /// </summary>
+    internal static readonly TimeSpan DiscoveredHubSummaryTimeout = TimeSpan.FromSeconds(15);
+
+    private static readonly TimeSpan DiscoveredHubStatusTimeout = TimeSpan.FromSeconds(5);
+
+    /// <summary>For hubs other processes run; the per-call timeouts above bound each request.</summary>
+    private static readonly HttpClient DiscoveredHubClient = new() { Timeout = TimeSpan.FromSeconds(20) };
+
+    /// <summary>
+    /// UsageAI's own hub child, which the serving-hub short cut already asks. The Antigravity probe
+    /// never treats it as a discovered hub.
+    /// </summary>
+    internal static int? OwnHubProcessId
+    {
+        get
+        {
+            var process = _hubProcess;
+            try
+            {
+                return process is { HasExited: false } ? process.Id : null;
+            }
+            catch (InvalidOperationException)
+            {
+                return null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// An editor extension's <c>agy --hub</c>, found by the Antigravity probe. Unlike UsageAI's own hub
+    /// it may be cold, so this follows the IDE probe: the fast <c>GetUserStatus</c> is required, and the
+    /// quota summary gets a longer wait and is merged when it answers. Without it this refresh still
+    /// returns the status reading rather than falling through to starting a second hub.
+    /// </summary>
+    internal static async Task<UsageSnapshot?> TryQueryDiscoveredHubAsync(
+        ushort port,
+        string token,
+        CancellationToken cancellationToken,
+        Func<ushort, string, string, TimeSpan, CancellationToken, Task<JsonDocument?>>? post = null)
+    {
+        post ??= (hubPort, hubToken, method, timeout, token2) =>
+            TryPostAsync(DiscoveredHubClient, hubPort, hubToken, method, "{}", timeout, token2);
+        using var status = await post(port, token, "GetUserStatus", DiscoveredHubStatusTimeout, cancellationToken);
+        var snapshot = status is null ? null : GeminiUsageClient.ParseAntigravityUserStatus(status.RootElement);
+        if (snapshot is null)
+        {
+            return null;
+        }
+
+        using var summary = await post(port, token, "RetrieveUserQuotaSummary", DiscoveredHubSummaryTimeout, cancellationToken);
+        var metrics = summary is null
+            ? Array.Empty<UsageMetric>()
+            : GeminiUsageClient.ParseQuotaSummaryResponse(summary.RootElement);
+        return metrics.Count == 0
+            ? snapshot
+            : snapshot with { Metrics = GeminiUsageClient.MergeAntigravityQuotaSummaryMetrics(snapshot.Metrics, metrics) };
+    }
+
     public static async Task<UsageSnapshot?> TryFetchAsync(CancellationToken cancellationToken)
     {
         var snapshot = await TryFetchFromHubAsync(cancellationToken);
@@ -133,10 +194,11 @@ internal static class AgyUsageProbe
             ? null
             : GeminiUsageClient.ParseAntigravityUserStatus(status.RootElement);
         return snapshot is null
-            ? CreateSnapshot(metrics, null, null)
+            ? CreateSnapshot(metrics, null, null) with { Source = "usageai-hub" }
             : snapshot with
             {
                 Metrics = GeminiUsageClient.MergeAntigravityQuotaSummaryMetrics(snapshot.Metrics, metrics),
+                Source = "usageai-hub",
             };
     }
 
@@ -382,7 +444,7 @@ internal static class AgyUsageProbe
             }
 
             return CreateSnapshot(metrics, FindString(document.RootElement, "plan", "planName", "tier"),
-                FindString(document.RootElement, "email", "accountEmail"));
+                FindString(document.RootElement, "email", "accountEmail")) with { Source = "agy-print" };
         }
     }
 
@@ -465,30 +527,47 @@ internal static class AgyUsageProbe
             Path.Combine(localAppData, "agy", "bin", "agy.exe"),
         };
 
-    private static async Task<JsonDocument?> TryPostAsync(
+    private static Task<JsonDocument?> TryPostAsync(
         HttpClient client,
         string method,
         string body,
+        CancellationToken cancellationToken) =>
+        TryPostAsync(client, _hubPort, _hubToken, method, body, null, cancellationToken);
+
+    private static async Task<JsonDocument?> TryPostAsync(
+        HttpClient client,
+        ushort port,
+        string token,
+        string method,
+        string body,
+        TimeSpan? timeout,
         CancellationToken cancellationToken)
     {
+        using var deadline = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        if (timeout is { } limit)
+        {
+            deadline.CancelAfter(limit);
+        }
+
         try
         {
-            // The hub listens on loopback without TLS. It is reachable only from this machine and is
-            // gated by the token minted for this process.
+            // A hub listens on loopback without TLS. It is reachable only from this machine and is
+            // gated by its CSRF token: the one minted for UsageAI's own hub, or the one a discovered
+            // hub's command line carries, sent only to the port that process owns.
             using var request = new HttpRequestMessage(
                 HttpMethod.Post,
                 string.Create(
                     CultureInfo.InvariantCulture,
-                    $"http://127.0.0.1:{_hubPort}/exa.language_server_pb.LanguageServerService/{method}"));
+                    $"http://127.0.0.1:{port}/exa.language_server_pb.LanguageServerService/{method}"));
             request.Headers.Add("Connect-Protocol-Version", "1");
-            request.Headers.Add("X-Codeium-Csrf-Token", _hubToken);
+            request.Headers.Add("X-Codeium-Csrf-Token", token);
             request.Content = new StringContent(body, Encoding.UTF8, "application/json");
             using var response = await client.SendAsync(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken);
+                deadline.Token);
             return response.IsSuccessStatusCode
-                ? await SecureHttp.ReadJsonDocumentAsync(response, cancellationToken)
+                ? await SecureHttp.ReadJsonDocumentAsync(response, deadline.Token)
                 : null;
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)

@@ -10,12 +10,17 @@ import { CodexUsageClient } from "../src/providers/codex";
 import { CopilotUsageClient } from "../src/providers/copilot";
 import {
   agyHubArguments,
+  antigravityProcessQuery,
   clearHubStartBackoff,
   combinedGeminiError,
   GeminiUsageClient,
+  hubQuotaSummaryTimeoutMs,
   hubRetryIntervalMs,
+  ownProcessLines,
   parseAntigravityProcessLines,
   parseNetstatListeningPorts,
+  parseProcNetListeners,
+  queryDiscoveredHub,
   recordHubStartFailure,
   shouldSkipHubStart,
   tryFetchAntigravitySnapshot,
@@ -458,18 +463,18 @@ test("Gemini names every failed path once the CLI fallback fails too", async () 
   // no sign-in: agy may be signed in but slow, and the IDE may be installed without agy.
   assert.equal(
     combinedGeminiError(true, "Google Gemini is not signed in. Run `agy` to sign in, then refresh."),
-    "Google Gemini usage is unavailable. Check that `agy` is signed in, then refresh. The Antigravity IDE and `agy` returned no usage, and the Gemini CLI is not signed in.",
+    "Google Gemini usage is unavailable. Check that `agy` is signed in, then refresh. Antigravity (IDE or editor extension) and `agy` returned no usage, and the Gemini CLI is not signed in.",
   );
   assert.equal(
     combinedGeminiError(false, "Google Gemini sign-in has expired. Run `agy` to sign in again, then refresh."),
-    "Google Gemini usage is unavailable. Sign in to Antigravity or install `agy`, then refresh. The Antigravity IDE returned no usage and `agy` is not installed, and the Gemini CLI sign-in has expired.",
+    "Google Gemini usage is unavailable. Sign in to Antigravity or install `agy`, then refresh. Antigravity (IDE or editor extension) returned no usage and `agy` is not installed, and the Gemini CLI sign-in has expired.",
   );
   // A failure that is not about sign-in keeps its own message and gets no sign-in hint.
   assert.equal(
     combinedGeminiError(true, "Google Cloud API rate-limited the quota request."),
-    "Google Cloud API rate-limited the quota request. The Antigravity IDE and `agy` returned no usage before the Gemini CLI fallback.",
+    "Google Cloud API rate-limited the quota request. Antigravity (IDE or editor extension) and `agy` returned no usage before the Gemini CLI fallback.",
   );
-  assert.match(combinedGeminiError(true, "Google Gemini API returned HTTP 500"), /HTTP 500\. The Antigravity/);
+  assert.match(combinedGeminiError(true, "Google Gemini API returned HTTP 500"), /HTTP 500\. Antigravity \(IDE or editor extension\)/);
   assert.doesNotMatch(combinedGeminiError(true, "Gemini usage request timed out."), /sign in|not found/i);
 
   const throttled = new UsageProviderError("Google Cloud API rate-limited the quota request.", 90_000);
@@ -551,7 +556,8 @@ test("Antigravity discovery binds tokens to revalidated process-owned ports", as
   ].join("\n");
   assert.deepEqual(parseAntigravityProcessLines(processLines), [
     { pid: 42, tokens: ["secondary", "primary"], hintedPort: 5002 },
-    { pid: 43, tokens: ["other"], hintedPort: 70000 },
+    // An out-of-range hint is dropped rather than kept for a port no process can own.
+    { pid: 43, tokens: ["other"] },
   ]);
 
   const expected = {
@@ -584,6 +590,160 @@ test("Antigravity discovery binds tokens to revalidated process-owned ports", as
     query: async () => { throw new Error("must not run"); },
   });
   assert.equal(unavailable, undefined);
+});
+
+test("Antigravity discovery finds editor-extension hubs and only the current user's processes", () => {
+  const lines = [
+    String.raw`7 C:\Users\me\.gemini\bin\agy.exe --hub --hub-port=49193 --app_data_dir=antigravity --csrf_token=hub-token --add-dir=d:\work`,
+    "8 /home/me/.gemini/bin/agy --hub --hub-port 50001 --csrf_token second",
+    String.raw`9 "C:\Program Files\agy\agy.exe" --hub --hub-port=50002 --csrf_token=third`,
+    "10 agy --hub --csrf_token=no-port",
+    "11 agy --hub --hub-port=70000 --csrf_token=bad-port",
+    "12 agy -p /usage --csrf_token=one-off",
+    "13 agy --hub-port=50003 --csrf_token=no-hub-flag",
+    "14 language_server_linux_x64 --csrf_token=ide --extension_server_port=4100",
+  ].join("\n");
+  assert.deepEqual(parseAntigravityProcessLines(lines), [
+    { pid: 7, tokens: ["hub-token"], hubPort: 49193 },
+    { pid: 8, tokens: ["second"], hubPort: 50001 },
+    { pid: 9, tokens: ["third"], hubPort: 50002 },
+    { pid: 14, tokens: ["ide"], hintedPort: 4100 },
+  ]);
+
+  // ps -o uid=,pid=,command=: another user's look-alike never becomes a candidate.
+  assert.equal(
+    ownProcessLines(" 1000  42 agy --hub --hub-port=1 --csrf_token=a\n0 43 agy --hub\n1000 44 language_server --csrf_token=b\nnoise", 1000),
+    "42 agy --hub --hub-port=1 --csrf_token=a\n44 language_server --csrf_token=b",
+  );
+
+  // One provider-side CIM filter covers both kinds; Where-Object listed every process first.
+  assert.match(antigravityProcessQuery, /-Filter "Name LIKE '%language_server%' OR Name = 'agy\.exe'"/);
+  assert.doesNotMatch(antigravityProcessQuery, /Where-Object/);
+});
+
+test("Antigravity probe asks IDE language servers before editor hubs and never its own hub", async () => {
+  const snapshot = {
+    plan: "Google AI Pro",
+    metrics: [{ name: "Gemini Models", kind: "session" as const, usedPercent: 4 }],
+    fetchedAt: new Date().toISOString(),
+    providerId: "gemini",
+    providerName: "Google Gemini",
+  };
+  const asked: string[] = [];
+  const memory: { last?: { pid: number; port: number; token: string; hub: boolean } | undefined } = {};
+  const result = await tryFetchAntigravitySnapshot(undefined, {
+    detectProcesses: async () => [
+      { pid: 7, tokens: ["hub"], hubPort: 900 },
+      { pid: 8, tokens: ["own"], hubPort: 901 },
+      { pid: 9, tokens: ["ide"] },
+    ],
+    listeningPorts: async (pid) => ({ 7: [900, 950], 8: [901], 9: [1200] } as Record<number, number[]>)[pid] ?? [],
+    query: async (port, token) => { asked.push(`ide ${port} ${token}`); return undefined; },
+    queryHub: async (port, token) => { asked.push(`hub ${port} ${token}`); return port === 900 ? snapshot : undefined; },
+    ownHubPid: () => 8,
+    memory,
+  });
+  assert.equal(result, snapshot);
+  // The language server goes first; the hub is asked only on its --hub-port, and UsageAI's own hub
+  // (already tried by the serving-hub short cut) is never a candidate.
+  assert.deepEqual(asked, ["ide 1200 ide", "hub 900 hub"]);
+  assert.deepEqual(memory.last, { pid: 7, port: 900, token: "hub", hub: true });
+
+  // Without a hub client, hub candidates are skipped rather than sent to the language-server query.
+  const skipped: string[] = [];
+  assert.equal(await tryFetchAntigravitySnapshot(undefined, {
+    detectProcesses: async () => [{ pid: 7, tokens: ["hub"], hubPort: 900 }],
+    listeningPorts: async () => [900],
+    query: async (port) => { skipped.push(String(port)); return snapshot; },
+  }), undefined);
+  assert.deepEqual(skipped, []);
+});
+
+test("the remembered Antigravity candidate skips the listing and is dropped once it stops serving", async () => {
+  const snapshot = {
+    plan: "Google AI Pro",
+    metrics: [{ name: "Gemini Models", kind: "session" as const, usedPercent: 4 }],
+    fetchedAt: new Date().toISOString(),
+    providerId: "gemini",
+    providerName: "Google Gemini",
+  };
+  const memory: { last?: { pid: number; port: number; token: string; hub: boolean } | undefined } = {
+    last: { pid: 7, port: 900, token: "hub", hub: true },
+  };
+  let listings = 0;
+  let owned = [900];
+  const sent: string[] = [];
+  const dependencies = {
+    detectProcesses: async () => { listings += 1; return []; },
+    listeningPorts: async () => owned,
+    query: async () => undefined,
+    queryHub: async (port: number, token: string) => { sent.push(`${port} ${token}`); return snapshot; },
+    memory,
+  };
+
+  assert.equal(await tryFetchAntigravitySnapshot(undefined, dependencies), snapshot);
+  assert.equal(listings, 0);
+
+  // The editor closed: its port is gone, so the token is not sent again and discovery runs instead.
+  owned = [];
+  sent.length = 0;
+  assert.equal(await tryFetchAntigravitySnapshot(undefined, dependencies), undefined);
+  assert.deepEqual(sent, []);
+  assert.equal(listings, 1);
+  assert.equal(memory.last, undefined);
+});
+
+test("an editor hub needs GetUserStatus, and gets longer for the quota summary", async () => {
+  const status = {
+    userStatus: {
+      email: "dev@example.com",
+      cascadeModelConfigData: { clientModelConfigs: [{ label: "Gemini Pro", quotaInfo: { remainingFraction: 0.8 } }] },
+    },
+  };
+  const summary = {
+    response: { groups: [{ displayName: "Gemini Models", buckets: [{ bucketId: "gemini_5h", remainingFraction: 0.7 }] }] },
+  };
+  const calls: Array<[string, number | undefined, string | undefined]> = [];
+  let summaryAnswers = true;
+  try {
+    mock.method(security, "requestJson", (async (url, options) => {
+      const method = String(url).split("/").at(-1) ?? "";
+      calls.push([method, options?.timeoutMs, options?.body as string | undefined]);
+      assert.ok(String(url).startsWith("http://127.0.0.1:900/"));
+      if (method === "GetUserStatus") return { status: 200, headers: {}, data: status };
+      if (summaryAnswers) return { status: 200, headers: {}, data: summary };
+      throw new Error("timed out");
+    }) as typeof security.requestJson);
+
+    const full = await queryDiscoveredHub(900, "hub-token");
+    assert.ok(full);
+    assert.ok(full.metrics.some((metric) => metric.name === "Gemini Models (5-hour)"));
+    assert.deepEqual(calls, [["GetUserStatus", 5_000, "{}"], ["RetrieveUserQuotaSummary", hubQuotaSummaryTimeoutMs, "{}"]]);
+
+    // A cold hub that cannot produce the summary in time still yields the status reading.
+    summaryAnswers = false;
+    const statusOnly = await queryDiscoveredHub(900, "hub-token");
+    assert.ok(statusOnly);
+    assert.deepEqual(statusOnly.metrics.map((metric) => metric.name), ["Gemini Models"]);
+
+    mock.restoreAll();
+    mock.method(security, "requestJson", (async () => ({ status: 401, headers: {}, data: {} })) as typeof security.requestJson);
+    assert.equal(await queryDiscoveredHub(900, "wrong-token"), undefined);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("Linux listening ports are read from /proc without lsof", () => {
+  const table = [
+    "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
+    "   0: 0100007F:C031 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 41001 1 0000000000000000 100 0 0 10 0",
+    "   1: 0100007F:1F90 0100007F:D2F0 01 00000000:00000000 00:00000000 00000000  1000        0 41002 1 0000000000000000 20 4 30 10 -1",
+    "   2: 00000000:0016 00000000:0000 0A 00000000:00000000 00:00000000 00000000     0        0 0 1",
+    "   3: short row",
+  ].join("\n");
+  // 0xC031 = 49201 is LISTEN; the 01 row is an established connection; inode 0 is unusable.
+  assert.deepEqual([...parseProcNetListeners(table)], [["41001", 49201]]);
 });
 
 test("Gemini prefers a running agy hub over the Antigravity process probe", async () => {

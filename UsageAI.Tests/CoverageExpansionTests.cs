@@ -1012,6 +1012,7 @@ internal static class CoverageExpansionTests
                 var snapshot = await client.GetUsageAsync();
                 Equal("Gemini Code Assist Pro", snapshot.Plan);
                 Equal(20, snapshot.Primary!.UsedPercent);
+                Equal("gemini-cli", snapshot.Source);
                 Equal(2, successHandler.CallCount);
             }
 
@@ -1079,21 +1080,90 @@ internal static class CoverageExpansionTests
         }
     }
 
+    public static async Task TestAntigravityEditorHubDiscoveryAsync()
+    {
+        var listing = string.Join(
+            "\r\n",
+            @"7	C:\Users\me\.gemini\bin\agy.exe --hub --hub-port=49193 --app_data_dir=antigravity --csrf_token=hub-token --add-dir=d:\work",
+            @"8	""C:\Program Files\agy\agy.exe"" --hub --hub-port 50002 --csrf_token second",
+            "10	agy.exe --hub --csrf_token=no-port",
+            "11	agy.exe --hub --hub-port=70000 --csrf_token=bad-port",
+            "12	agy.exe -p /usage --csrf_token=one-off",
+            "13	agy.exe --hub-port=50003 --csrf_token=no-hub-flag",
+            "14	language_server_windows_x64.exe --csrf_token=ide --extension_server_csrf_token ext --extension_server_port 4100",
+            "15	agy.exe --bg-updater --app_data_dir=antigravity-cli",
+            "noise");
+        var parsed = GeminiUsageClient.ProcessInfo.ParseCommandLines(listing);
+        Equal(3, parsed.Count);
+        Equal(new GeminiUsageClient.ProcessInfo("hub-token", null, null, 7, 49_193), parsed[0]);
+        Equal(new GeminiUsageClient.ProcessInfo("second", null, null, 8, 50_002), parsed[1]);
+        Equal(new GeminiUsageClient.ProcessInfo("ide", "ext", 4_100, 14), parsed[2]);
+
+        // One provider-side CIM filter covers both kinds; Where-Object listed every process first.
+        True(GeminiUsageClient.ProcessInfo.CommandLineQuery.Contains(
+            "-Filter \\\"Name LIKE '%language_server%' OR Name = 'agy.exe'\\\"",
+            StringComparison.Ordinal));
+        False(GeminiUsageClient.ProcessInfo.CommandLineQuery.Contains("Where-Object", StringComparison.Ordinal));
+
+        // A hub is asked only on the port its command line names, and its candidates say so.
+        var hub = parsed[0];
+        var candidates = hub.GetBoundCandidates(new ushort[] { 49_193, 50_339 });
+        Equal(1, candidates.Count);
+        Equal(new GeminiUsageClient.BoundAntigravityCandidate(7, 49_193, "hub-token", Hub: true), candidates[0]);
+        Equal(0, hub.GetBoundCandidates(new ushort[] { 50_339 }).Count);
+
+        // The status call is required; the summary gets the longer wait and is merged when it answers.
+        var statusJson = """{"userStatus":{"email":"dev@example.com","cascadeModelConfigData":{"clientModelConfigs":[{"label":"Gemini Pro","quotaInfo":{"remainingFraction":0.8}}]}}}""";
+        var summaryJson = """{"response":{"groups":[{"displayName":"Gemini Models","buckets":[{"bucketId":"gemini_5h","remainingFraction":0.7}]}]}}""";
+        var calls = new List<(string Method, TimeSpan Timeout)>();
+        var summaryAnswers = true;
+        var statusAnswers = true;
+        Task<JsonDocument?> Post(ushort port, string token, string method, TimeSpan timeout, CancellationToken _)
+        {
+            Equal((ushort)49_193, port);
+            Equal("hub-token", token);
+            calls.Add((method, timeout));
+            var json = method == "GetUserStatus"
+                ? (statusAnswers ? statusJson : null)
+                : (summaryAnswers ? summaryJson : null);
+            return Task.FromResult(json is null ? null : JsonDocument.Parse(json));
+        }
+
+        var full = await AgyUsageProbe.TryQueryDiscoveredHubAsync(49_193, "hub-token", CancellationToken.None, Post);
+        NotNull(full);
+        True(full!.Metrics.Any(metric => metric.Name == "Gemini Models (5-hour)"));
+        Equal(2, calls.Count);
+        Equal(("GetUserStatus", TimeSpan.FromSeconds(5)), calls[0]);
+        Equal(("RetrieveUserQuotaSummary", AgyUsageProbe.DiscoveredHubSummaryTimeout), calls[1]);
+
+        // A cold hub that cannot produce the summary in time still yields the status reading.
+        summaryAnswers = false;
+        var statusOnly = await AgyUsageProbe.TryQueryDiscoveredHubAsync(49_193, "hub-token", CancellationToken.None, Post);
+        NotNull(statusOnly);
+        False(statusOnly!.Metrics.Any(metric => metric.Name == "Gemini Models (5-hour)"));
+
+        // Without a status answer (a wrong token is a 401) nothing is returned, and no summary is asked.
+        statusAnswers = false;
+        calls.Clear();
+        Null(await AgyUsageProbe.TryQueryDiscoveredHubAsync(49_193, "hub-token", CancellationToken.None, Post));
+        Equal(1, calls.Count);
+    }
+
     public static async Task TestGeminiCombinedErrorAsync()
     {
         // The actionable sentence comes first, because the card's single stale-error line shows only that much.
         Equal(
-            "Google Gemini usage is unavailable. Check that `agy` is signed in, then refresh. The Antigravity IDE and `agy` returned no usage, and the Gemini CLI is not signed in.",
+            "Google Gemini usage is unavailable. Check that `agy` is signed in, then refresh. Antigravity (IDE or editor extension) and `agy` returned no usage, and the Gemini CLI is not signed in.",
             GeminiUsageClient.CombinedError(true, "Google Gemini is not signed in. Run `agy` to sign in, then refresh."));
         Equal(
-            "Google Gemini usage is unavailable. Sign in to Antigravity or install `agy`, then refresh. The Antigravity IDE returned no usage and `agy` is not installed, and the Gemini CLI sign-in has expired.",
+            "Google Gemini usage is unavailable. Sign in to Antigravity or install `agy`, then refresh. Antigravity (IDE or editor extension) returned no usage and `agy` is not installed, and the Gemini CLI sign-in has expired.",
             GeminiUsageClient.CombinedError(false, "Google Gemini sign-in has expired. Run `agy` to sign in again, then refresh."));
         // A failure that is not about sign-in keeps its own message and gets no sign-in hint.
         Equal(
-            "Google Cloud API rate-limited the quota request. The Antigravity IDE and `agy` returned no usage before the Gemini CLI fallback.",
+            "Google Cloud API rate-limited the quota request. Antigravity (IDE or editor extension) and `agy` returned no usage before the Gemini CLI fallback.",
             GeminiUsageClient.CombinedError(true, "Google Cloud API rate-limited the quota request."));
         True(GeminiUsageClient.CombinedError(true, "Google Gemini API returned HTTP 500")
-            .StartsWith("Google Gemini API returned HTTP 500. The Antigravity", StringComparison.Ordinal));
+            .StartsWith("Google Gemini API returned HTTP 500. Antigravity (IDE or editor extension)", StringComparison.Ordinal));
 
         var environment = SaveEnvironment("GEMINI_CONFIG_DIR");
         var directory = Path.Combine(AppPaths.DataDirectory, $"gemini-combined-{Guid.NewGuid():N}");

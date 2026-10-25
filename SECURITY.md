@@ -47,6 +47,14 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
   port — but it authorises that port's whole `LanguageServerService`, not a quota-only endpoint, for
   the lifetime of that child. UsageAI never opens or modifies the Antigravity keyring or credential
   files.
+- UsageAI also reuses `agy --hub` servers that Google's Antigravity editor extension starts, the same
+  way it already reuses the Antigravity IDE's language server. It reads the server's `--hub-port`
+  and `--csrf_token` from the command line of a process owned by the current user (other users'
+  command lines are not returned on Windows and are filtered out by uid on Linux and macOS),
+  re-reads that the process still owns that loopback port immediately before every request, and
+  sends the token only there, over plain HTTP on 127.0.0.1. It calls only the read-only
+  `GetUserStatus` and `RetrieveUserQuotaSummary` methods. The token is held in memory only, never
+  persisted or logged, and is dropped as soon as that process stops owning the port.
 
 The VS Code/Antigravity extension follows the same contract. Provider credentials stay in the local
 Node extension host and are never sent to its webview. Claude credentials remain read-only to the
