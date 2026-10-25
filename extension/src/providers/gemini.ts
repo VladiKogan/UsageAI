@@ -79,6 +79,12 @@ export interface AntigravityProcess {
    * port, never on its other listening ports. Unset for an Antigravity IDE language server.
    */
   readonly hubPort?: number;
+  /**
+   * The hub was started with `--app_data_dir`, as Google's Antigravity editor extension does. UsageAI
+   * never passes it to its own hubs, so a hub without it belongs to another UsageAI instance: still
+   * usable, but tried last, since on a host without a shared sign-in it is the signed-out one.
+   */
+  readonly editorHub?: boolean;
 }
 
 /** The candidate that answered last, so a later refresh can skip the process listing. */
@@ -429,10 +435,13 @@ export async function tryFetchAntigravitySnapshot(
     }
 
     const ownHub = dependencies.ownHubPid?.();
-    // Antigravity IDE language servers first, as before; editor-extension hubs after them.
+    // Antigravity IDE language servers first, as before; then editor-extension hubs; then hubs other
+    // UsageAI instances started.
+    const rank = (processInfo: AntigravityProcess) =>
+      processInfo.hubPort === undefined ? 0 : processInfo.editorHub ? 1 : 2;
     const processes = [...await dependencies.detectProcesses()]
       .filter((processInfo) => processInfo.pid !== ownHub && (processInfo.hubPort === undefined || dependencies.queryHub))
-      .sort((left, right) => Number(left.hubPort !== undefined) - Number(right.hubPort !== undefined));
+      .sort((left, right) => rank(left) - rank(right));
     for (const processInfo of processes) {
       const hub = processInfo.hubPort !== undefined;
       const ownedPorts = await dependencies.listeningPorts(processInfo.pid);
@@ -1134,7 +1143,7 @@ export function parseAntigravityProcessLines(stdout: string): AntigravityProcess
       // `--hub` is a one-off run or an interactive session, not a server.
       const hubPort = Number(flagValue(command, "hub-port"));
       if (csrf && validPort(hubPort)) {
-        results.push({ pid, tokens: [csrf], hubPort });
+        results.push({ pid, tokens: [csrf], hubPort, editorHub: flagValue(command, "app_data_dir") !== undefined });
       }
     } else if (/language_server/i.test(command)) {
       const extensionCsrf = flagValue(command, "extension_server_csrf_token");
@@ -1213,7 +1222,7 @@ async function listeningPorts(pid: number): Promise<number[]> {
     try {
       return await procListeningPorts(pid);
     } catch {
-      // /proc unreadable (an unusual mount or sandbox): try lsof below.
+      // The socket tables are unreadable (an unusual mount or sandbox): try lsof below.
     }
   }
   const lsof = await findExecutable(["lsof"]);
@@ -1252,26 +1261,51 @@ export function parseProcNetListeners(text: string): Map<string, number> {
   return listeners;
 }
 
+/** The file-system calls `procListeningPorts` makes, so tests can supply a fake `/proc`. */
+export interface ProcFileSystem {
+  readonly readFile: (path: string) => Promise<string>;
+  readonly readdir: (path: string) => Promise<readonly string[]>;
+  readonly readlink: (path: string) => Promise<string>;
+}
+
+const realProc: ProcFileSystem = {
+  readFile: (file) => readFile(file, "utf8"),
+  readdir: (directory) => readdir(directory),
+  readlink: (link) => readlink(link),
+};
+
 /**
  * Linux ports a pid listens on, read straight from `/proc`: no tool to spawn, and it works on
- * servers without `lsof`, where the probe used to find nothing. A user can list the descriptors of
- * their own processes only, so another user's pid throws and is treated as owning nothing.
+ * servers without `lsof`, where the probe used to find nothing. Throws only when neither socket table
+ * can be read, so the caller can try `lsof` instead. A pid whose descriptors cannot be listed, such as
+ * another user's or one that just exited, owns nothing: `lsof` could not see more.
  */
-async function procListeningPorts(pid: number): Promise<number[]> {
+export async function procListeningPorts(pid: number, proc: ProcFileSystem = realProc): Promise<number[]> {
   const listeners = new Map<string, number>();
+  let tablesRead = 0;
   for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
     try {
-      for (const [inode, port] of parseProcNetListeners(await readFile(table, "utf8"))) {
+      for (const [inode, port] of parseProcNetListeners(await proc.readFile(table))) {
         listeners.set(inode, port);
       }
+      tablesRead += 1;
     } catch {
       // A kernel without IPv6 has no tcp6 table.
     }
   }
+  if (tablesRead === 0) {
+    throw new Error("The /proc socket tables are unreadable.");
+  }
+  let descriptors: readonly string[];
+  try {
+    descriptors = await proc.readdir(`/proc/${pid}/fd`);
+  } catch {
+    return [];
+  }
   const ports = new Set<number>();
-  for (const descriptor of await readdir(`/proc/${pid}/fd`)) {
+  for (const descriptor of descriptors) {
     try {
-      const inode = (await readlink(`/proc/${pid}/fd/${descriptor}`)).match(/^socket:\[(\d+)\]$/)?.[1];
+      const inode = (await proc.readlink(`/proc/${pid}/fd/${descriptor}`)).match(/^socket:\[(\d+)\]$/)?.[1];
       const port = inode ? listeners.get(inode) : undefined;
       if (port) {
         ports.add(port);

@@ -1095,8 +1095,9 @@ internal static class CoverageExpansionTests
             "noise");
         var parsed = GeminiUsageClient.ProcessInfo.ParseCommandLines(listing);
         Equal(3, parsed.Count);
-        Equal(new GeminiUsageClient.ProcessInfo("hub-token", null, null, 7, 49_193), parsed[0]);
-        Equal(new GeminiUsageClient.ProcessInfo("second", null, null, 8, 50_002), parsed[1]);
+        // Only the editor extension passes --app_data_dir; UsageAI's own hubs never do.
+        Equal(new GeminiUsageClient.ProcessInfo("hub-token", null, null, 7, 49_193, EditorHub: true), parsed[0]);
+        Equal(new GeminiUsageClient.ProcessInfo("second", null, null, 8, 50_002, EditorHub: false), parsed[1]);
         Equal(new GeminiUsageClient.ProcessInfo("ide", "ext", 4_100, 14), parsed[2]);
 
         // One provider-side CIM filter covers both kinds; Where-Object listed every process first.
@@ -1104,6 +1105,19 @@ internal static class CoverageExpansionTests
             "-Filter \\\"Name LIKE '%language_server%' OR Name = 'agy.exe'\\\"",
             StringComparison.Ordinal));
         False(GeminiUsageClient.ProcessInfo.CommandLineQuery.Contains("Where-Object", StringComparison.Ordinal));
+
+        // Language servers first, then editor hubs, then other UsageAI instances' hubs; this process's
+        // own hub child never.
+        var ordered = GeminiUsageClient.OrderCandidateProcesses(
+            new[]
+            {
+                new GeminiUsageClient.ProcessInfo("other-usageai", null, null, 6, 50_010),
+                new GeminiUsageClient.ProcessInfo("editor", null, null, 7, 50_011, EditorHub: true),
+                new GeminiUsageClient.ProcessInfo("own", null, null, 8, 50_012),
+                new GeminiUsageClient.ProcessInfo("ide", null, null, 9),
+            },
+            ownHubProcessId: 8).Select(process => process.CsrfToken).ToArray();
+        Equal("ide,editor,other-usageai", string.Join(',', ordered));
 
         // A hub is asked only on the port its command line names, and its candidates say so.
         var hub = parsed[0];
@@ -1147,6 +1161,13 @@ internal static class CoverageExpansionTests
         calls.Clear();
         Null(await AgyUsageProbe.TryQueryDiscoveredHubAsync(49_193, "hub-token", CancellationToken.None, Post));
         Equal(1, calls.Count);
+
+        // A hub answering in an unexpected shape is skipped rather than ending the probe.
+        Null(await AgyUsageProbe.TryQueryDiscoveredHubAsync(
+            49_193,
+            "hub-token",
+            CancellationToken.None,
+            (_, _, _, _, _) => throw new InvalidOperationException("unexpected shape")));
     }
 
     public static async Task TestGeminiCombinedErrorAsync()

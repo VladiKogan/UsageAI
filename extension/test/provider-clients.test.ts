@@ -20,6 +20,7 @@ import {
   parseAntigravityProcessLines,
   parseNetstatListeningPorts,
   parseProcNetListeners,
+  procListeningPorts,
   queryDiscoveredHub,
   recordHubStartFailure,
   shouldSkipHubStart,
@@ -604,9 +605,10 @@ test("Antigravity discovery finds editor-extension hubs and only the current use
     "14 language_server_linux_x64 --csrf_token=ide --extension_server_port=4100",
   ].join("\n");
   assert.deepEqual(parseAntigravityProcessLines(lines), [
-    { pid: 7, tokens: ["hub-token"], hubPort: 49193 },
-    { pid: 8, tokens: ["second"], hubPort: 50001 },
-    { pid: 9, tokens: ["third"], hubPort: 50002 },
+    // Only the editor extension passes --app_data_dir; UsageAI's own hubs never do.
+    { pid: 7, tokens: ["hub-token"], hubPort: 49193, editorHub: true },
+    { pid: 8, tokens: ["second"], hubPort: 50001, editorHub: false },
+    { pid: 9, tokens: ["third"], hubPort: 50002, editorHub: false },
     { pid: 14, tokens: ["ide"], hintedPort: 4100 },
   ]);
 
@@ -633,19 +635,21 @@ test("Antigravity probe asks IDE language servers before editor hubs and never i
   const memory: { last?: { pid: number; port: number; token: string; hub: boolean } | undefined } = {};
   const result = await tryFetchAntigravitySnapshot(undefined, {
     detectProcesses: async () => [
-      { pid: 7, tokens: ["hub"], hubPort: 900 },
-      { pid: 8, tokens: ["own"], hubPort: 901 },
+      { pid: 6, tokens: ["other-usageai"], hubPort: 902, editorHub: false },
+      { pid: 7, tokens: ["hub"], hubPort: 900, editorHub: true },
+      { pid: 8, tokens: ["own"], hubPort: 901, editorHub: false },
       { pid: 9, tokens: ["ide"] },
     ],
-    listeningPorts: async (pid) => ({ 7: [900, 950], 8: [901], 9: [1200] } as Record<number, number[]>)[pid] ?? [],
+    listeningPorts: async (pid) => ({ 6: [902], 7: [900, 950], 8: [901], 9: [1200] } as Record<number, number[]>)[pid] ?? [],
     query: async (port, token) => { asked.push(`ide ${port} ${token}`); return undefined; },
     queryHub: async (port, token) => { asked.push(`hub ${port} ${token}`); return port === 900 ? snapshot : undefined; },
     ownHubPid: () => 8,
     memory,
   });
   assert.equal(result, snapshot);
-  // The language server goes first; the hub is asked only on its --hub-port, and UsageAI's own hub
-  // (already tried by the serving-hub short cut) is never a candidate.
+  // The language server goes first, then the editor's hub, asked only on its --hub-port. Another
+  // UsageAI instance's hub would come last, and this instance's own hub (already tried by the
+  // serving-hub short cut) is never a candidate.
   assert.deepEqual(asked, ["ide 1200 ide", "hub 900 hub"]);
   assert.deepEqual(memory.last, { pid: 7, port: 900, token: "hub", hub: true });
 
@@ -732,6 +736,41 @@ test("an editor hub needs GetUserStatus, and gets longer for the quota summary",
   } finally {
     mock.restoreAll();
   }
+});
+
+test("Linux /proc reads join socket inodes to the pid and fall back only when the tables are unreadable", async () => {
+  const tcp = [
+    "  sl  local_address rem_address   st tx_queue rx_queue tr tm->when retrnsmt   uid  timeout inode",
+    "   0: 0100007F:C031 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 41001 1",
+    "   1: 0100007F:C032 00000000:0000 0A 00000000:00000000 00:00000000 00000000  1000        0 41003 1",
+  ].join("\n");
+  const links: Record<string, string> = {
+    "/proc/7/fd/0": "/dev/null",
+    "/proc/7/fd/3": "socket:[41001]",
+    "/proc/7/fd/4": "socket:[99999]",
+    "/proc/7/fd/5": "pipe:[123]",
+  };
+  const proc = {
+    readFile: async (file: string) => {
+      if (file === "/proc/net/tcp") return tcp;
+      throw Object.assign(new Error("no IPv6"), { code: "ENOENT" });
+    },
+    readdir: async (directory: string) => {
+      if (directory === "/proc/7/fd") return ["0", "3", "4", "5", "6"];
+      throw Object.assign(new Error("not ours"), { code: "EACCES" });
+    },
+    readlink: async (link: string) => {
+      const target = links[link];
+      if (target === undefined) throw Object.assign(new Error("closed"), { code: "ENOENT" });
+      return target;
+    },
+  };
+  // Only fd 3 is a listening socket; 41003 belongs to some other process, fd 6 closed mid-read.
+  assert.deepEqual(await procListeningPorts(7, proc), [49201]);
+  // Another user's pid owns nothing; lsof could not see more.
+  assert.deepEqual(await procListeningPorts(8, proc), []);
+  // With neither socket table readable the caller must try lsof instead.
+  await assert.rejects(procListeningPorts(7, { ...proc, readFile: async () => { throw new Error("masked"); } }), /unreadable/);
 });
 
 test("Linux listening ports are read from /proc without lsof", () => {

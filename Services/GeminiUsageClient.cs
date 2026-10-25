@@ -251,6 +251,16 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         IReadOnlyList<BoundAntigravityCandidate> candidates) =>
         Prioritize(candidates, _lastAnsweringCandidate);
 
+    /// <summary>
+    /// Antigravity IDE language servers first, as before; then editor-extension hubs; then hubs other
+    /// UsageAI instances started, which on a host without a shared sign-in are the signed-out ones.
+    /// This process's own hub child is already asked by the serving-hub short cut, so it is skipped.
+    /// </summary>
+    internal static IEnumerable<ProcessInfo> OrderCandidateProcesses(IEnumerable<ProcessInfo> processes, int? ownHubProcessId) =>
+        processes
+            .Where(process => process.HubPort is null || process.Pid != (uint?)ownHubProcessId)
+            .OrderBy(process => process.HubPort is null ? 0 : process.EditorHub ? 1 : 2);
+
     private static async Task<UsageSnapshot?> TryFetchAntigravityLocalSnapshotAsync(CancellationToken cancellationToken)
     {
         try
@@ -271,12 +281,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
                 Timeout = TimeSpan.FromSeconds(5),
             };
 
-            // Antigravity IDE language servers first, as before; editor-extension hubs after them.
-            // UsageAI's own hub child is already asked by the serving-hub short cut.
-            var ownHub = AgyUsageProbe.OwnHubProcessId;
-            foreach (var proc in processes
-                         .Where(process => process.HubPort is null || process.Pid != (uint?)ownHub)
-                         .OrderBy(process => process.HubPort is not null))
+            foreach (var proc in OrderCandidateProcesses(processes, AgyUsageProbe.OwnHubProcessId))
             {
                 foreach (var candidate in Prioritize(proc.GetBoundCandidates()))
                 {
@@ -299,7 +304,12 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
                     if (snapshot is not null)
                     {
                         _lastAnsweringCandidate = candidate;
-                        return snapshot with { Source = candidate.Hub ? "antigravity-extension-hub" : "antigravity-ide" };
+                        return snapshot with
+                        {
+                            Source = !candidate.Hub ? "antigravity-ide"
+                                : proc.EditorHub ? "antigravity-extension-hub"
+                                : "usageai-hub",
+                        };
                     }
                 }
             }
@@ -1394,15 +1404,20 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             : null;
 
     /// <param name="HubPort">
-    /// Set for an editor extension's <c>agy --hub</c>, which is queried over plain HTTP on exactly this
-    /// port, never on its other listening ports. Unset for an Antigravity IDE language server.
+    /// Set for an <c>agy --hub</c>, which is queried over plain HTTP on exactly this port, never on its
+    /// other listening ports. Unset for an Antigravity IDE language server.
+    /// </param>
+    /// <param name="EditorHub">
+    /// The hub was started with <c>--app_data_dir</c>, as Google's Antigravity editor extension does.
+    /// UsageAI never passes it to its own hubs, so a hub without it belongs to another UsageAI instance.
     /// </param>
     internal sealed record ProcessInfo(
         string CsrfToken,
         string? ExtensionServerCsrfToken,
         ushort? ExtensionPort,
         uint? Pid,
-        ushort? HubPort = null)
+        ushort? HubPort = null,
+        bool EditorHub = false)
     {
         /// <summary>
         /// Command lines are fixed for the life of a process, so a language server that was
@@ -1469,6 +1484,9 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         internal static Dictionary<uint, long> FindLiveLanguageServers()
         {
             var live = new Dictionary<uint, long>();
+            // UsageAI's own hub is never a candidate, so it must not keep the "nothing running" short
+            // cut below from applying, or force a command-line query of its own.
+            var ownHub = AgyUsageProbe.OwnHubProcessId;
             Process[] processes;
             try
             {
@@ -1485,7 +1503,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
                 {
                     // agy is the backend Google's Antigravity editor extension runs as "agy --hub".
                     if (process.ProcessName.Contains("language_server", StringComparison.OrdinalIgnoreCase) ||
-                        process.ProcessName.Equals("agy", StringComparison.OrdinalIgnoreCase))
+                        (process.ProcessName.Equals("agy", StringComparison.OrdinalIgnoreCase) && process.Id != ownHub))
                     {
                         // A process whose start time cannot be read still counts; it just
                         // cannot be cached across refreshes, so it re-queries each time.
@@ -1621,7 +1639,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
                     // without --hub is a one-off run, an updater or an interactive session.
                     if (ushort.TryParse(FlagValue(commandLine, "hub-port"), out var hubPort) && hubPort != 0)
                     {
-                        list.Add(new ProcessInfo(csrfToken, null, null, pid, hubPort));
+                        list.Add(new ProcessInfo(csrfToken, null, null, pid, hubPort, FlagValue(commandLine, "app_data_dir") is not null));
                     }
 
                     continue;

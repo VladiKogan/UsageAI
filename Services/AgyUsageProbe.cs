@@ -43,7 +43,7 @@ internal static class AgyUsageProbe
     private static readonly TimeSpan DiscoveredHubStatusTimeout = TimeSpan.FromSeconds(5);
 
     /// <summary>For hubs other processes run; the per-call timeouts above bound each request.</summary>
-    private static readonly HttpClient DiscoveredHubClient = new() { Timeout = TimeSpan.FromSeconds(20) };
+    private static readonly HttpClient DiscoveredHubClient = SecureHttp.CreateClient(TimeSpan.FromSeconds(20));
 
     /// <summary>
     /// UsageAI's own hub child, which the serving-hub short cut already asks. The Antigravity probe
@@ -79,20 +79,32 @@ internal static class AgyUsageProbe
     {
         post ??= (hubPort, hubToken, method, timeout, token2) =>
             TryPostAsync(DiscoveredHubClient, hubPort, hubToken, method, "{}", timeout, token2);
-        using var status = await post(port, token, "GetUserStatus", DiscoveredHubStatusTimeout, cancellationToken);
-        var snapshot = status is null ? null : GeminiUsageClient.ParseAntigravityUserStatus(status.RootElement);
-        if (snapshot is null)
+        try
         {
+            using var status = await post(port, token, "GetUserStatus", DiscoveredHubStatusTimeout, cancellationToken);
+            var snapshot = status is null ? null : GeminiUsageClient.ParseAntigravityUserStatus(status.RootElement);
+            if (snapshot is null)
+            {
+                return null;
+            }
+
+            using var summary = await post(port, token, "RetrieveUserQuotaSummary", DiscoveredHubSummaryTimeout, cancellationToken);
+            var metrics = summary is null
+                ? Array.Empty<UsageMetric>()
+                : GeminiUsageClient.ParseQuotaSummaryResponse(summary.RootElement);
+            return metrics.Count == 0
+                ? snapshot
+                : snapshot with { Metrics = GeminiUsageClient.MergeAntigravityQuotaSummaryMetrics(snapshot.Metrics, metrics) };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (Exception exception) when (exception is InvalidOperationException or JsonException or FormatException or InvalidDataException or KeyNotFoundException)
+        {
+            // A hub answering in an unexpected shape must not end the probe: the next candidate may work.
             return null;
         }
-
-        using var summary = await post(port, token, "RetrieveUserQuotaSummary", DiscoveredHubSummaryTimeout, cancellationToken);
-        var metrics = summary is null
-            ? Array.Empty<UsageMetric>()
-            : GeminiUsageClient.ParseQuotaSummaryResponse(summary.RootElement);
-        return metrics.Count == 0
-            ? snapshot
-            : snapshot with { Metrics = GeminiUsageClient.MergeAntigravityQuotaSummaryMetrics(snapshot.Metrics, metrics) };
     }
 
     public static async Task<UsageSnapshot?> TryFetchAsync(CancellationToken cancellationToken)
@@ -244,7 +256,7 @@ internal static class AgyUsageProbe
             _ = ProcessSecurity.DrainTextAsync(process.StandardOutput, MaxErrorCharacters, CancellationToken.None);
             _ = ProcessSecurity.DrainTextAsync(process.StandardError, MaxErrorCharacters, CancellationToken.None);
 
-            var client = new HttpClient { Timeout = TimeSpan.FromSeconds(5) };
+            var client = SecureHttp.CreateClient(TimeSpan.FromSeconds(5));
             _hubPort = port;
             _hubToken = token;
             using var ready = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
