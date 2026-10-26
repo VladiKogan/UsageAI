@@ -100,13 +100,17 @@ internal static class PreviewRenderer
             states = MixedStates(states, DateTimeOffset.Now);
         }
 
+        // Each refresh alternates between the sample and busier readings, so the gauges have
+        // somewhere to move and some cross a status threshold.
+        var shown = states;
         form.RefreshRequested += async (_, _) =>
         {
-            form.SetStates(states, isRefreshing: true, lastRefreshed: lastRefreshed, history: history);
+            form.SetStates(shown, isRefreshing: true, lastRefreshed: lastRefreshed, history: history);
             await Task.Delay(900);
+            shown = ReferenceEquals(shown, states) ? Busier(states) : states;
             if (!form.IsDisposed)
             {
-                form.SetStates(states, isRefreshing: false, lastRefreshed: DateTimeOffset.Now, history: history);
+                form.SetStates(shown, isRefreshing: false, lastRefreshed: DateTimeOffset.Now, history: history);
             }
         };
         form.VisibleChanged += (_, _) =>
@@ -203,6 +207,21 @@ internal static class PreviewRenderer
         Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture;
         Thread.CurrentThread.CurrentUICulture = CultureInfo.InvariantCulture;
     }
+
+    /// <summary>The same providers with every metered limit 17 points busier, capped at 100%.</summary>
+    internal static ProviderStatus[] Busier(ProviderStatus[] states) => states
+        .Select(state => state.Snapshot is not { } snapshot
+            ? state
+            : state with
+            {
+                Snapshot = snapshot with
+                {
+                    Metrics = snapshot.Metrics
+                        .Select(metric => metric.HasQuota ? metric with { UsedPercent = Math.Min(100, metric.UsedPercent!.Value + 17) } : metric)
+                        .ToArray(),
+                },
+            })
+        .ToArray();
 
     /// <summary>
     /// The sample providers in every non-happy state the windows must handle: signed out with a

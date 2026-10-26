@@ -228,7 +228,7 @@ internal sealed class SectionNav : Control
 
     private Font FontForDpi()
     {
-        var dpi = DpiOverride ?? DeviceDpi;
+        var dpi = DpiOverride ?? LayoutScale.DpiOf(this);
         if (_font is null || _fontDpi != dpi)
         {
             _font?.Dispose();

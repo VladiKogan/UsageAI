@@ -56,7 +56,7 @@ internal static class DrawingHelpers
     public static void DrawCapacityMeter(
         Graphics graphics,
         Rectangle bounds,
-        int usedPercent,
+        float usedPercent,
         Color fill,
         Color track)
     {
@@ -72,7 +72,7 @@ internal static class DrawingHelpers
             graphics.FillPath(trackBrush, trackPath);
         }
 
-        var used = Math.Clamp(usedPercent, 0, 100);
+        var used = Math.Clamp(usedPercent, 0F, 100F);
         var width = (int)Math.Round(bounds.Width * used / 100D);
         if (width <= 0)
         {

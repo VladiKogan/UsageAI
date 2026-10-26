@@ -1196,6 +1196,221 @@ internal static class RedesignTests
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Gauges ease from what they showed to what they should show, a status colour crossfades,
+    /// and motion stops entirely when Windows animations are off or High Contrast is on.
+    /// </summary>
+    public static Task TestMotionAsync()
+    {
+        // The curve starts fast, settles gently and never overshoots.
+        Equal(0D, Motion.Ease(0));
+        Equal(1D, Motion.Ease(1));
+        Equal(0D, Motion.Ease(-1));
+        Equal(1D, Motion.Ease(2));
+        True(Motion.Ease(0.25) > 0.6);
+        var previous = 0D;
+        for (var step = 1; step <= 20; step++)
+        {
+            var eased = Motion.Ease(step / 20D);
+            True(eased >= previous && eased <= 1);
+            previous = eased;
+        }
+
+        Equal(0F, UsagePopupForm.SpinnerAngle(0));
+        Equal(180F, UsagePopupForm.SpinnerAngle(500));
+        Equal(90F, UsagePopupForm.SpinnerAngle(1250));
+
+        var enabled = true;
+        Motion.EnabledOverride = () => enabled;
+        try
+        {
+            long now = 10_000;
+            using var motion = new MotionTracker(() => now);
+            using var owner = new Panel();
+
+            // First sight draws the value at once: opening the popup never replays a sweep.
+            Equal(40F, motion.Value(owner, "a", 40));
+            False(motion.IsAnimating);
+
+            // A new value eases from the old one and arrives after the duration.
+            Equal(40F, motion.Value(owner, "a", 80));
+            True(motion.IsAnimating);
+            now += MotionTracker.ValueDurationMs / 2;
+            var halfway = motion.Value(owner, "a", 80);
+            True(halfway > 60 && halfway < 80);
+
+            // Retargeted mid-flight, it carries on from where it is rather than jumping back.
+            Equal(halfway, motion.Value(owner, "a", 20));
+            now += MotionTracker.ValueDurationMs;
+            Equal(20F, motion.Value(owner, "a", 20));
+
+            // Crossing a threshold crossfades the colour over a shorter time.
+            Equal(Color.Green.ToArgb(), motion.Color(owner, "c", Color.Green).ToArgb());
+            Equal(Color.Green.ToArgb(), motion.Color(owner, "c", Color.Red).ToArgb());
+            now += MotionTracker.ColorDurationMs / 2;
+            var mixed = motion.Color(owner, "c", Color.Red);
+            True(mixed.R > Color.Green.R && mixed.G < Color.Green.G);
+            now += MotionTracker.ColorDurationMs;
+            Equal(Color.Red.ToArgb(), motion.Color(owner, "c", Color.Red).ToArgb());
+
+            // Each tick repaints the controls still moving; with none left the timer stops.
+            motion.Value(owner, "a", 60);
+            True(motion.IsAnimating);
+            InvokeTick(motion);
+            InvokeTick(motion);
+            False(motion.IsAnimating);
+
+            // A disposed control is skipped rather than repainted.
+            var gone = new Panel();
+            motion.Value(gone, "a", 10);
+            gone.Dispose();
+            InvokeTick(motion);
+
+            // Only the moving gauge's area is repainted; a whole-control request absorbs it.
+            motion.Value(owner, "area", 0, new Rectangle(0, 0, 4, 4));
+            motion.Value(owner, "area", 50, new Rectangle(0, 0, 4, 4));
+            motion.Value(owner, "area2", 0, new Rectangle(10, 10, 4, 4));
+            motion.Value(owner, "area2", 50, new Rectangle(10, 10, 4, 4));
+            motion.Color(owner, "c", Color.Blue);
+            InvokeTick(motion);
+            InvokeTick(motion);
+
+            // Hiding the window forgets every gauge: what changed meanwhile is drawn in place.
+            motion.Value(owner, "a", 10);
+            True(motion.IsAnimating);
+            motion.Reset();
+            False(motion.IsAnimating);
+            Equal(70F, motion.Value(owner, "a", 70));
+            False(motion.IsAnimating);
+
+            // Animations off: every change lands at once and nothing keeps ticking.
+            InvokeTick(motion);
+            enabled = false;
+            Equal(90F, motion.Value(owner, "a", 90));
+            False(motion.IsAnimating);
+            enabled = true;
+
+            // The tiles and the table draw mid-flight values without trouble.
+            var status = Status("codex", "Codex", Metric("Weekly", UsageMetricKind.Rolling, 30));
+            using (var tile = new ProviderTile(status, dpiOverride: 96) { Motion = motion, Width = 300 })
+            {
+                Draw(tile);
+            }
+
+            var hotter = Status("codex", "Codex", Metric("Weekly", UsageMetricKind.Rolling, 95));
+            using (var tile = new ProviderTile(hotter, dpiOverride: 96) { Motion = motion, Width = 300 })
+            {
+                Draw(tile);
+                True(motion.IsAnimating);
+            }
+
+            using (var ledger = new UsageLedger(new[] { status }, MetricDisplayMode.All, QuotaDisplay.Used, Array.Empty<UsageSample>(), 96) { Motion = motion, Width = 640 })
+            {
+                Draw(ledger);
+                ledger.SetData(new[] { hotter }, MetricDisplayMode.All, QuotaDisplay.Used, Array.Empty<UsageSample>());
+                Draw(ledger);
+            }
+
+            // Flipping to "left" is presentation only: the gauges hold what was used, so nothing
+            // starts moving.
+            motion.Reset();
+            using (var used = new ProviderTile(hotter, dpiOverride: 96) { Motion = motion, Width = 300 })
+            {
+                Draw(used);
+            }
+
+            using (var left = new ProviderTile(hotter, QuotaDisplay.Remaining, dpiOverride: 96) { Motion = motion, Width = 300 })
+            {
+                Draw(left);
+                False(motion.IsAnimating);
+            }
+
+            using (var leftTable = new UsageLedger(new[] { hotter }, MetricDisplayMode.All, QuotaDisplay.Remaining, Array.Empty<UsageSample>(), 96) { Motion = motion, Width = 640 })
+            {
+                Draw(leftTable);
+            }
+
+            motion.Dispose();
+            motion.Dispose();
+            Equal(5F, motion.Value(owner, "z", 5));
+        }
+        finally
+        {
+            Motion.EnabledOverride = null;
+        }
+
+        // High Contrast asks for a still screen whatever Windows' animation setting says.
+        Theme.SetHighContrastProbe(static () => true);
+        try
+        {
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+            False(Motion.Enabled);
+        }
+        finally
+        {
+            Theme.SetHighContrastProbe(null);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+        }
+
+        _ = Motion.Enabled;
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// A control measures at its window's DPI even before it has a handle of its own, and a
+    /// suspended repaint resumes once.
+    /// </summary>
+    public static Task TestWindowDpiAndRedrawAsync()
+    {
+        using var form = new Form
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-10_000, -10_000),
+        };
+        var child = new Panel();
+        var grandchild = new Panel();
+        child.Controls.Add(grandchild);
+        form.Controls.Add(child);
+
+        // Before the window exists every control falls back to its own value.
+        Equal(grandchild.DeviceDpi, LayoutScale.DpiOf(grandchild));
+        form.CreateControl();
+        _ = form.Handle;
+        Equal(form.DeviceDpi, LayoutScale.DpiOf(grandchild));
+        Equal(form.DeviceDpi, LayoutScale.DpiOf(form));
+        Equal(new LayoutScale(form.DeviceDpi)[100], new LayoutScale(grandchild)[100]);
+        using (var loose = new Panel())
+        {
+            Equal(loose.DeviceDpi, LayoutScale.DpiOf(loose));
+        }
+
+        // Hidden: nothing is suspended, since turning redraw back on would show the window.
+        using (WindowThemeHelpers.SuspendRedraw(child))
+        {
+            False(form.Visible);
+        }
+
+        form.Show();
+        Application.DoEvents();
+        var redraw = WindowThemeHelpers.SuspendRedraw(child);
+        child.Controls.Clear();
+        child.Controls.Add(new Label { Text = "rebuilt" });
+        redraw.Dispose();
+        redraw.Dispose();
+        Application.DoEvents();
+        True(child.Visible);
+        form.Hide();
+        return Task.CompletedTask;
+    }
+
+    private static void InvokeTick(MotionTracker motion)
+    {
+        var method = typeof(MotionTracker).GetMethod("OnTick", BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException("Missing OnTick.");
+        method.Invoke(motion, new object?[] { null, EventArgs.Empty });
+    }
+
     private static void Draw(Control control)
     {
         control.CreateControl();

@@ -89,6 +89,11 @@ The project follows [Semantic Versioning](https://semver.org/).
   new", shows the notes on the window itself instead of in a bordered box, names sections in
   sentence case behind a coloured dot, closes with **Got it**, and links to the full changelog
   instead of offering it as a second button.
+- **Gauges move to new readings instead of jumping.** When a refresh brings a new value, the
+  popup's rings and the dashboard's bars ease to it over 0.4 s and a limit crossing into warning or
+  critical crossfades its colour, while the figure shows the new number at once. Opening the popup
+  draws everything in place, the refresh arrow now turns smoothly instead of in 24° steps, and all
+  motion stops when Windows' animation effects are turned off or High Contrast is on.
 - `--render-preview` accepts `--theme light|dark`, and the new `--preview-window popup|dashboard|settings|whatsnew|prompt|warning|menu`
   opens the real window with sample data at the monitor's own DPI, with no tray icon, provider
   access or settings file, so a UI change can be tried by hand next to an installed copy.
@@ -98,6 +103,18 @@ The project follows [Semantic Versioning](https://semver.org/).
 - **Large usage figures are no longer cut off at the bottom.** The headline value was drawn in a
   box shorter than the font's line height, so `92% USED` and `UNLIMITED` lost the bottom of every
   glyph at every display scale. The box is now sized from the font itself.
+- **The popup and dashboard fit a second monitor at a different display scale.** Opened on a
+  monitor whose scale differed from the main one, the popup was sized for the main monitor and
+  then grown in place, so its second row of providers ran off the bottom of the screen, and the
+  dashboard kept its main-monitor size, cutting the row filter to "Meter…" and "Import…" and
+  dropping the forecast column. Both are now measured for the monitor they open on. Controls
+  rebuilt during a scale change also took the old scale from their parent; they now ask the window.
+- **Exiting while a refresh is running no longer shows a crash dialog.** A provider that answered
+  just as UsageAI shut down still delivered its update to the tray icon, which had already been
+  disposed, and WinForms reported the `NullReferenceException`. Updates that arrive after shutdown
+  are now dropped.
+- **The popup no longer flashes empty when providers update.** Its tiles are rebuilt on each
+  update, and the panel was painted bare between removing the old tiles and adding the new ones.
 
 ## [0.13.0] - 2026-10-21
 

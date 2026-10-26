@@ -131,6 +131,55 @@ internal static class WindowThemeHelpers
         }
     }
 
+    [DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool RedrawWindow(IntPtr window, IntPtr updateRect, IntPtr updateRegion, uint flags);
+
+    /// <summary>
+    /// Stops <paramref name="control"/> painting until the returned scope is disposed, then
+    /// repaints it and its children once. Replacing child controls otherwise paints the empty
+    /// panel between removing the old ones and adding the new, which flashes. A hidden control is
+    /// left alone: turning redraw back on would also make it visible.
+    /// </summary>
+    public static IDisposable SuspendRedraw(Control control)
+    {
+        if (!OperatingSystem.IsWindows() || !control.IsHandleCreated || !control.Visible)
+        {
+            return RedrawScope.None;
+        }
+
+        const int WM_SETREDRAW = 0x000B;
+        _ = SendMessage(control.Handle, WM_SETREDRAW, IntPtr.Zero, IntPtr.Zero);
+        return new RedrawScope(control);
+    }
+
+    private sealed class RedrawScope : IDisposable
+    {
+        public static readonly RedrawScope None = new(null);
+
+        private Control? _control;
+
+        public RedrawScope(Control? control) => _control = control;
+
+        public void Dispose()
+        {
+            if (_control is not { IsDisposed: false, IsHandleCreated: true } control)
+            {
+                _control = null;
+                return;
+            }
+
+            _control = null;
+            const int WM_SETREDRAW = 0x000B;
+            const uint RDW_INVALIDATE = 0x0001, RDW_ERASE = 0x0004, RDW_ALLCHILDREN = 0x0080, RDW_FRAME = 0x0400;
+            _ = SendMessage(control.Handle, WM_SETREDRAW, new IntPtr(1), IntPtr.Zero);
+            _ = RedrawWindow(control.Handle, IntPtr.Zero, IntPtr.Zero, RDW_INVALIDATE | RDW_ERASE | RDW_ALLCHILDREN | RDW_FRAME);
+        }
+    }
+
     /// <summary>DWM colours are COLORREF values: 0x00BBGGRR.</summary>
     internal static int ColorRef(Color color) => color.R | (color.G << 8) | (color.B << 16);
 

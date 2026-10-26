@@ -5227,6 +5227,31 @@ internal static class CoverageExpansionTests
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// A provider update posted to the UI thread just before the context is disposed — the app
+    /// exiting mid-refresh — is dropped instead of reaching the disposed tray icon, which threw
+    /// a NullReferenceException from NotifyIcon.UpdateIcon.
+    /// </summary>
+    public static Task TestUpdateAfterDisposeIsDroppedAsync()
+    {
+        SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+        var client = new QueueUsageClient("codex", "Codex");
+        client.Enqueue(Snapshot("codex", "Codex", 20, DateTimeOffset.Now));
+        var context = new UsageApplicationContext(
+            new[] { client },
+            new AppSettings { GlobalHotkeyEnabled = false, LastRunVersion = AppIdentity.Version },
+            showTrayIcon: false,
+            enableAutomaticUpdateChecks: false,
+            profileExisted: true);
+
+        // From another thread the update is posted, not run, so it lands after Dispose.
+        Task.Run(() => InvokePrivate(context, "OnServiceUpdated", null, EventArgs.Empty)).Wait();
+        Task.Run(() => InvokePrivate(context, "OnAlertsRaised", null, new UsageAlertEventArgs(Array.Empty<UsageAlert>()))).Wait();
+        context.Dispose();
+        Application.DoEvents();
+        return Task.CompletedTask;
+    }
+
     public static Task TestWhatsNewLifecycleAsync()
     {
         if (File.Exists(AppPaths.SettingsFile))

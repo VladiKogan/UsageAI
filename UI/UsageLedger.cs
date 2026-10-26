@@ -89,6 +89,10 @@ internal sealed class UsageLedger : Control
 
     public event EventHandler<ProviderCardActionEventArgs>? ActionInvoked;
 
+    /// <summary>Eases the usage bars toward new values; null draws them where they belong at once.</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal MotionTracker? Motion { get; init; }
+
     /// <summary>The height every row needs; it does not depend on the width.</summary>
     public int NaturalHeight
     {
@@ -498,7 +502,7 @@ internal sealed class UsageLedger : Control
             new Rectangle(labelLeft, row.Top, Math.Max(1, columns.Label - labelLeft), row.Height),
             middle);
 
-        DrawUsageCell(graphics, scale, new Rectangle(columns.UsageLeft, row.Top, columns.Usage, row.Height), metric, dim);
+        DrawUsageCell(graphics, scale, new Rectangle(columns.UsageLeft, row.Top, columns.Usage, row.Height), status.ProviderId, metric, dim);
 
         if (metric.HasQuota)
         {
@@ -553,7 +557,7 @@ internal sealed class UsageLedger : Control
         }
     }
 
-    private void DrawUsageCell(Graphics graphics, LayoutScale scale, Rectangle cell, UsageMetric metric, bool dim)
+    private void DrawUsageCell(Graphics graphics, LayoutScale scale, Rectangle cell, string providerId, UsageMetric metric, bool dim)
     {
         var middle = TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis;
         if (metric.IsUnlimited)
@@ -589,11 +593,16 @@ internal sealed class UsageLedger : Control
         var barWidth = Math.Max(scale[24], cell.Width - (detailWidth > 0 ? detailWidth + scale[12] : 0));
         var used = metric.UsedPercent!.Value;
         var fill = dim ? Theme.Blend(Theme.ForUsage(used), Theme.Night, 0.45) : Theme.ForUsage(used);
+        // Tweened on what was used, so flipping to "left" redraws in place rather than sweeping.
+        var key = $"row|{providerId}|{metric.Name}";
+        var bar = new Rectangle(cell.Left, cell.Top + (cell.Height - scale[BarHeight]) / 2, barWidth, scale[BarHeight]);
+        var area = Rectangle.Inflate(bar, scale[2], scale[2]);
+        var shownUsed = Motion?.Value(this, key, Math.Clamp(used, 0, 100), area) ?? used;
         DrawingHelpers.DrawCapacityMeter(
             graphics,
-            new Rectangle(cell.Left, cell.Top + (cell.Height - scale[BarHeight]) / 2, barWidth, scale[BarHeight]),
-            metric.DisplayedPercent(_quotaDisplay),
-            fill,
+            bar,
+            _quotaDisplay == QuotaDisplay.Remaining ? 100 - shownUsed : shownUsed,
+            Motion?.Color(this, key, fill, area) ?? fill,
             Theme.Track);
         if (detailWidth > 0)
         {
@@ -758,7 +767,7 @@ internal sealed class UsageLedger : Control
     }
 
     private int EffectiveDpi =>
-        _dpiOverride ?? (IsHandleCreated ? DeviceDpi : Parent?.DeviceDpi ?? DeviceDpi);
+        _dpiOverride ?? LayoutScale.DpiOf(this);
 
     private LayoutScale Scale() => new(EffectiveDpi);
 

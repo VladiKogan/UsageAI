@@ -276,11 +276,13 @@ internal sealed class SegmentedControl : Control
     private void UpdateAccessibility() =>
         AccessibleDescription = $"{_options[_selectedIndex]} selected, {_selectedIndex + 1} of {_options.Length}. Use the arrow keys to change.";
 
-    private LayoutScale Scale() => DpiOverride is { } dpi ? new LayoutScale(dpi) : new LayoutScale(this);
+    private LayoutScale Scale() => new(EffectiveDpi);
+
+    private int EffectiveDpi => DpiOverride ?? LayoutScale.DpiOf(this);
 
     private Font FontForDpi()
     {
-        var dpi = DpiOverride ?? DeviceDpi;
+        var dpi = EffectiveDpi;
         if (_font is null || _fontDpi != dpi)
         {
             _font?.Dispose();

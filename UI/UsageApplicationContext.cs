@@ -34,6 +34,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private Icon? _currentIcon;
     private float _refreshAnimationAngle;
     private bool _isExiting;
+    private bool _disposed;
     private bool _updateCheckRunning;
 
     public UsageApplicationContext(IEnumerable<IUsageClient> clients, AppSettings settings, bool profileExisted)
@@ -515,7 +516,17 @@ internal sealed class UsageApplicationContext : ApplicationContext
         }
         else
         {
-            _syncContext.Post(_ => action(), null);
+            // A provider can finish after the context is disposed — the app exiting mid-refresh —
+            // and its update must not reach the disposed tray icon and popup.
+            _syncContext.Post(
+                _ =>
+                {
+                    if (!_disposed)
+                    {
+                        action();
+                    }
+                },
+                null);
         }
     }
 
@@ -535,6 +546,8 @@ internal sealed class UsageApplicationContext : ApplicationContext
     {
         if (disposing)
         {
+            _disposed = true;
+            _isExiting = true;
             Application.Idle -= RefreshOnFirstIdle;
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             SystemEvents.SessionSwitch -= OnSessionSwitch;

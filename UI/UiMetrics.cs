@@ -11,7 +11,17 @@ internal readonly struct LayoutScale
 
     private readonly float _factor;
 
-    public LayoutScale(Control control) => _factor = Math.Clamp(control.DeviceDpi / (float)BaselineDpi, 0.5F, 6F);
+    public LayoutScale(Control control) => _factor = Math.Clamp(DpiOf(control) / (float)BaselineDpi, 0.5F, 6F);
+
+    /// <summary>
+    /// The DPI <paramref name="control"/> is drawn at. A child window always shares its
+    /// top-level window's DPI, but its own <see cref="Control.DeviceDpi"/> lags: before its
+    /// handle exists it is the start-up DPI, and while the window handles a DPI change the
+    /// children still report the old one, so content rebuilt then was measured for the monitor
+    /// the window just left. The top-level window is asked instead whenever it has a handle.
+    /// </summary>
+    public static int DpiOf(Control control) =>
+        control.TopLevelControl is { IsHandleCreated: true } top ? top.DeviceDpi : control.DeviceDpi;
 
     /// <summary>Explicit-DPI seam for deterministic geometry tests and previews.</summary>
     internal LayoutScale(int dpi) => _factor = Math.Clamp(dpi / (float)BaselineDpi, 0.5F, 6F);

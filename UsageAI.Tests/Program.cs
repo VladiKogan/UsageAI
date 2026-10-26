@@ -61,6 +61,7 @@ internal static class Program
         ("release notes parser boundary cases", CoverageExpansionTests.TestReleaseNotesBoundariesAsync),
         ("release note bullet summaries", CoverageExpansionTests.TestReleaseNoteSummariesAsync),
         ("What's New first-interaction lifecycle", CoverageExpansionTests.TestWhatsNewLifecycleAsync),
+        ("a provider update after the app is disposed is dropped", CoverageExpansionTests.TestUpdateAfterDisposeIsDroppedAsync),
         ("runtime High Contrast surface propagation", CoverageExpansionTests.TestRuntimeHighContrastAsync),
         ("owned-window extreme DPI geometry", CoverageExpansionTests.TestExtremeDpiGeometryAsync),
         ("Primary metric prioritization in tray and header", TestPrimaryMetricTrayTooltipAsync),
@@ -77,6 +78,8 @@ internal static class Program
         ("dashboard keeps focus and scroll across updates and retries one provider", RedesignTests.TestDashboardKeepsStateAcrossUpdatesAsync),
         ("settings page sections, toggles and previews", RedesignTests.TestSettingsPageAsync),
         ("prompt dialog, tray menu and ring-only tray icon", RedesignTests.TestPromptMenuAndTrayAsync),
+        ("gauges ease to new values and respect reduced motion", RedesignTests.TestMotionAsync),
+        ("controls measure at their window's DPI and repaint once after a rebuild", RedesignTests.TestWindowDpiAndRedrawAsync),
         ("model formatting and provider status states", CoverageExpansionTests.TestModelFormattingAsync),
         ("refresh orchestration, alerts, history, and backoff", CoverageExpansionTests.TestRefreshOrchestrationAsync),
         ("scheduled stale-provider recovery", CoverageExpansionTests.TestScheduledStaleRecoveryAsync),
@@ -193,6 +196,10 @@ internal static class Program
         // preference, and that must never reach this machine's real Run key.
         var startupRoot = $@"Software\UsageAI-Tests-{Guid.NewGuid():N}";
         StartupManager.SetRegistryRootForTests(startupRoot);
+
+        // An exception in a UI callback fails the check that pumped it, rather than opening
+        // WinForms' crash dialog on the desktop and leaving the run waiting on it.
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
 
         var selectedTests = Tests.AsEnumerable();
         var filterIndex = Array.IndexOf(args, "--filter");

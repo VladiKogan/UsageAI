@@ -72,6 +72,10 @@ internal sealed class ProviderTile : Control
     /// <summary>The rings this tile shows; null until the provider has reported usage.</summary>
     internal PopupRings? Rings => _rings;
 
+    /// <summary>Eases the rings toward new values; null draws them where they belong at once.</summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal MotionTracker? Motion { get; init; }
+
     /// <summary>What hovering or focusing the ⓘ (or stale) indicator explains.</summary>
     internal string? IndicatorText => _status.IsStale
         ? StaleText()
@@ -309,15 +313,22 @@ internal sealed class ProviderTile : Control
             fill = Theme.Blend(fill, Theme.Surface, 0.45);
         }
 
+        // The figure states the new value at once; only the arc and its colour travel to it. The
+        // tween follows what was used, so switching between used and left redraws the ring in
+        // place instead of sweeping it as though usage had changed.
+        var key = $"tile|{_status.ProviderId}|{metric.Name}";
+        var displayed = metric.DisplayedPercent(_quotaDisplay);
+        var area = Rectangle.Inflate(Rectangle.Ceiling(circle), scale[2], scale[2]);
+        var shownUsed = Motion?.Value(this, key, Math.Clamp(used, 0, 100), area) ?? used;
         DrawingHelpers.DrawRing(
             graphics,
             circle,
             scale.Exact(RingStroke),
-            metric.DisplayedPercent(_quotaDisplay),
-            fill,
+            _quotaDisplay == QuotaDisplay.Remaining ? 100 - shownUsed : shownUsed,
+            Motion?.Color(this, key, fill, area) ?? fill,
             track);
 
-        var figure = $"{(Theme.IsHighContrast ? Theme.UsageCue(used).Trim() : string.Empty)}{metric.DisplayedPercent(_quotaDisplay)}%";
+        var figure = $"{(Theme.IsHighContrast ? Theme.UsageCue(used).Trim() : string.Empty)}{displayed}%";
         var figureHeight = _fonts.Figure.Height;
         var captionHeight = _fonts.Caption.Height;
         var stackTop = (int)Math.Round(circle.Top + (circle.Height - figureHeight - captionHeight) / 2F);
@@ -547,7 +558,7 @@ internal sealed class ProviderTile : Control
     }
 
     private int EffectiveDpi =>
-        _dpiOverride ?? (IsHandleCreated ? DeviceDpi : Parent?.DeviceDpi ?? DeviceDpi);
+        _dpiOverride ?? LayoutScale.DpiOf(this);
 
     private LayoutScale Scale() => new(EffectiveDpi);
 

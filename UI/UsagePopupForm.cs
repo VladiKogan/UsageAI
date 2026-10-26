@@ -43,6 +43,10 @@ internal sealed class UsagePopupForm : Form
     private IReadOnlyList<ProviderStatus> _states = Array.Empty<ProviderStatus>();
     private IReadOnlyList<UsageSample> _history = Array.Empty<UsageSample>();
     private DashboardMode _mode = DashboardMode.Compact;
+    // The DPI the chrome and content were last measured for.
+    private int _layoutDpi;
+    // Where the compact popup was opened from, so a re-measure can place it there again.
+    private Point? _trayAnchor;
     private bool _allowClose;
     private bool _isRefreshing;
     private DateTimeOffset? _lastRefreshed;
@@ -55,8 +59,11 @@ internal sealed class UsagePopupForm : Form
     private PopupHeadline? _headline;
     private readonly System.Windows.Forms.Timer _uiTickTimer;
     private readonly ThemedToolTip _tileToolTip = new();
+    // Shared by every tile and the table, which are rebuilt on updates, so a gauge keeps easing
+    // from what it showed before the rebuild.
+    private readonly MotionTracker _motion = new();
     private readonly System.Windows.Forms.Timer _refreshAnimationTimer;
-    private float _refreshAnimationAngle;
+    private long _refreshAnimationStart;
 
     public UsagePopupForm(AppSettings settings, int? dpiOverride = null)
     {
@@ -258,11 +265,18 @@ internal sealed class UsagePopupForm : Form
             }
         };
 
-        _refreshAnimationTimer = new System.Windows.Forms.Timer { Interval = 90 };
+        // The angle follows elapsed time, one turn a second, so a late tick never slows the turn.
+        _refreshAnimationTimer = new System.Windows.Forms.Timer { Interval = 16 };
         _refreshAnimationTimer.Tick += (_, _) =>
         {
-            _refreshAnimationAngle = (_refreshAnimationAngle + 24F) % 360F;
-            _refreshButton.Rotation = _refreshAnimationAngle;
+            // Animation effects or High Contrast can be switched on mid-refresh; the arrow stops.
+            if (!Motion.Enabled)
+            {
+                StopRefreshAnimation();
+                return;
+            }
+
+            _refreshButton.Rotation = SpinnerAngle(Environment.TickCount64 - _refreshAnimationStart);
         };
     }
 
@@ -335,9 +349,10 @@ internal sealed class UsagePopupForm : Form
     public void ShowNearTray(DashboardMode mode)
     {
         var changedToFull = _mode != DashboardMode.Full && mode == DashboardMode.Full;
-        SetMode(mode);
         var cursor = Cursor.Position;
         var screen = Screen.FromPoint(cursor).WorkingArea;
+        // Mode first: leaving the dashboard saves where the user left it, before anything moves.
+        SetMode(mode);
 
         if (mode == DashboardMode.Full)
         {
@@ -345,28 +360,56 @@ internal sealed class UsagePopupForm : Form
             return;
         }
 
-        ApplyPreferredSize(screen);
-        var scale = Scale();
-        var x = Math.Clamp(
-            cursor.X - Width + scale[24],
-            screen.Left + scale[8],
-            Math.Max(screen.Left + scale[8], screen.Right - Width - scale[8]));
-        var y = Math.Clamp(
-            screen.Bottom - Height - scale[8],
-            screen.Top + scale[8],
-            Math.Max(screen.Top + scale[8], screen.Bottom - Height - scale[8]));
-        if (cursor.Y < screen.Top + Height)
-        {
-            y = screen.Top + scale[8];
-        }
-
-        Location = new Point(x, y);
+        _trayAnchor = cursor;
+        MoveOntoScreen(screen);
+        PlaceNearTray(cursor, screen);
         if (!Visible)
         {
             Show();
         }
 
         Activate();
+    }
+
+    /// <summary>
+    /// Puts the hidden window on the screen it is about to open on before anything is measured.
+    /// Created or left on a monitor at another scale, it would be sized for that DPI and only
+    /// then put here, where Windows rescales a window it creates or moves without reliably
+    /// reporting it; a move while hidden reports the change, and the window is measured for it.
+    /// </summary>
+    private void MoveOntoScreen(Rectangle screen)
+    {
+        if (Visible || _dpiOverride is not null || screen.Contains(Location))
+        {
+            return;
+        }
+
+        _ = Handle;
+        Location = screen.Location;
+    }
+
+    /// <summary>
+    /// Sizes the compact popup and sets it beside the tray: against the screen edge nearest
+    /// <paramref name="anchor"/>, at the bottom, or at the top when the taskbar is there.
+    /// </summary>
+    private void PlaceNearTray(Point anchor, Rectangle screen)
+    {
+        ApplyPreferredSize(screen);
+        var scale = Scale();
+        var x = Math.Clamp(
+            anchor.X - Width + scale[24],
+            screen.Left + scale[8],
+            Math.Max(screen.Left + scale[8], screen.Right - Width - scale[8]));
+        var y = Math.Clamp(
+            screen.Bottom - Height - scale[8],
+            screen.Top + scale[8],
+            Math.Max(screen.Top + scale[8], screen.Bottom - Height - scale[8]));
+        if (anchor.Y < screen.Top + Height)
+        {
+            y = screen.Top + scale[8];
+        }
+
+        Location = new Point(x, y);
     }
 
     public void CloseForExit()
@@ -412,10 +455,18 @@ internal sealed class UsagePopupForm : Form
             eventArgs.DeviceDpiOld,
             eventArgs.DeviceDpiNew);
         base.OnDpiChanged(eventArgs);
+        ReapplyDpi(Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea, scrollY);
+    }
+
+    /// <summary>
+    /// Measures the window again for the DPI it is on now: after a move to a monitor at another
+    /// scale, and after being created straight onto one, which Windows reports as no change.
+    /// </summary>
+    private void ReapplyDpi(Rectangle workingArea, int scrollY)
+    {
         ApplyScaledChrome();
         RebuildCards();
         _content.AutoScrollPosition = new Point(0, scrollY);
-        var workingArea = Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea;
         if (_mode == DashboardMode.Full)
         {
             ApplyDashboardMinimumSize(workingArea);
@@ -432,7 +483,16 @@ internal sealed class UsagePopupForm : Form
         }
         else
         {
-            ApplyPreferredSize(workingArea);
+            // Grown or shrunk for the new scale, the popup is set beside the tray again: kept
+            // where it was, a popup opened at the bottom of the screen ran off it.
+            if (_trayAnchor is { } anchor)
+            {
+                PlaceNearTray(anchor, workingArea);
+            }
+            else
+            {
+                ApplyPreferredSize(workingArea);
+            }
         }
     }
 
@@ -451,6 +511,20 @@ internal sealed class UsagePopupForm : Form
         base.OnHandleCreated(e);
         WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
         WindowThemeHelpers.ApplyWindowFrame(this);
+
+        // Created straight onto a monitor at another scale, the window gets no DPI change and
+        // keeps a layout measured at the start-up DPI. It is measured again once creation has
+        // finished, when the window's own size and scrolling can be decided too.
+        if (_dpiOverride is null && _layoutDpi != 0 && _layoutDpi != DeviceDpi)
+        {
+            BeginInvoke(() =>
+            {
+                if (!IsDisposed && !Disposing && _layoutDpi != DeviceDpi)
+                {
+                    ReapplyDpi(Screen.FromControl(this).WorkingArea, 0);
+                }
+            });
+        }
     }
 
     protected override void OnVisibleChanged(EventArgs e)
@@ -466,6 +540,7 @@ internal sealed class UsagePopupForm : Form
         {
             _uiTickTimer.Stop();
             StopRefreshAnimation();
+            _motion.Reset();
         }
     }
 
@@ -477,6 +552,7 @@ internal sealed class UsagePopupForm : Form
             _refreshAnimationTimer.Dispose();
             _uiTickTimer.Dispose();
             _tileToolTip.Dispose();
+            _motion.Dispose();
             Theme.Changed -= OnThemeChanged;
         }
 
@@ -516,6 +592,8 @@ internal sealed class UsagePopupForm : Form
 
         ApplyThemeColors();
         RebuildCards();
+        // Leaving High Contrast during a refresh starts the arrow again.
+        UpdateRefreshAnimationState();
         Invalidate(invalidateChildren: true);
     }
 
@@ -543,6 +621,7 @@ internal sealed class UsagePopupForm : Form
 
     private void ApplyScaledChrome()
     {
+        _layoutDpi = _dpiOverride ?? DeviceDpi;
         var scale = Scale();
         _shell.Padding = ShellPadding(scale);
         _shell.RowStyles[0] = new RowStyle(SizeType.Absolute, scale[HeaderRowBaseline]);
@@ -558,6 +637,8 @@ internal sealed class UsagePopupForm : Form
 
     private void RebuildCards()
     {
+        // Held until the window has its new size, so the rebuild shows as one finished frame.
+        using var redraw = WindowThemeHelpers.SuspendRedraw(_content);
         _content.SuspendLayout();
         try
         {
@@ -614,6 +695,7 @@ internal sealed class UsagePopupForm : Form
                 _dpiOverride)
             {
                 Margin = Padding.Empty,
+                Motion = _motion,
             };
             ledger.ActionInvoked += OnCardActionInvoked;
             _content.Controls.Add(ledger);
@@ -672,7 +754,10 @@ internal sealed class UsagePopupForm : Form
                 _settings.QuotaDisplay,
                 _settings.PopupMetricGroup(state.ProviderId),
                 _dpiOverride,
-                _tileToolTip);
+                _tileToolTip)
+            {
+                Motion = _motion,
+            };
             tile.ActionInvoked += OnCardActionInvoked;
             _content.Controls.Add(tile);
         }
@@ -890,7 +975,9 @@ internal sealed class UsagePopupForm : Form
 
     private void UpdateRefreshAnimationState()
     {
-        if (!_isRefreshing || !Visible || IsDisposed || Disposing)
+        // Without motion the arrow holds still; the disabled button, its "Refreshing" name and
+        // the status line still say a refresh is running.
+        if (!_isRefreshing || !Visible || IsDisposed || Disposing || !Motion.Enabled)
         {
             StopRefreshAnimation();
             return;
@@ -898,11 +985,14 @@ internal sealed class UsagePopupForm : Form
 
         if (!_refreshAnimationTimer.Enabled)
         {
-            _refreshAnimationAngle = 0F;
+            _refreshAnimationStart = Environment.TickCount64;
             _refreshButton.Rotation = 0F;
             _refreshAnimationTimer.Start();
         }
     }
+
+    internal static float SpinnerAngle(long elapsedMilliseconds) =>
+        elapsedMilliseconds <= 0 ? 0F : elapsedMilliseconds % 1000 * 0.36F;
 
     private void StopRefreshAnimation()
     {
