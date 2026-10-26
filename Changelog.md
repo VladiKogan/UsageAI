@@ -4,6 +4,22 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **UsageAI has a new logo: a ring holding the quota that is left.** The old neon gradient ring
+  and glowing spark blurred into a smudge at the 16 px taskbar and title-bar sizes, and its
+  gradient-and-glow look read as a generic AI app rather than a usage meter. The new mark is a
+  light ring with a level of cyan inside it on a dark tile, so it reads on light and dark taskbars
+  alike, and at 24 px and below it switches to a thicker ring and a flat waterline so it stays
+  crisp. `Resources\app.ico` now carries 16, 20, 24, 32, 40, 48, 64, 128 and 256 px frames, adding
+  the 20, 24 and 40 px sizes Windows picks at 125% and 150% scaling instead of scaling a
+  neighbouring frame. `Resources\logo.png` is now a real PNG with transparent corners; it was a
+  JPEG with a `.png` name. All of them, and the new vector master `Resources\logo.svg`, come from
+  `scripts\render-logo.ps1`, which uses only `System.Drawing`, so the icon and the logos cannot
+  drift apart.
+
 ## [0.13.0] - 2026-10-21
 
 ### Added

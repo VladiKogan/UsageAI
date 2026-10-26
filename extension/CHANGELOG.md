@@ -1,5 +1,15 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The extension uses UsageAI's new logo: a ring holding the quota that is left.** The
+  Marketplace and Open VSX icon (`media/logo.png`) is the same mark as the desktop app, now a real
+  PNG with transparent corners instead of a JPEG with a `.png` name, and the Activity Bar icon
+  (`media/activity.svg`) is a one-colour version of it in place of the old dial, so the sidebar,
+  the Marketplace listing and the tray app read as one product.
+
 ## 0.1.17
 
 ### Added
