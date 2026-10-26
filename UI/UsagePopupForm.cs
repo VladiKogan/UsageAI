@@ -11,14 +11,21 @@ internal enum DashboardMode
     Full,
 }
 
+/// <summary>The limit the popup headline names, with its forecast when one exists.</summary>
+internal sealed record PopupHeadline(ProviderStatus Status, UsageMetric Metric, UsageProjection? Projection);
+
 internal sealed class UsagePopupForm : Form
 {
-    private const int CompactWidthBaseline = 416;
+    private const int CompactWidthBaseline = 384;
     private const int FullWidthBaseline = 620;
-    private const int HeaderRowBaseline = 58;
+    // A title row plus two lines of headline: the sentence naming the busiest limit, its value
+    // and when it runs out does not fit one line at popup width.
+    private const int HeaderRowBaseline = 68;
     private const int FooterRowBaseline = 46;
     private const int DashboardColumns = 2;
     private const int DashboardRows = 2;
+    private const int CompactColumns = 2;
+    private const int TileGap = 8;
 
     private readonly AppSettings _settings;
     private readonly int? _dpiOverride;
@@ -26,15 +33,13 @@ internal sealed class UsagePopupForm : Form
     private readonly TableLayoutPanel _header;
     private readonly FlowLayoutPanel _content;
     private readonly Label _titleLabel;
-    private readonly Label _subtitleLabel;
     private readonly Label _summaryLabel;
     private readonly Label _updatedLabel;
     private readonly ComboBox _metricMode;
     private readonly Button _detailsButton;
-    private readonly Button _refreshButton;
-    private readonly Button _settingsButton;
+    private readonly IconButton _refreshButton;
+    private readonly IconButton _settingsButton;
     private readonly TableLayoutPanel _footer;
-    private readonly UsageMarkControl _mark;
     private IReadOnlyList<ProviderStatus> _states = Array.Empty<ProviderStatus>();
     private IReadOnlyList<UsageSample> _history = Array.Empty<UsageSample>();
     private DashboardMode _mode = DashboardMode.Compact;
@@ -44,7 +49,10 @@ internal sealed class UsagePopupForm : Form
     private Rectangle? _dashboardBounds;
     private bool _dashboardWasShown;
     private bool _updatingCardWidths;
+    private bool _compactNeedsScroll;
+    private PopupHeadline? _headline;
     private readonly System.Windows.Forms.Timer _uiTickTimer;
+    private readonly ThemedToolTip _tileToolTip = new();
     private readonly System.Windows.Forms.Timer _refreshAnimationTimer;
     private float _refreshAnimationAngle;
 
@@ -77,7 +85,7 @@ internal sealed class UsagePopupForm : Form
             ColumnCount = 1,
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
-            Padding = scale.Pad(16, 14, 16, 12),
+            Padding = ShellPadding(scale),
             RowCount = 3,
         };
         _shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -86,11 +94,6 @@ internal sealed class UsagePopupForm : Form
         _shell.RowStyles.Add(new RowStyle(SizeType.Absolute, scale[FooterRowBaseline]));
         Controls.Add(_shell);
 
-        _mark = new UsageMarkControl
-        {
-            Dock = DockStyle.Fill,
-            Margin = scale.Pad(0, 2, 12, 2),
-        };
         _titleLabel = new Label
         {
             AutoEllipsis = true,
@@ -98,29 +101,36 @@ internal sealed class UsagePopupForm : Form
             Font = Typography.Display(12F),
             ForeColor = Theme.Text,
             Margin = Padding.Empty,
-            Text = "Usage at a glance",
-            TextAlign = ContentAlignment.BottomLeft,
+            Text = "Usage",
+            TextAlign = ContentAlignment.MiddleLeft,
         };
-        _subtitleLabel = new Label
-        {
-            AutoEllipsis = true,
-            Dock = DockStyle.Fill,
-            Font = Typography.Text(8.2F),
-            ForeColor = Theme.Muted,
-            Margin = Padding.Empty,
-            Text = "Your connected AI accounts",
-            TextAlign = ContentAlignment.TopLeft,
-        };
+
+        // The headline answers the popup's one question - which limit needs attention - in a
+        // sentence, so it is read before any ring.
         _summaryLabel = new Label
         {
             AutoEllipsis = true,
             Dock = DockStyle.Fill,
-            Font = Typography.Mono(7.5F),
-            ForeColor = Theme.Muted,
+            Font = Typography.Text(8.3F),
+            ForeColor = Theme.TextSecondary,
             Margin = Padding.Empty,
-            Text = "CHECKING",
-            TextAlign = ContentAlignment.MiddleRight,
+            Text = "Checking your accounts…",
+            TextAlign = ContentAlignment.TopLeft,
         };
+        _refreshButton = new IconButton(IconGlyph.Refresh, "Refresh")
+        {
+            Dock = DockStyle.Fill,
+            DpiOverride = _dpiOverride,
+            Margin = Padding.Empty,
+        };
+        _refreshButton.Click += (_, _) => RefreshRequested?.Invoke(this, EventArgs.Empty);
+        _settingsButton = new IconButton(IconGlyph.Settings, "Settings")
+        {
+            Dock = DockStyle.Fill,
+            DpiOverride = _dpiOverride,
+            Margin = Padding.Empty,
+        };
+        _settingsButton.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
 
         _header = new TableLayoutPanel
         {
@@ -129,28 +139,29 @@ internal sealed class UsagePopupForm : Form
             Margin = Padding.Empty,
             RowCount = 2,
         };
-        _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[46]));
         _header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[150]));
-        _header.RowStyles.Add(new RowStyle(SizeType.Percent, 52));
-        _header.RowStyles.Add(new RowStyle(SizeType.Percent, 48));
-        _header.Controls.Add(_mark, 0, 0);
-        _header.SetRowSpan(_mark, 2);
-        _header.Controls.Add(_titleLabel, 1, 0);
-        _header.Controls.Add(_subtitleLabel, 1, 1);
-        _header.Controls.Add(_summaryLabel, 2, 0);
-        _header.SetRowSpan(_summaryLabel, 2);
+        _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[32]));
+        _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[32]));
+        _header.RowStyles.Add(new RowStyle(SizeType.Absolute, scale[32]));
+        _header.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _header.Controls.Add(_titleLabel, 0, 0);
+        _header.Controls.Add(_refreshButton, 1, 0);
+        _header.Controls.Add(_settingsButton, 2, 0);
+        _header.Controls.Add(_summaryLabel, 0, 1);
+        _header.SetColumnSpan(_summaryLabel, 3);
         _shell.Controls.Add(_header, 0, 0);
 
+        // Both modes lay out in rows of two; SetMode returns early for the starting mode, so the
+        // flow is set here rather than only there.
         _content = new FlowLayoutPanel
         {
-            AutoScroll = true,
+            AutoScroll = false,
             BackColor = Theme.Night,
             Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.TopDown,
+            FlowDirection = FlowDirection.LeftToRight,
             Margin = Padding.Empty,
             Padding = Padding.Empty,
-            WrapContents = false,
+            WrapContents = true,
         };
         _content.HandleCreated += OnContentHandleCreated;
         _content.SizeChanged += (_, _) => RefreshDashboardLayout();
@@ -189,33 +200,23 @@ internal sealed class UsagePopupForm : Form
             _settings.Save();
             RebuildCards();
         };
-        _detailsButton = CreateButton("Details", scale, primary: false);
+        _detailsButton = CreateButton("Open dashboard", scale, primary: true);
         _detailsButton.Click += (_, _) => ShowNearTray(DashboardMode.Full);
-        _settingsButton = CreateButton("Settings", scale, primary: false);
-        _settingsButton.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
-        _refreshButton = CreateButton("Refresh", scale, primary: true);
-        _refreshButton.Click += (_, _) => RefreshRequested?.Invoke(this, EventArgs.Empty);
-        _refreshButton.ImageAlign = ContentAlignment.MiddleLeft;
-        _refreshButton.TextImageRelation = TextImageRelation.ImageBeforeText;
 
         _footer = new TableLayoutPanel
         {
-            ColumnCount = 5,
+            ColumnCount = 3,
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
             RowCount = 1,
         };
         _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 0));
-        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[84]));
-        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[76]));
-        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[84]));
+        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[132]));
         _footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _footer.Controls.Add(_updatedLabel, 0, 0);
         _footer.Controls.Add(_metricMode, 1, 0);
         _footer.Controls.Add(_detailsButton, 2, 0);
-        _footer.Controls.Add(_settingsButton, 3, 0);
-        _footer.Controls.Add(_refreshButton, 4, 0);
         _shell.Controls.Add(_footer, 0, 2);
 
         if (_settings.DashboardBounds is { Length: 4 } saved)
@@ -254,7 +255,7 @@ internal sealed class UsagePopupForm : Form
         _refreshAnimationTimer.Tick += (_, _) =>
         {
             _refreshAnimationAngle = (_refreshAnimationAngle + 24F) % 360F;
-            UpdateRefreshButtonImage();
+            _refreshButton.Rotation = _refreshAnimationAngle;
         };
     }
 
@@ -287,21 +288,17 @@ internal sealed class UsagePopupForm : Form
         ConfigureWindowPresentation();
         _detailsButton.Visible = mode == DashboardMode.Compact;
         _metricMode.Visible = mode == DashboardMode.Full;
-        _content.FlowDirection = mode == DashboardMode.Full
-            ? FlowDirection.LeftToRight
-            : FlowDirection.TopDown;
-        _content.WrapContents = mode == DashboardMode.Full;
+        _content.FlowDirection = FlowDirection.LeftToRight;
+        _content.WrapContents = true;
 
-        // The full dashboard is a fixed 2x2 grid whose cards are always resized to the client
-        // area, so there is never anything below the fold to scroll to. Leaving AutoScroll on
-        // let the freshly built, natural-height cards latch a scrollbar before UpdateCardWidths
-        // compacted them, which then stole width from the grid for the rest of the session.
-        _content.AutoScroll = mode == DashboardMode.Compact;
+        // Neither mode scrolls by default. The full dashboard is a fixed grid resized to the
+        // client area, and the popup sizes itself to its tiles. An automatic scrollbar latched
+        // onto freshly built content before the window had grown to fit it, narrowed the client
+        // area under the widths just computed, and wrapped every row for the rest of the session.
+        // ApplyPreferredSize turns scrolling on only when the popup cannot fit on the screen.
+        _content.AutoScroll = false;
+        _compactNeedsScroll = false;
         ApplyScaledChrome();
-        _titleLabel.Text = mode == DashboardMode.Compact ? "Usage at a glance" : "Usage dashboard";
-        _subtitleLabel.Text = mode == DashboardMode.Compact
-            ? "Your connected AI accounts"
-            : "All providers and usage metrics";
         RebuildCards();
     }
 
@@ -315,6 +312,13 @@ internal sealed class UsagePopupForm : Form
         _isRefreshing = isRefreshing;
         _lastRefreshed = lastRefreshed;
         _history = history;
+
+        // The forecast behind the headline changes only with new readings, so it is worked out
+        // here once; the five-second tick only re-words the countdown.
+        var forecastHistory = _settings.ForecastEnabled && _settings.HistoryEnabled
+            ? history
+            : Array.Empty<UsageSample>();
+        _headline = SelectHeadline(states, forecastHistory, DateTimeOffset.Now);
         UpdateStatus();
         RebuildCards();
     }
@@ -454,6 +458,7 @@ internal sealed class UsagePopupForm : Form
             StopRefreshAnimation();
             _refreshAnimationTimer.Dispose();
             _uiTickTimer.Dispose();
+            _tileToolTip.Dispose();
             Theme.Changed -= OnThemeChanged;
         }
 
@@ -502,19 +507,17 @@ internal sealed class UsagePopupForm : Form
         _shell.BackColor = Theme.Night;
         _content.BackColor = Theme.Night;
         _titleLabel.ForeColor = Theme.Text;
-        _subtitleLabel.ForeColor = Theme.Muted;
+        _summaryLabel.ForeColor = Theme.TextSecondary;
         _updatedLabel.ForeColor = Theme.Muted;
         _metricMode.BackColor = Theme.SurfaceRaised;
         _metricMode.ForeColor = Theme.Text;
-        _refreshButton.BackColor = Theme.Accent;
-        _refreshButton.ForeColor = Theme.OnAccent;
-        _refreshButton.FlatAppearance.BorderColor = Theme.Accent;
-        _detailsButton.BackColor = Theme.SurfaceRaised;
-        _detailsButton.ForeColor = Theme.Text;
-        _detailsButton.FlatAppearance.BorderColor = Theme.Hairline;
-        _settingsButton.BackColor = Theme.SurfaceRaised;
-        _settingsButton.ForeColor = Theme.Text;
-        _settingsButton.FlatAppearance.BorderColor = Theme.Hairline;
+        _detailsButton.BackColor = Theme.Accent;
+        _detailsButton.ForeColor = Theme.OnAccent;
+        _detailsButton.FlatAppearance.BorderColor = Theme.Accent;
+        _detailsButton.FlatAppearance.MouseDownBackColor = Theme.Blend(Theme.Accent, Theme.Night, 0.75);
+        _detailsButton.FlatAppearance.MouseOverBackColor = Theme.Blend(Theme.Accent, Theme.Text, 0.88);
+        _refreshButton.Invalidate();
+        _settingsButton.Invalidate();
         WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
         WindowThemeHelpers.ApplyWindowFrame(this);
         WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
@@ -524,15 +527,14 @@ internal sealed class UsagePopupForm : Form
     private void ApplyScaledChrome()
     {
         var scale = Scale();
-        _shell.Padding = scale.Pad(16, 14, 16, 12);
+        _shell.Padding = ShellPadding(scale);
         _shell.RowStyles[0] = new RowStyle(SizeType.Absolute, scale[HeaderRowBaseline]);
         _shell.RowStyles[2] = new RowStyle(SizeType.Absolute, scale[FooterRowBaseline]);
-        _header.ColumnStyles[0] = new ColumnStyle(SizeType.Absolute, scale[46]);
-        _header.ColumnStyles[2] = new ColumnStyle(SizeType.Absolute, scale[150]);
-        _footer.ColumnStyles[1] = new ColumnStyle(SizeType.Absolute, _mode == DashboardMode.Full ? scale[132] : 0);
-        _footer.ColumnStyles[2] = new ColumnStyle(SizeType.Absolute, _mode == DashboardMode.Compact ? scale[76] : 0);
-        _footer.ColumnStyles[3] = new ColumnStyle(SizeType.Absolute, scale[84]);
-        _footer.ColumnStyles[4] = new ColumnStyle(SizeType.Absolute, scale[84]);
+        _header.ColumnStyles[1] = new ColumnStyle(SizeType.Absolute, scale[32]);
+        _header.ColumnStyles[2] = new ColumnStyle(SizeType.Absolute, scale[32]);
+        _header.RowStyles[0] = new RowStyle(SizeType.Absolute, scale[32]);
+        _footer.ColumnStyles[1] = new ColumnStyle(SizeType.Absolute, _mode == DashboardMode.Full ? scale[150] : 0);
+        _footer.ColumnStyles[2] = new ColumnStyle(SizeType.Absolute, _mode == DashboardMode.Compact ? scale[132] : 0);
     }
 
     private void RebuildCards()
@@ -562,6 +564,19 @@ internal sealed class UsagePopupForm : Form
                 var expanded = _mode == DashboardMode.Full;
                 foreach (var state in visibleStates)
                 {
+                    if (!expanded)
+                    {
+                        var tile = new ProviderTile(
+                            state,
+                            _settings.QuotaDisplay,
+                            _settings.PopupMetricGroup(state.ProviderId),
+                            _dpiOverride,
+                            _tileToolTip);
+                        tile.ActionInvoked += OnCardActionInvoked;
+                        _content.Controls.Add(tile);
+                        continue;
+                    }
+
                     var selectedMetrics = expanded && state.Snapshot is { } snapshot
                         ? UsageMetricSelection.Select(snapshot.Metrics, _settings.MetricDisplayMode)
                         : null;
@@ -599,6 +614,9 @@ internal sealed class UsagePopupForm : Form
                 break;
             case ProviderCardAction.OpenAccount when eventArgs.Status.AccountUrl is { } url:
                 TryOpen(url);
+                break;
+            case ProviderCardAction.OpenDetails:
+                ShowNearTray(DashboardMode.Full);
                 break;
             default:
                 break;
@@ -651,37 +669,104 @@ internal sealed class UsagePopupForm : Form
 
     private void UpdateStatus()
     {
-        var connected = _states.Where(state => state.IsConnected).ToArray();
         _refreshButton.Enabled = !_isRefreshing;
-        _refreshButton.Text = _isRefreshing ? "Reading" : "Refresh";
+        _refreshButton.AccessibleName = _isRefreshing ? "Refreshing" : "Refresh";
         UpdateRefreshAnimationState();
 
-        // The provider with the busiest primary session earns the header slot.
-        var headlineStatus = SelectHeadlineStatus(connected);
-        var headline = headlineStatus is null ? null : Headline(headlineStatus.Snapshot);
-        if (headlineStatus is not null && headline is not null)
-        {
-            _summaryLabel.ForeColor = headline.HasQuota
-                ? Theme.ForUsage(headline.UsedPercent!.Value)
-                : Theme.Muted;
-            _summaryLabel.Text = $"{ShortName(headlineStatus.ProviderName)} {headline.DisplayPrimary(_settings.QuotaDisplay)}".ToUpperInvariant();
-        }
-        else if (_isRefreshing)
-        {
-            _summaryLabel.ForeColor = Theme.Signal;
-            _summaryLabel.Text = "CHECKING";
-        }
-        else
-        {
-            _summaryLabel.ForeColor = Theme.Critical;
-            _summaryLabel.Text = "NOT CONNECTED";
-        }
-
+        _summaryLabel.Text = FormatHeadline(_headline, _states, _isRefreshing, _settings.QuotaDisplay, DateTimeOffset.Now);
         _updatedLabel.Text = RefreshSummary(
             _states,
             _isRefreshing,
             _lastRefreshed,
             DateTimeOffset.Now);
+    }
+
+    /// <summary>
+    /// The busiest metered limit across connected providers: the one the popup headline names.
+    /// Unlike the tray gauge, which follows each provider's primary window, the headline looks
+    /// at every limit, so a weekly window at 92% is not hidden behind a 5-hour one at 40%.
+    /// </summary>
+    internal static (ProviderStatus Status, UsageMetric Metric)? SelectHeadlineMetric(IReadOnlyList<ProviderStatus> states) =>
+        states
+            .Where(state => state.Snapshot is not null)
+            .SelectMany(state => state.Snapshot!.Metrics
+                .Where(metric => metric.HasQuota)
+                .Select(metric => (Status: state, Metric: metric)))
+            .OrderByDescending(entry => entry.Metric.UsedPercent)
+            .Select(entry => ((ProviderStatus Status, UsageMetric Metric)?)entry)
+            .FirstOrDefault();
+
+    /// <summary>
+    /// The limit the popup headline names. A limit forecast to run out before it resets outranks
+    /// one that is merely busy, and among those the one that runs out earliest wins; without a
+    /// forecast it is the busiest limit of all.
+    /// </summary>
+    internal static PopupHeadline? SelectHeadline(
+        IReadOnlyList<ProviderStatus> states,
+        IReadOnlyList<UsageSample> history,
+        DateTimeOffset now)
+    {
+        var runningOut = states
+            .Where(state => state.Snapshot is not null)
+            .SelectMany(state => state.Snapshot!.Metrics
+                .Where(metric => metric.HasQuota)
+                .Select(metric => new PopupHeadline(
+                    state,
+                    metric,
+                    UsageForecast.Project(history, state.ProviderId, metric, now))))
+            .Where(candidate => candidate.Projection is { BeforeReset: true })
+            .OrderBy(candidate => candidate.Projection!.ExhaustedAt)
+            .FirstOrDefault();
+        if (runningOut is not null)
+        {
+            return runningOut;
+        }
+
+        return SelectHeadlineMetric(states) is { } busiest
+            ? new PopupHeadline(busiest.Status, busiest.Metric, null)
+            : null;
+    }
+
+    /// <summary>
+    /// One sentence that answers the popup's question before any ring is read: which limit runs
+    /// out first and when, or, without a forecast, which limit is busiest and when it resets.
+    /// </summary>
+    internal static string HeadlineText(
+        IReadOnlyList<ProviderStatus> states,
+        bool isRefreshing,
+        QuotaDisplay quotaDisplay,
+        IReadOnlyList<UsageSample> history,
+        DateTimeOffset now) =>
+        FormatHeadline(SelectHeadline(states, history, now), states, isRefreshing, quotaDisplay, now);
+
+    private static string FormatHeadline(
+        PopupHeadline? headline,
+        IReadOnlyList<ProviderStatus> states,
+        bool isRefreshing,
+        QuotaDisplay quotaDisplay,
+        DateTimeOffset now)
+    {
+        if (headline is null)
+        {
+            return isRefreshing
+                ? "Checking your accounts…"
+                : states.Any(state => state.IsConnected)
+                    ? "No metered limits reported."
+                    : "No connected providers.";
+        }
+
+        var (status, metric, projection) = headline;
+        var value = metric.DisplayPrimary(quotaDisplay).ToLowerInvariant();
+        var provider = ShortName(status.ProviderName);
+        if (projection is { BeforeReset: true })
+        {
+            return $"{provider} runs out first: {metric.Name} at {value}, around {UsageFormatting.AbsoluteReset(projection.ExhaustedAt, now)}.";
+        }
+
+        var reset = UsageFormatting.RelativeReset(metric.ResetsAt, now);
+        return string.IsNullOrEmpty(reset)
+            ? $"Busiest: {provider} {metric.Name} at {value}."
+            : $"Busiest: {provider} {metric.Name} at {value}, {reset}.";
     }
 
     internal static string RefreshSummary(
@@ -738,64 +823,15 @@ internal sealed class UsagePopupForm : Form
         if (!_refreshAnimationTimer.Enabled)
         {
             _refreshAnimationAngle = 0F;
-            UpdateRefreshButtonImage();
+            _refreshButton.Rotation = 0F;
             _refreshAnimationTimer.Start();
         }
-    }
-
-    private void UpdateRefreshButtonImage()
-    {
-        if (!_isRefreshing || !Visible || IsDisposed || Disposing)
-        {
-            return;
-        }
-
-        var scale = _dpiOverride is { } dpi ? new LayoutScale(dpi) : new LayoutScale(_refreshButton);
-        var pixels = Math.Max(scale[13], 8);
-        var bitmap = new Bitmap(pixels, pixels);
-        using (var graphics = Graphics.FromImage(bitmap))
-        {
-            graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            graphics.Clear(Color.Transparent);
-            var stroke = Math.Max(scale.Exact(1.6F), 1.4F);
-            var inset = stroke / 2F + scale.Exact(0.7F);
-            var bounds = new RectangleF(inset, inset, pixels - inset * 2F, pixels - inset * 2F);
-            using var pen = new Pen(Theme.OnAccent, stroke)
-            {
-                StartCap = LineCap.Round,
-                EndCap = LineCap.Round,
-            };
-            graphics.DrawArc(pen, bounds, _refreshAnimationAngle, 270F);
-        }
-
-        var previous = _refreshButton.Image;
-        _refreshButton.Image = bitmap;
-        previous?.Dispose();
     }
 
     private void StopRefreshAnimation()
     {
         _refreshAnimationTimer.Stop();
-        var previous = _refreshButton.Image;
-        _refreshButton.Image = null;
-        previous?.Dispose();
-    }
-
-    internal static ProviderStatus? SelectHeadlineStatus(IReadOnlyList<ProviderStatus> states) =>
-        states
-            .Where(state => state.Snapshot is not null)
-            .OrderByDescending(state => Headline(state.Snapshot)?.UsedPercent ?? 0)
-            .FirstOrDefault();
-
-    /// <summary>The metric that best represents a provider's active usage session.</summary>
-    private static UsageMetric? Headline(UsageSnapshot? snapshot)
-    {
-        if (snapshot is null)
-        {
-            return null;
-        }
-
-        return snapshot.Primary ?? snapshot.Metrics.FirstOrDefault(metric => metric.HasQuota);
+        _refreshButton.Rotation = 0F;
     }
 
     private static string ShortName(string providerName) =>
@@ -806,7 +842,14 @@ internal sealed class UsagePopupForm : Form
         var scale = Scale();
         var width = scale[_mode == DashboardMode.Compact ? CompactWidthBaseline : FullWidthBaseline];
         int contentHeight;
-        if (_mode == DashboardMode.Compact || _content.Controls.Count <= 1)
+        var tiles = _content.Controls.OfType<ProviderTile>().ToArray();
+        if (_mode == DashboardMode.Compact && tiles.Length > 0)
+        {
+            var rows = (tiles.Length + CompactColumns - 1) / CompactColumns;
+            var tileHeight = tiles.Max(tile => tile.NaturalHeight);
+            contentHeight = (rows * tileHeight) + (scale[TileGap] * (rows - 1));
+        }
+        else if (_mode == DashboardMode.Compact || _content.Controls.Count <= 1)
         {
             contentHeight = _content.Controls
                 .Cast<Control>()
@@ -828,10 +871,27 @@ internal sealed class UsagePopupForm : Form
         var chromeHeight = _shell.Padding.Vertical + scale[HeaderRowBaseline] + scale[FooterRowBaseline];
         var nonClientWidth = Width - ClientSize.Width;
         var nonClientHeight = Height - ClientSize.Height;
-        var maximumHeight = Math.Max(scale[260], workingArea.Height - nonClientHeight - scale[32]);
+        // A comfortable minimum, but never more than the screen: at extreme scaling the minimum
+        // alone can exceed the working area, and a window past the screen edge is unreachable.
+        var maximumHeight = Math.Min(
+            workingArea.Height - nonClientHeight,
+            Math.Max(scale[260], workingArea.Height - nonClientHeight - scale[32]));
         var desiredHeight = Math.Min(chromeHeight + contentHeight, maximumHeight);
+        if (_mode == DashboardMode.Compact)
+        {
+            _compactNeedsScroll = chromeHeight + contentHeight > maximumHeight;
+            if (_content.AutoScroll != _compactNeedsScroll)
+            {
+                _content.AutoScroll = _compactNeedsScroll;
+            }
+        }
+
         ClientSize = new Size(
-            Math.Min(width, Math.Max(scale[260], workingArea.Width - nonClientWidth - scale[32])),
+            Math.Min(
+                width,
+                Math.Min(
+                    workingArea.Width - nonClientWidth,
+                    Math.Max(scale[260], workingArea.Width - nonClientWidth - scale[32]))),
             desiredHeight);
         UpdateCardWidths();
     }
@@ -987,9 +1047,14 @@ internal sealed class UsagePopupForm : Form
         {
             var scale = Scale();
 
-            // ClientSize already excludes a visible scrollbar, so it is the usable width in
-            // both modes; subtracting the scrollbar again only left a dead strip on the right.
-            var availableWidth = _content.ClientSize.Width;
+            // The dashboard never scrolls, so its client width is the usable width. The popup
+            // reserves the scrollbar up front when it will need one, rather than reading a client
+            // width that changes underneath it the moment the scrollbar appears.
+            var availableWidth = _mode == DashboardMode.Compact
+                ? _content.Width - (_compactNeedsScroll
+                    ? SystemInformation.GetVerticalScrollBarWidthForDpi(_dpiOverride ?? DeviceDpi)
+                    : 0)
+                : _content.ClientSize.Width;
             if (availableWidth < scale[100])
             {
                 return;
@@ -997,13 +1062,30 @@ internal sealed class UsagePopupForm : Form
 
             if (_mode == DashboardMode.Compact)
             {
-                var cardWidth = Math.Max(scale[220], availableWidth);
-                foreach (Control control in _content.Controls)
+                // Tiles sit two to a row; anything else (the empty-state notice) spans the row.
+                var gap = scale[TileGap];
+                var count = _content.Controls.Count;
+                var rows = (count + CompactColumns - 1) / CompactColumns;
+                // FlowLayoutPanel wraps a row that fits exactly, and a wrapped row adds a scrollbar
+                // that keeps it wrapped, so the row keeps a pixel of slack.
+                var tileWidth = Math.Max(1, (availableWidth - gap - 1) / CompactColumns);
+                for (var i = 0; i < count; i++)
                 {
-                    control.Margin = new Padding(0, 0, 0, scale[10]);
-                    if (control.Width != cardWidth)
+                    var control = _content.Controls[i];
+                    var isTile = control is ProviderTile;
+                    var column = i % CompactColumns;
+                    var margin = isTile
+                        ? new Padding(0, 0, column == 0 ? gap : 0, i / CompactColumns == rows - 1 ? 0 : gap)
+                        : Padding.Empty;
+                    if (control.Margin != margin)
                     {
-                        control.Width = cardWidth;
+                        control.Margin = margin;
+                    }
+
+                    var width = isTile ? tileWidth : availableWidth;
+                    if (control.Width != width)
+                    {
+                        control.Width = width;
                     }
                 }
             }
@@ -1063,65 +1145,13 @@ internal sealed class UsagePopupForm : Form
 
     private LayoutScale Scale() => _dpiOverride is { } dpi ? new LayoutScale(dpi) : new LayoutScale(this);
 
+    // The popup is a tight flyout; the dashboard window gets more breathing room.
+    private Padding ShellPadding(LayoutScale scale) => _mode == DashboardMode.Compact
+        ? scale.Pad(12, 10, 12, 8)
+        : scale.Pad(16, 14, 16, 12);
+
     private void OnContentHandleCreated(object? sender, EventArgs eventArgs) =>
         WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
-
-    private sealed class UsageMarkControl : Control
-    {
-        private static readonly Lazy<Image?> LogoImage = new(() =>
-        {
-            try
-            {
-                var path = Path.Combine(AppContext.BaseDirectory, "Resources", "logo.png");
-                return File.Exists(path) ? Image.FromFile(path) : null;
-            }
-            catch
-            {
-                return null;
-            }
-        });
-
-        public UsageMarkControl()
-        {
-            DoubleBuffered = true;
-            AccessibleName = "UsageAI";
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            base.OnPaint(e);
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            var scale = new LayoutScale(this);
-            var side = Math.Min(Width, Height);
-            var box = new Rectangle(0, Math.Max(0, (Height - side) / 2), Math.Max(1, side - 1), Math.Max(1, side - 1));
-
-            var logo = Theme.IsHighContrast ? null : LogoImage.Value;
-            if (logo != null)
-            {
-                using var path = DrawingHelpers.RoundedRectangle(box, scale.Exact(9));
-                var state = e.Graphics.Save();
-                e.Graphics.SetClip(path);
-                e.Graphics.DrawImage(logo, box);
-                e.Graphics.Restore(state);
-                using var pen = new Pen(Theme.Hairline);
-                using var outlinePath = DrawingHelpers.RoundedRectangle(box, scale.Exact(9));
-                e.Graphics.DrawPath(pen, outlinePath);
-            }
-            else
-            {
-                DrawingHelpers.FillCard(e.Graphics, box, Theme.SurfaceRaised, Theme.Hairline, scale.Exact(9));
-                var barWidth = Math.Max(2, box.Width / 9);
-                var baseline = box.Bottom - box.Height / 4;
-                using var codex = new SolidBrush(Theme.Codex);
-                using var claude = new SolidBrush(Theme.Claude);
-                using var copilot = new SolidBrush(Theme.Copilot);
-                e.Graphics.FillRectangle(codex, box.Left + box.Width / 4, baseline - box.Height / 2, barWidth, box.Height / 2);
-                e.Graphics.FillRectangle(claude, box.Left + box.Width / 2 - barWidth / 2, baseline - box.Height / 3, barWidth, box.Height / 3);
-                e.Graphics.FillRectangle(copilot, box.Right - box.Width / 4 - barWidth, baseline - box.Height * 5 / 8, barWidth, box.Height * 5 / 8);
-            }
-        }
-    }
 
     private sealed class EmptyProvidersControl : Control
     {

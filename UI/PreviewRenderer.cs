@@ -66,6 +66,11 @@ internal static class PreviewRenderer
         using var context = new ApplicationContext();
         using var form = new UsagePopupForm(settings) { StaysOpenWhenInactive = true };
         var (states, history, lastRefreshed) = SampleData(DateTimeOffset.Now);
+        if (string.Equals(Program.ValueAfter(args, "--states"), "mixed", StringComparison.OrdinalIgnoreCase))
+        {
+            states = MixedStates(states, DateTimeOffset.Now);
+        }
+
         form.RefreshRequested += async (_, _) =>
         {
             form.SetStates(states, isRefreshing: true, lastRefreshed: lastRefreshed, history: history);
@@ -107,6 +112,35 @@ internal static class PreviewRenderer
         CultureInfo.DefaultThreadCurrentUICulture = CultureInfo.InvariantCulture;
         Thread.CurrentThread.CurrentCulture = CultureInfo.InvariantCulture;
         Thread.CurrentThread.CurrentUICulture = CultureInfo.InvariantCulture;
+    }
+
+    /// <summary>
+    /// The sample providers in every non-happy state the windows must handle: signed out with a
+    /// copyable sign-in command, still loading, stale with an error, and connected with only
+    /// unlimited allowances. The popup lists connected providers only, so it shows the last two;
+    /// the dashboard shows all four.
+    /// </summary>
+    internal static ProviderStatus[] MixedStates(ProviderStatus[] states, DateTimeOffset now)
+    {
+        var codex = states[0] with
+        {
+            Snapshot = null,
+            Error = "Codex CLI was not found. Install Codex or sign in through the Codex editor extension, then refresh.",
+            LastUpdated = null,
+        };
+        var claude = states[1] with { Snapshot = null, Error = null, IsLoading = true, LastUpdated = null };
+        var copilot = states[2] with
+        {
+            Error = "GitHub did not respond. UsageAI will try again.",
+            LastUpdated = now.AddHours(-2),
+            NextRetryAt = now.AddMinutes(4),
+        };
+        var unlimited = states[2].Snapshot! with
+        {
+            Metrics = states[2].Snapshot!.Metrics.Where(metric => metric.IsUnlimited).ToArray(),
+        };
+        var gemini = states[3] with { Snapshot = unlimited, ProviderId = "gemini" };
+        return new[] { codex, claude, copilot, gemini };
     }
 
     /// <summary>

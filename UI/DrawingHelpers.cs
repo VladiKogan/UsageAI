@@ -87,6 +87,47 @@ internal static class DrawingHelpers
         graphics.FillPath(fillBrush, fillPath);
     }
 
+    /// <summary>
+    /// Draws a ring gauge: a full track and an arc from twelve o'clock clockwise for
+    /// <paramref name="percent"/>. A tiny value keeps a visible cap, and a zero draws no arc at
+    /// all, so an unused limit never looks like it has started.
+    /// </summary>
+    public static void DrawRing(
+        Graphics graphics,
+        RectangleF circle,
+        float strokeWidth,
+        float percent,
+        Color fill,
+        Color track)
+    {
+        if (circle.Width <= strokeWidth || circle.Height <= strokeWidth)
+        {
+            return;
+        }
+
+        var previousMode = graphics.SmoothingMode;
+        graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        var path = RectangleF.Inflate(circle, -strokeWidth / 2F, -strokeWidth / 2F);
+        using (var trackPen = new Pen(track, strokeWidth))
+        {
+            graphics.DrawEllipse(trackPen, path);
+        }
+
+        var clamped = Math.Clamp(percent, 0F, 100F);
+        if (clamped > 0F)
+        {
+            var sweep = clamped >= 100F ? 360F : Math.Max(6F, 360F * clamped / 100F);
+            using var fillPen = new Pen(fill, strokeWidth)
+            {
+                StartCap = clamped >= 100F ? LineCap.Flat : LineCap.Round,
+                EndCap = clamped >= 100F ? LineCap.Flat : LineCap.Round,
+            };
+            graphics.DrawArc(fillPen, path, -90F, sweep);
+        }
+
+        graphics.SmoothingMode = previousMode;
+    }
+
     /// <summary>An indeterminate marker for balances, which have no percentage to meter.</summary>
     public static void DrawBalanceMarker(Graphics graphics, Rectangle bounds, Color color)
     {

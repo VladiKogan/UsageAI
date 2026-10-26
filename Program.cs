@@ -87,7 +87,9 @@ internal static class Program
                                     [--quota-display used|remaining] [--theme light|dark]
                                              Render a preview image of the popup.
           UsageAI.exe --preview-window popup|dashboard [--theme light|dark]
-                                             Open the popup or dashboard with sample data,
+                                             Open the popup or dashboard with sample data
+                                             (--states mixed for loading, stale and
+                                             signed-out providers),
                                              without a tray icon or provider access.
           UsageAI.exe --version              Print the application version.
           UsageAI.exe --help                 Show this help.

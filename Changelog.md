@@ -32,6 +32,22 @@ The project follows [Semantic Versioning](https://semver.org/).
   Windows 11 derives for its own controls, and is adjusted until the button stands out at 3:1 and
   its label reads at 4.5:1, so a pale yellow or deep navy accent no longer gives an invisible
   button or an unreadable label.
+- **The tray popup shows each provider as ring gauges, two providers to a row.** The popup used to
+  stack one tall card per provider with a single `92% USED` headline, so a second limit (Claude's
+  weekly window behind its 5-hour one) never appeared until the dashboard was opened. Each tile
+  now carries the provider's glyph and up to two rings side by side, shortest window first, each
+  with its figure inside and its window and countdown beneath; a one-ring provider uses the free
+  space for its balance or what is left of its allowance. The rings follow the dashboard's
+  Important selection, so the two views never disagree, and choosing a tile opens the dashboard.
+  A provider that reports more than one model group shows one group's limits, by default the group
+  closest to its limit, and an ⓘ beside its name explains which group and lists each limit in full;
+  the group can be pinned per provider in **Settings ▸ Providers**. A sentence above the tiles
+  names the limit forecast to run out first, or without a forecast the busiest limit of all, in
+  place of the `CODEX 92% USED` tag that followed each provider's first window. Refresh and Settings become icon
+  buttons beside the title, the refresh arrow spins while a refresh runs, and the footer keeps the
+  last-updated time and an Open dashboard button. Stale tiles dim their rings and show a warning
+  indicator whose tooltip says how old the reading is, the tooltips use the app's colours, and the
+  popup scrolls only when the screen cannot hold it.
 - `--render-preview` accepts `--theme light|dark`, and the new `--preview-window popup|dashboard`
   opens the real window with sample data at the monitor's own DPI, with no tray icon, provider
   access or settings file, so a UI change can be tried by hand next to an installed copy.

@@ -66,6 +66,12 @@ internal static class Program
         ("Primary metric prioritization in tray and header", TestPrimaryMetricTrayTooltipAsync),
         ("Theme usage fill colors and tray pie icon", TestThemeUsageColorsAsync),
         ("redesign foundation: accent legibility, critical threshold, preview isolation", TestRedesignFoundationAsync),
+        ("popup rings pick one model group, shortest window first", RedesignTests.TestPopupRingSelectionAsync),
+        ("popup model-group setting round trip and validation", RedesignTests.TestPopupGroupSettingAsync),
+        ("compact reset label and popup headline sentence", RedesignTests.TestCompactResetAndHeadlineAsync),
+        ("provider tile states, indicator and actions at every DPI", RedesignTests.TestProviderTileStatesAsync),
+        ("settings pins a provider's popup model group", RedesignTests.TestSettingsPopupGroupPickerAsync),
+        ("ring gauge, icon buttons and themed tooltip drawing", RedesignTests.TestRingAndIconDrawingAsync),
         ("model formatting and provider status states", CoverageExpansionTests.TestModelFormattingAsync),
         ("refresh orchestration, alerts, history, and backoff", CoverageExpansionTests.TestRefreshOrchestrationAsync),
         ("scheduled stale-provider recovery", CoverageExpansionTests.TestScheduledStaleRecoveryAsync),
@@ -1932,15 +1938,21 @@ internal static class Program
         throw new InvalidOperationException($"Expected {typeof(TException).Name}.");
     }
 
-    private static void True(bool value)
+    private static void True(
+        bool value,
+        [System.Runtime.CompilerServices.CallerFilePath] string file = "",
+        [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
     {
         if (!value)
         {
-            throw new InvalidOperationException("Expected true.");
+            throw new InvalidOperationException($"Expected true at {Path.GetFileName(file)}:{line}.");
         }
     }
 
-    private static void False(bool value) => True(!value);
+    private static void False(
+        bool value,
+        [System.Runtime.CompilerServices.CallerFilePath] string file = "",
+        [System.Runtime.CompilerServices.CallerLineNumber] int line = 0) => True(!value, file, line);
 
     private static void Null(object? value)
     {
@@ -1989,7 +2001,11 @@ internal static class Program
         Equal(8, UsageApplicationContext.TrayUsedPercent(status));
         Equal("codex", UsageApplicationContext.SelectTrayStatus(statuses, null)!.ProviderId);
         Equal("claude", UsageApplicationContext.SelectTrayStatus(statuses, "claude")!.ProviderId);
-        Equal("codex", UsagePopupForm.SelectHeadlineStatus(statuses)!.ProviderId);
+        // The tray follows each provider's primary window, but the popup headline names the
+        // busiest limit of all, so Claude's weekly window at 92% is not hidden behind Codex's 40%.
+        var headline = UsagePopupForm.SelectHeadlineMetric(statuses)!.Value;
+        Equal("claude", headline.Status.ProviderId);
+        Equal("Weekly", headline.Metric.Name);
         return Task.CompletedTask;
     }
 

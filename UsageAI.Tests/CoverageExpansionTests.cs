@@ -2528,14 +2528,18 @@ internal static class CoverageExpansionTests
             Application.DoEvents();
             DrawControl(popup);
 
-            var readingButton = Descendants(popup)
-                .OfType<Button>()
-                .Single(button => button.Text == "Reading");
-            NotNull(readingButton.Image);
+            // While a refresh runs the header's refresh icon is disabled and says so to a screen
+            // reader; it spins instead of swapping in a bitmap.
+            var refreshButton = Descendants(popup)
+                .OfType<IconButton>()
+                .Single(button => button.Text == "Refresh");
+            False(refreshButton.Enabled);
+            Equal("Refreshing", refreshButton.AccessibleName);
+            DrawControl(refreshButton);
 
             foreach (var button in Descendants(popup).OfType<Button>())
             {
-                if (button.Text is "Refresh" or "Reading")
+                if (button.Text is "Refresh")
                 {
                     InvokeProtected(button, "OnClick", EventArgs.Empty);
                 }
@@ -2552,7 +2556,9 @@ internal static class CoverageExpansionTests
             }
             popup.SetMode(DashboardMode.Compact);
             popup.SetStates(Array.Empty<ProviderStatus>(), false, null, Array.Empty<UsageSample>());
-            Null(readingButton.Image);
+            True(refreshButton.Enabled);
+            Equal("Refresh", refreshButton.AccessibleName);
+            Equal(0F, refreshButton.Rotation);
             Application.DoEvents();
             DrawControl(popup);
             popup.CloseForExit();
@@ -2975,9 +2981,22 @@ internal static class CoverageExpansionTests
             True(cards.Max(card => card.Right) >= content.ClientSize.Width - 2);
         }
 
+        // The popup sizes itself to its tiles and scrolls only when the screen cannot hold them;
+        // an automatic scrollbar used to latch on before the window grew and wrap every row.
         popup.SetMode(DashboardMode.Compact);
         Application.DoEvents();
+        popup.ApplyPreferredSize(new Rectangle(0, 0, 1_920, 1_080));
+        False(content.AutoScroll);
+        var tiles = content.Controls.OfType<ProviderTile>().ToArray();
+        Equal(4, tiles.Length);
+        Equal(tiles[0].Top, tiles[1].Top);
+        True(tiles[2].Top > tiles[0].Bottom);
+
+        popup.ApplyPreferredSize(new Rectangle(0, 0, 1_920, 300));
+        Application.DoEvents();
         True(content.AutoScroll);
+        Equal(tiles[0].Top, tiles[1].Top);
+        True(tiles[1].Right <= content.ClientSize.Width);
 
         popup.CloseForExit();
 
@@ -4514,10 +4533,16 @@ internal static class CoverageExpansionTests
         InvokePrivate(popup, "UpdateStatus");
         popup.SetStates(Array.Empty<ProviderStatus>(), false, null, Array.Empty<UsageSample>());
         InvokePrivate(popup, "UpdateStatus");
-        Null(InvokePrivateStatic<UsageMetric?>(
-            typeof(UsagePopupForm),
-            "Headline",
-            (object?)null));
+        Equal("No connected providers.", UsagePopupForm.HeadlineText(
+            Array.Empty<ProviderStatus>(), false, QuotaDisplay.Used, Array.Empty<UsageSample>(), now));
+        Equal("Checking your accounts…", UsagePopupForm.HeadlineText(
+            Array.Empty<ProviderStatus>(), true, QuotaDisplay.Used, Array.Empty<UsageSample>(), now));
+        Equal("No metered limits reported.", UsagePopupForm.HeadlineText(
+            new[] { connected with { Snapshot = connected.Snapshot! with { Metrics = Array.Empty<UsageMetric>() } } },
+            false,
+            QuotaDisplay.Used,
+            Array.Empty<UsageSample>(),
+            now));
 
         popup.SetStates(new[] { connected, disconnected }, false, now, Array.Empty<UsageSample>());
         popup.SetMode(DashboardMode.Full);
@@ -4952,8 +4977,10 @@ internal static class CoverageExpansionTests
         var modeControl = GetPrivateField<ComboBox>(popup, "_metricMode");
         False(modeControl.Visible);
         var content = GetPrivateField<FlowLayoutPanel>(popup, "_content");
-        var compactCard = content.Controls.OfType<ProviderUsageCard>().Single();
-        Equal(6, GetPrivateField<IReadOnlyList<UsageMetric>>(compactCard, "_metrics").Count);
+        // The popup picks its rings itself — the busiest session, then rolling limit — and the
+        // dashboard's row filter never reaches it.
+        var compactTile = content.Controls.OfType<ProviderTile>().Single();
+        Equal("Session highest|Rolling", string.Join('|', compactTile.Rings!.Rings.Select(metric => metric.Name)));
 
         popup.SetMode(DashboardMode.Full);
         True(modeControl.Visible);
@@ -5023,8 +5050,8 @@ internal static class CoverageExpansionTests
 
         popup.SetMode(DashboardMode.Compact);
         False(modeControl.Visible);
-        Equal(6, GetPrivateField<IReadOnlyList<UsageMetric>>(
-            content.Controls.OfType<ProviderUsageCard>().Single(), "_metrics").Count);
+        Equal("Session highest|Rolling", string.Join('|',
+            content.Controls.OfType<ProviderTile>().Single().Rings!.Rings.Select(metric => metric.Name)));
 
         var balanceSnapshot = snapshot with { Metrics = new[] { metrics[0] } };
         var balanceStatus = status with { Snapshot = balanceSnapshot };
@@ -5604,7 +5631,7 @@ internal static class CoverageExpansionTests
             "Codex");
         var coolStatus = new ProviderStatus("codex", "Codex", cool, null, false);
         var statuses = new[] { coolStatus, hotStatus };
-        Equal("claude", UsagePopupForm.SelectHeadlineStatus(statuses)!.ProviderId);
+        Equal("claude", UsagePopupForm.SelectHeadlineMetric(statuses)!.Value.Status.ProviderId);
         var settings = new AppSettings { QuotaDisplay = QuotaDisplay.Remaining, GlobalHotkeyEnabled = false };
         using (var popup = new UsagePopupForm(settings, 96))
         {
@@ -5612,8 +5639,10 @@ internal static class CoverageExpansionTests
             popup.Location = new Point(-10_000, -10_000);
             popup.SetStates(statuses, false, now, Array.Empty<UsageSample>());
             var summary = GetPrivateField<Label>(popup, "_summaryLabel");
-            Equal("CLAUDE CODE 5% LEFT", summary.Text);
-            Equal(critical, summary.ForeColor);
+            True(summary.Text.StartsWith("Busiest: Claude Code Weekly at 5% left", StringComparison.Ordinal));
+            var tiles = GetPrivateField<FlowLayoutPanel>(popup, "_content").Controls.OfType<ProviderTile>().ToArray();
+            Equal(2, tiles.Length);
+            True(tiles.All(tile => GetPrivateField<QuotaDisplay>(tile, "_quotaDisplay") == QuotaDisplay.Remaining));
             popup.SetMode(DashboardMode.Full);
             popup.Show();
             Application.DoEvents();
@@ -5749,11 +5778,11 @@ internal static class CoverageExpansionTests
             popup.Location = new Point(-10_000, -10_000);
             popup.SetStates(statuses, false, now, Array.Empty<UsageSample>());
             var summary = GetPrivateField<Label>(popup, "_summaryLabel");
-            Equal("CLAUDE CODE 95% USED", summary.Text);
+            True(summary.Text.StartsWith("Busiest: Claude Code Weekly at 95% used", StringComparison.Ordinal));
             var usedColour = summary.ForeColor;
             switching.QuotaDisplay = QuotaDisplay.Remaining;
             popup.SetStates(statuses, false, now, Array.Empty<UsageSample>());
-            Equal("CLAUDE CODE 5% LEFT", summary.Text);
+            True(summary.Text.StartsWith("Busiest: Claude Code Weekly at 5% left", StringComparison.Ordinal));
             Equal(usedColour, summary.ForeColor);
         }
 
@@ -6286,15 +6315,21 @@ internal static class CoverageExpansionTests
         throw new InvalidOperationException($"Expected {typeof(TException).Name}.");
     }
 
-    private static void True(bool value)
+    private static void True(
+        bool value,
+        [System.Runtime.CompilerServices.CallerFilePath] string file = "",
+        [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
     {
         if (!value)
         {
-            throw new InvalidOperationException("Expected true.");
+            throw new InvalidOperationException($"Expected true at {Path.GetFileName(file)}:{line}.");
         }
     }
 
-    private static void False(bool value) => True(!value);
+    private static void False(
+        bool value,
+        [System.Runtime.CompilerServices.CallerFilePath] string file = "",
+        [System.Runtime.CompilerServices.CallerLineNumber] int line = 0) => True(!value, file, line);
 
     private static void Null(object? value)
     {

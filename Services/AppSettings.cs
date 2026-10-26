@@ -133,6 +133,31 @@ internal sealed class AppSettings
     public int[]? DashboardBounds { get; set; }
 
     /// <summary>
+    /// The model group each provider's popup rings show, keyed by provider id. A provider with no
+    /// entry, or an entry naming a group it no longer reports, shows its busiest group.
+    /// </summary>
+    public Dictionary<string, string> PopupMetricGroups { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public string? PopupMetricGroup(string providerId) =>
+        PopupMetricGroups.TryGetValue(providerId, out var group) ? group : null;
+
+    /// <summary>Pins a provider's popup rings to <paramref name="group"/>; null returns to automatic.</summary>
+    public void SetPopupMetricGroup(string providerId, string? group)
+    {
+        var groups = new Dictionary<string, string>(PopupMetricGroups, StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(group))
+        {
+            groups.Remove(providerId);
+        }
+        else
+        {
+            groups[providerId] = group.Trim();
+        }
+
+        PopupMetricGroups = groups;
+    }
+
+    /// <summary>
     /// Keeps these settings in memory only. The interactive preview uses throwaway settings
     /// and must never overwrite the user's real file, whatever the window it opens saves.
     /// </summary>
@@ -273,6 +298,18 @@ internal sealed class AppSettings
         {
             DashboardBounds = null;
         }
+
+        // Deserialisation hands back a case-sensitive dictionary, or null for an explicit null.
+        PopupMetricGroups = (PopupMetricGroups ?? new Dictionary<string, string>())
+            .Where(entry => NormalizeId(entry.Key) is not null &&
+                            !string.IsNullOrWhiteSpace(entry.Value) &&
+                            entry.Value.Trim().Length <= 128)
+            .Take(16)
+            .GroupBy(entry => entry.Key.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Last().Value.Trim(),
+                StringComparer.OrdinalIgnoreCase);
     }
 
     private static string[] NormalizeIds(string[]? ids) => ids is { Length: > 0 }

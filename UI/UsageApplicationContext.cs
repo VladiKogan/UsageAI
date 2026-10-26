@@ -291,7 +291,8 @@ internal sealed class UsageApplicationContext : ApplicationContext
             _settings,
             _clients.Select(client => (client.Id, client.DisplayName)).ToArray(),
             UpdateChecker.CheckForUpdateAsync,
-            PromptForUpdateAsync);
+            PromptForUpdateAsync,
+            popupGroups: PopupGroups(_service.Statuses));
         if (dialog.ShowDialog() != DialogResult.OK)
         {
             return;
@@ -316,6 +317,16 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
         _ = CheckForUpdatesIfDueAsync();
     }
+
+    /// <summary>The model groups each provider reported last, for Settings' popup-ring pickers.</summary>
+    internal static IReadOnlyDictionary<string, IReadOnlyList<string>> PopupGroups(IReadOnlyList<ProviderStatus> statuses) =>
+        statuses
+            .Where(status => status.Snapshot is not null)
+            .GroupBy(status => status.ProviderId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => PopupMetricSelection.Groups(group.First().Snapshot!.Metrics),
+                StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The settings that decide which providers are fetched and how often.</summary>
     internal static string PollingInputs(AppSettings settings) => string.Join(

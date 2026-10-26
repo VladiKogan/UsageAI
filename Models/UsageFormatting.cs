@@ -16,22 +16,35 @@ internal static class UsageFormatting
         }
 
         var remaining = resetsAt.Value - now;
-        if (remaining <= TimeSpan.Zero)
+        return remaining <= TimeSpan.Zero ? "resetting now" : $"resets in {Countdown(remaining)}";
+    }
+
+    /// <summary>
+    /// The countdown alone, for labels too narrow for "resets in …": "2d 17h", "3h 11m", "45m",
+    /// or "now" once the window has rolled over. Empty when the provider reports no reset.
+    /// </summary>
+    public static string CompactReset(DateTimeOffset? resetsAt, DateTimeOffset now)
+    {
+        if (resetsAt is null)
         {
-            return "resetting now";
+            return string.Empty;
         }
 
+        var remaining = resetsAt.Value - now;
+        return remaining <= TimeSpan.Zero ? "now" : Countdown(remaining);
+    }
+
+    /// <summary>A positive span as the countdown both reset labels share: "2d 17h", "3h 11m", "45m".</summary>
+    private static string Countdown(TimeSpan remaining)
+    {
         if (remaining.TotalDays >= 1)
         {
-            return $"resets in {(int)remaining.TotalDays}d {remaining.Hours}h";
+            return $"{(int)remaining.TotalDays}d {remaining.Hours}h";
         }
 
-        if (remaining.TotalHours >= 1)
-        {
-            return $"resets in {(int)remaining.TotalHours}h {remaining.Minutes}m";
-        }
-
-        return $"resets in {Math.Max(1, remaining.Minutes)}m";
+        return remaining.TotalHours >= 1
+            ? $"{(int)remaining.TotalHours}h {remaining.Minutes}m"
+            : $"{Math.Max(1, remaining.Minutes)}m";
     }
 
     /// <summary>The wall-clock reset time, used where the countdown alone is ambiguous.</summary>

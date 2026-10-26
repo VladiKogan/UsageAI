@@ -10,6 +10,9 @@ internal enum ProviderCardAction
     None,
     CopyCommand,
     OpenAccount,
+
+    /// <summary>A popup tile was chosen: open the dashboard for the full picture.</summary>
+    OpenDetails,
 }
 
 internal sealed class ProviderCardActionEventArgs : EventArgs

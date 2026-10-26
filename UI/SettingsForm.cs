@@ -40,6 +40,7 @@ internal sealed class SettingsForm : Form
     private readonly CheckBox _startWithWindows;
     private readonly Label _startupHint;
     private readonly CheckedListBox _providers;
+    private readonly List<PopupGroupPicker> _popupGroupPickers = new();
     private readonly Button _checkForUpdatesButton;
     private readonly Label _updateStatus;
     private readonly Label _versionLabel;
@@ -76,7 +77,8 @@ internal sealed class SettingsForm : Form
         Func<UpdateRelease, Task> promptForUpdate,
         int? dpiOverride = null,
         Func<StartupState>? readStartup = null,
-        Action<bool>? writeStartup = null)
+        Action<bool>? writeStartup = null,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? popupGroups = null)
     {
         _settings = settings;
         _dpiOverride = dpiOverride;
@@ -301,6 +303,7 @@ internal sealed class SettingsForm : Form
         });
         AddSpan(_providers);
         AddSpan(CreateOrderButtons(scale));
+        AddPopupGroupPickers(providers, popupGroups, scale);
 
         AddSection("System");
         AddSpan(_startWithWindows);
@@ -432,6 +435,69 @@ internal sealed class SettingsForm : Form
         }
     }
 
+    /// <summary>
+    /// One picker per provider that reports more than one model group, choosing which group the
+    /// popup's rings show. Groups come from the provider's last reading, so a provider that has
+    /// not reported yet has no picker until it does.
+    /// </summary>
+    private void AddPopupGroupPickers(
+        IReadOnlyList<(string Id, string DisplayName)> providers,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? popupGroups,
+        LayoutScale scale)
+    {
+        if (popupGroups is null)
+        {
+            return;
+        }
+
+        foreach (var (id, displayName) in providers)
+        {
+            if (!popupGroups.TryGetValue(id, out var groups) || groups.Count < 2)
+            {
+                continue;
+            }
+
+            var picker = new ComboBox
+            {
+                AccessibleName = $"{displayName} popup rings",
+                BackColor = Theme.SurfaceRaised,
+                Dock = DockStyle.Fill,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                FlatStyle = FlatStyle.Flat,
+                ForeColor = Theme.Text,
+                Margin = scale.Pad(0, 4, 0, 4),
+            };
+            picker.Items.Add("Closest to its limit");
+            foreach (var group in groups)
+            {
+                picker.Items.Add(group);
+            }
+
+            // Item 0 is automatic; a pinned group the provider no longer reports selects it too.
+            var pinned = _settings.PopupMetricGroup(id);
+            picker.SelectedIndex = groups
+                .Select((group, index) => (group, index))
+                .Where(entry => string.Equals(entry.group, pinned, StringComparison.OrdinalIgnoreCase))
+                .Select(entry => entry.index + 1)
+                .FirstOrDefault();
+            _popupGroupPickers.Add(new PopupGroupPicker(id, picker, groups));
+            AddRow($"{displayName} popup rings", picker);
+        }
+
+        if (_popupGroupPickers.Count > 0)
+        {
+            AddSpan(new Label
+            {
+                AutoSize = true,
+                ForeColor = Theme.Muted,
+                Margin = scale.Pad(0, 0, 0, 8),
+                Text = "Which model group's limits the popup's rings show.",
+            });
+        }
+    }
+
+    private sealed record PopupGroupPicker(string ProviderId, ComboBox Control, IReadOnlyList<string> Groups);
+
     private void Apply()
     {
         _settings.RefreshIntervalMinutes = (int)_refreshInterval.Value;
@@ -472,6 +538,13 @@ internal sealed class SettingsForm : Form
         }
 
         _settings.ProviderOrder = order.ToArray();
+        foreach (var picker in _popupGroupPickers)
+        {
+            _settings.SetPopupMetricGroup(
+                picker.ProviderId,
+                picker.Control.SelectedIndex > 0 ? picker.Groups[picker.Control.SelectedIndex - 1] : null);
+        }
+
         _settings.Save();
         if (!TryApplyStartupPreference())
         {
