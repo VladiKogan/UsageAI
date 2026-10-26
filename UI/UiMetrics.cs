@@ -42,3 +42,20 @@ internal readonly struct LayoutScale
     public Padding Pad(int left, int top, int right, int bottom) =>
         new(this[left], this[top], this[right], this[bottom]);
 }
+
+/// <summary>Keeps a window on screen when it moves to a monitor or grows.</summary>
+internal static class WindowBounds
+{
+    /// <summary>
+    /// Shrinks <paramref name="bounds"/> to fit <paramref name="workingArea"/> and slides it
+    /// inside, so no edge or button ends up off screen or under the taskbar.
+    /// </summary>
+    public static Rectangle FitToWorkingArea(Rectangle bounds, Rectangle workingArea)
+    {
+        var width = Math.Min(bounds.Width, workingArea.Width);
+        var height = Math.Min(bounds.Height, workingArea.Height);
+        var x = Math.Clamp(bounds.X, workingArea.Left, Math.Max(workingArea.Left, workingArea.Right - width));
+        var y = Math.Clamp(bounds.Y, workingArea.Top, Math.Max(workingArea.Top, workingArea.Bottom - height));
+        return new Rectangle(x, y, width, height);
+    }
+}

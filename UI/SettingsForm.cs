@@ -1162,7 +1162,7 @@ internal sealed class SettingsForm : Form
             eventArgs.DeviceDpiNew);
         base.OnDpiChanged(eventArgs);
         ApplyScaledLayout();
-        Bounds = FitToWorkingArea(Bounds, Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea);
+        Bounds = WindowBounds.FitToWorkingArea(Bounds, Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea);
         _scrollHost.AutoScrollPosition = new Point(0, scrollY);
         SyncNavToScroll();
     }
@@ -1202,15 +1202,6 @@ internal sealed class SettingsForm : Form
             segmented.Margin = scale.Pad(0, 4, 0, 4);
             segmented.MinimumSize = new Size(0, scale[32]);
         }
-    }
-
-    private static Rectangle FitToWorkingArea(Rectangle bounds, Rectangle workingArea)
-    {
-        var width = Math.Min(bounds.Width, workingArea.Width);
-        var height = Math.Min(bounds.Height, workingArea.Height);
-        var x = Math.Clamp(bounds.X, workingArea.Left, Math.Max(workingArea.Left, workingArea.Right - width));
-        var y = Math.Clamp(bounds.Y, workingArea.Top, Math.Max(workingArea.Top, workingArea.Bottom - height));
-        return new Rectangle(x, y, width, height);
     }
 
     private void OnThemeChanged(object? sender, EventArgs eventArgs)

@@ -3230,12 +3230,12 @@ internal static class CoverageExpansionTests
         settings.GlobalHotkeyEnabled = false;
         InvokePrivate(context, "ApplyHotkeySetting");
 
-        var colorTableType = typeof(UsageApplicationContext).GetNestedType(
-            "DarkColorTable",
+        var colorTableType = typeof(MenuRenderer).GetNestedType(
+            "MenuColorTable",
             BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("DarkColorTable was not found.");
+            ?? throw new InvalidOperationException("MenuColorTable was not found.");
         var colorTable = Activator.CreateInstance(colorTableType)
-            ?? throw new InvalidOperationException("DarkColorTable could not be created.");
+            ?? throw new InvalidOperationException("MenuColorTable could not be created.");
         foreach (var property in colorTableType.GetProperties(
                      BindingFlags.Instance | BindingFlags.Public))
         {
@@ -5117,7 +5117,8 @@ internal static class CoverageExpansionTests
             var document = GetPrivateField<RichTextBox>(rendered, "_content").Text;
             // Angle brackets are never markup here, so the HTML survives verbatim.
             True(document.Contains("<b>literal HTML</b>", StringComparison.Ordinal));
-            True(document.Contains("SECURITY", StringComparison.Ordinal));
+            True(document.Contains("Security", StringComparison.Ordinal));
+            False(document.Contains("SECURITY", StringComparison.Ordinal));
             True(document.Contains("UsageAI 3.0.0", StringComparison.Ordinal));
             // The strong delimiters become a bold face, so the word is left without them.
             True(document.Contains("and Markdown as text.", StringComparison.Ordinal));
@@ -5324,7 +5325,7 @@ internal static class CoverageExpansionTests
             Equal(SystemColors.WindowText, Theme.ForProvider("gemini"));
             Equal(Color.Red, Theme.Blend(Color.Red, Color.Blue, 0.5));
 
-            using var icon = TrayIconFactory.Create(92, "G", size: 24, identityColor: Theme.Gemini);
+            using var icon = TrayIconFactory.Create(92, size: 24, identityColor: Theme.Gemini);
             using var iconBitmap = icon.ToBitmap();
             True(iconBitmap.Width == 24 && iconBitmap.Height == 24);
             DrawControl(popup);
@@ -5622,10 +5623,9 @@ internal static class CoverageExpansionTests
         Equal("UsageAI - Copilot: no metered limit", UsageApplicationContext.TrayTooltip(balanceOnly, QuotaDisplay.Remaining));
         Equal("UsageAI - Copilot: 0% used", UsageApplicationContext.TrayTooltip(balanceOnly));
 
-        using (var usedRing = TrayIconFactory.Create(95, "A", size: 32, identityColor: Theme.ForProvider("claude")))
+        using (var usedRing = TrayIconFactory.Create(95, size: 32, identityColor: Theme.ForProvider("claude")))
         using (var remainingRing = TrayIconFactory.Create(
                    95,
-                   "A",
                    size: 32,
                    identityColor: Theme.ForProvider("claude"),
                    fillPercent: 5))
@@ -5691,14 +5691,14 @@ internal static class CoverageExpansionTests
 
         // An empty remaining quota draws an empty ring, not the minimum-sweep sliver; a full one
         // draws more ring than a half-full one. 16px has no glyph, so only the ring is counted.
-        using (var emptyRing = TrayIconFactory.Create(100, "A", size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 0))
+        using (var emptyRing = TrayIconFactory.Create(100, size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 0))
         {
             Equal(0, OpaquePixels(emptyRing, Theme.ForUsage(100)));
         }
 
         var success = Theme.ForUsage(0);
-        using (var fullRing = TrayIconFactory.Create(0, "A", size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 100))
-        using (var halfRing = TrayIconFactory.Create(0, "A", size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 50))
+        using (var fullRing = TrayIconFactory.Create(0, size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 100))
+        using (var halfRing = TrayIconFactory.Create(0, size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 50))
         {
             True(OpaquePixels(halfRing, success) > 0);
             True(OpaquePixels(fullRing, success) > OpaquePixels(halfRing, success));

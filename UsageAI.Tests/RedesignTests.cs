@@ -1037,6 +1037,165 @@ internal static class RedesignTests
 
     private static string Names(IEnumerable<UsageMetric> metrics) => string.Join('|', metrics.Select(metric => metric.Name));
 
+    /// <summary>
+    /// The secondary surfaces: the themed prompt that replaced the system message boxes, the
+    /// Windows 11-style tray menu, the ring-only tray icon, and What's New's sentence-case sections.
+    /// </summary>
+    public static Task TestPromptMenuAndTrayAsync()
+    {
+        Theme.Apply(ThemeMode.Dark, 72, 90);
+        using (var question = new PromptDialog("UsageAI update", "UsageAI 9.9.9 is available", "You are running 1.0.0. Install it now?", "Install update", "Later", dpiOverride: 96))
+        {
+            var accept = question.AcceptControl;
+            var decline = question.DeclineControl!;
+            Equal<IButtonControl?>(accept, question.AcceptButton);
+            Equal<IButtonControl?>(decline, question.CancelButton);
+            Equal(DialogResult.Yes, accept.DialogResult);
+            Equal(DialogResult.No, decline.DialogResult);
+            Equal("UsageAI update", question.Text);
+            // The primary action sits at the right edge, the way Windows dialogs order them.
+            True(decline.Right < accept.Left);
+            Equal(question.ClientSize.Width - 24, accept.Right);
+            True(accept.Bottom < question.ClientSize.Height);
+            Equal(440, question.ClientSize.Width);
+            Draw(question);
+        }
+
+        // A notice has a single button that both Enter and Escape press, and a failure is marked
+        // with a warning sign rather than the app's logo.
+        using (var notice = new PromptDialog("UsageAI", "The changelog did not open", "Windows could not open it.", "OK", declineText: null, PromptKind.Warning, dpiOverride: 192))
+        {
+            Equal(PromptKind.Warning, notice.Kind);
+            Null(notice.DeclineControl);
+            Equal<IButtonControl?>(notice.AcceptControl, notice.CancelButton);
+            Equal(880, notice.ClientSize.Width);
+            Draw(notice);
+        }
+
+        // High Contrast hands the buttons to the system so they use the user's colours.
+        Theme.SetHighContrastProbe(static () => true);
+        try
+        {
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+            using var contrast = new PromptDialog("UsageAI", "Title", "Body", "Yes", "No", dpiOverride: 96);
+            Equal(FlatStyle.System, contrast.AcceptControl.FlatStyle);
+            Equal(FlatStyle.System, contrast.DeclineControl!.FlatStyle);
+            Draw(contrast);
+            using var contrastWarning = new PromptDialog("UsageAI", "Title", "Body", "OK", null, PromptKind.Warning, dpiOverride: 96);
+            Draw(contrastWarning);
+        }
+        finally
+        {
+            Theme.SetHighContrastProbe(null);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+        }
+
+        Equal("Added", WhatsNewForm.SentenceCase("ADDED"));
+        Equal("Security", WhatsNewForm.SentenceCase("security"));
+        Equal(string.Empty, WhatsNewForm.SentenceCase(string.Empty));
+
+        // The menu paints a selected item, a disabled item and a divider without falling back.
+        using (var menu = new ContextMenuStrip { Renderer = new MenuRenderer() })
+        {
+            menu.Items.Add(new ToolStripMenuItem("Open dashboard"));
+            menu.Items.Add(new ToolStripSeparator());
+            menu.Items.Add(new ToolStripMenuItem("Unavailable") { Enabled = false });
+            menu.Items.Add(new ToolStripMenuItem("Exit"));
+            menu.CreateControl();
+            menu.Items[0].Select();
+            using var bitmap = new Bitmap(Math.Max(1, menu.Width), Math.Max(1, menu.Height));
+            menu.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+            // The selected row carries a tinted fill inside its rounded inset.
+            var selected = menu.Items[0].Bounds;
+            var highlight = bitmap.GetPixel(selected.Right - 12, selected.Top + selected.Height / 2);
+            True(highlight.ToArgb() != Theme.Surface.ToArgb());
+            // The inset leaves the row's own corner on the menu surface.
+            Equal(Theme.Surface.ToArgb(), bitmap.GetPixel(selected.Left + 1, selected.Top + 1).ToArgb());
+        }
+
+        // Where Windows does not round the menu, the renderer draws the hairline border itself.
+        var rounded = MenuRenderer.RoundedByWindows;
+        try
+        {
+            MenuRenderer.RoundedByWindows = false;
+            using var square = new ContextMenuStrip { Renderer = new MenuRenderer() };
+            square.Items.Add(new ToolStripMenuItem("Exit"));
+            square.CreateControl();
+            using var squareBitmap = new Bitmap(Math.Max(1, square.Width), Math.Max(1, square.Height));
+            square.DrawToBitmap(squareBitmap, new Rectangle(Point.Empty, squareBitmap.Size));
+            Equal(Theme.Hairline.ToArgb(), squareBitmap.GetPixel(0, square.Height / 2).ToArgb());
+        }
+        finally
+        {
+            MenuRenderer.RoundedByWindows = rounded;
+        }
+
+        // Row spacing follows the DPI the menu opens at.
+        using (var scaled = TrayMenu.Create(static () => { }, static () => { }, static () => { }, static () => { }))
+        {
+            TrayMenu.ApplyMetrics(scaled, 96);
+            Equal(new Padding(10, 5, 10, 5), scaled.Items[0].Padding);
+            Equal(Padding.Empty, scaled.Items[2].Padding);
+            TrayMenu.ApplyMetrics(scaled, 192);
+            Equal(new Padding(20, 10, 20, 10), scaled.Items[0].Padding);
+        }
+
+        True(WindowThemeHelpers.MonitorDpiAt(Point.Empty) is >= 96);
+
+        // High Contrast keeps the system menu renderer and square corners.
+        Theme.SetHighContrastProbe(static () => true);
+        try
+        {
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+            using var contrastMenu = TrayMenu.Create(static () => { }, static () => { }, static () => { }, static () => { });
+            True(contrastMenu.Renderer is ToolStripSystemRenderer);
+            Equal(6, contrastMenu.Items.Count);
+        }
+        finally
+        {
+            Theme.SetHighContrastProbe(null);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+        }
+
+        var invoked = new List<string>();
+        using (var tray = TrayMenu.Create(() => invoked.Add("open"), () => invoked.Add("refresh"), () => invoked.Add("settings"), () => invoked.Add("exit")))
+        {
+            True(tray.Renderer is MenuRenderer);
+            Equal("Open dashboard", tray.Items[0].Text);
+            True(tray.Items[0].Font.Bold);
+            True(tray.Items[1] is ToolStripSeparator == false && tray.Items[2] is ToolStripSeparator);
+            foreach (ToolStripItem item in tray.Items)
+            {
+                item.PerformClick();
+            }
+
+            Equal("open,refresh,settings,exit", string.Join(',', invoked));
+        }
+
+        // The tray ring is a clean arc: the middle stays clear rather than holding a pie or glyph.
+        using (var icon = TrayIconFactory.Create(60, size: 32))
+        using (var bitmap = icon.ToBitmap())
+        {
+            Equal(0, bitmap.GetPixel(16, 16).A);
+            True(bitmap.GetPixel(26, 9).A > 0);
+        }
+
+        // An error is the only state that earns a glyph, and only where it can be read.
+        using (var error = TrayIconFactory.Create(100, hasError: true, size: 32))
+        using (var errorBitmap = error.ToBitmap())
+        {
+            True(Enumerable.Range(10, 12).Any(y => errorBitmap.GetPixel(16, y).A > 0));
+        }
+
+        using (var smallError = TrayIconFactory.Create(100, hasError: true, size: 16))
+        using (var smallBitmap = smallError.ToBitmap())
+        {
+            Equal(0, smallBitmap.GetPixel(8, 8).A);
+        }
+
+        return Task.CompletedTask;
+    }
+
     private static void Draw(Control control)
     {
         control.CreateControl();

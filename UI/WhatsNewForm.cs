@@ -69,7 +69,7 @@ internal sealed class WhatsNewForm : Form
             AccessibleRole = AccessibleRole.StaticText,
             Dock = DockStyle.Fill,
             Font = Typography.Display(15F),
-            Text = "What changed",
+            Text = "What's new",
             TextAlign = ContentAlignment.BottomLeft,
         };
         _subheading = new Label
@@ -82,8 +82,8 @@ internal sealed class WhatsNewForm : Form
         _content = new RichTextBox
         {
             AccessibleName = "Release notes",
-            BackColor = Theme.Surface,
-            BorderStyle = BorderStyle.FixedSingle,
+            BackColor = Theme.Night,
+            BorderStyle = BorderStyle.None,
             DetectUrls = false,
             Dock = DockStyle.Fill,
             Font = _bodyFont,
@@ -97,10 +97,10 @@ internal sealed class WhatsNewForm : Form
             FlowDirection = FlowDirection.RightToLeft,
             Margin = Padding.Empty,
         };
-        _close = CreateButton("Close", primary: true);
+        _close = CreateButton("Got it", primary: true);
         _close.DialogResult = DialogResult.OK;
-        _viewComplete = CreateButton("View complete changelog", primary: false);
-        _viewComplete.AutoSize = true;
+        _viewComplete = CreateButton("View full changelog", primary: false);
+        _buttons.Paint += OnButtonsPaint;
         _viewComplete.Click += (_, _) => OpenCompleteChangelog();
         _buttons.Controls.Add(_close);
         _buttons.Controls.Add(_viewComplete);
@@ -137,7 +137,7 @@ internal sealed class WhatsNewForm : Form
         ApplyScaledLayout();
         // Bullet indents are pixel geometry, so the whole document has to be laid out again.
         RenderContent();
-        Bounds = FitToWorkingArea(Bounds, Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea);
+        Bounds = WindowBounds.FitToWorkingArea(Bounds, Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea);
         _content.SelectionStart = Math.Min(selectionStart, _content.TextLength);
         _content.ScrollToCaret();
     }
@@ -157,6 +157,9 @@ internal sealed class WhatsNewForm : Form
         {
             Theme.Changed -= OnThemeChanged;
             _content.HandleCreated -= OnContentHandleCreated;
+            _buttons.Paint -= OnButtonsPaint;
+            _close.Font.Dispose();
+            _viewComplete.Font.Dispose();
             _heading.Font.Dispose();
             _subheading.Font.Dispose();
             _bodyFont.Dispose();
@@ -176,9 +179,8 @@ internal sealed class WhatsNewForm : Form
             : $"Updated to UsageAI {summary.InstalledVersion}";
 
     /// <summary>
-    /// The colour that reinforces a section's meaning. It is never the only cue: the heading text
-    /// spells the category out, and Windows High Contrast flattens all four to the system
-    /// foreground.
+    /// The colour of the dot before a section's name. It is never the only cue: the name spells
+    /// the category out, and Windows High Contrast flattens all four to the system foreground.
     /// </summary>
     private static Color SectionColor(string heading) => heading.ToUpperInvariant() switch
     {
@@ -245,9 +247,8 @@ internal sealed class WhatsNewForm : Form
                 AppendParagraph(
                     new[]
                     {
-                        (Text: section.Heading.ToUpperInvariant(),
-                            Font: _sectionFont,
-                            Color: SectionColor(section.Heading)),
+                        (Text: "\u25CF  ", Font: _sectionFont, Color: SectionColor(section.Heading)),
+                        (Text: SentenceCase(section.Heading), Font: _sectionFont, Color: Theme.Text),
                     },
                     indent: 0,
                     hangingIndent: 0);
@@ -286,7 +287,7 @@ internal sealed class WhatsNewForm : Form
                 new[]
                 {
                     (Text: $"{_summary.SkippedCount} older {releaseWord} not shown here. " +
-                        "Use View complete changelog to read them.",
+                        "Use View full changelog to read them.",
                         Font: _bodyFont,
                         Color: Theme.Muted),
                 },
@@ -342,20 +343,26 @@ internal sealed class WhatsNewForm : Form
         _content.Select(_content.TextLength, 0);
     }
 
-    private static Button CreateButton(string text, bool primary)
+    /// <summary>"ADDED" or "added" reads as "Added", the way the rest of the window is written.</summary>
+    internal static string SentenceCase(string heading) =>
+        heading.Length == 0
+            ? heading
+            : char.ToUpperInvariant(heading[0]) + heading[1..].ToLowerInvariant();
+
+    private static Button CreateButton(string text, bool primary) => new()
     {
-        var button = new Button
-        {
-            AutoSize = false,
-            BackColor = primary ? Theme.Accent : Theme.SurfaceRaised,
-            FlatStyle = FlatStyle.Flat,
-            Font = Typography.Text(8.5F, FontStyle.Bold),
-            ForeColor = primary ? Theme.OnAccent : Theme.Text,
-            Text = text,
-            UseVisualStyleBackColor = false,
-        };
-        button.FlatAppearance.BorderColor = primary ? Theme.Accent : Theme.Hairline;
-        return button;
+        AutoSize = false,
+        FlatStyle = FlatStyle.Flat,
+        Font = Typography.Text(9F, primary ? FontStyle.Bold : FontStyle.Regular),
+        Text = text,
+        UseVisualStyleBackColor = false,
+    };
+
+    /// <summary>A hairline between the notes and the buttons, now that the notes have no border.</summary>
+    private void OnButtonsPaint(object? sender, PaintEventArgs eventArgs)
+    {
+        using var pen = new Pen(Theme.IsHighContrast ? SystemColors.WindowText : Theme.Divider);
+        eventArgs.Graphics.DrawLine(pen, 0, 0, _buttons.Width, 0);
     }
 
     private void ApplyScaledLayout()
@@ -374,9 +381,9 @@ internal sealed class WhatsNewForm : Form
         _content.Margin = Padding.Empty;
         _buttons.Padding = scale.Pad(0, 12, 0, 0);
         _close.Margin = scale.Pad(8, 0, 0, 0);
-        _close.Size = new Size(scale[92], scale[32]);
-        _viewComplete.Margin = scale.Pad(8, 0, 0, 0);
-        _viewComplete.Size = new Size(scale[168], scale[32]);
+        _close.Size = new Size(Math.Max(scale[92], TextRenderer.MeasureText(_close.Text, _close.Font).Width + scale[28]), scale[32]);
+        _viewComplete.Margin = Padding.Empty;
+        _viewComplete.Size = new Size(TextRenderer.MeasureText(_viewComplete.Text, _viewComplete.Font).Width + scale[20], scale[32]);
     }
 
     private Size ConstrainClientSize(Size desired)
@@ -385,15 +392,6 @@ internal sealed class WhatsNewForm : Form
         var scale = Scale();
         return new Size(Math.Min(desired.Width, Math.Max(320, area.Width - scale[24])),
             Math.Min(desired.Height, Math.Max(280, area.Height - scale[24])));
-    }
-
-    private static Rectangle FitToWorkingArea(Rectangle bounds, Rectangle workingArea)
-    {
-        var width = Math.Min(bounds.Width, workingArea.Width);
-        var height = Math.Min(bounds.Height, workingArea.Height);
-        var x = Math.Clamp(bounds.X, workingArea.Left, Math.Max(workingArea.Left, workingArea.Right - width));
-        var y = Math.Clamp(bounds.Y, workingArea.Top, Math.Max(workingArea.Top, workingArea.Bottom - height));
-        return new Rectangle(x, y, width, height);
     }
 
     private void OnThemeChanged(object? sender, EventArgs eventArgs)
@@ -417,14 +415,21 @@ internal sealed class WhatsNewForm : Form
         ForeColor = Theme.Text;
         _heading.ForeColor = Theme.Text;
         _subheading.ForeColor = Theme.Muted;
-        _content.BackColor = Theme.Surface;
+        _content.BackColor = Theme.Night;
         _content.ForeColor = Theme.Text;
         _close.BackColor = Theme.Accent;
         _close.ForeColor = Theme.OnAccent;
         _close.FlatAppearance.BorderColor = Theme.Accent;
-        _viewComplete.BackColor = Theme.SurfaceRaised;
-        _viewComplete.ForeColor = Theme.Text;
-        _viewComplete.FlatAppearance.BorderColor = Theme.Hairline;
+        _close.FlatAppearance.MouseOverBackColor = Theme.Blend(Theme.Accent, Theme.Text, 0.88);
+        // A link rather than a second button: the changelog is a way out, not a choice.
+        _viewComplete.BackColor = Theme.Night;
+        _viewComplete.ForeColor = Theme.IsHighContrast ? SystemColors.HotTrack : Theme.Accent;
+        _viewComplete.FlatAppearance.BorderSize = Theme.IsHighContrast ? 1 : 0;
+        _viewComplete.FlatAppearance.BorderColor = Theme.IsHighContrast ? SystemColors.WindowText : Theme.Night;
+        // High Contrast keeps the window colour under the link: a blend there would be the system
+        // text colour and hide the link text. Its border is the cue instead.
+        _viewComplete.FlatAppearance.MouseOverBackColor = Theme.IsHighContrast ? SystemColors.Window : Theme.Blend(Theme.Text, Theme.Night, 0.06);
+        _viewComplete.FlatAppearance.MouseDownBackColor = Theme.IsHighContrast ? SystemColors.Window : Theme.Blend(Theme.Text, Theme.Night, 0.1);
         WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
         WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
         Invalidate(invalidateChildren: true);
@@ -441,7 +446,13 @@ internal sealed class WhatsNewForm : Form
         }
         catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
         {
-            MessageBox.Show("Windows could not open the UsageAI changelog.", "UsageAI", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+            PromptDialog.Ask(
+                "UsageAI",
+                "The changelog did not open",
+                "Windows could not open the UsageAI changelog in a browser.",
+                "OK",
+                declineText: null,
+                PromptKind.Warning);
         }
     }
 }

@@ -10,6 +10,7 @@ internal static class WindowThemeHelpers
     private const int DWMWA_BORDER_COLOR = 34;
     private const int DWMWCP_DEFAULT = 0;
     private const int DWMWCP_ROUND = 2;
+    private const int DWMWCP_ROUNDSMALL = 3;
     private const int DWMWA_COLOR_DEFAULT = unchecked((int)0xFFFFFFFF);
 
     [DllImport("dwmapi.dll", CharSet = CharSet.Unicode, PreserveSig = true)]
@@ -65,6 +66,68 @@ internal static class WindowThemeHelpers
         catch
         {
             // Ignore on unsupported OS or DWM errors
+        }
+    }
+
+    /// <summary>
+    /// Rounds a context menu's corners the way Windows 11 rounds its own menus (the small
+    /// radius). High Contrast keeps square system menus.
+    /// </summary>
+    public static void ApplyMenuCorners(Control menu)
+    {
+        if (!OperatingSystem.IsWindows() || !menu.IsHandleCreated)
+        {
+            return;
+        }
+
+        try
+        {
+            var corners = Theme.IsHighContrast ? DWMWCP_DEFAULT : DWMWCP_ROUNDSMALL;
+            _ = DwmSetWindowAttribute(menu.Handle, DWMWA_WINDOW_CORNER_PREFERENCE, ref corners, sizeof(int));
+        }
+        catch
+        {
+            // Ignore on unsupported OS or DWM errors
+        }
+    }
+
+    [StructLayout(LayoutKind.Sequential)]
+    private struct NativePoint
+    {
+        public int X;
+        public int Y;
+    }
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr MonitorFromPoint(NativePoint point, uint flags);
+
+    [DllImport("shcore.dll")]
+    private static extern int GetDpiForMonitor(IntPtr monitor, int dpiType, out uint dpiX, out uint dpiY);
+
+    /// <summary>
+    /// The effective DPI of the monitor holding <paramref name="point"/> (physical pixels), for a
+    /// window about to open there whose own <see cref="Control.DeviceDpi"/> still describes
+    /// wherever it was last shown. Null when Windows cannot say.
+    /// </summary>
+    public static int? MonitorDpiAt(Point point)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            return null;
+        }
+
+        try
+        {
+            const uint MONITOR_DEFAULTTONEAREST = 2;
+            const int MDT_EFFECTIVE_DPI = 0;
+            var monitor = MonitorFromPoint(new NativePoint { X = point.X, Y = point.Y }, MONITOR_DEFAULTTONEAREST);
+            return monitor != IntPtr.Zero && GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, out var dpi, out _) == 0 && dpi > 0
+                ? (int)dpi
+                : null;
+        }
+        catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return null;
         }
     }
 

@@ -59,15 +59,38 @@ internal static class PreviewRenderer
     {
         UseInvariantCulture();
         var settings = PreviewSettings(args);
-        if (string.Equals(Program.ValueAfter(args, "--preview-window"), "settings", StringComparison.OrdinalIgnoreCase))
+        var window = Program.ValueAfter(args, "--preview-window")?.ToLowerInvariant();
+        switch (window)
         {
-            ShowSettings(settings);
-            return;
+            case "settings":
+                ShowSettings(settings);
+                return;
+            case "whatsnew":
+                ShowWhatsNew();
+                return;
+            case "prompt":
+                PromptDialog.Ask(
+                    "UsageAI update",
+                    "UsageAI 9.9.9 is available",
+                    $"You are running {AppIdentity.Version}. Download the verified installer and install it now?",
+                    "Install update",
+                    "Later");
+                return;
+            case "warning":
+                PromptDialog.Ask(
+                    "UsageAI update",
+                    "The update could not be installed",
+                    "The installer's signature did not match. The GitHub release page has the installer to download by hand.",
+                    "Open release page",
+                    "Close",
+                    PromptKind.Warning);
+                return;
+            case "menu":
+                ShowMenu();
+                return;
         }
 
-        var mode = string.Equals(Program.ValueAfter(args, "--preview-window"), "dashboard", StringComparison.OrdinalIgnoreCase)
-            ? DashboardMode.Full
-            : DashboardMode.Compact;
+        var mode = window == "dashboard" ? DashboardMode.Full : DashboardMode.Compact;
 
         using var context = new ApplicationContext();
         using var form = new UsagePopupForm(settings) { StaysOpenWhenInactive = true };
@@ -96,6 +119,40 @@ internal static class PreviewRenderer
         // States first, as the tray app does, so the window sizes itself to real content.
         form.SetStates(states, isRefreshing: false, lastRefreshed: lastRefreshed, history: history);
         form.ShowNearTray(mode);
+        Application.Run(context);
+    }
+
+    /// <summary>
+    /// The What's New window as an upgrade across up to the two newest bundled releases shows it:
+    /// from the release before them, or from nothing when there are only two.
+    /// </summary>
+    private static void ShowWhatsNew()
+    {
+        var releases = ReleaseNotes.LoadBundled();
+        var summary = releases.Count == 0
+            ? new WhatsNewSummary(releases, AppIdentity.Version, 0)
+            : ReleaseNotes.ForUpgrade(
+                releases,
+                releases[0].DisplayVersion,
+                releases.Count > 2 ? releases[2].Version : new Version(0, 0));
+        using var form = new WhatsNewForm(summary);
+        Application.Run(form);
+    }
+
+    /// <summary>
+    /// The tray menu, opened at the cursor as the tray would open it. Choosing an item or
+    /// dismissing the menu ends the process.
+    /// </summary>
+    private static void ShowMenu()
+    {
+        using var context = new ApplicationContext();
+        using var menu = TrayMenu.Create(
+            open: context.ExitThread,
+            refresh: context.ExitThread,
+            settings: context.ExitThread,
+            exit: context.ExitThread);
+        menu.Closed += (_, _) => context.ExitThread();
+        menu.Show(Cursor.Position);
         Application.Run(context);
     }
 

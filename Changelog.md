@@ -76,7 +76,20 @@ The project follows [Semantic Versioning](https://semver.org/).
   thresholds show where fine, warning and critical begin on the scale as they are typed.
   Refresh, startup and the hotkey move together under General; Delete recorded history reads as
   a destructive action.
-- `--render-preview` accepts `--theme light|dark`, and the new `--preview-window popup|dashboard|settings`
+- **The tray icon, tray menu, update prompts and What's New match the new look.** The tray gauge
+  is now a clean arc on its track, the same ring the popup draws, without the translucent pie
+  behind it or the provider letter inside, which at tray size only blurred the arc; an error still
+  shows `!` where there is room to read it. The tray menu is drawn like a Windows 11 context menu,
+  with rounded corners, roomier rows, a rounded highlight and quiet dividers, and its first item
+  is now named **Open dashboard** and shown in bold as the default action. Update questions — a
+  new version is available, the install failed, the release page did not open — used system
+  message boxes that ignored the app's theme; they are now themed dialogs with plain-language
+  buttons (**Install update**, **Later**, **Open release page**), marked with the app's logo for
+  a question and a warning sign for a failure. What's New is headed "What's
+  new", shows the notes on the window itself instead of in a bordered box, names sections in
+  sentence case behind a coloured dot, closes with **Got it**, and links to the full changelog
+  instead of offering it as a second button.
+- `--render-preview` accepts `--theme light|dark`, and the new `--preview-window popup|dashboard|settings|whatsnew|prompt|warning|menu`
   opens the real window with sample data at the monitor's own DPI, with no tray icon, provider
   access or settings file, so a UI change can be tried by hand next to an installed copy.
 

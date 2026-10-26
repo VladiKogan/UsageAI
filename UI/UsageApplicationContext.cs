@@ -68,27 +68,13 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _popup.SettingsRequested += (_, _) => OpenSettings();
         PushStateToPopup();
 
-        _menu = new ContextMenuStrip
-        {
-            BackColor = Theme.Surface,
-            ForeColor = Theme.Text,
-            Renderer = CreateMenuRenderer(),
-            ShowImageMargin = false,
-            Padding = new Padding(4),
-        };
-        var openItem = new ToolStripMenuItem("Open")
-        {
-            Font = new Font(SystemFonts.MenuFont ?? SystemFonts.DefaultFont, FontStyle.Bold),
-        };
-        openItem.Click += (_, _) => OpenDashboard();
-        _menu.Items.Add(openItem);
-        _menu.Items.Add("Refresh", null, async (_, _) => await RefreshAsync(force: true));
-        _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add("Settings...", null, (_, _) => OpenSettings());
-        _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add("Exit", null, (_, _) => Exit());
+        _menu = TrayMenu.Create(
+            open: OpenDashboard,
+            refresh: () => _ = RefreshAsync(force: true),
+            settings: OpenSettings,
+            exit: Exit);
 
-        _currentIcon = TrayIconFactory.Create(0, "U");
+        _currentIcon = TrayIconFactory.Create(0);
         _trayIcon = new NotifyIcon
         {
             ContextMenuStrip = _menu,
@@ -228,7 +214,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         var connected = statuses.Where(status => status.Snapshot is not null).ToArray();
         if (connected.Length == 0)
         {
-            ReplaceIcon(TrayIconFactory.Create(100, "!", hasError: true));
+            ReplaceIcon(TrayIconFactory.Create(100, hasError: true));
             _trayIcon.Text = "UsageAI - no connected providers";
             return;
         }
@@ -237,7 +223,6 @@ internal sealed class UsageApplicationContext : ApplicationContext
         var usedPercent = TrayUsedPercent(trayStatus);
         ReplaceIcon(TrayIconFactory.Create(
             usedPercent,
-            ProviderGlyph(trayStatus.ProviderId),
             identityColor: Theme.ForProvider(trayStatus.ProviderId),
             fillPercent: TrayDisplayedPercent(trayStatus, _settings.QuotaDisplay) ?? 0));
         _trayIcon.Text = TrayTooltip(trayStatus, _settings.QuotaDisplay);
@@ -412,17 +397,15 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private async Task PromptForUpdateAsync(UpdateRelease release)
     {
         var canInstall = release.Installer is not null && release.Checksum is not null;
-        var choice = MessageBox.Show(
+        var accepted = PromptDialog.Ask(
+            "UsageAI update",
+            $"UsageAI {release.Version} is available",
             canInstall
-                ? $"UsageAI {release.Version} is available. You are running {AppIdentity.Version}.\n\n" +
-                  "Download the verified installer and install it now?"
-                : $"UsageAI {release.Version} is available. You are running {AppIdentity.Version}.\n\n" +
-                  "The automatic installer is unavailable. Open the release page?",
-            "UsageAI update available",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Information,
-            MessageBoxDefaultButton.Button1);
-        if (choice != DialogResult.Yes || _isExiting)
+                ? $"You are running {AppIdentity.Version}. Download the verified installer and install it now?"
+                : $"You are running {AppIdentity.Version}. The automatic installer is unavailable, so the release page has the download.",
+            canInstall ? "Install update" : "Open release page",
+            "Later");
+        if (!accepted || _isExiting)
         {
             return;
         }
@@ -454,13 +437,14 @@ internal sealed class UsageApplicationContext : ApplicationContext
                 return;
             }
 
-            var openPage = MessageBox.Show(
-                $"{exception.Message}\n\nOpen the GitHub release page instead?",
+            var openPage = PromptDialog.Ask(
                 "UsageAI update",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning,
-                MessageBoxDefaultButton.Button1);
-            if (openPage == DialogResult.Yes)
+                "The update could not be installed",
+                $"{exception.Message} The GitHub release page has the installer to download by hand.",
+                "Open release page",
+                "Close",
+                PromptKind.Warning);
+            if (openPage)
             {
                 OpenReleasePage(release.ReleasePageUrl);
             }
@@ -479,11 +463,13 @@ internal sealed class UsageApplicationContext : ApplicationContext
         catch (Exception exception) when (exception is InvalidOperationException
                                               or System.ComponentModel.Win32Exception)
         {
-            MessageBox.Show(
-                "Windows could not open the UsageAI release page.",
+            PromptDialog.Ask(
                 "UsageAI update",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
+                "The release page did not open",
+                "Windows could not open the UsageAI release page in a browser.",
+                "OK",
+                declineText: null,
+                PromptKind.Warning);
         }
     }
 
@@ -519,17 +505,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         });
     }
 
-    private void ApplyMenuTheme()
-    {
-        _menu.BackColor = Theme.Surface;
-        _menu.ForeColor = Theme.Text;
-        _menu.Renderer = CreateMenuRenderer();
-        _menu.Invalidate(invalidateChildren: true);
-    }
-
-    private static ToolStripRenderer CreateMenuRenderer() => Theme.IsHighContrast
-        ? new ToolStripSystemRenderer()
-        : new ToolStripProfessionalRenderer(new DarkColorTable());
+    private void ApplyMenuTheme() => TrayMenu.ApplyTheme(_menu);
 
     private void RunOnUi(Action action)
     {
@@ -631,28 +607,9 @@ internal sealed class UsageApplicationContext : ApplicationContext
             .FirstOrDefault();
     }
 
-    private static string ProviderGlyph(string providerId) => providerId.ToLowerInvariant() switch
-    {
-        "claude" => "A",
-        "copilot" => "G",
-        _ => "C",
-    };
-
     private static string ShortProviderName(string providerName) =>
         providerName.Equals("GitHub Copilot", StringComparison.OrdinalIgnoreCase) ? "Copilot" : providerName;
 
     private static string Trim(string value, int maximumLength) =>
         value.Length <= maximumLength ? value : value[..(maximumLength - 3)] + "...";
-
-    private sealed class DarkColorTable : ProfessionalColorTable
-    {
-        public override Color MenuItemSelected => Theme.SurfaceRaised;
-        public override Color MenuItemBorder => Theme.Hairline;
-        public override Color ToolStripDropDownBackground => Theme.Surface;
-        public override Color ImageMarginGradientBegin => Theme.Surface;
-        public override Color ImageMarginGradientMiddle => Theme.Surface;
-        public override Color ImageMarginGradientEnd => Theme.Surface;
-        public override Color SeparatorDark => Theme.Hairline;
-        public override Color SeparatorLight => Theme.Hairline;
-    }
 }

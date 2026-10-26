@@ -84,7 +84,7 @@ npm.cmd run package:vsix
 
 **The providers look like themselves.** Codex, Claude, GitHub Copilot, and Gemini use the same recognizable monochrome brand marks in the Windows dashboard and editor Status Bar, coloured by the surrounding native theme.
 
-**One glance or the full picture.** Left-click for a compact popup; open the dashboard for a fixed 2×2 grid of Codex, Claude Code, GitHub Copilot, and Google Gemini. Resize or maximize the window and all four provider cards—and the usage details inside them—resize together to fill the available space.
+**One glance or the full picture.** Left-click for a compact popup of ring gauges, two providers to a row; open the dashboard for one table of every limit from Codex, Claude Code, GitHub Copilot, and Google Gemini, in columns that line up — usage, what is used or left, when it resets, and where the current pace lands.
 
 <p align="center">
   <img src="usageai-dashboard-preview.png?v=0.13.0" alt="UsageAI 0.13.0 dashboard" width="750" />
@@ -100,13 +100,13 @@ npm.cmd run package:vsix
 | --- | --- |
 | Left-click the tray icon | Compact view of every connected provider |
 | **Win+Alt+U** | Same thing, from anywhere |
-| Right-click ▸ **Open** | Full dashboard, all providers and metrics |
-| Right-click ▸ **Settings...** | Preferences |
+| Right-click ▸ **Open dashboard** | Full dashboard, all providers and metrics |
+| Right-click ▸ **Settings…** | Preferences |
 | Launch UsageAI again | Brings the running window forward |
 | `Esc` | Back to the tray |
-| `Tab` / `Enter` on a card | Opens that provider's usage page — or copies its sign-in command if it's disconnected |
+| `Tab` / `Enter` on a provider | Opens that provider's usage page — or copies its sign-in command if it's disconnected |
 
-The dashboard is a normal Windows window: move it, resize it, maximize it, or close it back to the tray. Its provider layout always remains two columns by two rows; at shorter sizes, metric rows tighten their spacing and drop trend details before allowing a provider card to leave the visible grid.
+The dashboard is a normal Windows window: move it, resize it, maximize it, or close it back to the tray. It grows to fit the table, scrolls only when the table is taller than the window, and drops the forecast column on narrow windows rather than squeezing every cell.
 
 ## 🔌 Works with what you already use
 
@@ -174,7 +174,7 @@ The key is kept in memory, is never forwarded to provider CLI child processes, a
 
 ## ⚙️ Make it yours
 
-**Settings...** in the tray menu lets you tune:
+**Settings…** in the tray menu lets you tune:
 
 - How often it refreshes — and whether to ease off while no window is open
 - Alert thresholds, and whether resets get announced
@@ -185,6 +185,7 @@ The key is kept in memory, is never forwarded to provider CLI child processes, a
   important Session, Rolling, and Monthly limit
 - Whether history is recorded, and whether the trend and forecast are shown
 - Which provider drives the tray icon (or let it follow whichever is running hottest), which providers appear, and in what order
+- Which model group the popup shows for a provider that reports several, such as Gemini
 - The global hotkey, and whether UsageAI starts with Windows
 - The installed desktop-app version, with manual **What's new** and **Check for updates** actions
   under **About**
@@ -194,9 +195,9 @@ the popup, dashboard, or Settings. A clean first install stays quiet. Windows Hi
 overrides the selected app theme, and the desktop windows rescale when moved between monitors.
 
 UsageAI checks GitHub for a newer release once per day while it is running. You can also open
-**Settings...** and use **About** → **Check for updates** at any time. The result says whether your
+**Settings…** and use **About** → **Check for updates** at any time. The result says whether your
 installed version is current, a newer version is available, or the check could not be completed.
-When an update exists, UsageAI asks before downloading or installing anything; choosing **No** leaves
+When an update exists, UsageAI asks before downloading or installing anything; choosing **Later** leaves
 the current version untouched.
 Installed builds can download the matching Setup.exe, verify its published SHA-256, and ask Windows
 to install it. During an in-app upgrade, Windows closes the running tray process, replaces the
@@ -215,8 +216,8 @@ restart it automatically.
 - **"Google Gemini usage is unavailable"** — UsageAI tried the Antigravity IDE, the `agy` CLI, and the Gemini CLI, and the message says which of them returned nothing. Run `agy` to check that it is signed in, then hit **Refresh**.
 - **"Copilot is not signed in"** — sign in through a Copilot IDE extension or Copilot CLI, then hit **Refresh**.
 - **A card says "stale"** — the provider's latest check failed, so you're looking at its previous good reading. The card shows when that reading succeeded, the provider's error, and when UsageAI will retry automatically. The retry runs independently as soon as its backoff or provider-supplied wait time expires; **Refresh** remains available for an immediate manual check.
-- **The hotkey does nothing** — another app already owns Win+Alt+U. Turn it off in **Settings...** to release it.
-- **It didn't start with Windows** — open **Settings...** ▸ **System**. **Start with Windows** shows what Windows would actually do, so if it reads off with a warning underneath, Windows Startup Apps has switched UsageAI off or the entry belongs to another copy of it. Tick the box and save to repair it.
+- **The hotkey does nothing** — another app already owns Win+Alt+U. Turn it off in **Settings…** to release it.
+- **It didn't start with Windows** — open **Settings…** ▸ **General**. **Start with Windows** shows what Windows would actually do, so if it reads off with a warning underneath, Windows Startup Apps has switched UsageAI off or the entry belongs to another copy of it. Turn it on and save to repair it.
 - **No tray icon** — open the Windows tray overflow menu and pin UsageAI.
 
 </details>

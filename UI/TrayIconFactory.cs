@@ -5,9 +5,9 @@ using System.Runtime.InteropServices;
 namespace UsageAI.UI;
 
 /// <summary>
-/// Renders the tray icon at the size the shell actually asks for. A fixed 32-pixel bitmap
-/// scaled down to a 16-pixel tray slot loses the arc and turns any glyph into mush, so the
-/// icon is drawn to measure and the glyph appears only when there is room for it.
+/// Renders the tray icon at the size the shell actually asks for: the popup's ring, an arc on a
+/// track. A fixed 32-pixel bitmap scaled down to a 16-pixel tray slot loses the arc, so the icon
+/// is drawn to measure, and an error's "!" appears only where there is room to read it.
 /// </summary>
 internal static class TrayIconFactory
 {
@@ -23,13 +23,12 @@ internal static class TrayIconFactory
     }
 
     /// <summary>
-    /// Draws the gauge. Colour and fill intensity always follow <paramref name="usedPercent"/>;
-    /// the ring sweeps to <paramref name="fillPercent"/> when the quota display shows what is
-    /// left, so the ring and the tooltip number encode the same quantity.
+    /// Draws the gauge. Its colour always follows <paramref name="usedPercent"/>; the arc sweeps
+    /// to <paramref name="fillPercent"/> when the quota display shows what is left, so the ring
+    /// and the tooltip number encode the same quantity.
     /// </summary>
     public static Icon Create(
         int usedPercent,
-        string glyph = "C",
         bool hasError = false,
         int size = 0,
         Color? identityColor = null,
@@ -59,21 +58,16 @@ internal static class TrayIconFactory
                 graphics.DrawEllipse(track, circle);
             }
 
-            var normalizedUsage = Math.Clamp(usedPercent, 0, 100);
+            // A clean arc on the track, the same ring the popup draws: no translucent pie behind
+            // it and no letter inside, which at tray size only blurred the arc.
             var normalizedFill = Math.Clamp(fillPercent ?? usedPercent, 0, 100);
             if (hasError || normalizedFill > 0)
             {
                 var sweep = hasError ? 360F : Math.Max(10F, 360F * normalizedFill / 100F);
-                var fillAlpha = Math.Clamp((int)(55 + normalizedUsage * 0.85), 55, 160);
-                using (var fillBrush = new SolidBrush(Theme.IsHighContrast ? color : Color.FromArgb(fillAlpha, color)))
-                {
-                    graphics.FillPie(fillBrush, circle.X, circle.Y, circle.Width, circle.Height, -90, sweep);
-                }
-
                 using var arc = new Pen(color, ringWidth)
                 {
-                    StartCap = LineCap.Round,
-                    EndCap = LineCap.Round,
+                    StartCap = hasError ? LineCap.Flat : LineCap.Round,
+                    EndCap = hasError ? LineCap.Flat : LineCap.Round,
                 };
                 graphics.DrawArc(arc, circle, -90, sweep);
             }
@@ -96,7 +90,8 @@ internal static class TrayIconFactory
                 graphics.FillEllipse(marker, markerBounds);
             }
 
-            var displayedGlyph = hasError ? "!" : glyph;
+            // Only an error earns a glyph, and only where there is room to read it.
+            var displayedGlyph = hasError ? "!" : string.Empty;
             if (pixels >= MinimumGlyphSize && !string.IsNullOrEmpty(displayedGlyph))
             {
                 using var glyphFont = new Font(

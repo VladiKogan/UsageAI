@@ -76,6 +76,7 @@ internal static class Program
         ("dashboard refits its table after a DPI change until the user sizes it", RedesignTests.TestDashboardRefitsOnDpiChangeAsync),
         ("dashboard keeps focus and scroll across updates and retries one provider", RedesignTests.TestDashboardKeepsStateAcrossUpdatesAsync),
         ("settings page sections, toggles and previews", RedesignTests.TestSettingsPageAsync),
+        ("prompt dialog, tray menu and ring-only tray icon", RedesignTests.TestPromptMenuAndTrayAsync),
         ("model formatting and provider status states", CoverageExpansionTests.TestModelFormattingAsync),
         ("refresh orchestration, alerts, history, and backoff", CoverageExpansionTests.TestRefreshOrchestrationAsync),
         ("scheduled stale-provider recovery", CoverageExpansionTests.TestScheduledStaleRecoveryAsync),
@@ -1252,7 +1253,6 @@ internal static class Program
 
         using var emptyIcon = TrayIconFactory.Create(
             0,
-            "A",
             size: 16,
             identityColor: Theme.ForProvider("claude"));
         using var emptyBitmap = emptyIcon.ToBitmap();
@@ -1965,7 +1965,6 @@ internal static class Program
 
         using var filledIcon = TrayIconFactory.Create(
             45,
-            "A",
             size: 24,
             identityColor: Theme.ForProvider("claude"));
         using var bitmap = filledIcon.ToBitmap();

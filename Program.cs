@@ -94,7 +94,7 @@ internal static class Program
           UsageAI.exe --render-preview [path] [--full] [--dpi 96|192|288]
                                     [--quota-display used|remaining] [--theme light|dark]
                                              Render a preview image of the popup.
-          UsageAI.exe --preview-window popup|dashboard|settings [--theme light|dark]
+          UsageAI.exe --preview-window popup|dashboard|settings|whatsnew|prompt|warning|menu [--theme light|dark]
                                              Open the popup or dashboard with sample data
                                              (--states mixed for loading, stale and
                                              signed-out providers),
