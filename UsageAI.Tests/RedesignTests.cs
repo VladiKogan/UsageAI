@@ -13,6 +13,7 @@ internal static class RedesignTests
     private static readonly int[] TileDpis = { 96, 192, 288 };
     private static readonly string[] ShippedProviders = { "codex", "claude", "copilot", "gemini" };
     private static readonly int[] RestoredBounds = { 0, 0, 900, 700 };
+    private static readonly string[] SectionList = { "General", "Alerts", "History" };
     private static readonly int[] AutoSavedBounds = { 0, 0, 620, 600 };
 
     public static Task TestPopupRingSelectionAsync()
@@ -769,6 +770,175 @@ internal static class RedesignTests
         {
             False(Field<bool>(autoSaved, "_dashboardSizedByUser"));
         }
+    }
+
+    public static Task TestSettingsPageAsync()
+    {
+        // Previews get a throwaway data folder of their own, never the user's profile.
+        var original = Environment.GetEnvironmentVariable("USAGEAI_DATA_DIR");
+        try
+        {
+            PreviewRenderer.IsolateDataDirectory();
+            var isolated = Environment.GetEnvironmentVariable("USAGEAI_DATA_DIR")!;
+            True(isolated.StartsWith(Path.Combine(Path.GetTempPath(), "UsageAI.Preview"), StringComparison.OrdinalIgnoreCase));
+            PreviewRenderer.IsolateDataDirectory();
+            False(string.Equals(isolated, Environment.GetEnvironmentVariable("USAGEAI_DATA_DIR"), StringComparison.Ordinal));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("USAGEAI_DATA_DIR", original);
+        }
+
+        // Toggle switches stay check boxes: Checked, Space and the accessible role are WinForms'.
+        using (var host = new Panel { Size = new Size(400, 60), BackColor = Theme.Surface })
+        using (var toggle = new ToggleSwitch { Text = "Show tray notifications", Size = new Size(380, 34), DpiOverride = 144 })
+        {
+            host.Controls.Add(toggle);
+            True(toggle is CheckBox);
+            True(toggle.PreferredRowHeight >= new LayoutScale(144)[32]);
+            foreach (var state in new[] { false, true })
+            {
+                toggle.Checked = state;
+                Draw(toggle);
+                Invoke(toggle, "OnMouseEnter", EventArgs.Empty);
+                Draw(toggle);
+                Invoke(toggle, "OnMouseLeave", EventArgs.Empty);
+            }
+
+            toggle.Enabled = false;
+            Draw(toggle);
+            Theme.SetHighContrastProbe(static () => true);
+            try
+            {
+                Theme.Apply(ThemeMode.Dark, 72, 90);
+                toggle.Enabled = true;
+                Draw(toggle);
+            }
+            finally
+            {
+                Theme.SetHighContrastProbe(null);
+                Theme.Apply(ThemeMode.Dark, 72, 90);
+            }
+        }
+
+        // The section list: a click or the arrow keys choose, Home and End jump to the ends.
+        using (var nav = new SectionNav(SectionList) { Size = new Size(176, 300), DpiOverride = 96 })
+        {
+            var chosen = 0;
+            nav.SectionChosen += (_, _) => chosen++;
+            Draw(nav);
+            var second = nav.ItemBounds(1);
+            Invoke(nav, "OnMouseMove", new MouseEventArgs(MouseButtons.None, 0, second.Left + 4, second.Top + 4, 0));
+            Draw(nav);
+            Invoke(nav, "OnMouseDown", new MouseEventArgs(MouseButtons.Left, 1, second.Left + 4, second.Top + 4, 0));
+            Equal(1, nav.SelectedIndex);
+            Invoke(nav, "OnKeyDown", new KeyEventArgs(Keys.Down));
+            Equal(2, nav.SelectedIndex);
+            Invoke(nav, "OnKeyDown", new KeyEventArgs(Keys.End));
+            Equal(2, nav.SelectedIndex);
+            Invoke(nav, "OnKeyDown", new KeyEventArgs(Keys.Home));
+            Equal(0, nav.SelectedIndex);
+            Invoke(nav, "OnKeyDown", new KeyEventArgs(Keys.Up));
+            Equal(0, nav.SelectedIndex);
+            Equal(3, chosen);
+
+            // Enter goes into the section rather than reaching the dialog's Save button.
+            var entered = 0;
+            nav.SectionEntered += (_, _) => entered++;
+            True((bool)typeof(SectionNav).GetMethod("IsInputKey", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(nav, new object[] { Keys.Enter })!);
+            Invoke(nav, "OnKeyDown", new KeyEventArgs(Keys.Enter));
+            Equal(1, entered);
+            Invoke(nav, "OnMouseDown", new MouseEventArgs(MouseButtons.Left, 1, 4, 299, 0));
+            Equal(3, chosen);
+            nav.SelectedIndex = 9;
+            Equal(2, nav.SelectedIndex);
+            True(nav.AccessibleDescription!.StartsWith("History, 3 of 3", StringComparison.Ordinal));
+            Invoke(nav, "OnGotFocus", EventArgs.Empty);
+            Draw(nav);
+            Invoke(nav, "OnLostFocus", EventArgs.Empty);
+            Invoke(nav, "OnMouseLeave", EventArgs.Empty);
+        }
+
+        // Each preview shows what its setting produces.
+        using (var ring = new SettingPreview(SettingPreviewKind.QuotaRing) { Size = new Size(200, 40), DpiOverride = 96, BackColor = Theme.Surface })
+        {
+            Equal("Example: 92% used", ring.AccessibleDescription);
+            Draw(ring);
+            ring.ShowRemaining = true;
+            ring.ShowRemaining = true;
+            Equal("Example: 8% left", ring.AccessibleDescription);
+            Draw(ring);
+        }
+
+        using (var band = new SettingPreview(SettingPreviewKind.ThresholdBand) { Size = new Size(300, 40), DpiOverride = 96 })
+        {
+            // The same rule the saved setting follows: critical starts at least one point later.
+            band.SetThresholds(60, 50);
+            Equal("Fine below 60%, warning from 60%, critical from 61%", band.AccessibleDescription);
+            band.SetThresholds(72, 90);
+            Draw(band);
+        }
+
+        // The settings page jumps to a section, and follows the scroll back to the list.
+        using var dialog = Settings(new AppSettings { IsEphemeral = true }, null);
+        dialog.Show();
+        Application.DoEvents();
+        var sectionNav = Field<SectionNav>(dialog, "_nav");
+        var scrollHost = Field<Panel>(dialog, "_scrollHost");
+        Equal("General|Alerts|Appearance|Providers|History|About", string.Join('|', sectionNav.Sections));
+        var appearance = 2;
+        sectionNav.SelectedIndex = appearance;
+        typeof(SettingsForm).GetMethod("ScrollToSection", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dialog, new object[] { appearance });
+        True(-scrollHost.AutoScrollPosition.Y > 0);
+        sectionNav.SelectedIndex = 0;
+        typeof(SettingsForm).GetMethod("SyncNavToScroll", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dialog, null);
+        Equal(appearance, sectionNav.SelectedIndex);
+
+        // At the bottom of the page the last section is the one marked, though it never reaches the top.
+        scrollHost.AutoScrollPosition = new Point(0, scrollHost.DisplayRectangle.Height);
+        typeof(SettingsForm).GetMethod("SyncNavToScroll", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dialog, null);
+        Equal(sectionNav.Sections.Count - 1, sectionNav.SelectedIndex);
+        typeof(SettingsForm).GetMethod("ScrollToSection", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dialog, new object[] { 99 });
+
+        // Enter on a section moves the focus to its first control.
+        typeof(SettingsForm).GetMethod("EnterSection", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dialog, new object[] { 1 });
+        True(Field<CheckBox>(dialog, "_notificationsEnabled").Focused);
+        typeof(SettingsForm).GetMethod("EnterSection", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dialog, new object[] { -1 });
+
+        // The tab order follows the screen: section list, then the page, then the buttons.
+        True(sectionNav.TabIndex < scrollHost.TabIndex);
+
+        // A theme change keeps the update status's meaning, and High Contrast restores the
+        // borders that are the number fields' only edge on a card.
+        typeof(SettingsForm).GetMethod("SetUpdateTone", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(dialog, new object[] { Enum.Parse(typeof(SettingsForm).GetNestedType("UpdateTone", BindingFlags.NonPublic)!, "Warning") });
+        Theme.SetHighContrastProbe(static () => true);
+        try
+        {
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+            Application.DoEvents();
+            Equal(Theme.WarningText, Field<Label>(dialog, "_updateStatus").ForeColor);
+            Equal(BorderStyle.FixedSingle, Field<NumericUpDown>(dialog, "_refreshInterval").BorderStyle);
+        }
+        finally
+        {
+            Theme.SetHighContrastProbe(null);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+        }
+
+        Application.DoEvents();
+        Equal(BorderStyle.None, Field<NumericUpDown>(dialog, "_refreshInterval").BorderStyle);
+        Equal(Theme.WarningText, Field<Label>(dialog, "_updateStatus").ForeColor);
+
+        // Changing the quota display or a threshold updates its preview straight away.
+        Field<SegmentedControl>(dialog, "_quotaDisplay").SelectedIndex = 1;
+        True(Field<SettingPreview>(dialog, "_quotaPreview").ShowRemaining);
+        Field<NumericUpDown>(dialog, "_warningPercent").Value = 60;
+        Field<NumericUpDown>(dialog, "_criticalPercent").Value = 90;
+        True(Field<SettingPreview>(dialog, "_thresholdPreview").AccessibleDescription!.Contains("warning from 60%", StringComparison.Ordinal));
+        Draw(dialog);
+        dialog.Hide();
+        return Task.CompletedTask;
     }
 
     private sealed class CountingClient : IUsageClient

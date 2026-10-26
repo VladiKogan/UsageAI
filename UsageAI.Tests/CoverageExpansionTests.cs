@@ -2650,7 +2650,7 @@ internal static class CoverageExpansionTests
             var box = GetPrivateField<CheckBox>(dialog, "_startWithWindows");
             var hint = GetPrivateField<Label>(dialog, "_startupHint");
             False(box.Checked);
-            Equal(Theme.Warning, hint.ForeColor);
+            Equal(Theme.WarningText, hint.ForeColor);
             True(hint.Text.Length > 0);
 
             // Left alone, the entry another copy of UsageAI owns is not deleted by a Save the
@@ -2665,7 +2665,7 @@ internal static class CoverageExpansionTests
 
             // A theme change must not repaint the warning as ordinary body text.
             InvokePrivate(dialog, "ApplyThemeColors");
-            Equal(Theme.Warning, hint.ForeColor);
+            Equal(Theme.WarningText, hint.ForeColor);
         }
 
         // A registry the user cannot write is reported, not thrown out of the dialog.
@@ -4549,7 +4549,7 @@ internal static class CoverageExpansionTests
                 .Single(button => button.Text == "Delete recorded history");
             InvokeProtected(deleteHistory, "OnClick", EventArgs.Empty);
 
-            GetPrivateField<ComboBox>(settingsForm, "_theme").SelectedIndex = 1;
+            GetPrivateField<SegmentedControl>(settingsForm, "_theme").SelectedIndex = 1;
             InvokePrivate(settingsForm, "Apply");
             Equal(ThemeMode.Dark, darkSettings.Theme);
         }
@@ -4557,7 +4557,7 @@ internal static class CoverageExpansionTests
         var lightSettings = new AppSettings();
         using (var settingsForm = new SettingsForm(lightSettings, providerEntries))
         {
-            GetPrivateField<ComboBox>(settingsForm, "_theme").SelectedIndex = 2;
+            GetPrivateField<SegmentedControl>(settingsForm, "_theme").SelectedIndex = 2;
             InvokePrivate(settingsForm, "Apply");
             Equal(ThemeMode.Light, lightSettings.Theme);
         }
@@ -4589,7 +4589,7 @@ internal static class CoverageExpansionTests
             var version = Descendants(settingsForm)
                 .OfType<Label>()
                 .Single(label => label.Text == $"v{AppIdentity.Version}");
-            Equal(Theme.Signal, version.ForeColor);
+            Equal(Theme.Text, version.ForeColor);
 
             await InvokePrivateTaskAsync(settingsForm, "CheckForUpdatesAsync");
             var status = GetPrivateField<Label>(settingsForm, "_updateStatus");
@@ -4598,7 +4598,7 @@ internal static class CoverageExpansionTests
 
             await InvokePrivateTaskAsync(settingsForm, "CheckForUpdatesAsync");
             True(status.Text.Contains("Couldn’t check", StringComparison.Ordinal));
-            Equal(Theme.Warning, status.ForeColor);
+            Equal(Theme.WarningText, status.ForeColor);
 
             await InvokePrivateTaskAsync(settingsForm, "CheckForUpdatesAsync");
             True(status.Text.Contains("99.0.0", StringComparison.Ordinal));
@@ -5051,7 +5051,7 @@ internal static class CoverageExpansionTests
             _ => Task.FromResult(new UpdateCheckResult(true, null)),
             _ => Task.CompletedTask,
             96);
-        var settingsMode = GetPrivateField<ComboBox>(dialog, "_metricDisplayMode");
+        var settingsMode = GetPrivateField<SegmentedControl>(dialog, "_metricDisplayMode");
         Equal(0, settingsMode.SelectedIndex);
         settingsMode.SelectedIndex = 2;
         InvokePrivate(dialog, "Apply");
@@ -5315,7 +5315,8 @@ internal static class CoverageExpansionTests
             Equal(SystemColors.Window, popup.BackColor);
             Equal(SystemColors.Window, dialog.BackColor);
             Equal(SystemColors.Window, whatsNew.BackColor);
-            Equal(SystemColors.Control, GetPrivateField<ComboBox>(dialog, "_theme").BackColor);
+            Equal(SystemColors.Control, GetPrivateField<ComboBox>(dialog, "_trayProvider").BackColor);
+            Equal(SystemColors.Window, GetPrivateField<SegmentedControl>(dialog, "_theme").BackColor);
             Equal(SystemColors.Window, GetPrivateField<RichTextBox>(whatsNew, "_content").BackColor);
             Equal(SystemColors.Highlight, GetPrivateField<Button>(whatsNew, "_close").BackColor);
             Equal(SystemColors.HighlightText, GetPrivateField<Button>(whatsNew, "_close").ForeColor);
@@ -5644,7 +5645,7 @@ internal static class CoverageExpansionTests
                    _ => Task.CompletedTask,
                    96))
         {
-            var combo = GetPrivateField<ComboBox>(dialog, "_quotaDisplay");
+            var combo = GetPrivateField<SegmentedControl>(dialog, "_quotaDisplay");
             Equal(0, combo.SelectedIndex);
             combo.SelectedIndex = 1;
             InvokePrivate(dialog, "Apply");
@@ -5658,7 +5659,7 @@ internal static class CoverageExpansionTests
                    _ => Task.CompletedTask,
                    96))
         {
-            Equal(1, GetPrivateField<ComboBox>(reopened, "_quotaDisplay").SelectedIndex);
+            Equal(1, GetPrivateField<SegmentedControl>(reopened, "_quotaDisplay").SelectedIndex);
         }
 
         // Alerts still fire on the used threshold in both modes; only their wording flips.

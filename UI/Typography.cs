@@ -77,6 +77,9 @@ internal static class Typography
     public static Font Mono(float points, int dpi, FontStyle style = FontStyle.Bold) =>
         Create(MonoFamily, points, dpi, style);
 
+    /// <summary>Usage figures for a control's own font, which WinForms rescales. The caller owns it.</summary>
+    public static Font Figures(float points) => Create(FiguresFamily, points, FiguresStyle);
+
     /// <summary>
     /// Usage figures — percentages, balances, countdowns — realised for one monitor's DPI. The
     /// caller owns the returned font.

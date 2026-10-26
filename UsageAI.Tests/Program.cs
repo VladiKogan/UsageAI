@@ -75,6 +75,7 @@ internal static class Program
         ("dashboard table rows, columns, forecasts and keyboard", RedesignTests.TestUsageLedgerAsync),
         ("dashboard refits its table after a DPI change until the user sizes it", RedesignTests.TestDashboardRefitsOnDpiChangeAsync),
         ("dashboard keeps focus and scroll across updates and retries one provider", RedesignTests.TestDashboardKeepsStateAcrossUpdatesAsync),
+        ("settings page sections, toggles and previews", RedesignTests.TestSettingsPageAsync),
         ("model formatting and provider status states", CoverageExpansionTests.TestModelFormattingAsync),
         ("refresh orchestration, alerts, history, and backoff", CoverageExpansionTests.TestRefreshOrchestrationAsync),
         ("scheduled stale-provider recovery", CoverageExpansionTests.TestScheduledStaleRecoveryAsync),
@@ -1167,7 +1168,9 @@ internal static class Program
         shell.PerformLayout();
         Equal(2, shell.RowCount);
 
-        var content = shell.GetControlFromPosition(0, 0) as Panel
+        // The section list sits beside the scrolling page, and the footer spans both.
+        True(shell.GetControlFromPosition(0, 0) is SectionNav);
+        var content = shell.GetControlFromPosition(1, 0) as Panel
             ?? throw new InvalidOperationException("The settings content area is missing.");
         var footer = shell.GetControlFromPosition(0, 1)
             ?? throw new InvalidOperationException("The settings footer is missing.");

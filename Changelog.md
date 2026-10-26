@@ -65,7 +65,18 @@ The project follows [Semantic Versioning](https://semver.org/).
   provider's reading arrives, and Tab walks its links and buttons in reading order. Until the
   dashboard is resized by hand it grows to fit its rows, including after moving to a monitor with
   a different scale; a size the user picks is kept.
-- `--render-preview` accepts `--theme light|dark`, and the new `--preview-window popup|dashboard`
+- **Settings is organised into sections on cards, with a section list to jump between them.** The
+  dialog was one narrow column of checkboxes and dropdowns under upper-case headings, and a setting
+  near the bottom took a long scroll to find. It is now wider, with General, Alerts, Appearance,
+  Providers, History and About listed on the left: choosing one scrolls to it, and the list marks
+  the section being read as the page scrolls. Each section is a card. On/off settings are Windows
+  11 toggle switches, short choices (theme, dashboard rows, show quota as) are segmented controls
+  with every option in view, number fields are compact steppers, and the dropdowns are themed. The
+  quota display shows a small ring flipping between "92% used" and "8% left", and the status-colour
+  thresholds show where fine, warning and critical begin on the scale as they are typed.
+  Refresh, startup and the hotkey move together under General; Delete recorded history reads as
+  a destructive action.
+- `--render-preview` accepts `--theme light|dark`, and the new `--preview-window popup|dashboard|settings`
   opens the real window with sample data at the monitor's own DPI, with no tray icon, provider
   access or settings file, so a UI change can be tried by hand next to an installed copy.
 

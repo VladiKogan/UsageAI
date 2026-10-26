@@ -22,6 +22,14 @@ internal static class Program
             return;
         }
 
+        if (HasFlag(args, "--render-preview") || HasFlag(args, "--preview-window"))
+        {
+            // Previews open real windows, and some of their buttons write local state (Settings'
+            // Delete recorded history). Point them at a throwaway folder before anything reads
+            // AppPaths, so a preview can never touch an installed copy's settings or history.
+            PreviewRenderer.IsolateDataDirectory();
+        }
+
         if (HasFlag(args, "--render-preview"))
         {
             PreviewRenderer.Render(args);
@@ -86,7 +94,7 @@ internal static class Program
           UsageAI.exe --render-preview [path] [--full] [--dpi 96|192|288]
                                     [--quota-display used|remaining] [--theme light|dark]
                                              Render a preview image of the popup.
-          UsageAI.exe --preview-window popup|dashboard [--theme light|dark]
+          UsageAI.exe --preview-window popup|dashboard|settings [--theme light|dark]
                                              Open the popup or dashboard with sample data
                                              (--states mixed for loading, stale and
                                              signed-out providers),

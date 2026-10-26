@@ -145,7 +145,8 @@ internal sealed class SegmentedControl : Control
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         graphics.TextRenderingHint = TextRenderingHint.ClearTypeGridFit;
         var scale = Scale();
-        var background = Parent?.BackColor ?? Theme.Night;
+        // BackColor is ambient: the window's, unless a host such as a settings card sets its own.
+        var background = BackColor;
         graphics.Clear(background);
         var highContrast = Theme.IsHighContrast;
 

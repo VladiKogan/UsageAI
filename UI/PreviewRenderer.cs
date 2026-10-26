@@ -59,6 +59,12 @@ internal static class PreviewRenderer
     {
         UseInvariantCulture();
         var settings = PreviewSettings(args);
+        if (string.Equals(Program.ValueAfter(args, "--preview-window"), "settings", StringComparison.OrdinalIgnoreCase))
+        {
+            ShowSettings(settings);
+            return;
+        }
+
         var mode = string.Equals(Program.ValueAfter(args, "--preview-window"), "dashboard", StringComparison.OrdinalIgnoreCase)
             ? DashboardMode.Full
             : DashboardMode.Compact;
@@ -92,6 +98,33 @@ internal static class PreviewRenderer
         form.ShowNearTray(mode);
         Application.Run(context);
     }
+
+    /// <summary>
+    /// The real Settings dialog with the sample providers' model groups. Startup registration and
+    /// the update check are stubbed, so the preview never touches the Run key or the network.
+    /// </summary>
+    private static void ShowSettings(AppSettings settings)
+    {
+        var (states, _, _) = SampleData(DateTimeOffset.Now);
+        using var dialog = new SettingsForm(
+            settings,
+            states.Select(state => (state.ProviderId, state.ProviderName)).ToArray(),
+            static _ => Task.FromResult(new UpdateCheckResult(true, null)),
+            static _ => Task.CompletedTask,
+            readStartup: static () => new StartupState(StartupStatus.Enabled, null),
+            writeStartup: static _ => { },
+            popupGroups: UsageApplicationContext.PopupGroups(states));
+        Application.Run(dialog);
+    }
+
+    /// <summary>
+    /// Redirects <see cref="AppPaths"/> to a fresh folder under the temp directory. It must run
+    /// before anything reads <see cref="AppPaths.DataDirectory"/>, which resolves once.
+    /// </summary>
+    internal static void IsolateDataDirectory() =>
+        Environment.SetEnvironmentVariable(
+            "USAGEAI_DATA_DIR",
+            Path.Combine(Path.GetTempPath(), "UsageAI.Preview", Guid.NewGuid().ToString("N")));
 
     private static AppSettings PreviewSettings(string[] args)
     {
