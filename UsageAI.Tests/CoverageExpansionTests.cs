@@ -18,9 +18,7 @@ namespace UsageAI.Tests;
 
 internal static class CoverageExpansionTests
 {
-    private static readonly int[] SparklineValues = { -10, 25, 120 };
     private static readonly string[] SingleSegment = { "Only" };
-    private static readonly int[] SingleSparklineValue = { 10 };
     private static readonly string[] IconProviderIds = { "codex", "claude", "copilot", "gemini" };
     private static readonly string[] UserProfileScope = { "user:profile" };
     private static readonly string[] CopilotTokenPair = { "token-one", "token-two" };
@@ -2413,8 +2411,6 @@ internal static class CoverageExpansionTests
             DrawingHelpers.DrawCapacityMeter(graphics, Rectangle.Empty, 50, Color.Red, Color.Gray);
             DrawingHelpers.DrawBalanceMarker(graphics, new Rectangle(5, 95, 120, 8), Color.Blue);
             DrawingHelpers.DrawBalanceMarker(graphics, Rectangle.Empty, Color.Blue);
-            DrawingHelpers.DrawSparkline(graphics, new Rectangle(5, 110, 140, 30), SparklineValues, Color.Green);
-            DrawingHelpers.DrawSparkline(graphics, Rectangle.Empty, SingleSparklineValue, Color.Green);
             True(ProviderIconPainter.IsBrandFontAvailable);
             foreach (var provider in IconProviderIds)
             {
@@ -3307,9 +3303,13 @@ internal static class CoverageExpansionTests
             var compactPath = Path.Combine(directory, "compact.png");
             var compact96Path = Path.Combine(directory, "compact-96.png");
             var fullPath = Path.Combine(directory, "full.png");
+            // Rendering creates forms, which install WinForms' synchronization context; Render
+            // must hand the thread back without it, or the awaits below deadlock.
+            var callerContext = SynchronizationContext.Current;
             PreviewRenderer.Render(new[] { "--render-preview", compactPath });
             PreviewRenderer.Render(new[] { "--render-preview", compact96Path, "--dpi", "96" });
             PreviewRenderer.Render(new[] { "--render-preview", fullPath, "--full" });
+            True(ReferenceEquals(callerContext, SynchronizationContext.Current));
             True(new FileInfo(compactPath).Length > 1_000);
             True(new FileInfo(compact96Path).Length > 1_000);
             True(new FileInfo(fullPath).Length > 1_000);

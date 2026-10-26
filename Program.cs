@@ -93,9 +93,10 @@ internal static class Program
                                              Providers: codex, claude, copilot, gemini.
           UsageAI.exe --render-preview [path] [--full] [--dpi 96|192|288]
                                     [--quota-display used|remaining] [--theme light|dark]
-                                             Render a preview image of the popup.
+                                             Render a preview image of the popup, or of
+                                             the dashboard with --full.
           UsageAI.exe --preview-window popup|dashboard|settings|whatsnew|prompt|warning|menu [--theme light|dark]
-                                             Open the popup or dashboard with sample data
+                                             Open that window with sample data
                                              (--states mixed for loading, stale and
                                              signed-out providers),
                                              without a tray icon or provider access.

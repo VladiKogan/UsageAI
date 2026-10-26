@@ -412,6 +412,15 @@ internal sealed class UsagePopupForm : Form
         Location = new Point(x, y);
     }
 
+    /// <summary>
+    /// For the README preview: the content area in client coordinates and the dashboard's
+    /// table, so a table taller than any window can still be drawn whole. Null in the popup.
+    /// </summary>
+    internal (Rectangle Content, UsageLedger Table)? PreviewTable =>
+        _content.Controls.OfType<UsageLedger>().FirstOrDefault() is { } table
+            ? (RectangleToClient(_content.RectangleToScreen(new Rectangle(Point.Empty, _content.Size))), table)
+            : null;
+
     public void CloseForExit()
     {
         SaveDashboardBounds();

@@ -64,7 +64,9 @@ The project follows [Semantic Versioning](https://semver.org/).
   only when the window is shorter than it, keeps its scroll position and keyboard focus as each
   provider's reading arrives, and Tab walks its links and buttons in reading order. Until the
   dashboard is resized by hand it grows to fit its rows, including after moving to a monitor with
-  a different scale; a size the user picks is kept.
+  a different scale; a size the user picks is kept. The per-card trend sparkline is gone with the
+  cards: the forecast column says where the current pace leads, and the Settings option is now
+  **Show burn-rate forecast**.
 - **Settings is organised into sections on cards, with a section list to jump between them.** The
   dialog was one narrow column of checkboxes and dropdowns under upper-case headings, and a setting
   near the bottom took a long scroll to find. It is now wider, with General, Alerts, Appearance,
@@ -97,6 +99,9 @@ The project follows [Semantic Versioning](https://semver.org/).
 - `--render-preview` accepts `--theme light|dark`, and the new `--preview-window popup|dashboard|settings|whatsnew|prompt|warning|menu`
   opens the real window with sample data at the monitor's own DPI, with no tray icon, provider
   access or settings file, so a UI change can be tried by hand next to an installed copy.
+  `--render-preview` now draws at the requested DPI instead of enlarging a 96-DPI image, which
+  blurred the README screenshots and, on a display scaled above 100%, clipped their text; the
+  dashboard image is as tall as its whole table rather than the screen.
 
 ### Fixed
 

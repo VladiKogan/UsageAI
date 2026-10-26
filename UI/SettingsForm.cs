@@ -174,7 +174,7 @@ internal sealed class SettingsForm : Form
         _warningPercent = CreateNumeric(1, 99);
         _criticalPercent = CreateNumeric(2, 100);
         _historyEnabled = CreateCheckBox("Record usage history on this machine");
-        _forecastEnabled = CreateCheckBox("Show trend and burn-rate forecast");
+        _forecastEnabled = CreateCheckBox("Show burn-rate forecast");
         _hotkeyEnabled = CreateCheckBox("Global hotkey (Win+Alt+U)");
         _startWithWindows = CreateCheckBox("Start with Windows");
         _startupHint = new Label

@@ -1,6 +1,4 @@
-using System.Drawing.Drawing2D;
 using System.Globalization;
-using System.Runtime.InteropServices;
 using System.Threading;
 using UsageAI.Models;
 using UsageAI.Services;
@@ -16,7 +14,22 @@ internal static class PreviewRenderer
 {
     public static void Render(string[] args)
     {
-        using var dpiScope = PreviewDpiScope.EnterBaseline();
+        // Creating the form installs WinForms' synchronization context on this thread. Left in
+        // place, a caller that awaits afterwards posts its continuation to a message loop that
+        // nobody runs, so the thread is handed back as it was found.
+        var callerContext = SynchronizationContext.Current;
+        try
+        {
+            RenderCore(args);
+        }
+        finally
+        {
+            SynchronizationContext.SetSynchronizationContext(callerContext);
+        }
+    }
+
+    private static void RenderCore(string[] args)
+    {
         UseInvariantCulture();
 
         var outputPath = ResolveOutputPath(args);
@@ -24,29 +37,38 @@ internal static class PreviewRenderer
         var settings = PreviewSettings(args);
         var (states, history, lastRefreshed) = SampleData(DateTimeOffset.Now);
 
-        using var form = new UsagePopupForm(settings, LayoutScale.BaselineDpi);
+        // Drawn at the requested DPI itself rather than at 96 and enlarged: the controls paint
+        // with fonts realised for an exact DPI, which a 96-DPI surface inside a scaled session
+        // inflated past their boxes, and the enlargement blurred every edge.
+        using var form = new UsagePopupForm(settings, previewDpi);
         var isFull = args.Contains("--full", StringComparer.OrdinalIgnoreCase);
         var mode = isFull ? DashboardMode.Full : DashboardMode.Compact;
         form.ShowNearTray(mode);
         form.SetStates(states, isRefreshing: false, lastRefreshed: lastRefreshed, history: history);
+        ScaleControlFonts(form, previewDpi);
         if (isFull)
         {
             form.FormBorderStyle = FormBorderStyle.None;
-            var scale = new LayoutScale(LayoutScale.BaselineDpi);
-            form.ClientSize = new Size(scale[940], scale[930]);
         }
-        else
+
+        // Sized from the content on a canvas larger than any screen, so the image never
+        // inherits this machine's screen size; the dashboard at its natural width, which
+        // keeps the forecast column.
+        var scale = new LayoutScale(previewDpi);
+        form.ApplyPreferredSize(new Rectangle(0, 0, scale[4000], scale[4000]));
+        if (isFull)
         {
-            var workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, 1920, 1080);
-            form.ApplyPreferredSize(workingArea);
+            form.ClientSize = new Size(scale[940], form.ClientSize.Height);
         }
-        form.Location = new Point(-10_000, -10_000);
+
+        form.Location = new Point(-30_000, -30_000);
         Application.DoEvents();
         form.PerformLayout();
-        using var baselineBitmap = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
-        baselineBitmap.SetResolution(LayoutScale.BaselineDpi, LayoutScale.BaselineDpi);
-        form.DrawToBitmap(baselineBitmap, form.ClientRectangle);
-        SaveScaled(baselineBitmap, outputPath, previewDpi);
+        using var window = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
+        form.DrawToBitmap(window, form.ClientRectangle);
+        using var image = ComposeWholeTable(form, window);
+        image.SetResolution(previewDpi, previewDpi);
+        image.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
         form.Hide();
     }
 
@@ -445,29 +467,72 @@ internal static class PreviewRenderer
         return (states, history, lastRefreshed);
     }
 
-    private static void SaveScaled(Bitmap baseline, string outputPath, int outputDpi)
+    /// <summary>
+    /// Windows will not make a window taller than the screen, so a dashboard whose table is
+    /// taller is drawn in two parts: the window for its header and footer, and the table on its
+    /// own at its full height and the content's full width, put where the content area was.
+    /// </summary>
+    private static Bitmap ComposeWholeTable(UsagePopupForm form, Bitmap window)
     {
-        if (outputDpi == LayoutScale.BaselineDpi)
+        if (form.PreviewTable is not ({ } content, { } table) || table.NaturalHeight <= content.Height)
         {
-            baseline.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
+            return new Bitmap(window);
+        }
+
+        // Detached first: in the window the layout keeps it narrowed for the scrollbar.
+        // It keeps the panel's background, which it otherwise inherited.
+        table.BackColor = table.Parent?.BackColor ?? table.BackColor;
+        table.Parent?.Controls.Remove(table);
+        table.Size = new Size(content.Width, table.NaturalHeight);
+        table.CreateControl();
+        using var tableImage = new Bitmap(table.Width, table.Height);
+        table.DrawToBitmap(tableImage, new Rectangle(Point.Empty, tableImage.Size));
+        var extra = table.Height - content.Height;
+        var image = new Bitmap(window.Width, window.Height + extra);
+        using var graphics = Graphics.FromImage(image);
+        var above = new Rectangle(0, 0, window.Width, content.Top);
+        var below = Rectangle.FromLTRB(0, content.Bottom, window.Width, window.Height);
+        graphics.DrawImage(window, above, above, GraphicsUnit.Pixel);
+        // The window's sides beside the content area: its background and border.
+        graphics.DrawImage(window, new Rectangle(0, content.Top, window.Width, table.Height), new Rectangle(0, content.Top, window.Width, 1), GraphicsUnit.Pixel);
+        graphics.DrawImage(tableImage, content.Left, content.Top, tableImage.Width, tableImage.Height);
+        graphics.DrawImage(window, new Rectangle(0, content.Bottom + extra, window.Width, below.Height), below, GraphicsUnit.Pixel);
+        return image;
+    }
+
+    /// <summary>
+    /// Labels and buttons keep point-sized fonts, which WinForms enlarges for a real monitor's
+    /// DPI. Drawn off screen at another DPI nothing enlarges them, so each font a control sets
+    /// itself is scaled here from the DPI GDI realises points at to the preview's.
+    /// </summary>
+    private static void ScaleControlFonts(Control root, int previewDpi)
+    {
+        using var screen = Graphics.FromHwnd(IntPtr.Zero);
+        var factor = previewDpi / screen.DpiY;
+        if (Math.Abs(factor - 1F) < 0.01F)
+        {
             return;
         }
 
-        var factor = outputDpi / (float)LayoutScale.BaselineDpi;
-        using var scaled = new Bitmap(
-            (int)Math.Round(baseline.Width * factor),
-            (int)Math.Round(baseline.Height * factor));
-        scaled.SetResolution(outputDpi, outputDpi);
-        using (var graphics = Graphics.FromImage(scaled))
+        void Scale(Control control)
         {
-            graphics.CompositingQuality = CompositingQuality.HighQuality;
-            graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
-            graphics.SmoothingMode = SmoothingMode.HighQuality;
-            graphics.DrawImage(baseline, new Rectangle(Point.Empty, scaled.Size));
+            // An inherited font is the parent's own object; it follows the parent's change.
+            if (control.Parent is null || !ReferenceEquals(control.Font, control.Parent.Font))
+            {
+                var font = control.Font;
+                if (font.Unit != GraphicsUnit.Pixel)
+                {
+                    control.Font = new Font(font.FontFamily, font.SizeInPoints * factor, font.Style, GraphicsUnit.Point);
+                }
+            }
+
+            foreach (Control child in control.Controls)
+            {
+                Scale(child);
+            }
         }
 
-        scaled.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
+        Scale(root);
     }
 
     private static string ResolveOutputPath(string[] args) =>
@@ -485,31 +550,4 @@ internal static class PreviewRenderer
         string.Equals(Program.ValueAfter(args, "--quota-display"), "remaining", StringComparison.OrdinalIgnoreCase)
             ? QuotaDisplay.Remaining
             : QuotaDisplay.Used;
-
-    /// <summary>
-    /// Preview composition starts from a virtual 96-DPI surface and is then resampled as one image.
-    /// This keeps point-sized fonts and pixel geometry in lockstep on every host monitor scale.
-    /// </summary>
-    private readonly struct PreviewDpiScope : IDisposable
-    {
-        private static readonly nint DpiAwarenessContextUnaware = -1;
-        private readonly nint _previousContext;
-
-        private PreviewDpiScope(nint previousContext) => _previousContext = previousContext;
-
-        public static PreviewDpiScope EnterBaseline() =>
-            new(SetThreadDpiAwarenessContext(DpiAwarenessContextUnaware));
-
-        public void Dispose()
-        {
-            if (_previousContext != 0)
-            {
-                _ = SetThreadDpiAwarenessContext(_previousContext);
-            }
-        }
-
-        [DllImport("user32.dll")]
-        [DefaultDllImportSearchPaths(DllImportSearchPath.System32)]
-        private static extern nint SetThreadDpiAwarenessContext(nint dpiContext);
-    }
 }
