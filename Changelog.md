@@ -19,6 +19,28 @@ The project follows [Semantic Versioning](https://semver.org/).
   JPEG with a `.png` name. All of them, and the new vector master `Resources\logo.svg`, come from
   `scripts\render-logo.ps1`, which uses only `System.Drawing`, so the icon and the logos cannot
   drift apart.
+- **The tray app has a quieter, Windows 11 look.** The navy palette and a hue per usage band read
+  as dated and made every card compete for attention; windows now use a neutral charcoal (or
+  white) palette where only a limit at risk is coloured. Meters below the warning threshold share
+  one calm colour instead of switching to blue at 50%, and a figure is coloured only when its
+  limit needs attention, in shades chosen to keep 4.5:1 contrast on its surface. Usage figures use
+  Bahnschrift, the gauge face that ships with Windows, and metric names are shown as providers
+  report them instead of in upper case. Provider icons drop their tinted tile so brand colour only
+  identifies the provider. The popup gets Windows 11's rounded corners and a theme-coloured frame,
+  while the dashboard, Settings and What's New keep the system frame and any accent-coloured
+  border the user has turned on. The accent colour now comes from the same light and dark shades
+  Windows 11 derives for its own controls, and is adjusted until the button stands out at 3:1 and
+  its label reads at 4.5:1, so a pale yellow or deep navy accent no longer gives an invisible
+  button or an unreadable label.
+- `--render-preview` accepts `--theme light|dark`, and the new `--preview-window popup|dashboard`
+  opens the real window with sample data at the monitor's own DPI, with no tray icon, provider
+  access or settings file, so a UI change can be tried by hand next to an installed copy.
+
+### Fixed
+
+- **Large usage figures are no longer cut off at the bottom.** The headline value was drawn in a
+  box shorter than the font's line height, so `92% USED` and `UNLIMITED` lost the bottom of every
+  glyph at every display scale. The box is now sized from the font itself.
 
 ## [0.13.0] - 2026-10-21
 

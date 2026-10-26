@@ -225,7 +225,7 @@ internal sealed class UsagePopupForm : Form
 
         Deactivate += (_, _) =>
         {
-            if (_mode == DashboardMode.Compact)
+            if (_mode == DashboardMode.Compact && !StaysOpenWhenInactive)
             {
                 Hide();
             }
@@ -263,6 +263,13 @@ internal sealed class UsagePopupForm : Form
     public event EventHandler? SettingsRequested;
 
     public DashboardMode Mode => _mode;
+
+    /// <summary>
+    /// Keeps the compact popup visible when it loses focus. Only the interactive preview sets
+    /// it, so the window can be inspected while another program has the focus.
+    /// </summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal bool StaysOpenWhenInactive { get; init; }
 
     public void SetMode(DashboardMode mode)
     {
@@ -410,6 +417,9 @@ internal sealed class UsagePopupForm : Form
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
+
+        // Painted even where DWM draws a rounded frame of the same colour: DWM clips the corners
+        // away, while previews (DrawToBitmap) and sessions without DWM effects still get an edge.
         using var border = new Pen(Theme.Hairline);
         e.Graphics.DrawRectangle(border, 0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
     }
@@ -418,6 +428,7 @@ internal sealed class UsagePopupForm : Form
     {
         base.OnHandleCreated(e);
         WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
+        WindowThemeHelpers.ApplyWindowFrame(this);
     }
 
     protected override void OnVisibleChanged(EventArgs e)
@@ -505,6 +516,7 @@ internal sealed class UsagePopupForm : Form
         _settingsButton.ForeColor = Theme.Text;
         _settingsButton.FlatAppearance.BorderColor = Theme.Hairline;
         WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
+        WindowThemeHelpers.ApplyWindowFrame(this);
         WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
         UpdateStatus();
     }
@@ -839,6 +851,7 @@ internal sealed class UsagePopupForm : Form
                 Text = "UsageAI Dashboard";
                 TopMost = false;
                 WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
+                WindowThemeHelpers.ApplyWindowFrame(this);
                 WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
                 return;
             }
@@ -855,6 +868,7 @@ internal sealed class UsagePopupForm : Form
             FormBorderStyle = FormBorderStyle.None;
             Text = "UsageAI";
             TopMost = true;
+            WindowThemeHelpers.ApplyWindowFrame(this);
         }
         finally
         {

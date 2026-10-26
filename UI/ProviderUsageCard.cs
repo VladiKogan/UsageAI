@@ -201,7 +201,6 @@ internal sealed class ProviderUsageCard : Control
         var scale = Scale();
         var card = new Rectangle(0, 0, Math.Max(1, Width - 1), Math.Max(1, Height - 1));
         var providerColor = Theme.ForProvider(_status.ProviderId);
-        var severity = SeverityColor(providerColor);
         var isCritical = IsCritical();
 
         DrawingHelpers.FillCard(
@@ -222,11 +221,11 @@ internal sealed class ProviderUsageCard : Control
 
         if (_expanded)
         {
-            DrawExpanded(e.Graphics, scale, providerColor, severity);
+            DrawExpanded(e.Graphics, scale, providerColor);
         }
         else
         {
-            DrawCompact(e.Graphics, scale, providerColor, severity);
+            DrawCompact(e.Graphics, scale, providerColor);
         }
 
         if (Focused && _expanded)
@@ -239,9 +238,9 @@ internal sealed class ProviderUsageCard : Control
         }
     }
 
-    private void DrawCompact(Graphics graphics, LayoutScale scale, Color providerColor, Color severity)
+    private void DrawCompact(Graphics graphics, LayoutScale scale, Color providerColor)
     {
-        ProviderIconPainter.Draw(graphics, scale.Rect(14, 16, 34, 34), _status.ProviderId);
+        ProviderIconPainter.Draw(graphics, scale.Rect(20, 22, 22, 22), _status.ProviderId);
 
         var textLeft = scale[58];
         var metric = _status.Snapshot?.Primary;
@@ -272,14 +271,17 @@ internal sealed class ProviderUsageCard : Control
             Width - scale[Gutter] - valueWidth,
             scale[8],
             valueWidth,
-            scale[26]);
-        DrawingHelpers.DrawText(graphics, valueText, _fonts.Value, severity, valueBounds, TextFormatFlags.Right);
+            _fonts.Value.Height);
+        var valueColor = metric is { HasQuota: true }
+            ? Theme.TextForUsage(metric.UsedPercent!.Value)
+            : _status.IsLoading ? Theme.Muted : Theme.Text;
+        DrawingHelpers.DrawText(graphics, valueText, _fonts.Value, valueColor, valueBounds, TextFormatFlags.Right);
 
         if (metric is not null)
         {
             DrawingHelpers.DrawText(
                 graphics,
-                metric.Name.ToUpperInvariant(),
+                metric.Name,
                 _fonts.Utility,
                 Theme.Muted,
                 new Rectangle(Width - scale[Gutter] - scale[160], scale[36], scale[160], scale[14]),
@@ -294,22 +296,22 @@ internal sealed class ProviderUsageCard : Control
             DetailRight(metric),
             _fonts.Small,
             Theme.Muted,
-            _status.IsStale ? Theme.Warning : Theme.Muted);
+            _status.IsStale ? Theme.WarningText : Theme.Faint);
 
         DrawMeter(graphics, metric, new Rectangle(scale[14], scale[78], Width - scale[28], scale[5]), providerColor);
     }
 
-    private void DrawExpanded(Graphics graphics, LayoutScale scale, Color providerColor, Color severity)
+    private void DrawExpanded(Graphics graphics, LayoutScale scale, Color providerColor)
     {
-        ProviderIconPainter.Draw(graphics, scale.Rect(16, 12, 36, 36), _status.ProviderId);
+        ProviderIconPainter.Draw(graphics, scale.Rect(22, 18, 24, 24), _status.ProviderId);
 
         var statusText = _status.StatusText;
         var statusColor = statusText switch
         {
             "Connected" => Theme.Success,
             "Refreshing" => Theme.Signal,
-            "Stale" => Theme.Warning,
-            _ => Theme.Critical,
+            "Stale" => Theme.WarningText,
+            _ => Theme.CriticalText,
         };
         var statusWidth = MeasureWidth(graphics, statusText, _fonts.Small) + scale[18];
         var nameWidth = Math.Max(scale[60], Width - scale[64] - statusWidth - scale[24]);
@@ -361,7 +363,7 @@ internal sealed class ProviderUsageCard : Control
                 graphics,
                 _status.IsStale ? $"Last good {age}" : age,
                 _fonts.Small,
-                Theme.Muted,
+                Theme.Faint,
                 new Rectangle(Width - scale[Gutter] - scale[120], scale[32], scale[120], scale[16]),
                 TextFormatFlags.Right | TextFormatFlags.EndEllipsis);
         }
@@ -387,7 +389,7 @@ internal sealed class ProviderUsageCard : Control
             var rowHeight = availableRowsHeight < naturalRowsHeight
                 ? compressedRowHeight
                 : RowHeight(metric, scale) + extraPerRow;
-            DrawMetricRow(graphics, scale, metric, top, rowHeight, providerColor, severity);
+            DrawMetricRow(graphics, scale, metric, top, rowHeight, providerColor);
             top += rowHeight;
         }
 
@@ -397,7 +399,7 @@ internal sealed class ProviderUsageCard : Control
                 graphics,
                 staleError,
                 _fonts.Small,
-                Theme.Warning,
+                Theme.WarningText,
                 new Rectangle(scale[18], top + scale[4], Width - scale[36], scale[16]),
                 TextFormatFlags.EndEllipsis);
         }
@@ -409,15 +411,14 @@ internal sealed class ProviderUsageCard : Control
         UsageMetric metric,
         int top,
         int rowHeight,
-        Color providerColor,
-        Color severity)
+        Color providerColor)
     {
-        using (var divider = new Pen(Theme.Hairline))
+        using (var divider = new Pen(Theme.Divider))
         {
             graphics.DrawLine(divider, scale[Gutter], top, Width - scale[Gutter], top);
         }
 
-        var valueColor = metric.HasQuota ? Theme.ForUsage(metric.UsedPercent!.Value) : severity;
+        var valueColor = metric.HasQuota ? Theme.TextForUsage(metric.UsedPercent!.Value) : Theme.Text;
         var valueText = metric.HasQuota
             ? Theme.UsageCue(metric.UsedPercent!.Value) + metric.DisplayPrimary(_quotaDisplay)
             : metric.DisplayUsed;
@@ -444,9 +445,9 @@ internal sealed class ProviderUsageCard : Control
 
         DrawingHelpers.DrawText(
             graphics,
-            metric.Name.ToUpperInvariant(),
+            metric.Name,
             _fonts.Utility,
-            Theme.Muted,
+            Theme.TextSecondary,
             new Rectangle(scale[14], contentTop + scale[8], Math.Max(scale[40], Width - scale[28] - valueWidth - scale[8]), scale[16]),
             TextFormatFlags.EndEllipsis);
 
@@ -455,7 +456,7 @@ internal sealed class ProviderUsageCard : Control
             valueText,
             _fonts.Value,
             metric.IsUnlimited ? Theme.Muted : valueColor,
-            new Rectangle(Width - scale[14] - valueWidth, contentTop + scale[4], valueWidth, scale[22]),
+            new Rectangle(Width - scale[14] - valueWidth, contentTop + scale[2], valueWidth, _fonts.Value.Height),
             TextFormatFlags.Right);
 
         DrawSplitLine(
@@ -504,7 +505,7 @@ internal sealed class ProviderUsageCard : Control
                 graphics,
                 text,
                 _fonts.Small,
-                projection.BeforeReset ? Theme.Warning : Theme.Muted,
+                projection.BeforeReset ? Theme.WarningText : Theme.Faint,
                 new Rectangle(scale[14], trendTop + scale[1], Math.Max(scale[40], Width - scale[28] - sparklineWidth - scale[8]), scale[16]),
                 TextFormatFlags.EndEllipsis);
         }
@@ -526,9 +527,9 @@ internal sealed class ProviderUsageCard : Control
         var primaryTop = top + Math.Max(1, (rowHeight - primaryHeight - scale[14]) / 2);
         DrawingHelpers.DrawText(
             graphics,
-            metric.Name.ToUpperInvariant(),
+            metric.Name,
             _fonts.Utility,
-            Theme.Muted,
+            Theme.TextSecondary,
             new Rectangle(
                 horizontalPadding,
                 primaryTop,
@@ -577,7 +578,7 @@ internal sealed class ProviderUsageCard : Control
     private void DrawConnectionBlock(Graphics graphics, LayoutScale scale)
     {
         var headerBottom = scale[HeaderHeight];
-        using (var divider = new Pen(Theme.Hairline))
+        using (var divider = new Pen(Theme.Divider))
         {
             graphics.DrawLine(divider, scale[Gutter], headerBottom, Width - scale[Gutter], headerBottom);
         }
@@ -597,7 +598,7 @@ internal sealed class ProviderUsageCard : Control
             graphics,
             message,
             _fonts.Body,
-            _status.IsLoading ? Theme.Muted : Theme.Critical,
+            _status.IsLoading ? Theme.Muted : Theme.CriticalText,
             new Rectangle(scale[18], top + scale[10], Width - scale[36], scale[34]),
             TextFormatFlags.WordBreak | TextFormatFlags.EndEllipsis);
 
@@ -738,15 +739,10 @@ internal sealed class ProviderUsageCard : Control
             : $"{snapshot.Plan}  ·  {snapshot.AccountName}";
     }
 
-    private Color SeverityColor(Color providerColor) => _status.Snapshot is { } snapshot
-        ? Theme.ForUsage(snapshot.HighestUsedPercent)
-        : _status.IsLoading
-            ? Theme.Muted
-            : providerColor;
-
+    // Compared as a percentage, not by colour: in High Contrast every status shares one colour.
     private bool IsCritical() =>
         _status.Snapshot is { } snapshot &&
-        Theme.ForUsage(snapshot.HighestUsedPercent) == Theme.Critical;
+        Theme.IsCriticalUsage(snapshot.HighestUsedPercent);
 
     private ProviderCardAction HitTest(Point location)
     {
@@ -957,8 +953,8 @@ internal sealed class ProviderUsageCard : Control
             Name = Typography.Display(10F, dpi);
             Body = Typography.Text(8.5F, dpi);
             Small = Typography.Text(7.8F, dpi);
-            Utility = Typography.Mono(7.5F, dpi);
-            Value = Typography.Mono(13.5F, dpi);
+            Utility = Typography.Text(8F, dpi);
+            Value = Typography.Figures(12.5F, dpi);
         }
 
         internal int Dpi { get; }

@@ -18,6 +18,10 @@ namespace UsageAI.Tests;
 internal static class Program
 {
     private static readonly string[] ProviderIds = { "codex", "claude", "copilot", "gemini" };
+    private static readonly int[] EphemeralBounds = { 1, 2, 3, 4 };
+    private static readonly string[] PreviewDashboardArgs = { "--preview-window", "dashboard" };
+    private static readonly string[] PreviewFlagFollowedByFlagArgs = { "--preview-window", "--theme", "dark" };
+    private static readonly string[] TrailingThemeFlagArgs = { "--theme" };
 
     private static readonly (string Name, Func<Task> Run)[] Tests =
     {
@@ -61,6 +65,7 @@ internal static class Program
         ("owned-window extreme DPI geometry", CoverageExpansionTests.TestExtremeDpiGeometryAsync),
         ("Primary metric prioritization in tray and header", TestPrimaryMetricTrayTooltipAsync),
         ("Theme usage fill colors and tray pie icon", TestThemeUsageColorsAsync),
+        ("redesign foundation: accent legibility, critical threshold, preview isolation", TestRedesignFoundationAsync),
         ("model formatting and provider status states", CoverageExpansionTests.TestModelFormattingAsync),
         ("refresh orchestration, alerts, history, and backoff", CoverageExpansionTests.TestRefreshOrchestrationAsync),
         ("scheduled stale-provider recovery", CoverageExpansionTests.TestScheduledStaleRecoveryAsync),
@@ -1990,12 +1995,18 @@ internal static class Program
 
     private static Task TestThemeUsageColorsAsync()
     {
+        // One calm colour below the warning threshold: only a limit at risk draws the eye.
         Equal(Theme.Success, Theme.ForUsage(8));
         Equal(Theme.Success, Theme.ForUsage(45));
-        Equal(Theme.Signal, Theme.ForUsage(50));
-        Equal(Theme.Signal, Theme.ForUsage(70));
+        Equal(Theme.Success, Theme.ForUsage(50));
+        Equal(Theme.Success, Theme.ForUsage(70));
         Equal(Theme.Warning, Theme.ForUsage(75));
         Equal(Theme.Critical, Theme.ForUsage(92));
+
+        // A fine figure reads as ordinary text, so colour on a number always means attention.
+        Equal(Theme.Text, Theme.TextForUsage(70));
+        Equal(Theme.WarningText, Theme.TextForUsage(75));
+        Equal(Theme.CriticalText, Theme.TextForUsage(92));
 
         using var filledIcon = TrayIconFactory.Create(
             45,
@@ -2004,6 +2015,58 @@ internal static class Program
             identityColor: Theme.ForProvider("claude"));
         using var bitmap = filledIcon.ToBitmap();
         True(bitmap.Width == 24 && bitmap.Height == 24);
+        return Task.CompletedTask;
+    }
+
+    private static Task TestRedesignFoundationAsync()
+    {
+        // Critical is decided by percentage, never by colour: High Contrast paints every status
+        // in WindowText, which once made a 60% limit look critical.
+        Theme.SetHighContrastProbe(static () => true);
+        try
+        {
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+            Equal(Theme.Success, Theme.Critical);
+            False(Theme.IsCriticalUsage(60));
+            True(Theme.IsCriticalUsage(90));
+        }
+        finally
+        {
+            Theme.SetHighContrastProbe(null);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+        }
+
+        // A pale accent on a light window and a deep one on a dark window are both moved until
+        // the button stands out (3:1) and its label reads (4.5:1).
+        foreach (var (accent, dark) in new[]
+                 {
+                     (Color.FromArgb(255, 214, 10), false),
+                     (Color.FromArgb(255, 241, 118), false),
+                     (Color.FromArgb(10, 20, 80), true),
+                     (Color.FromArgb(0, 103, 192), false),
+                 })
+        {
+            var legible = Theme.LegibleAccent(accent, dark);
+            var background = dark ? Theme.Night : Color.White;
+            True(Theme.ContrastRatio(legible, background) >= 3);
+            True(Math.Max(
+                Theme.ContrastRatio(legible, Color.FromArgb(12, 16, 22)),
+                Theme.ContrastRatio(legible, Color.FromArgb(250, 252, 255))) >= 4.5);
+        }
+
+        // Windows' own light-mode accent already passes and is left exactly as Windows draws it.
+        Equal(Color.FromArgb(0, 103, 192), Theme.LegibleAccent(Color.FromArgb(0, 103, 192), dark: false));
+        True(Math.Abs(Theme.ContrastRatio(Color.Black, Color.White) - 21) < 0.01);
+
+        // Preview settings never reach the user's file, whatever the window saves.
+        var path = AppPaths.SettingsFile;
+        var before = File.Exists(path) ? File.ReadAllText(path) : null;
+        new AppSettings { IsEphemeral = true, RefreshIntervalMinutes = 77, DashboardBounds = EphemeralBounds }.Save();
+        Equal(before, File.Exists(path) ? File.ReadAllText(path) : null);
+
+        Equal("dashboard", global::UsageAI.Program.ValueAfter(PreviewDashboardArgs, "--preview-window"));
+        Equal<string?>(null, global::UsageAI.Program.ValueAfter(PreviewFlagFollowedByFlagArgs, "--preview-window"));
+        Equal<string?>(null, global::UsageAI.Program.ValueAfter(TrailingThemeFlagArgs, "--theme"));
         return Task.CompletedTask;
     }
 

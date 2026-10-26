@@ -132,6 +132,13 @@ internal sealed class AppSettings
     /// <summary>Saved dashboard bounds as x, y, width, height.</summary>
     public int[]? DashboardBounds { get; set; }
 
+    /// <summary>
+    /// Keeps these settings in memory only. The interactive preview uses throwaway settings
+    /// and must never overwrite the user's real file, whatever the window it opens saves.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsEphemeral { get; init; }
+
     public static AppSettings Load()
     {
         try
@@ -160,6 +167,12 @@ internal sealed class AppSettings
 
     public void Save()
     {
+        if (IsEphemeral)
+        {
+            Validate();
+            return;
+        }
+
         try
         {
             Validate();

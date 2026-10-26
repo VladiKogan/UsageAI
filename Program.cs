@@ -28,6 +28,12 @@ internal static class Program
             return;
         }
 
+        if (HasFlag(args, "--preview-window"))
+        {
+            PreviewRenderer.ShowWindow(args);
+            return;
+        }
+
         if (HasFlag(args, "--diagnose"))
         {
             try
@@ -78,8 +84,11 @@ internal static class Program
           UsageAI.exe --diagnose <provider>  Print one provider's usage as JSON.
                                              Providers: codex, claude, copilot, gemini.
           UsageAI.exe --render-preview [path] [--full] [--dpi 96|192|288]
-                                    [--quota-display used|remaining]
+                                    [--quota-display used|remaining] [--theme light|dark]
                                              Render a preview image of the popup.
+          UsageAI.exe --preview-window popup|dashboard [--theme light|dark]
+                                             Open the popup or dashboard with sample data,
+                                             without a tray icon or provider access.
           UsageAI.exe --version              Print the application version.
           UsageAI.exe --help                 Show this help.
 
@@ -132,12 +141,18 @@ internal static class Program
     private static bool HasFlag(string[] args, string flag) =>
         args.Contains(flag, StringComparer.OrdinalIgnoreCase);
 
-    private static string GetDiagnosticProviderId(string[] args)
+    private static string GetDiagnosticProviderId(string[] args) =>
+        ValueAfter(args, "--diagnose") ?? "codex";
+
+    /// <summary>
+    /// The argument following <paramref name="flag"/>, or null when the flag is absent or is
+    /// followed by another flag rather than a value.
+    /// </summary>
+    internal static string? ValueAfter(string[] args, string flag)
     {
-        var flagIndex = Array.FindIndex(args, argument =>
-            argument.Equals("--diagnose", StringComparison.OrdinalIgnoreCase));
+        var flagIndex = Array.FindIndex(args, argument => argument.Equals(flag, StringComparison.OrdinalIgnoreCase));
         return flagIndex >= 0 && flagIndex + 1 < args.Length && !args[flagIndex + 1].StartsWith('-')
             ? args[flagIndex + 1]
-            : "codex";
+            : null;
     }
 }

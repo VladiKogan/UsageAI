@@ -11,6 +11,12 @@ internal static class Theme
 {
     private const string PersonalizeKey = @"Software\Microsoft\Windows\CurrentVersion\Themes\Personalize";
     private const string DwmKey = @"Software\Microsoft\Windows\DWM";
+    private const string AccentKey = @"Software\Microsoft\Windows\CurrentVersion\Explorer\Accent";
+
+    // AccentPalette holds eight RGBA entries from lightest to darkest; Windows 11 draws accent
+    // fills with Light2 in dark mode and Dark1 in light mode.
+    private const int AccentLight2 = 1;
+    private const int AccentDark1 = 4;
 
     private static int _warningPercent = 72;
     private static int _criticalPercent = 90;
@@ -33,21 +39,38 @@ internal static class Theme
     /// <summary>Controls and secondary surfaces.</summary>
     public static Color SurfaceRaised { get; private set; }
 
+    /// <summary>Window and card outlines.</summary>
     public static Color Hairline { get; private set; }
+
+    /// <summary>Rules between rows inside one surface; quieter than <see cref="Hairline"/>.</summary>
+    public static Color Divider { get; private set; }
 
     public static Color Track { get; private set; }
 
     public static Color Text { get; private set; }
 
+    /// <summary>Row labels and secondary values: one step below <see cref="Text"/>.</summary>
+    public static Color TextSecondary { get; private set; }
+
     public static Color Muted { get; private set; }
+
+    /// <summary>Timestamps and hints: the quietest text that still meets 4.5:1 on its surface.</summary>
+    public static Color Faint { get; private set; }
 
     public static Color Signal { get; private set; }
 
+    /// <summary>The meter colour for a limit that is fine.</summary>
     public static Color Success { get; private set; }
 
     public static Color Warning { get; private set; }
 
     public static Color Critical { get; private set; }
+
+    /// <summary><see cref="Warning"/> as text, adjusted so a figure stays legible on its surface.</summary>
+    public static Color WarningText { get; private set; }
+
+    /// <summary><see cref="Critical"/> as text, adjusted so a figure stays legible on its surface.</summary>
+    public static Color CriticalText { get; private set; }
 
     public static Color Codex { get; private set; }
 
@@ -83,13 +106,18 @@ internal static class Theme
             Surface = SystemColors.Window;
             SurfaceRaised = SystemColors.Control;
             Hairline = SystemColors.WindowFrame;
+            Divider = SystemColors.WindowFrame;
             Track = SystemColors.ControlDark;
             Text = SystemColors.WindowText;
+            TextSecondary = SystemColors.WindowText;
             Muted = SystemColors.GrayText;
+            Faint = SystemColors.GrayText;
             Signal = SystemColors.Highlight;
             Success = SystemColors.WindowText;
             Warning = SystemColors.WindowText;
             Critical = SystemColors.WindowText;
+            WarningText = SystemColors.WindowText;
+            CriticalText = SystemColors.WindowText;
             Codex = SystemColors.WindowText;
             Claude = SystemColors.WindowText;
             Copilot = SystemColors.WindowText;
@@ -99,17 +127,24 @@ internal static class Theme
         }
         else if (dark)
         {
-            Night = Color.FromArgb(10, 14, 20);
-            Surface = Color.FromArgb(17, 24, 33);
-            SurfaceRaised = Color.FromArgb(23, 32, 44);
-            Hairline = Color.FromArgb(42, 55, 70);
-            Track = Color.FromArgb(8, 12, 18);
-            Text = Color.FromArgb(244, 247, 250);
-            Muted = Color.FromArgb(148, 162, 178);
-            Signal = Color.FromArgb(103, 204, 232);
-            Success = Color.FromArgb(105, 211, 164);
-            Warning = Color.FromArgb(240, 177, 91);
-            Critical = Color.FromArgb(239, 107, 119);
+            // Neutral charcoal rather than navy: elevation comes from lightness alone, and colour
+            // is reserved for data, so a limit at risk is the brightest thing in the window.
+            Night = Color.FromArgb(31, 31, 31);
+            Surface = Color.FromArgb(43, 43, 43);
+            SurfaceRaised = Color.FromArgb(51, 51, 51);
+            Hairline = Color.FromArgb(58, 58, 58);
+            Divider = Color.FromArgb(51, 51, 51);
+            Track = Color.FromArgb(58, 58, 58);
+            Text = Color.FromArgb(241, 241, 239);
+            TextSecondary = Color.FromArgb(214, 214, 210);
+            Muted = Color.FromArgb(165, 166, 161);
+            Faint = Color.FromArgb(150, 151, 146);
+            Signal = Color.FromArgb(96, 205, 255);
+            Success = Color.FromArgb(143, 176, 142);
+            Warning = Color.FromArgb(232, 165, 75);
+            Critical = Color.FromArgb(240, 96, 90);
+            WarningText = Color.FromArgb(242, 191, 114);
+            CriticalText = Color.FromArgb(255, 138, 132);
             Codex = Color.FromArgb(110, 211, 180);
             Claude = Color.FromArgb(222, 155, 112);
             Copilot = Color.FromArgb(157, 169, 255);
@@ -117,17 +152,22 @@ internal static class Theme
         }
         else
         {
-            Night = Color.FromArgb(243, 246, 250);
-            Surface = Color.FromArgb(255, 255, 255);
-            SurfaceRaised = Color.FromArgb(236, 241, 247);
-            Hairline = Color.FromArgb(210, 219, 229);
-            Track = Color.FromArgb(224, 231, 240);
-            Text = Color.FromArgb(16, 24, 34);
-            Muted = Color.FromArgb(88, 100, 116);
-            Signal = Color.FromArgb(11, 116, 153);
-            Success = Color.FromArgb(21, 122, 81);
-            Warning = Color.FromArgb(166, 92, 8);
-            Critical = Color.FromArgb(184, 39, 53);
+            Night = Color.FromArgb(255, 255, 255);
+            Surface = Color.FromArgb(247, 248, 250);
+            SurfaceRaised = Color.FromArgb(241, 242, 244);
+            Hairline = Color.FromArgb(223, 225, 229);
+            Divider = Color.FromArgb(236, 238, 241);
+            Track = Color.FromArgb(232, 234, 238);
+            Text = Color.FromArgb(17, 19, 24);
+            TextSecondary = Color.FromArgb(43, 47, 54);
+            Muted = Color.FromArgb(95, 99, 104);
+            Faint = Color.FromArgb(109, 113, 118);
+            Signal = Color.FromArgb(0, 103, 192);
+            Success = Color.FromArgb(79, 122, 78);
+            Warning = Color.FromArgb(217, 119, 6);
+            Critical = Color.FromArgb(196, 36, 42);
+            WarningText = Color.FromArgb(146, 64, 14);
+            CriticalText = Color.FromArgb(179, 20, 28);
             Codex = Color.FromArgb(13, 122, 96);
             Claude = Color.FromArgb(166, 82, 26);
             Copilot = Color.FromArgb(70, 82, 191);
@@ -137,7 +177,9 @@ internal static class Theme
         if (!IsHighContrast)
         {
             Accent = ResolveAccent(dark);
-            OnAccent = Luminance(Accent) > 0.55 ? Color.FromArgb(12, 16, 22) : Color.FromArgb(250, 252, 255);
+            OnAccent = ContrastRatio(Accent, DarkOnAccent) >= ContrastRatio(Accent, LightOnAccent)
+                ? DarkOnAccent
+                : LightOnAccent;
         }
         Changed?.Invoke(null, EventArgs.Empty);
     }
@@ -145,11 +187,23 @@ internal static class Theme
     /// <summary>Re-reads the Windows setting; used when the system theme changes at runtime.</summary>
     public static void Reapply(ThemeMode mode) => Apply(mode, _warningPercent, _criticalPercent);
 
+    /// <summary>
+    /// The meter colour for a usage level. Everything below the warning threshold is one calm
+    /// colour: a hue per band read as a rainbow, and only a limit at risk should draw the eye.
+    /// </summary>
     public static Color ForUsage(int usedPercent) =>
         usedPercent >= _criticalPercent ? Critical :
         usedPercent >= _warningPercent ? Warning :
-        usedPercent < 50 ? Success :
-        Signal;
+        Success;
+
+    /// <summary>
+    /// The text colour for a usage figure. A fine limit reads in the ordinary text colour, so
+    /// colour on a number always means the limit needs attention.
+    /// </summary>
+    public static Color TextForUsage(int usedPercent) =>
+        usedPercent >= _criticalPercent ? CriticalText :
+        usedPercent >= _warningPercent ? WarningText :
+        Text;
 
     public static Color ForProvider(string providerId) => providerId.ToLowerInvariant() switch
     {
@@ -173,6 +227,12 @@ internal static class Theme
             (int)Math.Round(foreground.G * weight + background.G * (1 - weight)),
             (int)Math.Round(foreground.B * weight + background.B * (1 - weight)));
     }
+
+    /// <summary>
+    /// Whether a usage level is past the critical threshold. Callers ask this rather than
+    /// comparing colours, because High Contrast gives every status the same colour.
+    /// </summary>
+    public static bool IsCriticalUsage(int usedPercent) => usedPercent >= _criticalPercent;
 
     public static string UsageCue(int usedPercent) =>
         usedPercent >= _criticalPercent ? "!! " :
@@ -210,29 +270,30 @@ internal static class Theme
         }
     }
 
-    private static Color ResolveAccent(bool dark)
+    private static Color ResolveAccent(bool dark) => LegibleAccent(ReadAccent(dark), dark);
+
+    private static Color ReadAccent(bool dark)
     {
-        var fallback = dark ? Color.FromArgb(66, 133, 191) : Color.FromArgb(20, 96, 160);
+        var fallback = dark ? Color.FromArgb(96, 205, 255) : Color.FromArgb(0, 103, 192);
         try
         {
-            using var key = Registry.CurrentUser.OpenSubKey(DwmKey, writable: false);
-            if (key?.GetValue("AccentColor") is not int accent)
+            // Windows 11 derives its own light and dark accent shades from the user's choice;
+            // using the same entries keeps UsageAI's buttons the colour Windows' own controls are.
+            using (var accentKey = Registry.CurrentUser.OpenSubKey(AccentKey, writable: false))
             {
-                return fallback;
+                if (accentKey?.GetValue("AccentPalette") is byte[] { Length: >= 32 } palette)
+                {
+                    var index = dark ? AccentLight2 : AccentDark1;
+                    return Color.FromArgb(palette[index * 4], palette[index * 4 + 1], palette[index * 4 + 2]);
+                }
             }
 
+            using var key = Registry.CurrentUser.OpenSubKey(DwmKey, writable: false);
+
             // DWM stores the accent as 0xAABBGGRR.
-            var colour = Color.FromArgb(
-                accent & 0xFF,
-                (accent >> 8) & 0xFF,
-                (accent >> 16) & 0xFF);
-            var luminance = Luminance(colour);
-            return dark switch
-            {
-                true when luminance < 0.16 => Blend(colour, Color.White, 0.62),
-                false when luminance > 0.78 => Blend(colour, Color.Black, 0.68),
-                _ => colour,
-            };
+            return key?.GetValue("AccentColor") is int accent
+                ? Color.FromArgb(accent & 0xFF, (accent >> 8) & 0xFF, (accent >> 16) & 0xFF)
+                : fallback;
         }
         catch (Exception exception) when (exception is System.Security.SecurityException or UnauthorizedAccessException or IOException)
         {
@@ -240,6 +301,57 @@ internal static class Theme
         }
     }
 
-    private static double Luminance(Color colour) =>
-        (0.2126 * colour.R + 0.7152 * colour.G + 0.0722 * colour.B) / 255d;
+    /// <summary>
+    /// Moves an accent towards white on dark backgrounds, or towards black on light ones, until it
+    /// stands out from the window (3:1, the bar for a filled control) and some label colour reads
+    /// on it at 4.5:1. Windows' own palette entries usually pass untouched; a pale yellow or a
+    /// deep navy accent would otherwise give an invisible button or an unreadable label.
+    /// </summary>
+    internal static Color LegibleAccent(Color accent, bool dark)
+    {
+        var background = dark ? Night : Color.White;
+        var target = dark ? Color.White : Color.Black;
+        var candidate = accent;
+        for (var step = 1; step <= 10 && !IsLegibleAccent(candidate, background); step++)
+        {
+            candidate = BlendColors(target, accent, step / 10d);
+        }
+
+        return candidate;
+    }
+
+    private static bool IsLegibleAccent(Color accent, Color background) =>
+        ContrastRatio(accent, background) >= 3 &&
+        Math.Max(ContrastRatio(accent, DarkOnAccent), ContrastRatio(accent, LightOnAccent)) >= 4.5;
+
+    private static readonly Color DarkOnAccent = Color.FromArgb(12, 16, 22);
+    private static readonly Color LightOnAccent = Color.FromArgb(250, 252, 255);
+
+    /// <summary>The WCAG contrast ratio between two opaque colours.</summary>
+    internal static double ContrastRatio(Color first, Color second)
+    {
+        var a = RelativeLuminance(first);
+        var b = RelativeLuminance(second);
+        return (Math.Max(a, b) + 0.05) / (Math.Min(a, b) + 0.05);
+    }
+
+    private static double RelativeLuminance(Color colour)
+    {
+        static double Channel(byte value)
+        {
+            var c = value / 255d;
+            return c <= 0.03928 ? c / 12.92 : Math.Pow((c + 0.055) / 1.055, 2.4);
+        }
+
+        return 0.2126 * Channel(colour.R) + 0.7152 * Channel(colour.G) + 0.0722 * Channel(colour.B);
+    }
+
+    private static Color BlendColors(Color foreground, Color background, double amount)
+    {
+        var weight = Math.Clamp(amount, 0, 1);
+        return Color.FromArgb(
+            (int)Math.Round(foreground.R * weight + background.R * (1 - weight)),
+            (int)Math.Round(foreground.G * weight + background.G * (1 - weight)),
+            (int)Math.Round(foreground.B * weight + background.B * (1 - weight)));
+    }
 }
