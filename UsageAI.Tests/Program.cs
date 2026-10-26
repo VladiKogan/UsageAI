@@ -55,7 +55,7 @@ internal static class Program
         ("dashboard metric display selection", TestMetricDisplaySelectionAsync),
         ("bundled release notes and upgrade state", TestReleaseNotesAsync),
         ("High Contrast palette and extreme DPI scale", TestHighContrastAndDpiAsync),
-        ("painted card text and rows follow the monitor DPI", TestCardDpiTypographyAsync),
+        ("painted tile and table text follow the monitor DPI", TestCardDpiTypographyAsync),
         ("dashboard metric mode UI and settings isolation", CoverageExpansionTests.TestDashboardMetricModeUiAsync),
         ("quota display flips presentation only", CoverageExpansionTests.TestQuotaDisplayAsync),
         ("release notes parser boundary cases", CoverageExpansionTests.TestReleaseNotesBoundariesAsync),
@@ -72,6 +72,9 @@ internal static class Program
         ("provider tile states, indicator and actions at every DPI", RedesignTests.TestProviderTileStatesAsync),
         ("settings pins a provider's popup model group", RedesignTests.TestSettingsPopupGroupPickerAsync),
         ("ring gauge, icon buttons and themed tooltip drawing", RedesignTests.TestRingAndIconDrawingAsync),
+        ("dashboard table rows, columns, forecasts and keyboard", RedesignTests.TestUsageLedgerAsync),
+        ("dashboard refits its table after a DPI change until the user sizes it", RedesignTests.TestDashboardRefitsOnDpiChangeAsync),
+        ("dashboard keeps focus and scroll across updates and retries one provider", RedesignTests.TestDashboardKeepsStateAcrossUpdatesAsync),
         ("model formatting and provider status states", CoverageExpansionTests.TestModelFormattingAsync),
         ("refresh orchestration, alerts, history, and backoff", CoverageExpansionTests.TestRefreshOrchestrationAsync),
         ("scheduled stale-provider recovery", CoverageExpansionTests.TestScheduledStaleRecoveryAsync),
@@ -94,8 +97,8 @@ internal static class Program
         ("corrupt local state recovery", CoverageExpansionTests.TestCorruptLocalStateAsync),
         ("security utility edge cases", CoverageExpansionTests.TestSecurityUtilityEdgesAsync),
         ("custom UI rendering paths", CoverageExpansionTests.TestUiRenderingAsync),
-        ("dashboard keeps a responsive two-by-two provider grid", CoverageExpansionTests.TestDashboardFixedGridAsync),
-        ("dashboard grid never shows a scrollbar", CoverageExpansionTests.TestDashboardNeverScrollsAsync),
+        ("dashboard table follows the window width", CoverageExpansionTests.TestDashboardTableWidthAsync),
+        ("dashboard table scrolls only when taller than the window", CoverageExpansionTests.TestDashboardScrollsOnlyWhenTallerAsync),
         ("settings provider list reorders by drag", CoverageExpansionTests.TestProviderDragReorderAsync),
         ("settings startup preference", CoverageExpansionTests.TestSettingsStartupPreferenceAsync),
         ("application context lifecycle and tray updates", CoverageExpansionTests.TestApplicationContextAsync),
@@ -214,6 +217,11 @@ internal static class Program
         var failures = 0;
         foreach (var (name, run) in testsToRun)
         {
+            // Constructing a WinForms control installs a WindowsFormsSynchronizationContext on the
+            // current thread, and this harness never pumps a message loop. A UI check that leaves
+            // one behind would strand the continuation of the next asynchronous check, so every
+            // check starts without one, whatever ran before it.
+            SynchronizationContext.SetSynchronizationContext(null);
             try
             {
                 await run();
@@ -1434,12 +1442,11 @@ internal static class Program
         var now = DateTimeOffset.Now;
         var snapshot = new UsageSnapshot("Free", new[] { metrics[0] }, now, "codex", "Codex");
         var status = new ProviderStatus("codex", "Codex", snapshot, null, false);
-        using var filteredEmpty = new ProviderUsageCard(
-            status,
-            expanded: true,
-            Array.Empty<UsageSample>(),
-            showTrend: false,
-            metrics: UsageMetricSelection.Select(snapshot.Metrics, MetricDisplayMode.MeteredOnly))
+        using var filteredEmpty = new UsageLedger(
+            new[] { status },
+            MetricDisplayMode.MeteredOnly,
+            QuotaDisplay.Used,
+            Array.Empty<UsageSample>())
         {
             Width = 520,
         };
@@ -1571,20 +1578,6 @@ internal static class Program
         Equal(Typography.PixelSize(13.5F, 600), Typography.PixelSize(13.5F, 4800));
         Equal(Typography.PixelSize(48F, 96), Typography.PixelSize(400F, 96));
 
-        // The height the user's 1080p-class dashboard leaves each metric row of a four-limit
-        // provider. It is under the preferred row height but above what the full stack needs, so
-        // the row keeps its detail line and meter instead of dropping to the compressed layout.
-        foreach (var dpi in new[] { 96, 192, 288 })
-        {
-            var scale = new LayoutScale(dpi);
-            True(ProviderUsageCard.FitsFullLayout(scale[51], scale));
-            False(ProviderUsageCard.FitsFullLayout(scale[40], scale));
-            False(ProviderUsageCard.FitsTrend(scale[51], 0, scale));
-            True(ProviderUsageCard.FitsTrend(scale[72], 0, scale));
-            // A centred content block pushes the trend down with it, so the offset counts.
-            False(ProviderUsageCard.FitsTrend(scale[72], scale[8], scale));
-        }
-
         var now = DateTimeOffset.Now;
         var snapshot = new UsageSnapshot(
             "Google AI Pro",
@@ -1624,137 +1617,80 @@ internal static class Program
             null,
             false);
 
-        var headlineWidth = new Dictionary<int, int>();
+        // Painting the same table at two DPIs has to scale the text with the geometry: every
+        // glyph doubles in both directions, so the ink in a row grows about four times. A face
+        // pinned to whichever DPI this machine started at would leave the ink nearly unchanged.
+        var ink = new Dictionary<int, int>();
         foreach (var dpi in new[] { 96, 192 })
         {
             var scale = new LayoutScale(dpi);
-            using var card = new ProviderUsageCard(
-                single,
-                expanded: true,
+            using var ledger = new UsageLedger(
+                new[] { single },
+                MetricDisplayMode.All,
+                QuotaDisplay.Used,
                 Array.Empty<UsageSample>(),
-                showTrend: false,
-                dpiOverride: dpi)
+                dpi)
             {
-                Width = scale[340],
+                Width = scale[700],
             };
-
-            using var bitmap = new Bitmap(card.Width, card.Height);
-            card.DrawToBitmap(bitmap, card.ClientRectangle);
-
-            // The row's headline band: below the header divider, above the detail line. The card
-            // surface is whatever colour fills most of that band, so the scan calibrates itself
-            // against the active theme rather than against a hard-coded colour or a border pixel.
-            var top = scale[46] + scale[6];
-            var bottom = scale[46] + scale[24];
-            var histogram = new Dictionary<int, int>();
-            for (var y = top; y < bottom; y++)
-            {
-                for (var x = bitmap.Width / 2; x < bitmap.Width; x++)
-                {
-                    var argb = bitmap.GetPixel(x, y).ToArgb();
-                    histogram[argb] = histogram.GetValueOrDefault(argb) + 1;
-                }
-            }
-
-            var surface = histogram.MaxBy(entry => entry.Value).Key;
-            var leftmost = bitmap.Width;
-            for (var y = top; y < bottom; y++)
-            {
-                for (var x = bitmap.Width / 2; x < bitmap.Width; x++)
-                {
-                    if (bitmap.GetPixel(x, y).ToArgb() != surface)
-                    {
-                        leftmost = Math.Min(leftmost, x);
-                        break;
-                    }
-                }
-            }
-
-            True(leftmost > bitmap.Width / 2 && leftmost < bitmap.Width);
-            headlineWidth[dpi] = bitmap.Width - leftmost;
+            Equal(scale[32] + scale[46] + scale[40], ledger.NaturalHeight);
+            using var bitmap = new Bitmap(ledger.Width, ledger.Height);
+            ledger.DrawToBitmap(bitmap, ledger.ClientRectangle);
+            ink[dpi] = InkPixels(bitmap, new Rectangle(0, scale[32 + 46], bitmap.Width, scale[40]));
         }
 
-        var growth = headlineWidth[192] / (double)headlineWidth[96];
-        True(growth is > 1.8 and < 2.2);
+        var growth = ink[192] / (double)ink[96];
+        True(growth is > 3.0 and < 5.0);
 
+        // A provider with two model groups gets a sub-heading per group, and the table's height
+        // is known before it is laid out: it never depends on the width.
         foreach (var dpi in new[] { 96, 192 })
         {
             var scale = new LayoutScale(dpi);
-            using var quadCard = new ProviderUsageCard(
-                status,
-                expanded: true,
-                history,
-                showTrend: true,
-                dpiOverride: dpi)
+            using var grouped = new UsageLedger(new[] { status }, MetricDisplayMode.All, QuotaDisplay.Used, history, dpi)
             {
                 Width = scale[340],
             };
-            Equal(scale[46] + scale[8] + (4 * scale[72]), quadCard.NaturalHeight);
+            Equal(scale[32] + scale[46] + (2 * scale[28]) + (4 * scale[40]), grouped.NaturalHeight);
+            grouped.Width = scale[900];
+            Equal(scale[32] + scale[46] + (2 * scale[28]) + (4 * scale[40]), grouped.NaturalHeight);
         }
 
-        // A dashboard cell is never as tall as four trend rows want to be, so the squeezed card has
-        // to keep painting inside itself rather than run past the bottom edge.
-        using var squeezedCard = new ProviderUsageCard(
-            status,
-            expanded: true,
-            history,
-            showTrend: true,
-            dpiOverride: 96)
-        {
-            Width = 340,
-        };
-        // The real order: the dashboard grid assigns the cell height while the card is still
-        // handle-less, and the handle lands afterwards. Re-resolving the DPI there must not take
-        // the squeeze back, or the grid's bottom row ends up past a client area that never scrolls.
-        squeezedCard.Height = 252;
-        _ = squeezedCard.Handle;
-        Equal(252, squeezedCard.Height);
-        using var squeezed = new Bitmap(squeezedCard.Width, squeezedCard.Height);
-        squeezedCard.DrawToBitmap(squeezed, squeezedCard.ClientRectangle);
-
-        // A compact card carrying a height measured at another monitor's DPI is what clipped the
-        // popup's detail line and hid its meter: the card painted for the monitor it had moved to
-        // inside a box measured for the one the process started on. Every hook WinForms offers for
-        // that moment has to put the height back, and the card has to take its own measurement
-        // because the popup sizes itself by adding those heights up.
+        // A tile or table measured before it knew its monitor takes its own height back on every
+        // hook WinForms offers for the moment a control learns which monitor it is really on: the
+        // popup and dashboard size themselves by adding those heights up.
         foreach (var hook in new[] { "OnHandleCreated", "OnDpiChangedAfterParent", "RescaleConstantsForDpi" })
         {
-            using var compact = new ProviderUsageCard(
-                single,
-                expanded: false,
-                Array.Empty<UsageSample>(),
-                showTrend: false)
-            {
-                Width = 340,
-            };
-            Equal(new LayoutScale(compact.DeviceDpi)[98], compact.NaturalHeight);
+            using var tile = new ProviderTile(single) { Width = 340 };
+            Equal(new LayoutScale(tile.DeviceDpi)[156], tile.NaturalHeight);
+            tile.Height = 10;
+            InvokeHook(tile, hook);
+            Equal(tile.NaturalHeight, tile.Height);
 
-            // The height and faces a card measured before it knew which monitor it was going to.
-            SetPrivateField(compact, "_measuredDpi", compact.DeviceDpi * 2);
-            compact.Height = 10;
-            InvokeHook(compact, hook);
-            Equal(compact.NaturalHeight, compact.Height);
+            using var table = new UsageLedger(new[] { status }, MetricDisplayMode.All, QuotaDisplay.Used, history) { Width = 340 };
+            table.Height = 10;
+            InvokeHook(table, hook);
+            Equal(table.NaturalHeight, table.Height);
         }
 
-        // An expanded card is the opposite case: the dashboard grid has already given it a cell
-        // height, and re-resolving the DPI has to carry that squeeze across rather than take the
-        // natural height back, which would push the grid's bottom row out of a view that never
-        // scrolls. Here the card was squeezed to 252 at twice the DPI, so it lands on half of it.
-        using var gridded = new ProviderUsageCard(
-            status,
-            expanded: true,
-            history,
-            showTrend: true)
-        {
-            Width = 340,
-        };
-        SetPrivateField(gridded, "_measuredDpi", gridded.DeviceDpi * 2);
-        gridded.Height = 252;
-        InvokeHook(gridded, "OnHandleCreated");
-        Equal(126, gridded.Height);
-        True(gridded.Height < gridded.NaturalHeight);
-
         return Task.CompletedTask;
+    }
+
+    /// <summary>Pixels in <paramref name="band"/> that differ from the band's most common colour.</summary>
+    private static int InkPixels(Bitmap bitmap, Rectangle band)
+    {
+        var histogram = new Dictionary<int, int>();
+        for (var y = band.Top; y < band.Bottom; y++)
+        {
+            for (var x = band.Left; x < band.Right; x++)
+            {
+                var argb = bitmap.GetPixel(x, y).ToArgb();
+                histogram[argb] = histogram.GetValueOrDefault(argb) + 1;
+            }
+        }
+
+        var surface = histogram.MaxBy(entry => entry.Value).Key;
+        return histogram.Where(entry => entry.Key != surface).Sum(entry => entry.Value);
     }
 
     private static void InvokeHook(Control target, string name) =>

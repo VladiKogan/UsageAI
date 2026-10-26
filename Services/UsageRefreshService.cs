@@ -194,7 +194,14 @@ internal sealed class UsageRefreshService : IDisposable
     public Task RefreshDueAsync(bool anyWindowVisible) =>
         RefreshCoreAsync(force: false, anyWindowVisible, scheduled: true);
 
-    private async Task RefreshCoreAsync(bool force, bool anyWindowVisible, bool scheduled)
+    /// <summary>
+    /// Retries one provider now — the dashboard's Retry on a stale row — past its backoff, leaving
+    /// every other provider and the regular refresh deadline on their own schedules.
+    /// </summary>
+    public Task RefreshProviderAsync(string providerId, bool anyWindowVisible) =>
+        RefreshCoreAsync(force: true, anyWindowVisible, scheduled: false, onlyProviderId: providerId);
+
+    private async Task RefreshCoreAsync(bool force, bool anyWindowVisible, bool scheduled, string? onlyProviderId = null)
     {
         var entered = await _refreshLock.WaitAsync(0);
         if (!entered)
@@ -210,8 +217,9 @@ internal sealed class UsageRefreshService : IDisposable
             }
 
             var now = DateTimeOffset.Now;
-            var regularRefresh = !scheduled || force || now >= _nextRegularRefresh;
+            var regularRefresh = onlyProviderId is null && (!scheduled || force || now >= _nextRegularRefresh);
             var due = _clients
+                .Where(client => onlyProviderId is null || client.Id.Equals(onlyProviderId, StringComparison.OrdinalIgnoreCase))
                 .Where(client => _settings.IsProviderVisible(client.Id))
                 .Where(client => IsProviderDue(client.Id, force, regularRefresh, now))
                 .ToArray();

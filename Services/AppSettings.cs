@@ -133,6 +133,12 @@ internal sealed class AppSettings
     public int[]? DashboardBounds { get; set; }
 
     /// <summary>
+    /// Whether the saved bounds are a size the user chose. Until they are, the dashboard grows
+    /// to fit its table; bounds saved only because the window was hidden do not count.
+    /// </summary>
+    public bool DashboardSizedByUser { get; set; }
+
+    /// <summary>
     /// The model group each provider's popup rings show, keyed by provider id. A provider with no
     /// entry, or an entry naming a group it no longer reports, shows its busiest group.
     /// </summary>

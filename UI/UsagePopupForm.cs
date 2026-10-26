@@ -17,15 +17,15 @@ internal sealed record PopupHeadline(ProviderStatus Status, UsageMetric Metric, 
 internal sealed class UsagePopupForm : Form
 {
     private const int CompactWidthBaseline = 384;
-    private const int FullWidthBaseline = 620;
+    private const int FullWidthBaseline = 820;
     // A title row plus two lines of headline: the sentence naming the busiest limit, its value
     // and when it runs out does not fit one line at popup width.
     private const int HeaderRowBaseline = 68;
     private const int FooterRowBaseline = 46;
-    private const int DashboardColumns = 2;
-    private const int DashboardRows = 2;
     private const int CompactColumns = 2;
     private const int TileGap = 8;
+
+    private static readonly string[] MetricModeOptions = { "All", "Metered", "Important" };
 
     private readonly AppSettings _settings;
     private readonly int? _dpiOverride;
@@ -35,7 +35,7 @@ internal sealed class UsagePopupForm : Form
     private readonly Label _titleLabel;
     private readonly Label _summaryLabel;
     private readonly Label _updatedLabel;
-    private readonly ComboBox _metricMode;
+    private readonly SegmentedControl _metricMode;
     private readonly Button _detailsButton;
     private readonly IconButton _refreshButton;
     private readonly IconButton _settingsButton;
@@ -49,7 +49,9 @@ internal sealed class UsagePopupForm : Form
     private Rectangle? _dashboardBounds;
     private bool _dashboardWasShown;
     private bool _updatingCardWidths;
-    private bool _compactNeedsScroll;
+    private bool _needsScroll;
+    private bool _dashboardSizedByUser;
+    private Size _sizeAtResizeBegin;
     private PopupHeadline? _headline;
     private readonly System.Windows.Forms.Timer _uiTickTimer;
     private readonly ThemedToolTip _tileToolTip = new();
@@ -117,6 +119,22 @@ internal sealed class UsagePopupForm : Form
             Text = "Checking your accounts…",
             TextAlign = ContentAlignment.TopLeft,
         };
+        // The dashboard's row filter sits in the header, every option in view: one click to
+        // change, where the dropdown took two.
+        _metricMode = new SegmentedControl(MetricModeOptions, (int)_settings.MetricDisplayMode)
+        {
+            AccessibleName = "Dashboard rows",
+            Dock = DockStyle.Fill,
+            DpiOverride = _dpiOverride,
+            Margin = scale.Pad(8, 2, 8, 2),
+            Visible = false,
+        };
+        _metricMode.SelectedIndexChanged += (_, _) =>
+        {
+            _settings.MetricDisplayMode = (MetricDisplayMode)_metricMode.SelectedIndex;
+            _settings.Save();
+            RebuildCards();
+        };
         _refreshButton = new IconButton(IconGlyph.Refresh, "Refresh")
         {
             Dock = DockStyle.Fill,
@@ -134,26 +152,28 @@ internal sealed class UsagePopupForm : Form
 
         _header = new TableLayoutPanel
         {
-            ColumnCount = 3,
+            ColumnCount = 4,
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
             RowCount = 2,
         };
         _header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 0));
         _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[32]));
         _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[32]));
         _header.RowStyles.Add(new RowStyle(SizeType.Absolute, scale[32]));
         _header.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _header.Controls.Add(_titleLabel, 0, 0);
-        _header.Controls.Add(_refreshButton, 1, 0);
-        _header.Controls.Add(_settingsButton, 2, 0);
+        _header.Controls.Add(_metricMode, 1, 0);
+        _header.Controls.Add(_refreshButton, 2, 0);
+        _header.Controls.Add(_settingsButton, 3, 0);
         _header.Controls.Add(_summaryLabel, 0, 1);
-        _header.SetColumnSpan(_summaryLabel, 3);
+        _header.SetColumnSpan(_summaryLabel, 4);
         _shell.Controls.Add(_header, 0, 0);
 
         // Both modes lay out in rows of two; SetMode returns early for the starting mode, so the
         // flow is set here rather than only there.
-        _content = new FlowLayoutPanel
+        _content = new ContentPanel
         {
             AutoScroll = false,
             BackColor = Theme.Night,
@@ -177,51 +197,27 @@ internal sealed class UsagePopupForm : Form
             Text = "Checking accounts...",
             TextAlign = ContentAlignment.MiddleLeft,
         };
-        _metricMode = new ThemedComboBox
-        {
-            AccessibleName = "Dashboard metrics",
-            BackColor = Theme.SurfaceRaised,
-            Dock = DockStyle.Fill,
-            Font = Typography.Text(8.5F),
-            ForeColor = Theme.Text,
-            Margin = scale.Pad(6, 7, 0, 1),
-            Visible = false,
-        };
-        _metricMode.Items.AddRange(new object[] { "All metrics", "Metered only", "Important only" });
-        _metricMode.SelectedIndex = (int)_settings.MetricDisplayMode;
-        _metricMode.SelectedIndexChanged += (_, _) =>
-        {
-            if (_metricMode.SelectedIndex < 0)
-            {
-                return;
-            }
-
-            _settings.MetricDisplayMode = (MetricDisplayMode)_metricMode.SelectedIndex;
-            _settings.Save();
-            RebuildCards();
-        };
         _detailsButton = CreateButton("Open dashboard", scale, primary: true);
         _detailsButton.Click += (_, _) => ShowNearTray(DashboardMode.Full);
 
         _footer = new TableLayoutPanel
         {
-            ColumnCount = 3,
+            ColumnCount = 2,
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
             RowCount = 1,
         };
         _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 0));
         _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[132]));
         _footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _footer.Controls.Add(_updatedLabel, 0, 0);
-        _footer.Controls.Add(_metricMode, 1, 0);
-        _footer.Controls.Add(_detailsButton, 2, 0);
+        _footer.Controls.Add(_detailsButton, 1, 0);
         _shell.Controls.Add(_footer, 0, 2);
 
         if (_settings.DashboardBounds is { Length: 4 } saved)
         {
             _dashboardBounds = new Rectangle(saved[0], saved[1], saved[2], saved[3]);
+            _dashboardSizedByUser = _settings.DashboardSizedByUser;
         }
 
         Deactivate += (_, _) =>
@@ -231,7 +227,18 @@ internal sealed class UsagePopupForm : Form
                 Hide();
             }
         };
-        ResizeEnd += (_, _) => SaveDashboardBounds();
+        // ResizeEnd also ends a move, so only a size that actually changed counts as the user
+        // sizing the dashboard.
+        ResizeBegin += (_, _) => _sizeAtResizeBegin = Size;
+        ResizeEnd += (_, _) =>
+        {
+            if (_mode == DashboardMode.Full && Size != _sizeAtResizeBegin)
+            {
+                _dashboardSizedByUser = true;
+            }
+
+            SaveDashboardBounds();
+        };
         KeyDown += (_, eventArgs) =>
         {
             if (eventArgs.KeyCode == Keys.Escape)
@@ -263,6 +270,9 @@ internal sealed class UsagePopupForm : Form
 
     public event EventHandler? SettingsRequested;
 
+    /// <summary>A stale provider's Retry: refresh that provider alone.</summary>
+    public event EventHandler<ProviderCardActionEventArgs>? ProviderRefreshRequested;
+
     public DashboardMode Mode => _mode;
 
     /// <summary>
@@ -291,13 +301,12 @@ internal sealed class UsagePopupForm : Form
         _content.FlowDirection = FlowDirection.LeftToRight;
         _content.WrapContents = true;
 
-        // Neither mode scrolls by default. The full dashboard is a fixed grid resized to the
-        // client area, and the popup sizes itself to its tiles. An automatic scrollbar latched
-        // onto freshly built content before the window had grown to fit it, narrowed the client
-        // area under the widths just computed, and wrapped every row for the rest of the session.
-        // ApplyPreferredSize turns scrolling on only when the popup cannot fit on the screen.
+        // Neither mode scrolls by default: the popup sizes itself to its tiles and the dashboard
+        // window to its table. An automatic scrollbar latched onto freshly built content before
+        // the window had grown to fit it and narrowed the client area under the widths just
+        // computed, so scrolling is switched on explicitly, only when the content cannot fit.
         _content.AutoScroll = false;
-        _compactNeedsScroll = false;
+        _needsScroll = false;
         ApplyScaledChrome();
         RebuildCards();
     }
@@ -410,6 +419,15 @@ internal sealed class UsagePopupForm : Form
         if (_mode == DashboardMode.Full)
         {
             ApplyDashboardMinimumSize(workingArea);
+
+            // Until the user sizes the dashboard it fits its table: a window created on one
+            // monitor and shown on another was only scaled by Windows, from a height measured at
+            // the first monitor's DPI, and cut the last provider off.
+            if (!_dashboardSizedByUser)
+            {
+                ApplyPreferredSize(workingArea);
+            }
+
             Bounds = FitDashboardToWorkingArea(Bounds, workingArea);
         }
         else
@@ -509,8 +527,7 @@ internal sealed class UsagePopupForm : Form
         _titleLabel.ForeColor = Theme.Text;
         _summaryLabel.ForeColor = Theme.TextSecondary;
         _updatedLabel.ForeColor = Theme.Muted;
-        _metricMode.BackColor = Theme.SurfaceRaised;
-        _metricMode.ForeColor = Theme.Text;
+        _metricMode.Invalidate();
         _detailsButton.BackColor = Theme.Accent;
         _detailsButton.ForeColor = Theme.OnAccent;
         _detailsButton.FlatAppearance.BorderColor = Theme.Accent;
@@ -530,11 +547,13 @@ internal sealed class UsagePopupForm : Form
         _shell.Padding = ShellPadding(scale);
         _shell.RowStyles[0] = new RowStyle(SizeType.Absolute, scale[HeaderRowBaseline]);
         _shell.RowStyles[2] = new RowStyle(SizeType.Absolute, scale[FooterRowBaseline]);
-        _header.ColumnStyles[1] = new ColumnStyle(SizeType.Absolute, scale[32]);
+        _header.ColumnStyles[1] = new ColumnStyle(
+            SizeType.Absolute,
+            _mode == DashboardMode.Full ? _metricMode.PreferredWidth + _metricMode.Margin.Horizontal : 0);
         _header.ColumnStyles[2] = new ColumnStyle(SizeType.Absolute, scale[32]);
+        _header.ColumnStyles[3] = new ColumnStyle(SizeType.Absolute, scale[32]);
         _header.RowStyles[0] = new RowStyle(SizeType.Absolute, scale[32]);
-        _footer.ColumnStyles[1] = new ColumnStyle(SizeType.Absolute, _mode == DashboardMode.Full ? scale[150] : 0);
-        _footer.ColumnStyles[2] = new ColumnStyle(SizeType.Absolute, _mode == DashboardMode.Compact ? scale[132] : 0);
+        _footer.ColumnStyles[1] = new ColumnStyle(SizeType.Absolute, _mode == DashboardMode.Compact ? scale[132] : 0);
     }
 
     private void RebuildCards()
@@ -542,55 +561,21 @@ internal sealed class UsagePopupForm : Form
         _content.SuspendLayout();
         try
         {
-            // Copy first: disposing a control removes it from the collection being iterated.
-            var previous = _content.Controls.Cast<Control>().ToArray();
-            _content.Controls.Clear();
-            foreach (var control in previous)
-            {
-                control.Dispose();
-            }
+            var forecastHistory = _settings.ForecastEnabled && _settings.HistoryEnabled
+                ? _history
+                : Array.Empty<UsageSample>();
 
-            var visibleStates = _mode == DashboardMode.Full ? _states : CompactStates();
-            if (visibleStates.Count == 0)
+            // The dashboard's table is updated in place: it is rebuilt several times a refresh as
+            // providers publish, and a new control would drop the user's focus and scroll position.
+            if (_mode == DashboardMode.Full &&
+                _content.Controls.Count == 1 &&
+                _content.Controls[0] is UsageLedger existing)
             {
-                _content.Controls.Add(new EmptyProvidersControl
-                {
-                    Height = Scale()[104],
-                    Margin = new Padding(0, 0, 0, 10),
-                });
+                existing.SetData(_states, _settings.MetricDisplayMode, _settings.QuotaDisplay, forecastHistory);
             }
             else
             {
-                var expanded = _mode == DashboardMode.Full;
-                foreach (var state in visibleStates)
-                {
-                    if (!expanded)
-                    {
-                        var tile = new ProviderTile(
-                            state,
-                            _settings.QuotaDisplay,
-                            _settings.PopupMetricGroup(state.ProviderId),
-                            _dpiOverride,
-                            _tileToolTip);
-                        tile.ActionInvoked += OnCardActionInvoked;
-                        _content.Controls.Add(tile);
-                        continue;
-                    }
-
-                    var selectedMetrics = expanded && state.Snapshot is { } snapshot
-                        ? UsageMetricSelection.Select(snapshot.Metrics, _settings.MetricDisplayMode)
-                        : null;
-                    var card = new ProviderUsageCard(
-                        state,
-                        expanded,
-                        _history,
-                        _settings.ForecastEnabled && _settings.HistoryEnabled,
-                        selectedMetrics,
-                        _dpiOverride,
-                        _settings.QuotaDisplay);
-                    card.ActionInvoked += OnCardActionInvoked;
-                    _content.Controls.Add(card);
-                }
+                ReplaceContent(forecastHistory);
             }
         }
         finally
@@ -602,6 +587,94 @@ internal sealed class UsagePopupForm : Form
         if (_mode == DashboardMode.Compact || !_dashboardWasShown)
         {
             ApplyPreferredSize(Screen.FromPoint(Cursor.Position).WorkingArea);
+        }
+        else
+        {
+            GrowDashboardToFit();
+        }
+    }
+
+    private void ReplaceContent(IReadOnlyList<UsageSample> forecastHistory)
+    {
+        // Copy first: disposing a control removes it from the collection being iterated.
+        var previous = _content.Controls.Cast<Control>().ToArray();
+        _content.Controls.Clear();
+        foreach (var control in previous)
+        {
+            control.Dispose();
+        }
+
+        if (_mode == DashboardMode.Full)
+        {
+            var ledger = new UsageLedger(
+                _states,
+                _settings.MetricDisplayMode,
+                _settings.QuotaDisplay,
+                forecastHistory,
+                _dpiOverride)
+            {
+                Margin = Padding.Empty,
+            };
+            ledger.ActionInvoked += OnCardActionInvoked;
+            _content.Controls.Add(ledger);
+        }
+        else
+        {
+            AddCompactContent();
+        }
+    }
+
+    /// <summary>
+    /// Grows a dashboard the user has not sized when its table outgrows the window: one first
+    /// opened while providers were still loading was sized to their one-line placeholders, and
+    /// would otherwise keep that height and scroll once the real rows arrived. It never shrinks,
+    /// so switching the row filter does not make the window jump.
+    /// </summary>
+    private void GrowDashboardToFit()
+    {
+        if (_mode != DashboardMode.Full ||
+            _dashboardSizedByUser ||
+            WindowState != FormWindowState.Normal ||
+            _content.Controls.OfType<UsageLedger>().FirstOrDefault() is not { } ledger ||
+            ledger.NaturalHeight <= _content.ClientSize.Height)
+        {
+            return;
+        }
+
+        var workingArea = Screen.FromControl(this).WorkingArea;
+        var before = Size;
+        ApplyPreferredSize(workingArea);
+        if (Height < before.Height || Width < before.Width)
+        {
+            Size = new Size(Math.Max(Width, before.Width), Math.Max(Height, before.Height));
+        }
+
+        Bounds = FitDashboardToWorkingArea(Bounds, workingArea);
+    }
+
+    private void AddCompactContent()
+    {
+        var visibleStates = CompactStates();
+        if (visibleStates.Length == 0)
+        {
+            _content.Controls.Add(new EmptyProvidersControl
+            {
+                Height = Scale()[104],
+                Margin = new Padding(0, 0, 0, 10),
+            });
+            return;
+        }
+
+        foreach (var state in visibleStates)
+        {
+            var tile = new ProviderTile(
+                state,
+                _settings.QuotaDisplay,
+                _settings.PopupMetricGroup(state.ProviderId),
+                _dpiOverride,
+                _tileToolTip);
+            tile.ActionInvoked += OnCardActionInvoked;
+            _content.Controls.Add(tile);
         }
     }
 
@@ -617,6 +690,9 @@ internal sealed class UsagePopupForm : Form
                 break;
             case ProviderCardAction.OpenDetails:
                 ShowNearTray(DashboardMode.Full);
+                break;
+            case ProviderCardAction.Refresh:
+                ProviderRefreshRequested?.Invoke(this, eventArgs);
                 break;
             default:
                 break;
@@ -849,22 +925,15 @@ internal sealed class UsagePopupForm : Form
             var tileHeight = tiles.Max(tile => tile.NaturalHeight);
             contentHeight = (rows * tileHeight) + (scale[TileGap] * (rows - 1));
         }
-        else if (_mode == DashboardMode.Compact || _content.Controls.Count <= 1)
+        else if (_content.Controls.OfType<UsageLedger>().FirstOrDefault() is { } ledger)
+        {
+            contentHeight = ledger.NaturalHeight;
+        }
+        else
         {
             contentHeight = _content.Controls
                 .Cast<Control>()
                 .Sum(control => control.Height + control.Margin.Vertical);
-        }
-        else
-        {
-            var gap = scale[10];
-            var tallestCard = _content.Controls
-                .Cast<Control>()
-                .Select(control => control is ProviderUsageCard card ? card.NaturalHeight : control.Height)
-                .DefaultIfEmpty(scale[104])
-                .Max();
-            var rows = DashboardRowCount(_content.Controls.Count);
-            contentHeight = (rows * tallestCard) + (gap * (rows - 1));
         }
 
         contentHeight = Math.Max(scale[104], contentHeight);
@@ -877,13 +946,10 @@ internal sealed class UsagePopupForm : Form
             workingArea.Height - nonClientHeight,
             Math.Max(scale[260], workingArea.Height - nonClientHeight - scale[32]));
         var desiredHeight = Math.Min(chromeHeight + contentHeight, maximumHeight);
-        if (_mode == DashboardMode.Compact)
+        _needsScroll = chromeHeight + contentHeight > maximumHeight;
+        if (_content.AutoScroll != _needsScroll)
         {
-            _compactNeedsScroll = chromeHeight + contentHeight > maximumHeight;
-            if (_content.AutoScroll != _compactNeedsScroll)
-            {
-                _content.AutoScroll = _compactNeedsScroll;
-            }
+            _content.AutoScroll = _needsScroll;
         }
 
         ClientSize = new Size(
@@ -998,12 +1064,15 @@ internal sealed class UsagePopupForm : Form
 
         _dashboardBounds = bounds;
         var saved = new[] { bounds.X, bounds.Y, bounds.Width, bounds.Height };
-        if (_settings.DashboardBounds is { Length: 4 } existing && existing.SequenceEqual(saved))
+        if (_settings.DashboardBounds is { Length: 4 } existing &&
+            existing.SequenceEqual(saved) &&
+            _settings.DashboardSizedByUser == _dashboardSizedByUser)
         {
             return;
         }
 
         _settings.DashboardBounds = saved;
+        _settings.DashboardSizedByUser = _dashboardSizedByUser;
         _settings.Save();
     }
 
@@ -1025,15 +1094,6 @@ internal sealed class UsagePopupForm : Form
         return new Rectangle(x, y, width, height);
     }
 
-    /// <summary>
-    /// How many rows the grid needs. Four providers are the 2x2 the dashboard is designed around,
-    /// but the column count is what is fixed, not the row count: the panel no longer scrolls, so a
-    /// fifth provider has to earn a third row rather than be laid out past the bottom edge where
-    /// nothing could reach it. Shorter rows are what the cards already compact for.
-    /// </summary>
-    private static int DashboardRowCount(int cardCount) =>
-        Math.Max(DashboardRows, (cardCount + DashboardColumns - 1) / DashboardColumns);
-
     private void UpdateCardWidths()
     {
         if (_updatingCardWidths || _content.IsDisposed || Disposing || IsDisposed)
@@ -1047,14 +1107,22 @@ internal sealed class UsagePopupForm : Form
         {
             var scale = Scale();
 
-            // The dashboard never scrolls, so its client width is the usable width. The popup
-            // reserves the scrollbar up front when it will need one, rather than reading a client
-            // width that changes underneath it the moment the scrollbar appears.
-            var availableWidth = _mode == DashboardMode.Compact
-                ? _content.Width - (_compactNeedsScroll
-                    ? SystemInformation.GetVerticalScrollBarWidthForDpi(_dpiOverride ?? DeviceDpi)
-                    : 0)
-                : _content.ClientSize.Width;
+            // The dashboard is resized by hand, so whether its table needs a scrollbar is decided
+            // here from the room it has now. Both modes reserve the scrollbar's width up front
+            // rather than reading a client width that changes the moment the scrollbar appears.
+            var ledger = _content.Controls.OfType<UsageLedger>().FirstOrDefault();
+            if (_mode == DashboardMode.Full && ledger is not null)
+            {
+                _needsScroll = ledger.NaturalHeight > _content.Height;
+                if (_content.AutoScroll != _needsScroll)
+                {
+                    _content.AutoScroll = _needsScroll;
+                }
+            }
+
+            var availableWidth = _content.Width - (_needsScroll
+                ? SystemInformation.GetVerticalScrollBarWidthForDpi(_dpiOverride ?? DeviceDpi)
+                : 0);
             if (availableWidth < scale[100])
             {
                 return;
@@ -1089,32 +1157,13 @@ internal sealed class UsagePopupForm : Form
                     }
                 }
             }
-            else
+            else if (ledger is not null)
             {
-                var gap = scale[10];
-                var cardWidth = Math.Max(1, (availableWidth - gap) / DashboardColumns);
-                var count = _content.Controls.Count;
-                var rows = DashboardRowCount(count);
-                var availableHeight = _content.ClientSize.Height;
-                var availableCardHeight = Math.Max(1, (availableHeight - (gap * (rows - 1))) / rows);
-
-                for (var i = 0; i < count; i++)
+                ledger.Margin = Padding.Empty;
+                var size = new Size(availableWidth, ledger.NaturalHeight);
+                if (ledger.Size != size)
                 {
-                    var control = _content.Controls[i];
-                    var colIndex = i % DashboardColumns;
-                    var rowIndex = i / DashboardColumns;
-                    var rightMargin = colIndex == DashboardColumns - 1 ? 0 : gap;
-                    var bottomMargin = rowIndex == rows - 1 ? 0 : gap;
-                    var margin = new Padding(0, 0, rightMargin, bottomMargin);
-                    if (control.Margin != margin)
-                    {
-                        control.Margin = margin;
-                    }
-
-                    if (control.Width != cardWidth || control.Height != availableCardHeight)
-                    {
-                        control.Size = new Size(cardWidth, availableCardHeight);
-                    }
+                    ledger.Size = size;
                 }
             }
         }
@@ -1152,6 +1201,19 @@ internal sealed class UsagePopupForm : Form
 
     private void OnContentHandleCreated(object? sender, EventArgs eventArgs) =>
         WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
+
+    /// <summary>
+    /// The content panel. WinForms scrolls a focused child into view by aligning its top, which for
+    /// the dashboard's table — taller than the view — undid the table's own scroll to its focused
+    /// link. A child that does not fit keeps the current position and scrolls itself.
+    /// </summary>
+    private sealed class ContentPanel : FlowLayoutPanel
+    {
+        protected override Point ScrollToControl(Control activeControl) =>
+            activeControl.Height > ClientSize.Height
+                ? DisplayRectangle.Location
+                : base.ScrollToControl(activeControl);
+    }
 
     private sealed class EmptyProvidersControl : Control
     {

@@ -135,7 +135,7 @@ internal static class PreviewRenderer
             LastUpdated = now.AddHours(-2),
             NextRetryAt = now.AddMinutes(4),
         };
-        var unlimited = states[2].Snapshot! with
+        var unlimited = states[3].Snapshot! with
         {
             Metrics = states[2].Snapshot!.Metrics.Where(metric => metric.IsUnlimited).ToArray(),
         };

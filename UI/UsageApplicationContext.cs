@@ -64,6 +64,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
         _popup = new UsagePopupForm(_settings);
         _popup.RefreshRequested += async (_, _) => await RefreshAsync(force: true);
+        _popup.ProviderRefreshRequested += async (_, eventArgs) => await RetryProviderAsync(eventArgs.Status.ProviderId);
         _popup.SettingsRequested += (_, _) => OpenSettings();
         PushStateToPopup();
 
@@ -159,6 +160,16 @@ internal sealed class UsageApplicationContext : ApplicationContext
         }
 
         await _service.RefreshAsync(force, _popup.Visible);
+    }
+
+    private async Task RetryProviderAsync(string providerId)
+    {
+        if (_isExiting)
+        {
+            return;
+        }
+
+        await _service.RefreshProviderAsync(providerId, _popup.Visible);
     }
 
     private void OnServiceUpdated(object? sender, EventArgs eventArgs) => RunOnUi(() =>

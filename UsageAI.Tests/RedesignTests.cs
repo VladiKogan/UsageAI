@@ -11,6 +11,9 @@ namespace UsageAI.Tests;
 internal static class RedesignTests
 {
     private static readonly int[] TileDpis = { 96, 192, 288 };
+    private static readonly string[] ShippedProviders = { "codex", "claude", "copilot", "gemini" };
+    private static readonly int[] RestoredBounds = { 0, 0, 900, 700 };
+    private static readonly int[] AutoSavedBounds = { 0, 0, 620, 600 };
 
     public static Task TestPopupRingSelectionAsync()
     {
@@ -483,6 +486,339 @@ internal static class RedesignTests
 
         return Task.CompletedTask;
     }
+
+    public static Task TestUsageLedgerAsync()
+    {
+        var now = DateTimeOffset.Now;
+        var weekly = Metric("Weekly", UsageMetricKind.Rolling, 95) with { ResetsAt = now.AddDays(3) };
+        var session = Metric("5-hour", UsageMetricKind.Session, 75) with { ResetsAt = now.AddHours(4) };
+        var calm = Metric("Monthly", UsageMetricKind.Monthly, 10) with { ResetsAt = now.AddDays(20) };
+        var unreset = Metric("Pool", UsageMetricKind.Rolling, 40);
+        var codex = Status("codex", "Codex", weekly, session, calm, unreset) with { AccountUrl = new Uri("https://example.com/codex") };
+        var gemini = Status(
+            "gemini",
+            "Google Gemini",
+            Metric("Gemini Models (5-hour)", UsageMetricKind.Session, 14),
+            Metric("Gemini Models (Weekly)", UsageMetricKind.Rolling, 48),
+            Metric("Claude and GPT models (5-hour)", UsageMetricKind.Session, 94));
+        History(now, "codex", weekly, 60, 95, out var weeklyHistory);
+        History(now, "codex", session, 70, 75, out var sessionHistory);
+        History(now, "codex", calm, 9, 10, out var calmHistory);
+        var history = weeklyHistory.Concat(sessionHistory).Concat(calmHistory).ToArray();
+
+        using var table = new UsageLedger(new[] { codex, gemini }, MetricDisplayMode.All, QuotaDisplay.Remaining, history, 96)
+        {
+            Width = 900,
+        };
+
+        // Two model groups give two sub-headings; their limits are labelled by window alone.
+        var groupRows = table.Rows.Where(row => row.Kind == UsageLedger.RowKind.Group).Select(row => row.Label).ToArray();
+        Equal("Gemini Models|Claude and GPT models", string.Join('|', groupRows));
+        Equal("5-hour|Weekly|5-hour", string.Join('|', table.Rows
+            .Where(row => row.Kind == UsageLedger.RowKind.Metric && row.Status!.ProviderId == "gemini")
+            .Select(row => row.Label)));
+        True(table.Rows.Where(row => row.Kind == UsageLedger.RowKind.Metric && row.Status!.ProviderId == "gemini").All(row => row.Nested));
+
+        // A provider with one group, or none, gets no sub-heading.
+        False(table.Rows.Any(row => row.Kind == UsageLedger.RowKind.Group && row.Status!.ProviderId == "codex"));
+
+        // Every forecast state: out before reset (critical and warning), resets first, and none.
+        var projections = table.Rows
+            .Where(row => row.Kind == UsageLedger.RowKind.Metric && row.Status!.ProviderId == "codex")
+            .ToDictionary(row => row.Metric!.Name, row => row.Projection);
+        True(projections["Weekly"] is { BeforeReset: true });
+        True(projections["5-hour"] is not null);
+        Null(projections["Pool"]);
+        True(table.ShowsForecastColumn);
+        Draw(table);
+
+        // Narrow widths drop the forecast column instead of squeezing every cell.
+        table.Width = 520;
+        False(table.ShowsForecastColumn);
+        Draw(table);
+        table.Width = 900;
+
+        // Tab walks the actions in reading order and stops at either end; Shift+Tab walks back.
+        Draw(table);
+        Equal(1, table.Actions.Count);
+        Invoke(table, "OnGotFocus", EventArgs.Empty);
+        Equal(0, Field<int>(table, "_focusIndex"));
+        Equal(false, (bool)typeof(Control).GetMethod("IsInputKey", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(table, new object[] { Keys.Tab })!);
+        Equal(false, (bool)typeof(Control).GetMethod("IsInputKey", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(table, new object[] { Keys.Tab | Keys.Shift })!);
+        var invoked = new List<ProviderCardAction>();
+        table.ActionInvoked += (_, args) => invoked.Add(args.Action);
+        Invoke(table, "OnKeyDown", new KeyEventArgs(Keys.Space));
+        Equal(ProviderCardAction.OpenAccount, invoked.Single());
+
+        var stale = codex with { Error = "Timed out", LastUpdated = now.AddMinutes(-30) };
+        using (var walk = new UsageLedger(new[] { stale, gemini with { AccountUrl = new Uri("https://example.com/g") } }, MetricDisplayMode.All, QuotaDisplay.Used, history, 96) { Width = 900 })
+        {
+            Draw(walk);
+            Equal("OpenAccount|Refresh|OpenAccount", string.Join('|', walk.Actions.Select(action => action.Action)));
+            Invoke(walk, "OnGotFocus", EventArgs.Empty);
+            Invoke(walk, "OnKeyDown", new KeyEventArgs(Keys.Tab));
+            Invoke(walk, "OnKeyDown", new KeyEventArgs(Keys.Tab));
+            Equal(2, Field<int>(walk, "_focusIndex"));
+            Invoke(walk, "OnKeyDown", new KeyEventArgs(Keys.Tab));
+            Equal(2, Field<int>(walk, "_focusIndex"));
+            Invoke(walk, "OnKeyDown", new KeyEventArgs(Keys.Tab | Keys.Shift));
+            Equal(1, Field<int>(walk, "_focusIndex"));
+            Draw(walk);
+            Invoke(walk, "OnMouseMove", new MouseEventArgs(MouseButtons.None, 0, walk.Actions[1].Bounds.Left + 1, walk.Actions[1].Bounds.Top + 1, 0));
+            Draw(walk);
+        }
+
+        // A scrolling host keeps the focused action in view.
+        using (var host = new Panel { AutoScroll = true, Size = new Size(900, 120) })
+        using (var tall = new UsageLedger(new[] { gemini, stale }, MetricDisplayMode.All, QuotaDisplay.Used, history, 96) { Width = 880 })
+        {
+            host.Controls.Add(tall);
+            host.CreateControl();
+            Draw(tall);
+            Invoke(tall, "OnGotFocus", EventArgs.Empty);
+            Invoke(tall, "OnKeyDown", new KeyEventArgs(Keys.Tab));
+            True(-host.AutoScrollPosition.Y > 0);
+        }
+
+        // Nothing to show, and High Contrast cues on critical figures.
+        using (var empty = new UsageLedger(Array.Empty<ProviderStatus>(), MetricDisplayMode.All, QuotaDisplay.Used, Array.Empty<UsageSample>(), 96) { Width = 600 })
+        {
+            True(empty.AccessibleDescription is not null);
+            False(empty.TabStop);
+            Equal("No providers to show. Turn providers on in Settings › Providers.", empty.Rows.Single(row => row.Kind == UsageLedger.RowKind.Message).Text);
+            Draw(empty);
+        }
+
+        using (var noUsage = new UsageLedger(new[] { Status("copilot", "GitHub Copilot") }, MetricDisplayMode.All, QuotaDisplay.Used, Array.Empty<UsageSample>(), 96) { Width = 600 })
+        {
+            Equal("No usage reported.", noUsage.Rows.Single(row => row.Kind == UsageLedger.RowKind.Message).Text);
+        }
+
+        Theme.SetHighContrastProbe(static () => true);
+        try
+        {
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+            using var contrast = new UsageLedger(new[] { codex }, MetricDisplayMode.All, QuotaDisplay.Used, history, 96) { Width = 900 };
+            Draw(contrast);
+        }
+        finally
+        {
+            Theme.SetHighContrastProbe(null);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public static Task TestDashboardRefitsOnDpiChangeAsync()
+    {
+        // Four providers with three limits each: a table well over 380 pixels tall at 96 DPI.
+        var states = ShippedProviders
+            .Select(id => Status(
+                id,
+                id,
+                Metric("Weekly", UsageMetricKind.Rolling, 50),
+                Metric("5-hour", UsageMetricKind.Session, 20),
+                Metric("Monthly", UsageMetricKind.Monthly, 5)))
+            .ToArray();
+
+        foreach (var sizedByUser in new[] { false, true })
+        {
+            using var form = new UsagePopupForm(new AppSettings { IsEphemeral = true }, 96)
+            {
+                StartPosition = FormStartPosition.Manual,
+                Location = new Point(-10_000, -10_000),
+            };
+            form.SetStates(states, false, DateTimeOffset.Now, Array.Empty<UsageSample>());
+            form.SetMode(DashboardMode.Full);
+
+            // The way the tray app opens it, so the form knows the dashboard has been shown.
+            typeof(UsagePopupForm)
+                .GetMethod("ShowDashboard", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(form, new object[] { new Rectangle(-10_000, -10_000, 1_200, 1_000), false });
+            Application.DoEvents();
+            if (sizedByUser)
+            {
+                Invoke(form, "OnResizeEnd", EventArgs.Empty);
+            }
+
+            // Windows moved the window to a monitor with another DPI and kept a size scaled from
+            // one measured before it knew where it would land: too short for the table.
+            form.ClientSize = new Size(700, 320);
+            DpiChanged(form, new Rectangle(0, 0, 900, 380));
+            Application.DoEvents();
+            var table = Descendants(form).OfType<UsageLedger>().Single();
+            True(table.NaturalHeight > 380);
+            if (sizedByUser)
+            {
+                // A size the user chose is theirs: the window stays short and scrolls.
+                True(form.ClientSize.Height <= 380);
+            }
+            else
+            {
+                // It grows to fit its table, or to the screen when the screen is the smaller.
+                var screen = Screen.FromRectangle(new Rectangle(0, 0, 900, 380)).WorkingArea;
+                True(form.ClientSize.Height >= Math.Min(table.NaturalHeight, screen.Height - 200));
+            }
+
+            form.Hide();
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public static async Task TestDashboardKeepsStateAcrossUpdatesAsync()
+    {
+        // Retry on a stale row refreshes that provider alone, past its backoff.
+        var first = new CountingClient("first");
+        var second = new CountingClient("second");
+        var settings = new AppSettings { IsEphemeral = true, HistoryEnabled = false };
+        using (var service = new UsageRefreshService(new IUsageClient[] { first, second }, settings))
+        {
+            await service.RefreshProviderAsync("SECOND", anyWindowVisible: true);
+            Equal(0, first.Calls);
+            Equal(1, second.Calls);
+            await service.RefreshProviderAsync("missing", anyWindowVisible: true);
+            Equal(1, second.Calls);
+            await service.RefreshAsync(force: true, anyWindowVisible: true);
+            Equal(1, first.Calls);
+            Equal(2, second.Calls);
+        }
+
+        var now = DateTimeOffset.Now;
+        var loading = ShippedProviders.Select(id => new ProviderStatus(id, id, null, null, true)).ToArray();
+        var loaded = ShippedProviders
+            .Select(id => Status(id, id, Metric("Weekly", UsageMetricKind.Rolling, 50), Metric("5-hour", UsageMetricKind.Session, 20), Metric("Monthly", UsageMetricKind.Monthly, 5)) with
+            {
+                AccountUrl = new Uri($"https://example.com/{id}"),
+            })
+            .ToArray();
+        using var form = new UsagePopupForm(new AppSettings { IsEphemeral = true }, 96)
+        {
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-10_000, -10_000),
+        };
+        var retried = new List<string>();
+        form.ProviderRefreshRequested += (_, args) => retried.Add(args.Status.ProviderId);
+
+        // First opened while every provider is still loading: sized to their placeholders.
+        form.SetStates(loading, true, null, Array.Empty<UsageSample>());
+        form.SetMode(DashboardMode.Full);
+        typeof(UsagePopupForm)
+            .GetMethod("ShowDashboard", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(form, new object[] { new Rectangle(-10_000, -10_000, 1_400, 1_000), false });
+        Application.DoEvents();
+        var content = Descendants(form).OfType<FlowLayoutPanel>().Single(panel => panel.Controls.OfType<UsageLedger>().Any());
+        var table = content.Controls.OfType<UsageLedger>().Single();
+        var loadingHeight = form.ClientSize.Height;
+
+        // The data lands: the same table updates in place and the unsized window grows to fit.
+        form.SetStates(loaded, false, now, Array.Empty<UsageSample>());
+        Application.DoEvents();
+        True(ReferenceEquals(table, content.Controls.OfType<UsageLedger>().Single()));
+        True(form.ClientSize.Height > loadingHeight);
+
+        // Focus inside the table survives an update.
+        Draw(table);
+        Invoke(table, "OnGotFocus", EventArgs.Empty);
+        Invoke(table, "OnKeyDown", new KeyEventArgs(Keys.Tab));
+        Equal(1, Field<int>(table, "_focusIndex"));
+        form.SetStates(loaded.Select(state => state with { LastUpdated = now.AddMinutes(1) }).ToArray(), false, now, Array.Empty<UsageSample>());
+        Application.DoEvents();
+        Equal(1, Field<int>(table, "_focusIndex"));
+
+        // A stale row's Retry names its provider.
+        form.SetStates(loaded.Select((state, index) => index == 2 ? state with { Error = "Timed out" } : state).ToArray(), false, now, Array.Empty<UsageSample>());
+        Draw(table);
+        var retry = table.Actions.Single(action => action.Action == ProviderCardAction.Refresh).Bounds;
+        Invoke(table, "OnMouseClick", new MouseEventArgs(MouseButtons.Left, 1, retry.Left + 1, retry.Top + 1, 0));
+        Equal("copilot", retried.Single());
+
+        // Moving the window is not sizing it; a size the user changes is, and is remembered.
+        Invoke(form, "OnResizeBegin", EventArgs.Empty);
+        Invoke(form, "OnResizeEnd", EventArgs.Empty);
+        False(Field<bool>(form, "_dashboardSizedByUser"));
+        Invoke(form, "OnResizeBegin", EventArgs.Empty);
+        form.Size = new Size(form.Width - 40, form.Height - 40);
+        Invoke(form, "OnResizeEnd", EventArgs.Empty);
+        True(Field<bool>(form, "_dashboardSizedByUser"));
+        var saved = Field<AppSettings>(form, "_settings");
+        True(saved.DashboardSizedByUser);
+
+        // A sized dashboard keeps its size when more rows arrive; it scrolls instead.
+        var sizedHeight = form.ClientSize.Height;
+        form.SetStates(loaded.Concat(loaded.Select(state => state with { ProviderId = state.ProviderId + "2" })).ToArray(), false, now, Array.Empty<UsageSample>());
+        Application.DoEvents();
+        Equal(sizedHeight, form.ClientSize.Height);
+
+        // Focus moving to the tall table does not snap the scroll back to its top.
+        content.AutoScrollPosition = new Point(0, 120);
+        var scrollToControl = typeof(ScrollableControl).GetMethod("ScrollToControl", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        var target = (Point)scrollToControl.Invoke(content, new object[] { table })!;
+        Equal(content.DisplayRectangle.Location, target);
+        form.Hide();
+
+        // Saved bounds bring back whether the user sized them.
+        var restored = new AppSettings { IsEphemeral = true, DashboardBounds = RestoredBounds, DashboardSizedByUser = true };
+        using (var reopened = new UsagePopupForm(restored, 96))
+        {
+            True(Field<bool>(reopened, "_dashboardSizedByUser"));
+        }
+
+        using (var autoSaved = new UsagePopupForm(new AppSettings { IsEphemeral = true, DashboardBounds = AutoSavedBounds }, 96))
+        {
+            False(Field<bool>(autoSaved, "_dashboardSizedByUser"));
+        }
+    }
+
+    private sealed class CountingClient : IUsageClient
+    {
+        public CountingClient(string id) => Id = id;
+
+        public string Id { get; }
+
+        public string DisplayName => Id;
+
+        public string SignInCommand => Id;
+
+        public Uri AccountUrl => new($"https://example.com/{Id}");
+
+        public int Calls { get; private set; }
+
+        public Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            return Task.FromResult(new UsageSnapshot("Pro", new[] { Metric("Weekly", UsageMetricKind.Rolling, 10) }, DateTimeOffset.Now, Id, Id));
+        }
+    }
+
+    /// <summary>Sends <paramref name="form"/> the event Windows raises after a monitor DPI change.</summary>
+    private static void DpiChanged(Form form, Rectangle suggested)
+    {
+        const int WmDpiChanged = 0x02E0;
+        var rect = System.Runtime.InteropServices.Marshal.AllocHGlobal(16);
+        try
+        {
+            System.Runtime.InteropServices.Marshal.WriteInt32(rect, 0, suggested.Left);
+            System.Runtime.InteropServices.Marshal.WriteInt32(rect, 4, suggested.Top);
+            System.Runtime.InteropServices.Marshal.WriteInt32(rect, 8, suggested.Right);
+            System.Runtime.InteropServices.Marshal.WriteInt32(rect, 12, suggested.Bottom);
+            var dpi = form.DeviceDpi;
+            var message = Message.Create(form.Handle, WmDpiChanged, (IntPtr)(dpi | (dpi << 16)), rect);
+            var constructor = typeof(DpiChangedEventArgs).GetConstructors(BindingFlags.Instance | BindingFlags.NonPublic).Single();
+            var args = (DpiChangedEventArgs)constructor.Invoke(new object[] { dpi, message });
+            Invoke(form, "OnDpiChanged", args);
+        }
+        finally
+        {
+            System.Runtime.InteropServices.Marshal.FreeHGlobal(rect);
+        }
+    }
+
+    private static void History(DateTimeOffset now, string providerId, UsageMetric metric, int from, int to, out UsageSample[] samples) =>
+        samples = Enumerable.Range(0, 4)
+            .Select(step => new UsageSample(now.AddHours(step - 3), providerId, metric.Key, from + (to - from) * step / 3))
+            .ToArray();
 
     private static UsageMetric Metric(string name, UsageMetricKind kind, int used) => new(name, kind, used);
 

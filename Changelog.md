@@ -48,6 +48,23 @@ The project follows [Semantic Versioning](https://semver.org/).
   last-updated time and an Open dashboard button. Stale tiles dim their rings and show a warning
   indicator whose tooltip says how old the reading is, the tooltips use the app's colours, and the
   popup scrolls only when the screen cannot hold it.
+- **The dashboard is one table of every limit, in columns that line up.** The 2×2 grid of cards
+  squeezed a provider with four limits into the same cell as a provider with one, clipped long
+  names such as "Claude and GPT models (5-ho…", and put each figure wherever its card's layout
+  landed. The dashboard now lists every provider in one table with fixed columns — limit, usage
+  bar, used (or left), resets in, and at this pace — so values compare straight down the page.
+  Each provider is a group led by its glyph, name (a link to its usage page), plan and account,
+  and its status: connected and how long ago, the last good reading and the next retry with a
+  **Retry** link that refreshes that provider alone, or not connected with the sign-in command to
+  copy. A provider with several model
+  groups gets a sub-heading per group, so names are never cut to fit. The forecast column says
+  when a limit runs out ("Out by 17:47") or that it resets first, and narrow windows drop it
+  rather than squeeze every cell. The All / Metered / Important filter moves from a dropdown in
+  the footer to a segmented control in the header, every option one click away. The table scrolls
+  only when the window is shorter than it, keeps its scroll position and keyboard focus as each
+  provider's reading arrives, and Tab walks its links and buttons in reading order. Until the
+  dashboard is resized by hand it grows to fit its rows, including after moving to a monitor with
+  a different scale; a size the user picks is kept.
 - `--render-preview` accepts `--theme light|dark`, and the new `--preview-window popup|dashboard`
   opens the real window with sample data at the monitor's own DPI, with no tray icon, provider
   access or settings file, so a UI change can be tried by hand next to an installed copy.
