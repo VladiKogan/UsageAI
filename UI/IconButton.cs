@@ -121,7 +121,9 @@ internal sealed class IconButton : Button
             graphics.DrawPath(pen, focus);
         }
 
-        var color = Enabled ? Theme.Muted : Theme.Blend(Theme.Muted, background, 0.5);
+        // Secondary text rather than the muted tone: the glyphs are thin strokes, and in the muted
+        // tone the refresh arrow read as a smudge until hovered.
+        var color = Enabled ? Theme.TextSecondary : Theme.Blend(Theme.Muted, background, 0.5);
         if (Enabled && (_hovered || Focused))
         {
             color = Theme.Text;
@@ -163,15 +165,25 @@ internal sealed class IconButton : Button
             switch (glyph)
             {
                 case IconGlyph.Refresh:
+                    // A clockwise arc with a gap at the top right, ending at twelve o'clock in a
+                    // solid arrowhead that points on into the gap: the arrow is part of the arc,
+                    // not a separate corner beside it, so it reads at tray-header size.
                     var arc = new RectangleF(box.Left + U(2.5F), box.Top + U(2.5F), U(11), U(11));
                     graphics.DrawArc(stroke, arc, -30F, 300F);
-                    var tip = new PointF(box.Left + U(13.5F), box.Top + U(2.5F));
-                    graphics.DrawLines(stroke, new[]
+                    var end = new PointF(box.Left + U(8), box.Top + U(2.5F));
+                    var head = new[]
                     {
-                        tip,
-                        new PointF(tip.X, tip.Y + U(3)),
-                        new PointF(tip.X - U(3), tip.Y + U(3)),
-                    });
+                        new PointF(end.X + U(2.6F), end.Y),
+                        new PointF(end.X - U(0.6F), end.Y - U(2.3F)),
+                        new PointF(end.X - U(0.6F), end.Y + U(2.3F)),
+                    };
+                    using (var fill = new SolidBrush(stroke.Color))
+                    {
+                        graphics.FillPolygon(fill, head);
+                    }
+
+                    // Outlined with the same round-joined stroke, so its corners match the arc.
+                    graphics.DrawPolygon(stroke, head);
                     break;
                 case IconGlyph.Settings:
                     graphics.DrawLine(stroke, box.Left + U(2.5F), box.Top + U(4.5F), box.Left + U(9.5F), box.Top + U(4.5F));
