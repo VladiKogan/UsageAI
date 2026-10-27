@@ -1086,6 +1086,8 @@ internal sealed class UsagePopupForm : Form
                 ApplyDashboardMinimumSize(Screen.FromPoint(Location).WorkingArea);
                 ShowInTaskbar = true;
                 Text = "UsageAI Dashboard";
+                // Its title bar and taskbar button carry the logo, not the generic placeholder.
+                AppIcon.Apply(this);
                 TopMost = false;
                 WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
                 WindowThemeHelpers.ApplyWindowFrame(this);

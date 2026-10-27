@@ -35,6 +35,7 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <EmbeddedResource Include="Resources\usageai-providers.ttf" LogicalName="UsageAI.Resources.usageai-providers.ttf" />
+    <EmbeddedResource Include="Resources\app.ico" LogicalName="UsageAI.Resources.app.ico" />
     <EmbeddedResource Include="THIRD-PARTY-NOTICES.md" LogicalName="UsageAI.Resources.THIRD-PARTY-NOTICES.md" />
     <EmbeddedResource Include="Changelog.md" LogicalName="UsageAI.Changelog.md" />
   </ItemGroup>

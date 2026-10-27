@@ -50,6 +50,7 @@ internal sealed class WhatsNewForm : Form
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.CenterScreen;
         Text = "What's new in UsageAI";
+        AppIcon.Apply(this);
         var initialScale = Scale();
         ClientSize = ConstrainClientSize(new Size(initialScale[560], initialScale[520]));
 

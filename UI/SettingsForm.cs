@@ -112,6 +112,7 @@ internal sealed class SettingsForm : Form
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.CenterScreen;
         Text = "UsageAI settings";
+        AppIcon.Apply(this);
         var workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, scale[1920], scale[1080]);
         var size = settings.SettingsWindowSize is [var width, var height] ? (width, height) : (700, 640);
         ClientSize = new Size(

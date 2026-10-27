@@ -18,7 +18,8 @@ The project follows [Semantic Versioning](https://semver.org/).
   neighbouring frame. `Resources\logo.png` is now a real PNG with transparent corners; it was a
   JPEG with a `.png` name. All of them, and the new vector master `Resources\logo.svg`, come from
   `scripts\render-logo.ps1`, which uses only `System.Drawing`, so the icon and the logos cannot
-  drift apart.
+  drift apart. Settings, What's New, the dashboard and the update prompts now show the logo in
+  their title bars and taskbar buttons, where they showed Windows' generic window icon.
 - **The tray app has a quieter, Windows 11 look.** The navy palette and a hue per usage band read
   as dated and made every card compete for attention; windows now use a neutral charcoal (or
   white) palette where only a limit at risk is coloured. Meters below the warning threshold share

@@ -50,6 +50,7 @@ internal sealed class PromptDialog : Form
         ShowInTaskbar = true;
         StartPosition = FormStartPosition.CenterScreen;
         Text = caption;
+        AppIcon.Apply(this);
 
         _title = new Label
         {

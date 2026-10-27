@@ -1503,6 +1503,9 @@ internal static class RedesignTests
         {
             Equal(FormBorderStyle.Sizable, dialog.FormBorderStyle);
             False(dialog.MaximizeBox);
+            // The title bar carries the UsageAI logo, embedded so a single-file copy has it too.
+            True(AppIcon.Window is not null);
+            True(dialog.ShowIcon && ReferenceEquals(AppIcon.Window, dialog.Icon));
             Equal(new Size(760, 600), dialog.ClientSize);
 
             // A drag that only moves the window is not a size choice.
