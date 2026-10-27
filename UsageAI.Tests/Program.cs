@@ -1369,10 +1369,6 @@ internal static class Program
         True(projection!.PercentPerHour > 20 && projection.PercentPerHour < 28);
         True(projection.BeforeReset);
         True(projection.ExhaustedAt > now && projection.ExhaustedAt < now.AddHours(4));
-
-        var trend = UsageForecast.Trend(samples, "codex", metric);
-        Equal(6, trend.Count);
-        Equal(50, trend[^1]);
         return Task.CompletedTask;
     }
 

@@ -20,7 +20,6 @@ internal static class CoverageExpansionTests
 {
     private static readonly string[] SingleSegment = { "Only" };
     private static readonly string[] IconProviderIds = { "codex", "claude", "copilot", "gemini" };
-    private static readonly string[] UserProfileScope = { "user:profile" };
     private static readonly string[] CopilotTokenPair = { "token-one", "token-two" };
     private static readonly string[] SingleCopilotToken = { "synthetic-copilot-token" };
     private static readonly ushort[] CandidatePorts = { 51_234, 51_234, 51_235 };
@@ -2409,8 +2408,6 @@ internal static class CoverageExpansionTests
             DrawingHelpers.DrawCapacityMeter(graphics, new Rectangle(5, 65, 120, 8), 1, Color.Red, Color.Gray);
             DrawingHelpers.DrawCapacityMeter(graphics, new Rectangle(5, 80, 120, 8), 150, Color.Red, Color.Gray);
             DrawingHelpers.DrawCapacityMeter(graphics, Rectangle.Empty, 50, Color.Red, Color.Gray);
-            DrawingHelpers.DrawBalanceMarker(graphics, new Rectangle(5, 95, 120, 8), Color.Blue);
-            DrawingHelpers.DrawBalanceMarker(graphics, Rectangle.Empty, Color.Blue);
             True(ProviderIconPainter.IsBrandFontAvailable);
             foreach (var provider in IconProviderIds)
             {

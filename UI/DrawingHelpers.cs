@@ -127,20 +127,4 @@ internal static class DrawingHelpers
 
         graphics.SmoothingMode = previousMode;
     }
-
-    /// <summary>An indeterminate marker for balances, which have no percentage to meter.</summary>
-    public static void DrawBalanceMarker(Graphics graphics, Rectangle bounds, Color color)
-    {
-        if (bounds.Width <= 0 || bounds.Height <= 0)
-        {
-            return;
-        }
-
-        var width = Math.Min(bounds.Width, bounds.Height * 8);
-        using var path = RoundedRectangle(
-            new Rectangle(bounds.X, bounds.Y, width, bounds.Height),
-            bounds.Height / 2F);
-        using var brush = new SolidBrush(Theme.IsHighContrast ? color : Color.FromArgb(150, color));
-        graphics.FillPath(brush, path);
-    }
 }
