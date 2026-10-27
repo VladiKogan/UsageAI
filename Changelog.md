@@ -118,6 +118,10 @@ The project follows [Semantic Versioning](https://semver.org/).
   just as UsageAI shut down still delivered its update to the tray icon, which had already been
   disposed, and WinForms reported the `NullReferenceException`. Updates that arrive after shutdown
   are now dropped.
+- **Settings' number fields no longer show white arrow buttons in the dark theme.** Windows draws
+  a number field's up and down buttons in its light style whatever the app's theme; they now take
+  the field's own colour, with quiet chevrons that shade on hover and press. High Contrast keeps
+  the system's buttons.
 - **The popup no longer flashes empty when providers update.** Its tiles are rebuilt on each
   update, and the panel was painted bare between removing the old tiles and adding the new ones.
 

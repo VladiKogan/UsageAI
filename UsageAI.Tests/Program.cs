@@ -80,6 +80,7 @@ internal static class Program
         ("prompt dialog, tray menu and ring-only tray icon", RedesignTests.TestPromptMenuAndTrayAsync),
         ("gauges ease to new values and respect reduced motion", RedesignTests.TestMotionAsync),
         ("controls measure at their window's DPI and repaint once after a rebuild", RedesignTests.TestWindowDpiAndRedrawAsync),
+        ("settings number fields draw themed spin buttons", RedesignTests.TestThemedStepperAsync),
         ("model formatting and provider status states", CoverageExpansionTests.TestModelFormattingAsync),
         ("refresh orchestration, alerts, history, and backoff", CoverageExpansionTests.TestRefreshOrchestrationAsync),
         ("scheduled stale-provider recovery", CoverageExpansionTests.TestScheduledStaleRecoveryAsync),

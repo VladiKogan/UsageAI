@@ -1404,6 +1404,80 @@ internal static class RedesignTests
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Settings' number fields draw their spin buttons in the app's palette rather than the
+    /// system's light style, which showed as a white block on a dark card.
+    /// </summary>
+    public static Task TestThemedStepperAsync()
+    {
+        Theme.Apply(ThemeMode.Dark, 72, 90);
+        using var host = new Form { ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Location = new Point(-10_000, -10_000) };
+        using var stepper = new ThemedNumericUpDown { BackColor = Theme.SurfaceRaised, Minimum = 1, Maximum = 99, Value = 10, Width = 96 };
+        host.Controls.Add(stepper);
+        host.Show();
+        Application.DoEvents();
+
+        var buttons = stepper.SpinButtons;
+        using (var bitmap = new Bitmap(Math.Max(1, buttons.Width), Math.Max(1, buttons.Height)))
+        using (var graphics = Graphics.FromImage(bitmap))
+        {
+            stepper.PaintButtons(graphics, new Rectangle(Point.Empty, bitmap.Size));
+            // The corners are the field's own surface; the chevrons sit in the middle.
+            Equal(Theme.SurfaceRaised.ToArgb(), bitmap.GetPixel(0, 0).ToArgb());
+            Equal(Theme.SurfaceRaised.ToArgb(), bitmap.GetPixel(bitmap.Width - 1, bitmap.Height - 1).ToArgb());
+
+            // Pointing at a half shades it, and pressing shades it more.
+            Invoke(buttons, stepper, "OnButtonsMouseMove", new MouseEventArgs(MouseButtons.None, 0, 1, 1, 0));
+            Equal(0, stepper.HoverHalf);
+            stepper.PaintButtons(graphics, new Rectangle(Point.Empty, bitmap.Size));
+            var hovered = bitmap.GetPixel(0, 0);
+            True(hovered.ToArgb() != Theme.SurfaceRaised.ToArgb());
+            Invoke(buttons, stepper, "OnButtonsMouseDown", new MouseEventArgs(MouseButtons.Left, 1, 1, 1, 0));
+            stepper.PaintButtons(graphics, new Rectangle(Point.Empty, bitmap.Size));
+            True(bitmap.GetPixel(0, 0).ToArgb() != hovered.ToArgb());
+            Invoke(buttons, stepper, "OnButtonsMouseUp", new MouseEventArgs(MouseButtons.Left, 1, 1, 1, 0));
+            Invoke(buttons, stepper, "OnButtonsMouseMove", new MouseEventArgs(MouseButtons.None, 0, 1, buttons.Height - 1, 0));
+            Equal(1, stepper.HoverHalf);
+            Invoke(buttons, stepper, "OnButtonsMouseLeave", EventArgs.Empty);
+            Equal(-1, stepper.HoverHalf);
+
+            stepper.Enabled = false;
+            stepper.PaintButtons(graphics, new Rectangle(Point.Empty, bitmap.Size));
+            stepper.Enabled = true;
+            stepper.BackColor = Theme.Surface;
+            stepper.PaintButtons(graphics, Rectangle.Empty);
+        }
+
+        Draw(stepper);
+
+        // High Contrast leaves the system's buttons alone.
+        Theme.SetHighContrastProbe(static () => true);
+        try
+        {
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+            using var bitmap = new Bitmap(20, 20);
+            using var graphics = Graphics.FromImage(bitmap);
+            graphics.Clear(Color.Magenta);
+            stepper.PaintButtons(graphics, new Rectangle(0, 0, 20, 20));
+            Equal(Color.Magenta.ToArgb(), bitmap.GetPixel(0, 0).ToArgb());
+        }
+        finally
+        {
+            Theme.SetHighContrastProbe(null);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+        }
+
+        host.Hide();
+        return Task.CompletedTask;
+    }
+
+    private static void Invoke(Control sender, object target, string name, EventArgs eventArgs)
+    {
+        var method = target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)
+            ?? throw new InvalidOperationException($"Missing method {name}.");
+        method.Invoke(target, new object[] { sender, eventArgs });
+    }
+
     private static void InvokeTick(MotionTracker motion)
     {
         var method = typeof(MotionTracker).GetMethod("OnTick", BindingFlags.Instance | BindingFlags.NonPublic)

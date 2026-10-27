@@ -1081,7 +1081,7 @@ internal sealed class SettingsForm : Form
     };
 
     // A compact, borderless stepper at the right edge, where the switches and choices sit.
-    private NumericUpDown CreateNumeric(int minimum, int maximum) => new()
+    private ThemedNumericUpDown CreateNumeric(int minimum, int maximum) => new()
     {
         Anchor = AnchorStyles.Right,
         BackColor = Theme.SurfaceRaised,
