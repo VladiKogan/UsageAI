@@ -1471,6 +1471,83 @@ internal static class RedesignTests
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Settings is resizable but not maximizable, opens at the size it was left at, and stores
+    /// that size at 96 DPI however the window closed.
+    /// </summary>
+    public static Task TestSettingsWindowSizeAsync()
+    {
+        static SettingsForm Open(AppSettings settings, int dpi) => new(
+            settings,
+            new[] { ("codex", "Codex") },
+            static _ => Task.FromResult(new UpdateCheckResult(true, null)),
+            static _ => Task.CompletedTask,
+            readStartup: static () => new StartupState(StartupStatus.NotRegistered, null),
+            writeStartup: static _ => { },
+            dpiOverride: dpi)
+        {
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-10_000, -10_000),
+        };
+
+        // Out-of-range or malformed sizes are dropped, so the default opens instead.
+        foreach (var invalid in new[] { new[] { 100, 600 }, new[] { 800, 9000 }, new[] { 800 } })
+        {
+            new AppSettings { SettingsWindowSize = invalid }.Save();
+            Null(AppSettings.Load().SettingsWindowSize);
+        }
+
+        var remembered = new AppSettings { GlobalHotkeyEnabled = false, SettingsWindowSize = new[] { 760, 600 } };
+        using (var dialog = Open(remembered, 96))
+        {
+            Equal(FormBorderStyle.Sizable, dialog.FormBorderStyle);
+            False(dialog.MaximizeBox);
+            Equal(new Size(760, 600), dialog.ClientSize);
+
+            // A drag that only moves the window is not a size choice.
+            dialog.Show();
+            Invoke(dialog, "OnResizeBegin", EventArgs.Empty);
+            Invoke(dialog, "OnResizeEnd", EventArgs.Empty);
+            dialog.Close();
+        }
+
+        Equal("760,600", string.Join(',', remembered.SettingsWindowSize!));
+
+        // Resized by the user, the size is kept whether Settings was saved or cancelled.
+        using (var dialog = Open(remembered, 96))
+        {
+            dialog.Show();
+            Invoke(dialog, "OnResizeBegin", EventArgs.Empty);
+            dialog.ClientSize = new Size(820, 700);
+            Invoke(dialog, "OnResizeEnd", EventArgs.Empty);
+            dialog.Close();
+        }
+
+        Equal("820,700", string.Join(',', remembered.SettingsWindowSize!));
+        Equal("820,700", string.Join(',', AppSettings.Load().SettingsWindowSize!));
+
+        // It is stored at 96 DPI, so a size chosen at 200% opens the same on any monitor.
+        using (var scaled = Open(remembered, 192))
+        {
+            scaled.Show();
+            Invoke(scaled, "OnResizeBegin", EventArgs.Empty);
+            scaled.ClientSize = new Size(1200, 1000);
+            Invoke(scaled, "OnResizeEnd", EventArgs.Empty);
+            scaled.Close();
+        }
+
+        Equal("600,500", string.Join(',', remembered.SettingsWindowSize!));
+
+        // A window opened with no saved size uses the default.
+        using (var fresh = Open(new AppSettings { GlobalHotkeyEnabled = false }, 96))
+        {
+            Equal(new Size(700, 640), fresh.ClientSize);
+        }
+
+        File.Delete(AppPaths.SettingsFile);
+        return Task.CompletedTask;
+    }
+
     private static void Invoke(Control sender, object target, string name, EventArgs eventArgs)
     {
         var method = target.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)

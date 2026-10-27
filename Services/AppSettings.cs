@@ -139,6 +139,12 @@ internal sealed class AppSettings
     public bool DashboardSizedByUser { get; set; }
 
     /// <summary>
+    /// The Settings window's client size as width, height at 96 DPI, so a size chosen on one
+    /// monitor opens the same on another at a different scale. Null opens the default size.
+    /// </summary>
+    public int[]? SettingsWindowSize { get; set; }
+
+    /// <summary>
     /// The model group each provider's popup rings show, keyed by provider id. A provider with no
     /// entry, or an entry naming a group it no longer reports, shows its busiest group.
     /// </summary>
@@ -303,6 +309,12 @@ internal sealed class AppSettings
         if (DashboardBounds is { Length: not 4 })
         {
             DashboardBounds = null;
+        }
+
+        // Within any plausible screen; the window keeps itself on the screen it opens on.
+        if (SettingsWindowSize is not [>= 200 and <= 8000, >= 200 and <= 8000])
+        {
+            SettingsWindowSize = null;
         }
 
         // Deserialisation hands back a case-sensitive dictionary, or null for an explicit null.

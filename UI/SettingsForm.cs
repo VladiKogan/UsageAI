@@ -21,6 +21,8 @@ internal sealed class SettingsForm : Form
     private readonly CancellationTokenSource _lifetime = new();
     private readonly AppSettings _settings;
     private readonly int? _dpiOverride;
+    private Size _sizeAtResizeBegin;
+    private bool _resizedByUser;
     private readonly Func<CancellationToken, Task<UpdateCheckResult>> _checkForUpdates;
     private readonly Func<UpdateRelease, Task> _promptForUpdate;
     private readonly TableLayoutPanel _shell;
@@ -100,16 +102,20 @@ internal sealed class SettingsForm : Form
         AutoScaleMode = AutoScaleMode.None;
         BackColor = Theme.Night;
         ForeColor = Theme.Text;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
+        // Resizable, since the page scrolls and a taller window shows more of it; not
+        // maximizable, because rows stretched across a whole screen are hard to read.
+        FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = false;
         MinimizeBox = false;
+        SizeGripStyle = SizeGripStyle.Hide;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.CenterScreen;
         Text = "UsageAI settings";
         var workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, scale[1920], scale[1080]);
+        var size = settings.SettingsWindowSize is [var width, var height] ? (width, height) : (700, 640);
         ClientSize = new Size(
-            Math.Min(scale[700], Math.Max(320, workingArea.Width - scale[24])),
-            Math.Min(scale[640], Math.Max(280, workingArea.Height - scale[24])));
+            Math.Min(scale[size.Item1], Math.Max(320, workingArea.Width - scale[24])),
+            Math.Min(scale[size.Item2], Math.Max(280, workingArea.Height - scale[24])));
         Font = Own(Typography.Text(9F));
 
         _shell = new TableLayoutPanel
@@ -563,12 +569,13 @@ internal sealed class SettingsForm : Form
         {
             // Every other preference is already saved, so the dialog still closes; only the one
             // thing that failed is reported, and reopening Settings shows the real startup state.
-            MessageBox.Show(
-                this,
-                "Windows startup settings could not be updated.",
-                "UsageAI",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
+            PromptDialog.Ask(
+                "UsageAI settings",
+                "Start with Windows was not changed",
+                "Windows did not accept the change. Your other settings are saved; reopen Settings to see whether UsageAI starts with Windows.",
+                "OK",
+                declineText: null,
+                PromptKind.Warning);
         }
 
         DialogResult = DialogResult.OK;
@@ -1165,6 +1172,45 @@ internal sealed class SettingsForm : Form
         Bounds = WindowBounds.FitToWorkingArea(Bounds, Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea);
         _scrollHost.AutoScrollPosition = new Point(0, scrollY);
         SyncNavToScroll();
+    }
+
+    protected override void OnResizeBegin(EventArgs e)
+    {
+        base.OnResizeBegin(e);
+        _sizeAtResizeBegin = Size;
+    }
+
+    // A drag that only moved the window leaves its size alone and is not a size choice.
+    protected override void OnResizeEnd(EventArgs e)
+    {
+        base.OnResizeEnd(e);
+        _resizedByUser |= Size != _sizeAtResizeBegin;
+    }
+
+    /// <summary>
+    /// Remembers a size the user chose, however the window closed: it is how they want the
+    /// window, not one of the settings Save or Cancel decides on. Stored at 96 DPI. A window
+    /// that was only fitted to a smaller screen is not a choice, so it never shrinks the size.
+    /// </summary>
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        base.OnFormClosed(e);
+        if (!_resizedByUser)
+        {
+            return;
+        }
+
+        var dpi = _dpiOverride ?? DeviceDpi;
+        int[] size =
+        [
+            LayoutScale.ScaleBetweenDpis(ClientSize.Width, dpi, LayoutScale.BaselineDpi),
+            LayoutScale.ScaleBetweenDpis(ClientSize.Height, dpi, LayoutScale.BaselineDpi),
+        ];
+        if (_settings.SettingsWindowSize is not [var width, var height] || width != size[0] || height != size[1])
+        {
+            _settings.SettingsWindowSize = size;
+            _settings.Save();
+        }
     }
 
     private void ApplyScaledLayout()

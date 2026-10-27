@@ -77,7 +77,8 @@ The project follows [Semantic Versioning](https://semver.org/).
   quota display shows a small ring flipping between "92% used" and "8% left", and the status-colour
   thresholds show where fine, warning and critical begin on the scale as they are typed.
   Refresh, startup and the hotkey move together under General; Delete recorded history reads as
-  a destructive action.
+  a destructive action. The window can now be resized, so a taller one shows more of the page,
+  and it reopens at the size it was last given, on any monitor; it opened at one fixed size before.
 - **The tray icon, tray menu, update prompts and What's New match the new look.** The tray gauge
   is now a clean arc on its track, the same ring the popup draws, without the translucent pie
   behind it or the provider letter inside, which at tray size only blurred the arc; an error still
@@ -87,7 +88,8 @@ The project follows [Semantic Versioning](https://semver.org/).
   new version is available, the install failed, the release page did not open — used system
   message boxes that ignored the app's theme; they are now themed dialogs with plain-language
   buttons (**Install update**, **Later**, **Open release page**), marked with the app's logo for
-  a question and a warning sign for a failure. What's New is headed "What's
+  a question and a warning sign for a failure; so is the notice when Settings cannot change Start
+  with Windows. What's New is headed "What's
   new", shows the notes on the window itself instead of in a bordered box, names sections in
   sentence case behind a coloured dot, closes with **Got it**, and links to the full changelog
   instead of offering it as a second button.
