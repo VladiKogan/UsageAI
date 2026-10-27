@@ -92,7 +92,7 @@ npm.cmd run package:vsix
 
 **It never goes blank.** If a refresh fails, UsageAI keeps the last good reading and marks it **stale**, with the provider's own error message attached. The dashboard says when that good reading was captured and when the next automatic retry is due, with a **Retry** link for that provider alone; the popup dims its rings and explains on hover. Each failed provider wakes independently after its backoff, instead of waiting for the regular polling interval or hammering a rate-limited API.
 
-**It looks like it belongs on your desktop.** Windows 11 rounded corners and context menus, native dark title bars and scrollbars, light/dark/follow-Windows themes, your Windows accent colour, Windows High Contrast, and window size and position remembered between runs. Gauges ease to new readings, and stay still when Windows' animation effects are off.
+**It looks like it belongs on your desktop.** Windows 11 rounded corners, context menus and slim scrollbars, native dark title bars, light/dark/follow-Windows themes, your Windows accent colour, Windows High Contrast, and window size and position remembered between runs. Gauges ease to new readings, and stay still when Windows' animation effects are off.
 
 ## 🖱️ Living in the tray
 

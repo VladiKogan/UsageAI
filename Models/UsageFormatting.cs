@@ -47,8 +47,13 @@ internal static class UsageFormatting
             : $"{Math.Max(1, remaining.Minutes)}m";
     }
 
-    /// <summary>The wall-clock reset time, used where the countdown alone is ambiguous.</summary>
-    public static string AbsoluteReset(DateTimeOffset? resetsAt, DateTimeOffset now)
+    /// <summary>
+    /// The wall-clock reset time, used where the countdown alone is ambiguous. It keeps the
+    /// user's 12- or 24-hour clock but spells words in English like the rest of the app: the
+    /// culture's own day names and AM/PM put "יום ו׳" or "오후" in the middle of an English sentence.
+    /// </summary>
+    /// <param name="clockCulture">Whose clock to follow: the user's culture, or a fixed one in tests.</param>
+    public static string AbsoluteReset(DateTimeOffset? resetsAt, DateTimeOffset now, CultureInfo clockCulture)
     {
         if (resetsAt is null)
         {
@@ -56,10 +61,10 @@ internal static class UsageFormatting
         }
 
         var local = resetsAt.Value.ToLocalTime();
-        var time = local.ToString("t", CultureInfo.CurrentCulture);
+        var time = local.ToString(clockCulture.DateTimeFormat.ShortTimePattern, CultureInfo.InvariantCulture);
         return local.Date == now.ToLocalTime().Date
             ? time
-            : $"{local.ToString("ddd", CultureInfo.CurrentCulture)} {time}";
+            : $"{local.ToString("ddd", CultureInfo.InvariantCulture)} {time}";
     }
 
     public static string Age(DateTimeOffset when, DateTimeOffset now)

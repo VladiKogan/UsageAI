@@ -32,6 +32,7 @@ internal sealed class UsagePopupForm : Form
     private readonly TableLayoutPanel _shell;
     private readonly TableLayoutPanel _header;
     private readonly FlowLayoutPanel _content;
+    private readonly SlimScrollHost _contentFrame;
     private readonly Label _titleLabel;
     private readonly Label _summaryLabel;
     private readonly Label _updatedLabel;
@@ -192,7 +193,13 @@ internal sealed class UsagePopupForm : Form
         };
         _content.HandleCreated += OnContentHandleCreated;
         _content.SizeChanged += (_, _) => RefreshDashboardLayout();
-        _shell.Controls.Add(_content, 0, 1);
+        // Scrolls behind a slim scrollbar rather than the system's full-width one.
+        _contentFrame = new SlimScrollHost(_content, _dpiOverride)
+        {
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+        };
+        _shell.Controls.Add(_contentFrame, 0, 1);
 
         _updatedLabel = new Label
         {
@@ -418,7 +425,7 @@ internal sealed class UsagePopupForm : Form
     /// </summary>
     internal (Rectangle Content, UsageLedger Table)? PreviewTable =>
         _content.Controls.OfType<UsageLedger>().FirstOrDefault() is { } table
-            ? (RectangleToClient(_content.RectangleToScreen(new Rectangle(Point.Empty, _content.Size))), table)
+            ? (RectangleToClient(_contentFrame.RectangleToScreen(new Rectangle(Point.Empty, _contentFrame.Size))), table)
             : null;
 
     public void CloseForExit()
@@ -930,7 +937,7 @@ internal sealed class UsagePopupForm : Form
         var provider = ShortName(status.ProviderName);
         if (projection is { BeforeReset: true })
         {
-            return $"{provider} runs out first: {metric.Name} at {value}, around {UsageFormatting.AbsoluteReset(projection.ExhaustedAt, now)}.";
+            return $"{provider} runs out first: {metric.Name} at {value}, around {UsageFormatting.AbsoluteReset(projection.ExhaustedAt, now, System.Globalization.CultureInfo.CurrentCulture)}.";
         }
 
         var reset = UsageFormatting.RelativeReset(metric.ResetsAt, now);
@@ -1195,7 +1202,8 @@ internal sealed class UsagePopupForm : Form
 
     private void UpdateCardWidths()
     {
-        if (_updatingCardWidths || _content.IsDisposed || Disposing || IsDisposed)
+        // The frame is created after the panel, whose first resize can arrive before it exists.
+        if (_updatingCardWidths || _contentFrame is null || _content.IsDisposed || Disposing || IsDisposed)
         {
             return;
         }
@@ -1219,9 +1227,8 @@ internal sealed class UsagePopupForm : Form
                 }
             }
 
-            var availableWidth = _content.Width - (_needsScroll
-                ? SystemInformation.GetVerticalScrollBarWidthForDpi(_dpiOverride ?? DeviceDpi)
-                : 0);
+            // Sized to the visible frame, less the slim scrollbar's gutter while it scrolls.
+            var availableWidth = _contentFrame.ContentWidth(_needsScroll);
             if (availableWidth < scale[100])
             {
                 return;

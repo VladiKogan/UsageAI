@@ -27,6 +27,7 @@ internal sealed class SettingsForm : Form
     private readonly Func<UpdateRelease, Task> _promptForUpdate;
     private readonly TableLayoutPanel _shell;
     private readonly Panel _scrollHost;
+    private readonly SlimScrollHost _scrollFrame;
     private readonly TableLayoutPanel _layout;
     private readonly NumericUpDown _refreshInterval;
     private readonly CheckBox _slowWhenHidden;
@@ -135,13 +136,18 @@ internal sealed class SettingsForm : Form
         _scrollHost = new Panel
         {
             AutoScroll = true,
-            Dock = DockStyle.Fill,
             Margin = Padding.Empty,
         };
         _scrollHost.HandleCreated += OnScrollableControlHandleCreated;
         _scrollHost.Scroll += (_, _) => SyncNavToScroll();
         _scrollHost.MouseWheel += (_, _) => SyncNavToScroll();
-        _shell.Controls.Add(_scrollHost, 1, 0);
+        // The page scrolls behind a slim scrollbar rather than the system's full-width one.
+        _scrollFrame = new SlimScrollHost(_scrollHost, _dpiOverride)
+        {
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+        };
+        _shell.Controls.Add(_scrollFrame, 1, 0);
 
         // Sections are one long page, so every setting stays findable by scrolling; the list on
         // the left jumps to a section and marks the one being read.
@@ -155,7 +161,7 @@ internal sealed class SettingsForm : Form
         _nav.SectionEntered += (_, _) => EnterSection(_nav.SelectedIndex);
         _shell.Controls.Add(_nav, 0, 0);
         _nav.TabIndex = 0;
-        _scrollHost.TabIndex = 1;
+        _scrollFrame.TabIndex = 1;
 
         _layout = new TableLayoutPanel
         {

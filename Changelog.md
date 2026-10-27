@@ -93,6 +93,12 @@ The project follows [Semantic Versioning](https://semver.org/).
   new", shows the notes on the window itself instead of in a bordered box, names sections in
   sentence case behind a coloured dot, closes with **Got it**, and links to the full changelog
   instead of offering it as a second button.
+- **Scrollbars are slim and stay out of the way.** The system scrollbar can only be themed light
+  or dark, so the dashboard, popup and Settings showed a full-width track down the whole window,
+  even when the content overflowed by a few pixels. They now show a thin rounded thumb in the
+  Windows 11 style, with no track until it is pointed at, widening on hover; it drags, pages on a
+  click above or below, and scrolls with the wheel. Content that fits shows no scrollbar at all,
+  and High Contrast keeps the system scrollbar.
 - **Gauges move to new readings instead of jumping.** When a refresh brings a new value, the
   popup's rings and the dashboard's bars ease to it over 0.4 s and a limit crossing into warning or
   critical crossfades its colour, while the figure shows the new number at once. Opening the popup
@@ -127,6 +133,10 @@ The project follows [Semantic Versioning](https://semver.org/).
 - **What's New has a dark scrollbar in the dark theme.** The window asked for one when it was
   created, before the release-notes box inside it existed, so the request never reached that box
   and its scrollbar stayed white. The box now asks for it itself as soon as it is created.
+- **Forecast times no longer mix in day names from the Windows language.** "Out by" and the
+  popup's "runs out first … around" took the weekday and AM/PM from the Windows display
+  language, so a Hebrew system showed "Out by 21:52 יום ו׳" inside an English sentence. They now
+  read "Out by Fri 21:52", keeping the user's 12- or 24-hour clock.
 - **The popup no longer flashes empty when providers update.** Its tiles are rebuilt on each
   update, and the panel was painted bare between removing the old tiles and adding the new ones.
 

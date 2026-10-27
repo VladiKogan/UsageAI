@@ -82,6 +82,7 @@ internal static class Program
         ("controls measure at their window's DPI and repaint once after a rebuild", RedesignTests.TestWindowDpiAndRedrawAsync),
         ("settings number fields draw themed spin buttons", RedesignTests.TestThemedStepperAsync),
         ("settings window resizes and remembers a size the user chose", RedesignTests.TestSettingsWindowSizeAsync),
+        ("scrolling views use a slim scrollbar", RedesignTests.TestSlimScrollBarAsync),
         ("model formatting and provider status states", CoverageExpansionTests.TestModelFormattingAsync),
         ("refresh orchestration, alerts, history, and backoff", CoverageExpansionTests.TestRefreshOrchestrationAsync),
         ("scheduled stale-provider recovery", CoverageExpansionTests.TestScheduledStaleRecoveryAsync),
@@ -1180,11 +1181,15 @@ internal static class Program
 
         // The section list sits beside the scrolling page, and the footer spans both.
         True(shell.GetControlFromPosition(0, 0) is SectionNav);
-        var content = shell.GetControlFromPosition(1, 0) as Panel
+        // The page scrolls inside a slim-scrollbar frame, which is what the shell lays out.
+        var frame = shell.GetControlFromPosition(1, 0) as SlimScrollHost
+            ?? throw new InvalidOperationException("The settings content frame is missing.");
+        var content = frame.Target as Panel
             ?? throw new InvalidOperationException("The settings content area is missing.");
         var footer = shell.GetControlFromPosition(0, 1)
             ?? throw new InvalidOperationException("The settings footer is missing.");
-        Equal(content.Bottom, footer.Top);
+        Equal(frame.Bottom, footer.Top);
+        Equal(frame.Height, content.Height);
         Equal(shell.ClientSize.Height, footer.Bottom);
 
         content.PerformLayout();

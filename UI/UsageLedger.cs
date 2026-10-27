@@ -541,7 +541,7 @@ internal sealed class UsageLedger : Control
         {
             Cell(
                 graphics,
-                $"Out by {UsageFormatting.AbsoluteReset(projection.ExhaustedAt, DateTimeOffset.Now)}",
+                $"Out by {UsageFormatting.AbsoluteReset(projection.ExhaustedAt, DateTimeOffset.Now, System.Globalization.CultureInfo.CurrentCulture)}",
                 _fonts.Small,
                 Theme.IsCriticalUsage(metric.UsedPercent ?? 0) ? Theme.CriticalText : Theme.WarningText,
                 pace,

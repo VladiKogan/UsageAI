@@ -39,9 +39,18 @@ internal static class CoverageExpansionTests
         Equal("resets in 2d 3h", UsageFormatting.RelativeReset(now.AddDays(2).AddHours(3), now));
         Equal("resets in 4h 12m", UsageFormatting.RelativeReset(now.AddHours(4).AddMinutes(12), now));
         Equal("resets in 1m", UsageFormatting.RelativeReset(now.AddSeconds(20), now));
-        True(UsageFormatting.AbsoluteReset(now.AddHours(2), now).Length > 0);
-        True(UsageFormatting.AbsoluteReset(now.AddDays(2), now).Length > 0);
-        Equal(string.Empty, UsageFormatting.AbsoluteReset(null, now));
+        True(UsageFormatting.AbsoluteReset(now.AddHours(2), now, CultureInfo.CurrentCulture).Length > 0);
+        True(UsageFormatting.AbsoluteReset(now.AddDays(2), now, CultureInfo.CurrentCulture).Length > 0);
+        Equal(string.Empty, UsageFormatting.AbsoluteReset(null, now, CultureInfo.CurrentCulture));
+
+        // A Hebrew or Korean clock keeps its 24- or 12-hour form, but the words stay English.
+        var friday = new DateTimeOffset(2026, 10, 30, 21, 52, 0, TimeZoneInfo.Local.GetUtcOffset(new DateTime(2026, 10, 30, 21, 52, 0)));
+        var monday = friday.AddDays(-4);
+        Equal("Fri 21:52", UsageFormatting.AbsoluteReset(friday, monday, CultureInfo.GetCultureInfo("he-IL")));
+        Equal("Fri 9:52 PM", UsageFormatting.AbsoluteReset(friday, monday, CultureInfo.GetCultureInfo("en-US")));
+        True(UsageFormatting.AbsoluteReset(friday, monday, CultureInfo.GetCultureInfo("ko-KR")).StartsWith("Fri ", StringComparison.Ordinal));
+        False(UsageFormatting.AbsoluteReset(friday, monday, CultureInfo.GetCultureInfo("ko-KR")).Contains('오'));
+        Equal("21:52", UsageFormatting.AbsoluteReset(friday, friday.AddHours(-2), CultureInfo.GetCultureInfo("he-IL")));
         Equal("just now", UsageFormatting.Age(now.AddSeconds(-10), now));
         Equal("42 min ago", UsageFormatting.Age(now.AddMinutes(-42), now));
         Equal("3h ago", UsageFormatting.Age(now.AddHours(-3), now));
@@ -2945,8 +2954,11 @@ internal static class CoverageExpansionTests
         Application.DoEvents();
 
         var content = GetPrivateField<FlowLayoutPanel>(popup, "_content");
+        var frame = GetPrivateField<SlimScrollHost>(popup, "_contentFrame");
 
         // The table spans the window at every size: no dead strip, never a horizontal scrollbar.
+        // While it scrolls it leaves exactly the slim scrollbar's gutter, so the thumb never
+        // covers the last column.
         // It scrolls exactly when it is taller than the window, and stays fully reachable then.
         foreach (var size in new[] { new Size(1_020, 820), new Size(760, 620), new Size(600, 300) })
         {
@@ -2959,7 +2971,9 @@ internal static class CoverageExpansionTests
             False(content.HorizontalScroll.Visible);
             Equal(ledger.NaturalHeight > content.Height, content.AutoScroll);
             True(ledger.Right <= content.ClientSize.Width);
-            True(ledger.Right >= content.ClientSize.Width - 1);
+            var gutter = content.AutoScroll ? frame.ScrollInset : 0;
+            True(ledger.Right >= content.ClientSize.Width - gutter - 1);
+            True(ledger.Right <= frame.Width - gutter);
             True(content.DisplayRectangle.Height >= ledger.Height);
         }
 

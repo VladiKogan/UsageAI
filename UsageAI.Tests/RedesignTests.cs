@@ -905,8 +905,9 @@ internal static class RedesignTests
         True(Field<CheckBox>(dialog, "_notificationsEnabled").Focused);
         typeof(SettingsForm).GetMethod("EnterSection", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dialog, new object[] { -1 });
 
-        // The tab order follows the screen: section list, then the page, then the buttons.
-        True(sectionNav.TabIndex < scrollHost.TabIndex);
+        // The tab order follows the screen: section list, then the page, then the buttons. The
+        // page sits in its slim-scrollbar frame, which is what the window orders.
+        True(sectionNav.TabIndex < Field<SlimScrollHost>(dialog, "_scrollFrame").TabIndex);
 
         // A theme change keeps the update status's meaning, and High Contrast restores the
         // borders that are the number fields' only edge on a card.
@@ -1547,6 +1548,113 @@ internal static class RedesignTests
         File.Delete(AppPaths.SettingsFile);
         return Task.CompletedTask;
     }
+
+    /// <summary>
+    /// Scrolling views hide the system scrollbar past their right edge and draw a slim one: it
+    /// tracks the panel, drags, pages, passes the wheel on, and gives way to the system scrollbar
+    /// in High Contrast.
+    /// </summary>
+    public static Task TestSlimScrollBarAsync()
+    {
+        Theme.Apply(ThemeMode.Dark, 72, 90);
+        using var form = new Form { ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Location = new Point(-10_000, -10_000), ClientSize = new Size(300, 200) };
+        var panel = new Panel { AutoScroll = true, BackColor = Theme.Night };
+        panel.Controls.Add(new Panel { Bounds = new Rectangle(0, 0, 200, 1000) });
+        using var host = new SlimScrollHost(panel, dpiOverride: 96) { Dock = DockStyle.Fill };
+        form.Controls.Add(host);
+        form.Show();
+        Application.DoEvents();
+        host.Sync();
+
+        // The system scrollbar is pushed just past the host's edge, and the slim bar shows.
+        var native = SystemInformation.GetVerticalScrollBarWidthForDpi(96);
+        True(host.CanScroll);
+        Equal(host.Width + native, panel.Width);
+        Equal(host.Width, panel.ClientSize.Width);
+        True(host.Bar.Visible);
+        Equal(SlimScrollHost.GutterWidth, host.ScrollInset);
+        Equal(SlimScrollHost.GutterWidth, host.Bar.Width);
+        // Content gives up only the slim gutter once the panel is widened, and nothing when it fits.
+        Equal(host.Width - SlimScrollHost.GutterWidth, host.ContentWidth(scrolling: true));
+        Equal(host.Width, host.ContentWidth(scrolling: false));
+
+        // The thumb follows the panel's position.
+        var top = host.Bar.ThumbBounds.Top;
+        host.ScrollTo(400);
+        Equal(400, host.Offset);
+        True(host.Bar.ThumbBounds.Top > top);
+        host.ScrollTo(99_999);
+        Equal(host.ContentHeight - host.ViewportHeight, host.Offset);
+        host.ScrollTo(0);
+        Draw(host.Bar);
+
+        // Pointing at it widens the thumb; dragging it scrolls, and clicking below pages.
+        var idleWidth = host.Bar.ThumbBounds.Width;
+        Invoke(host.Bar, "OnMouseEnter", EventArgs.Empty);
+        True(host.Bar.IsHovered && host.Bar.ThumbBounds.Width > idleWidth);
+        Draw(host.Bar);
+        var thumb = host.Bar.ThumbBounds;
+        Invoke(host.Bar, "OnMouseDown", new MouseEventArgs(MouseButtons.Left, 1, thumb.Left + 1, thumb.Top + 2, 0));
+        True(host.Bar.IsDragging);
+        Invoke(host.Bar, "OnMouseMove", new MouseEventArgs(MouseButtons.Left, 0, thumb.Left + 1, thumb.Top + 40, 0));
+        True(host.Offset > 0);
+        Draw(host.Bar);
+        Invoke(host.Bar, "OnMouseUp", new MouseEventArgs(MouseButtons.Left, 1, thumb.Left + 1, thumb.Top + 40, 0));
+        False(host.Bar.IsDragging);
+        Invoke(host.Bar, "OnMouseMove", new MouseEventArgs(MouseButtons.None, 0, 1, 1, 0));
+        host.ScrollTo(0);
+        Invoke(host.Bar, "OnMouseDown", new MouseEventArgs(MouseButtons.Left, 1, 2, host.Bar.Height - 2, 0));
+        True(host.Offset > 0);
+        var paged = host.Offset;
+        Invoke(host.Bar, "OnMouseDown", new MouseEventArgs(MouseButtons.Left, 1, 2, 1, 0));
+        True(host.Offset < paged);
+        Invoke(host.Bar, "OnMouseDown", new MouseEventArgs(MouseButtons.Right, 1, 2, 1, 0));
+        Invoke(host.Bar, "OnMouseLeave", EventArgs.Empty);
+        False(host.Bar.IsHovered);
+
+        // The wheel over the bar scrolls the panel as it would over the content.
+        host.ScrollTo(0);
+        SendMessage(host.Bar.Handle, 0x020A, new IntPtr(-120 << 16), IntPtr.Zero);
+        True(host.Offset > 0);
+
+        // Content that fits needs no bar at all.
+        panel.Controls[0].Height = 50;
+        panel.PerformLayout();
+        Application.DoEvents();
+        host.Sync();
+        False(host.CanScroll);
+        False(host.Bar.Visible);
+        Draw(host.Bar);
+        panel.Controls[0].Height = 1000;
+        panel.PerformLayout();
+        Application.DoEvents();
+        host.Sync();
+
+        // High Contrast keeps the system scrollbar where it is, and the slim bar stands aside.
+        Theme.SetHighContrastProbe(static () => true);
+        try
+        {
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+            Application.DoEvents();
+            host.PerformLayout();
+            True(SlimScrollHost.UsesSystemScrollBar);
+            Equal(host.Width, panel.Width);
+            False(host.Bar.Visible);
+            Equal(native, host.ScrollInset);
+            Equal(host.Width - native, host.ContentWidth(scrolling: true));
+        }
+        finally
+        {
+            Theme.SetHighContrastProbe(null);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+        }
+
+        form.Hide();
+        return Task.CompletedTask;
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
 
     private static void Invoke(Control sender, object target, string name, EventArgs eventArgs)
     {
