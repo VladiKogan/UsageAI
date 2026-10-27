@@ -122,6 +122,9 @@ The project follows [Semantic Versioning](https://semver.org/).
   a number field's up and down buttons in its light style whatever the app's theme; they now take
   the field's own colour, with quiet chevrons that shade on hover and press. High Contrast keeps
   the system's buttons.
+- **What's New has a dark scrollbar in the dark theme.** The window asked for one when it was
+  created, before the release-notes box inside it existed, so the request never reached that box
+  and its scrollbar stayed white. The box now asks for it itself as soon as it is created.
 - **The popup no longer flashes empty when providers update.** Its tiles are rebuilt on each
   update, and the panel was painted bare between removing the old tiles and adding the new ones.
 

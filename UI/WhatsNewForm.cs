@@ -149,7 +149,13 @@ internal sealed class WhatsNewForm : Form
         WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
     }
 
-    private void OnContentHandleCreated(object? sender, EventArgs eventArgs) => RenderContent();
+    // The notes box is created after the window, so the window's own handle creation is too early
+    // to theme its scrollbar, which then stayed light on a dark window.
+    private void OnContentHandleCreated(object? sender, EventArgs eventArgs)
+    {
+        WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
+        RenderContent();
+    }
 
     protected override void Dispose(bool disposing)
     {
