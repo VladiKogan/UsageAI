@@ -94,11 +94,12 @@ The project follows [Semantic Versioning](https://semver.org/).
   sentence case behind a coloured dot, closes with **Got it**, and links to the full changelog
   instead of offering it as a second button.
 - **Scrollbars are slim and stay out of the way.** The system scrollbar can only be themed light
-  or dark, so the dashboard, popup and Settings showed a full-width track down the whole window,
-  even when the content overflowed by a few pixels. They now show a thin rounded thumb in the
-  Windows 11 style, with no track until it is pointed at, widening on hover; it drags, pages on a
-  click above or below, and scrolls with the wheel. Content that fits shows no scrollbar at all,
-  and High Contrast keeps the system scrollbar.
+  or dark, so the dashboard, popup, Settings and What's New showed a full-width track down the
+  whole window, even when the content overflowed by a few pixels. They now show a thin rounded
+  thumb in the Windows 11 style at the window's right edge, with no track until it is pointed at,
+  widening on hover; it drags, pages on a click above or below, and scrolls with the wheel. Content
+  keeps its margin, so the thumb never covers it, and content that fits shows no scrollbar at all.
+  High Contrast keeps the system scrollbar.
 - **Gauges move to new readings instead of jumping.** When a refresh brings a new value, the
   popup's rings and the dashboard's bars ease to it over 0.4 s and a limit crossing into warning or
   critical crossfades its colour, while the figure shows the new number at once. Opening the popup

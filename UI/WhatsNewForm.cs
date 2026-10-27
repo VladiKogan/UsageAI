@@ -19,10 +19,14 @@ internal sealed class WhatsNewForm : Form
     private readonly Label _heading;
     private readonly Label _subheading;
     private readonly RichTextBox _content;
+    private readonly SlimScrollHost _contentFrame;
     private readonly FlowLayoutPanel _buttons;
     private readonly Button _viewComplete;
     private readonly Button _close;
     private readonly int? _dpiOverride;
+
+    /// <summary>The window's right margin, which the notes keep as an indent, at 96 DPI.</summary>
+    private const int RightInset = 20;
     private readonly Font _bodyFont = Typography.Text(9F);
     private readonly Font _strongFont = Typography.Text(9F, FontStyle.Bold);
     private readonly Font _codeFont = Typography.Mono(8.5F, FontStyle.Regular);
@@ -106,7 +110,13 @@ internal sealed class WhatsNewForm : Form
         _buttons.Controls.Add(_viewComplete);
         _shell.Controls.Add(_heading, 0, 0);
         _shell.Controls.Add(_subheading, 0, 1);
-        _shell.Controls.Add(_content, 0, 2);
+        // The notes scroll behind a slim scrollbar at the window's right edge.
+        _contentFrame = new SlimScrollHost(_content, _dpiOverride)
+        {
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+        };
+        _shell.Controls.Add(_contentFrame, 0, 2);
         _shell.Controls.Add(_buttons, 0, 3);
         AcceptButton = _close;
         CancelButton = _close;
@@ -346,6 +356,7 @@ internal sealed class WhatsNewForm : Form
         _content.Select(paragraphStart, _content.TextLength - paragraphStart);
         _content.SelectionIndent = indent;
         _content.SelectionHangingIndent = hangingIndent;
+        _content.SelectionRightIndent = Scale()[RightInset];
         _content.Select(_content.TextLength, 0);
     }
 
@@ -378,13 +389,17 @@ internal sealed class WhatsNewForm : Form
         MinimumSize = new Size(
             Math.Min(scale[420], workingArea.Width),
             Math.Min(scale[360], workingArea.Height));
-        _shell.Padding = scale.Pad(20, 16, 20, 12);
+        // The right edge is open so the notes' scrollbar reaches the window's edge; everything
+        // else keeps the inset itself, and the notes keep it as a paragraph indent.
+        _shell.Padding = scale.Pad(20, 16, 0, 12);
         _shell.RowStyles[0] = new RowStyle(SizeType.Absolute, scale[42]);
         _shell.RowStyles[1] = new RowStyle(SizeType.Absolute, scale[30]);
         _shell.RowStyles[3] = new RowStyle(SizeType.Absolute, scale[54]);
-        _heading.Margin = Padding.Empty;
-        _subheading.Margin = scale.Pad(0, 0, 0, 8);
+        _heading.Margin = scale.Pad(0, 0, RightInset, 0);
+        _subheading.Margin = scale.Pad(0, 0, RightInset, 8);
         _content.Margin = Padding.Empty;
+        _contentFrame.Margin = Padding.Empty;
+        _buttons.Margin = scale.Pad(0, 0, RightInset, 0);
         _buttons.Padding = scale.Pad(0, 12, 0, 0);
         _close.Margin = scale.Pad(8, 0, 0, 0);
         _close.Size = new Size(Math.Max(scale[92], TextRenderer.MeasureText(_close.Text, _close.Font).Width + scale[28]), scale[32]);

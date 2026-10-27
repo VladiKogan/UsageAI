@@ -470,7 +470,7 @@ internal static class PreviewRenderer
     /// <summary>
     /// Windows will not make a window taller than the screen, so a dashboard whose table is
     /// taller is drawn in two parts: the window for its header and footer, and the table on its
-    /// own at its full height and the content's full width, put where the content area was.
+    /// own at its full height, put where the content area was.
     /// </summary>
     private static Bitmap ComposeWholeTable(UsagePopupForm form, Bitmap window)
     {
@@ -483,7 +483,8 @@ internal static class PreviewRenderer
         // It keeps the panel's background, which it otherwise inherited.
         table.BackColor = table.Parent?.BackColor ?? table.BackColor;
         table.Parent?.Controls.Remove(table);
-        table.Size = new Size(content.Width, table.NaturalHeight);
+        // As wide as the window laid it out, which leaves the dashboard's right margin.
+        table.Size = new Size(table.Width, table.NaturalHeight);
         table.CreateControl();
         using var tableImage = new Bitmap(table.Width, table.Height);
         table.DrawToBitmap(tableImage, new Rectangle(Point.Empty, tableImage.Size));

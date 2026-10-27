@@ -162,7 +162,8 @@ internal sealed class UsagePopupForm : Form
         {
             ColumnCount = 4,
             Dock = DockStyle.Fill,
-            Margin = Padding.Empty,
+            // The shell's right edge is open for the scrollbar; this keeps the window's inset.
+            Margin = scale.Pad(0, 0, RightEdge, 0),
             RowCount = 2,
         };
         _header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -218,7 +219,8 @@ internal sealed class UsagePopupForm : Form
         {
             ColumnCount = 2,
             Dock = DockStyle.Fill,
-            Margin = Padding.Empty,
+            // The shell's right edge is open for the scrollbar; this keeps the window's inset.
+            Margin = scale.Pad(0, 0, RightEdge, 0),
             RowCount = 1,
         };
         _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -640,6 +642,9 @@ internal sealed class UsagePopupForm : Form
         _layoutDpi = _dpiOverride ?? DeviceDpi;
         var scale = Scale();
         _shell.Padding = ShellPadding(scale);
+        var edge = scale.Pad(0, 0, RightEdge, 0);
+        _header.Margin = edge;
+        _footer.Margin = edge;
         _shell.RowStyles[0] = new RowStyle(SizeType.Absolute, scale[HeaderRowBaseline]);
         _shell.RowStyles[2] = new RowStyle(SizeType.Absolute, scale[FooterRowBaseline]);
         _header.ColumnStyles[1] = new ColumnStyle(
@@ -1227,8 +1232,12 @@ internal sealed class UsagePopupForm : Form
                 }
             }
 
-            // Sized to the visible frame, less the slim scrollbar's gutter while it scrolls.
-            var availableWidth = _contentFrame.ContentWidth(_needsScroll);
+            // Sized to the visible frame, less the slim scrollbar's gutter while it scrolls. The
+            // frame runs to the window's edge, so content keeps the window's inset and the
+            // scrollbar sits in that margin.
+            var availableWidth = Math.Min(
+                _contentFrame.ContentWidth(_needsScroll),
+                _contentFrame.Width - scale[RightEdge]);
             if (availableWidth < scale[100])
             {
                 return;
@@ -1300,10 +1309,15 @@ internal sealed class UsagePopupForm : Form
 
     private LayoutScale Scale() => _dpiOverride is { } dpi ? new LayoutScale(dpi) : new LayoutScale(this);
 
-    // The popup is a tight flyout; the dashboard window gets more breathing room.
+    // The popup is a tight flyout; the dashboard window gets more breathing room. The right edge
+    // is open in both, so a scrolling view carries its scrollbar to the window's edge; the
+    // header, footer and content keep the same inset themselves (RightEdge).
     private Padding ShellPadding(LayoutScale scale) => _mode == DashboardMode.Compact
-        ? scale.Pad(12, 10, 12, 8)
-        : scale.Pad(16, 14, 16, 12);
+        ? scale.Pad(12, 10, 0, 8)
+        : scale.Pad(16, 14, 0, 12);
+
+    /// <summary>The right inset of everything but the scrollbar, at 96 DPI.</summary>
+    private int RightEdge => _mode == DashboardMode.Compact ? 12 : 16;
 
     private void OnContentHandleCreated(object? sender, EventArgs eventArgs) =>
         WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);

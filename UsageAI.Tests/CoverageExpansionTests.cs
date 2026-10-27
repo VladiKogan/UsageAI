@@ -2956,9 +2956,9 @@ internal static class CoverageExpansionTests
         var content = GetPrivateField<FlowLayoutPanel>(popup, "_content");
         var frame = GetPrivateField<SlimScrollHost>(popup, "_contentFrame");
 
-        // The table spans the window at every size: no dead strip, never a horizontal scrollbar.
-        // While it scrolls it leaves exactly the slim scrollbar's gutter, so the thumb never
-        // covers the last column.
+        // The table spans the window at every size, never with a horizontal scrollbar. Its frame
+        // runs to the window's edge so the slim scrollbar can sit there; the table keeps the
+        // window's 16 px inset, which the thumb's gutter fits inside.
         // It scrolls exactly when it is taller than the window, and stays fully reachable then.
         foreach (var size in new[] { new Size(1_020, 820), new Size(760, 620), new Size(600, 300) })
         {
@@ -2971,9 +2971,8 @@ internal static class CoverageExpansionTests
             False(content.HorizontalScroll.Visible);
             Equal(ledger.NaturalHeight > content.Height, content.AutoScroll);
             True(ledger.Right <= content.ClientSize.Width);
-            var gutter = content.AutoScroll ? frame.ScrollInset : 0;
-            True(ledger.Right >= content.ClientSize.Width - gutter - 1);
-            True(ledger.Right <= frame.Width - gutter);
+            Equal(frame.Width - 16, ledger.Right);
+            True(frame.ScrollInset <= 16);
             True(content.DisplayRectangle.Height >= ledger.Height);
         }
 

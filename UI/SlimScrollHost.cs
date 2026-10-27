@@ -4,30 +4,38 @@ using System.Runtime.InteropServices;
 namespace UsageAI.UI;
 
 /// <summary>
-/// Hosts a scrolling panel behind a slim, Windows 11-style scrollbar. The system scrollbar can be
+/// Hosts a scrolling panel or text box behind a slim, Windows 11-style scrollbar. The system scrollbar can be
 /// themed only light or dark, and its full-width track ran the height of every scrolling window
 /// even when the content overflowed by a few pixels. The panel keeps its own scrolling — the
 /// wheel, the keyboard, scrolling a focused control into view, and every AutoScrollPosition the
 /// windows set — and is simply made wider than the host by the system scrollbar's width, so
 /// that scrollbar falls outside the visible area. A thin rounded thumb is drawn over the right
 /// edge instead, with no track until it is pointed at, and nothing at all when the content fits.
-/// High Contrast shows the system scrollbar as it is.
+/// High Contrast shows the system scrollbar as it is. A RichTextBox, which is not a panel, is read
+/// and scrolled through the scrollbar and rich-edit messages instead of AutoScrollPosition.
 /// </summary>
 internal sealed class SlimScrollHost : Control
 {
     /// <summary>The strip at the right edge that the slim scrollbar occupies, at 96 DPI.</summary>
     internal const int GutterWidth = 12;
 
-    private readonly ScrollableControl _target;
+    private readonly Control _target;
+    private readonly ScrollAdapter _adapter;
     private readonly SlimScrollBar _bar;
     private readonly int? _dpiOverride;
     private (int Offset, int Content, int Viewport) _last;
     private bool _ready;
 
-    public SlimScrollHost(ScrollableControl target, int? dpiOverride = null)
+    public SlimScrollHost(Control target, int? dpiOverride = null)
     {
         ArgumentNullException.ThrowIfNull(target);
         _target = target;
+        _adapter = target switch
+        {
+            RichTextBox text => new RichTextAdapter(text),
+            ScrollableControl panel => new PanelAdapter(panel),
+            _ => throw new ArgumentException("Only scrolling panels and rich text boxes can be hosted.", nameof(target)),
+        };
         _dpiOverride = dpiOverride;
         target.Dock = DockStyle.None;
         _bar = new SlimScrollBar(this) { Visible = false };
@@ -40,7 +48,7 @@ internal sealed class SlimScrollHost : Control
         ResumeLayout(performLayout: false);
         _ready = true;
         target.ClientSizeChanged += OnTargetChanged;
-        target.Scroll += OnTargetChanged;
+        _adapter.Scrolled += OnTargetChanged;
         target.MouseWheel += OnTargetChanged;
         target.Layout += OnTargetLayout;
         target.BackColorChanged += OnTargetBackColorChanged;
@@ -50,7 +58,7 @@ internal sealed class SlimScrollHost : Control
         Application.Idle += OnIdle;
     }
 
-    internal ScrollableControl Target => _target;
+    internal Control Target => _target;
 
     internal SlimScrollBar Bar => _bar;
 
@@ -83,19 +91,19 @@ internal sealed class SlimScrollHost : Control
         return Width - (widened ? ScrollInset : Math.Max(native, ScrollInset));
     }
 
-    internal int Offset => -_target.AutoScrollPosition.Y;
+    internal int Offset => _adapter.Offset;
 
-    internal int ContentHeight => _target.DisplayRectangle.Height;
+    internal int ContentHeight => _adapter.ContentHeight;
 
-    internal int ViewportHeight => _target.ClientSize.Height;
+    internal int ViewportHeight => _adapter.ViewportHeight;
 
-    internal bool CanScroll => _target.VerticalScroll.Visible && ContentHeight > ViewportHeight;
+    internal bool CanScroll => _adapter.SystemBarShown && ContentHeight > ViewportHeight;
 
     /// <summary>Scrolls the panel so <paramref name="offset"/> pixels of content are above the view.</summary>
     internal void ScrollTo(int offset)
     {
         var maximum = Math.Max(0, ContentHeight - ViewportHeight);
-        _target.AutoScrollPosition = new Point(-_target.AutoScrollPosition.X, Math.Clamp(offset, 0, maximum));
+        _adapter.ScrollTo(Math.Clamp(offset, 0, maximum));
         Sync();
     }
 
@@ -129,7 +137,8 @@ internal sealed class SlimScrollHost : Control
             Application.Idle -= OnIdle;
             Theme.Changed -= OnThemeChanged;
             _target.ClientSizeChanged -= OnTargetChanged;
-            _target.Scroll -= OnTargetChanged;
+            _adapter.Scrolled -= OnTargetChanged;
+            _adapter.Dispose();
             _target.MouseWheel -= OnTargetChanged;
             _target.Layout -= OnTargetLayout;
             _target.BackColorChanged -= OnTargetBackColorChanged;
@@ -149,7 +158,7 @@ internal sealed class SlimScrollHost : Control
             return;
         }
 
-        var hidden = !UsesSystemScrollBar && _target.VerticalScroll.Visible
+        var hidden = !UsesSystemScrollBar && _adapter.SystemBarShown
             ? SystemInformation.GetVerticalScrollBarWidthForDpi(Dpi)
             : 0;
         var bounds = new Rectangle(0, 0, Width + hidden, Height);
@@ -207,6 +216,137 @@ internal sealed class SlimScrollHost : Control
     }
 
     private int Dpi => _dpiOverride ?? LayoutScale.DpiOf(this);
+
+    /// <summary>How the host reads and moves one kind of scrolling control.</summary>
+    private abstract class ScrollAdapter : IDisposable
+    {
+        public abstract event EventHandler? Scrolled;
+
+        public abstract bool SystemBarShown { get; }
+
+        public abstract int Offset { get; }
+
+        public abstract int ContentHeight { get; }
+
+        public abstract int ViewportHeight { get; }
+
+        public abstract void ScrollTo(int offset);
+
+        public virtual void Dispose()
+        {
+        }
+    }
+
+    private sealed class PanelAdapter : ScrollAdapter
+    {
+        private readonly ScrollableControl panel;
+
+        public PanelAdapter(ScrollableControl panel)
+        {
+            this.panel = panel;
+            panel.Scroll += OnScroll;
+        }
+
+        public override event EventHandler? Scrolled;
+
+        public override bool SystemBarShown => panel.VerticalScroll.Visible;
+
+        public override int Offset => -panel.AutoScrollPosition.Y;
+
+        public override int ContentHeight => panel.DisplayRectangle.Height;
+
+        public override int ViewportHeight => panel.ClientSize.Height;
+
+        public override void ScrollTo(int offset) =>
+            panel.AutoScrollPosition = new Point(-panel.AutoScrollPosition.X, offset);
+
+        public override void Dispose()
+        {
+            panel.Scroll -= OnScroll;
+            base.Dispose();
+        }
+
+        private void OnScroll(object? sender, ScrollEventArgs e) => Scrolled?.Invoke(sender, e);
+    }
+
+    /// <summary>
+    /// A rich edit box keeps its scroll state in the window's own scrollbar, in pixels: the range
+    /// is the document height and the page is the visible height.
+    /// </summary>
+    private sealed class RichTextAdapter(RichTextBox text) : ScrollAdapter
+    {
+        private const int SB_VERT = 1;
+        private const uint SIF_ALL = 0x17;
+        private const int GWL_STYLE = -16;
+        private const int WS_VSCROLL = 0x00200000;
+        private const int EM_SETSCROLLPOS = 0x0400 + 222;
+
+        public override event EventHandler? Scrolled
+        {
+            add => text.VScroll += value;
+            remove => text.VScroll -= value;
+        }
+
+        public override bool SystemBarShown =>
+            text.IsHandleCreated && (GetWindowLong(text.Handle, GWL_STYLE) & WS_VSCROLL) != 0;
+
+        public override int Offset => Info().nPos;
+
+        public override int ContentHeight => Math.Max(0, Info().nMax - Info().nMin + 1);
+
+        public override int ViewportHeight => text.ClientSize.Height;
+
+        public override void ScrollTo(int offset)
+        {
+            if (!text.IsHandleCreated)
+            {
+                return;
+            }
+
+            var point = new NativePoint { X = 0, Y = offset };
+            _ = SendMessage(text.Handle, EM_SETSCROLLPOS, IntPtr.Zero, ref point);
+        }
+
+        private ScrollInfo Info()
+        {
+            var info = new ScrollInfo { cbSize = (uint)Marshal.SizeOf<ScrollInfo>(), fMask = SIF_ALL };
+            if (!text.IsHandleCreated || !GetScrollInfo(text.Handle, SB_VERT, ref info))
+            {
+                return default;
+            }
+
+            return info;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ScrollInfo
+        {
+            public uint cbSize;
+            public uint fMask;
+            public int nMin;
+            public int nMax;
+            public uint nPage;
+            public int nPos;
+            public int nTrackPos;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativePoint
+        {
+            public int X;
+            public int Y;
+        }
+
+        [DllImport("user32.dll")]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetScrollInfo(IntPtr window, int bar, ref ScrollInfo info);
+
+        [DllImport("user32.dll", EntryPoint = "GetWindowLongW")]
+        private static extern int GetWindowLong(IntPtr window, int index);
+
+        [DllImport("user32.dll")]
+        private static extern IntPtr SendMessage(IntPtr window, int message, IntPtr wParam, ref NativePoint point);
+    }
 
     private LayoutScale Scale() => new(Dpi);
 

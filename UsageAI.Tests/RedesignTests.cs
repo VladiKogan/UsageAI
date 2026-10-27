@@ -1650,6 +1650,46 @@ internal static class RedesignTests
         }
 
         form.Hide();
+
+        // What's New's notes are a rich text box, read and scrolled through its own scrollbar.
+        var releases = ReleaseNotes.LoadBundled();
+        using (var notes = new WhatsNewForm(ReleaseNotes.ForUpgrade(releases, releases[0].DisplayVersion, new Version(0, 0)), 96)
+        {
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-10_000, -10_000),
+        })
+        {
+            notes.Show();
+            notes.ClientSize = new Size(480, 420);
+            Application.DoEvents();
+            var frame = Field<SlimScrollHost>(notes, "_contentFrame");
+            var text = Field<RichTextBox>(notes, "_content");
+            frame.PerformLayout();
+            Application.DoEvents();
+            frame.Sync();
+            True(frame.CanScroll);
+            True(frame.ContentHeight > frame.ViewportHeight);
+            Equal(frame.Width + native, text.Width);
+            Equal(0, frame.Offset);
+            frame.ScrollTo(120);
+            True(frame.Offset > 0);
+            frame.ScrollTo(0);
+            Equal(0, frame.Offset);
+            notes.Hide();
+        }
+
+        // Only scrolling panels and rich text boxes have a scroll state to follow.
+        var refused = false;
+        try
+        {
+            using var unsupported = new SlimScrollHost(new Label());
+        }
+        catch (ArgumentException)
+        {
+            refused = true;
+        }
+
+        True(refused);
         return Task.CompletedTask;
     }
 
