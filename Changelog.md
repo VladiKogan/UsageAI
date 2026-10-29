@@ -4,7 +4,7 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.14.0] - 2026-10-29
 
 ### Added
 
@@ -139,9 +139,11 @@ The project follows [Semantic Versioning](https://semver.org/).
   critical crossfades its colour, while the figure shows the new number at once. Opening the popup
   draws everything in place, the refresh arrow now turns smoothly instead of in 24° steps, and all
   motion stops when Windows' animation effects are turned off or High Contrast is on.
-- `--render-preview` accepts `--theme light|dark`, and the new `--preview-window popup|dashboard|settings|whatsnew|prompt|warning|menu`
-  opens the real window with sample data at the monitor's own DPI, with no tray icon, provider
-  access or settings file, so a UI change can be tried by hand next to an installed copy.
+- **Every window can be opened with sample data to try a change by hand.** `--render-preview`
+  accepts `--theme light|dark`, and the new
+  `--preview-window popup|dashboard|settings|whatsnew|prompt|warning|menu` opens the real window
+  with sample data at the monitor's own DPI, with no tray icon, provider access or settings file,
+  so a UI change can be tried by hand next to an installed copy.
   `--render-preview` now draws at the requested DPI instead of enlarging a 96-DPI image, which
   blurred the README screenshots and, on a display scaled above 100%, clipped their text; the
   dashboard image is as tall as its whole table rather than the screen.

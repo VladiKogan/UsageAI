@@ -32,18 +32,18 @@ You're mid-refactor and the model stops. Weekly limit. Nobody told you it was cl
 **UsageAI** is a tiny Windows tray app that keeps every AI coding limit you have in one glance — how much you've used, how fast you're burning it, and exactly when it resets. No dashboards to open, no logins to repeat, no surprises at 2 a.m.
 
 <p align="center">
-  <img src="usageai-preview.png?v=0.13.0" alt="UsageAI 0.13.0 compact tray popup" width="420" />
+  <img src="usageai-preview.png?v=0.14.0" alt="UsageAI 0.14.0 compact tray popup" width="420" />
 </p>
 
 ## ⚡ Get it
 
-Current release: **UsageAI for Windows 0.13.0** and **UsageAI editor extension 0.1.17**.
+Current release: **UsageAI for Windows 0.14.0** and **UsageAI editor extension 0.1.17**.
 You can also browse the complete **[Releases page](https://github.com/VladiKogan/UsageAI/releases)**.
 
 | | |
 | --- | --- |
-| 🚀 **[UsageAI-0.13.0-Setup.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.13.0/UsageAI-0.13.0-Setup.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.13.0/UsageAI-0.13.0-Setup.exe.sha256)) | The easy one. Start Menu shortcut, clean uninstall, and it installs the .NET 10 Desktop Runtime for you if you don't have it. |
-| 🎒 **[UsageAI-0.13.0-portable.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.13.0/UsageAI-0.13.0-portable.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.13.0/UsageAI-0.13.0-portable.exe.sha256)) | One file. No install. Drop it anywhere and double-click — it uses the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) if you already have it. |
+| 🚀 **[UsageAI-0.14.0-Setup.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.14.0/UsageAI-0.14.0-Setup.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.14.0/UsageAI-0.14.0-Setup.exe.sha256)) | The easy one. Start Menu shortcut, clean uninstall, and it installs the .NET 10 Desktop Runtime for you if you don't have it. |
+| 🎒 **[UsageAI-0.14.0-portable.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.14.0/UsageAI-0.14.0-portable.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.14.0/UsageAI-0.14.0-portable.exe.sha256)) | One file. No install. Drop it anywhere and double-click — it uses the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) if you already have it. |
 | 🧩 **[usageai-0.1.17.vsix](https://open-vsx.org/api/vladikogan/usageai/0.1.17/file/vladikogan.usageai-0.1.17.vsix)** | The VS Code and Antigravity extension. Install it from the editor's **Extensions: Install from VSIX...** command. |
 
 Windows 10 or 11 (x64), plus at least one AI tool you're already signed in to. That's the whole setup — UsageAI reuses the login you already have, so there's nothing new to create, paste, or remember.
@@ -97,7 +97,7 @@ Gemini 60% | 30%
 **One glance or the full picture.** Left-click for a compact popup of ring gauges, two providers to a row; open the dashboard for one table of every limit from Codex, Claude Code, GitHub Copilot, and Google Gemini, in columns that line up — usage, what is used or left, when it resets, and where the current pace lands.
 
 <p align="center">
-  <img src="usageai-dashboard-preview.png?v=0.13.0" alt="UsageAI 0.13.0 dashboard" width="750" />
+  <img src="usageai-dashboard-preview.png?v=0.14.0" alt="UsageAI 0.14.0 dashboard" width="750" />
 </p>
 
 **It never goes blank.** If a refresh fails, UsageAI keeps the last good reading and marks it **stale**, with the provider's own error message attached. The dashboard says when that good reading was captured and when the next automatic retry is due, with a **Retry** link for that provider alone; the popup dims its rings and explains on hover. Each failed provider wakes independently after its backoff, instead of waiting for the regular polling interval or hammering a rate-limited API.
