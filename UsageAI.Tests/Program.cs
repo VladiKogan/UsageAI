@@ -205,6 +205,10 @@ internal static class Program
         // WinForms' crash dialog on the desktop and leaving the run waiting on it.
         Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
 
+        // The dashboard table starts focus at its last action when Shift is held, and the checks
+        // that walk it with faked keys must not depend on a Shift key pressed at this machine.
+        UsageLedger.SetShiftProbe(static () => false);
+
         var selectedTests = Tests.AsEnumerable();
         var filterIndex = Array.IndexOf(args, "--filter");
         if (filterIndex >= 0)
