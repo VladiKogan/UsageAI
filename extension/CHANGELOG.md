@@ -4,6 +4,21 @@
 
 ### Changed
 
+- Google Gemini now reads usage from the `agy` server Google's Antigravity editor extension already
+  runs, before starting a second one of its own. On hosts where the standalone `agy` keeps a
+  separate login, such as Linux over Remote-SSH, that removes the extra `agy` sign-in reported in
+  #17; everywhere it saves the duplicate server, about 175 MB while UsageAI runs. The token comes from
+  that process's own command line, goes only to the port the process owns at that moment, and only
+  the current user's processes are considered. The cold server's first quota-summary answer can take
+  seconds, so it gets 15 seconds, and a reading without it falls back to the status data instead of a
+  second server.
+- The Antigravity probe now remembers the server that answered and, on later refreshes, only
+  re-checks that the process still owns its port before asking it again. Measured here, a refresh
+  dropped from about 970 ms (a PowerShell process listing) to about 35 ms. The listing itself now uses
+  a provider-side CIM filter, about 390 ms instead of about 700 ms when it does run.
+- On Linux, the probe reads listening ports from `/proc` instead of requiring `lsof`, which servers
+  often lack and without which the Antigravity probe found nothing.
+- The combined Gemini error now names Antigravity's IDE or editor extension rather than the IDE alone.
 - **The extension uses UsageAI's new logo: a ring holding the quota that is left.** The
   Marketplace and Open VSX icon (`media/logo.png`) is the same mark as the desktop app, now a real
   PNG with transparent corners instead of a JPEG with a `.png` name, and the Activity Bar icon

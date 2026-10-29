@@ -149,11 +149,13 @@ UsageAI reads the login your tools already made, and nothing else:
   one automatic GitHub release check per day while UsageAI is running, and checks you start manually.
 - 🗑️ **Your history is yours to delete** — one button in Settings.
 
-For Gemini, UsageAI first reuses a running Antigravity language server. If none is available, it
-starts one long-lived `agy --hub` server on a loopback port and reads quota from it for the rest of
-the session, so refreshes launch no child process of their own. This includes the backend
-automatically installed by Google's official Antigravity VS Code extension, whose unified sign-in
-keeps working after VS Code closes. Should that CLI build predate `--hub`, UsageAI falls back to a
+For Gemini, UsageAI first reuses a running Antigravity language server, then the `agy --hub` server
+Google's Antigravity editor extension runs while an editor with it is open. That uses the editor's
+own sign-in, so no second `agy` login is needed even where the two don't share one, such as a Linux
+host over Remote-SSH. If neither is available, it starts one long-lived `agy --hub` server of its own
+on a loopback port and reads quota from it for the rest of the session, so refreshes launch no child
+process of their own. This includes the backend automatically installed by Google's official
+Antigravity VS Code extension, whose unified sign-in keeps working after VS Code closes. Should that CLI build predate `--hub`, UsageAI falls back to a
 short read-only `agy -p /usage` run with closed stdin, bounded output, and a fifteen-second deadline.
 UsageAI never reads or writes Antigravity's credential store; the official CLI remains the sole owner
 of that login. A failed `agy` cold start is skipped while a healthy Gemini CLI fallback remains
@@ -226,7 +228,7 @@ restart it automatically.
 - **"Codex CLI was not found"** — install the Codex CLI so `codex.cmd` is on your `PATH`, set `CODEX_PATH` to its full path, or install OpenAI's Codex extension in a supported editor; UsageAI then uses the CLI it ships. (UsageAI intentionally uses `codex.cmd` rather than `codex.ps1`, so it works with the default Windows PowerShell execution policy.)
 - **"Codex is not signed in"** — run `codex login` in a terminal or sign in through the Codex extension, then hit **Refresh**.
 - **"Claude Code is not signed in"** — run `claude` or sign in through the Claude Code extension, or use the session-key method above, then hit **Refresh**.
-- **"Google Gemini usage is unavailable"** — UsageAI tried the Antigravity IDE, the `agy` CLI, and the Gemini CLI, and the message says which of them returned nothing. Run `agy` to check that it is signed in, then hit **Refresh**.
+- **"Google Gemini usage is unavailable"** — UsageAI tried Antigravity (the IDE or the editor extension's backend), the `agy` CLI, and the Gemini CLI, and the message says which of them returned nothing. Run `agy` to check that it is signed in, then hit **Refresh**.
 - **"Copilot is not signed in"** — sign in through a Copilot IDE extension or Copilot CLI, then hit **Refresh**.
 - **A provider says "stale"** — its latest check failed, so you're looking at its previous good reading. The dashboard shows when that reading succeeded, the provider's error, and when UsageAI will retry automatically. The retry runs independently as soon as its backoff or provider-supplied wait time expires; **Retry** beside it, or **Refresh** for every provider, checks immediately.
 - **The hotkey does nothing** — another app already owns Win+Alt+U. Turn it off in **Settings…** to release it.

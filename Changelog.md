@@ -4,6 +4,24 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- Google Gemini now reads usage from the `agy` server Google's Antigravity editor extension already
+  runs, before starting a second one of its own. That saves the duplicate server, about 175 MB while
+  UsageAI runs, whenever VS Code or another editor with the Antigravity extension is open, and it uses
+  that editor's own sign-in. The token comes from that process's own command line and goes only to
+  the loopback port the process owns at that moment. A cold server's first quota-summary answer can
+  take seconds, so it gets 15 seconds, and a reading without it falls back to the status data instead
+  of starting a second server.
+- The Antigravity process listing now uses a provider-side CIM filter. It measured about 390 ms
+  instead of about 700 ms, and it runs only when a newly started language server or `agy` process
+  appears.
+- `--diagnose gemini` now reports which path answered in a `Source` field: the Antigravity IDE, the
+  editor extension's `agy` server, UsageAI's own `agy` server, `agy -p`, or the Gemini CLI.
+- The combined Gemini error now names Antigravity's IDE or editor extension rather than the IDE alone.
+
 ## [0.14.0] - 2026-10-29
 
 ### Added

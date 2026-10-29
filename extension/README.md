@@ -108,9 +108,11 @@ Your provider credentials stay in the extension host. UsageAI does not scan brow
 
 Additional protections include allowlisted provider endpoints, blocked redirects, size-limited responses, read-only Claude OAuth credentials, in-memory-only refresh caching for other providers, and a local Antigravity connection reachable only over loopback. When Claude's short-lived access token expires—or the first usage request indicates that a seemingly current login is stale—the extension invokes the official `claude auth status --json` command once with bounded runtime and output—plus `claude mcp list` while the stored token is still expired, which makes Claude Code refresh its own login—rereads the credentials, and retries usage once. Claude Code remains the only process that can exchange the shared refresh token or update its credential store; explicit environment-token overrides are never replaced by this fallback. The optional Claude web session key remains an environment variable and is never saved by UsageAI.
 
-When no Antigravity language server is already available, the extension starts one long-lived
-`agy --hub` server on a loopback port and reads quota from it for the rest of the session, so
-refreshes launch no child process of their own. This includes the backend installed by Google's
+For Gemini, the extension first reuses a running Antigravity language server, then the `agy --hub`
+server Google's Antigravity editor extension runs while an editor with it is open, using that editor's
+own sign-in. Only when neither answers does it start one long-lived `agy --hub` server of its own on a
+loopback port and read quota from it for the rest of the session, so refreshes launch no child process
+of their own. This includes the backend installed by Google's
 official VS Code extension. The hub is reachable only from this machine, is gated by a token the
 extension mints per session and passes to the CLI both in its environment and as `--csrf_token`, and
 is stopped when the extension deactivates. Should the installed CLI predate `--hub`, the extension
