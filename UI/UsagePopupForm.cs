@@ -11,42 +11,60 @@ internal enum DashboardMode
     Full,
 }
 
+/// <summary>The limit the popup headline names, with its forecast when one exists.</summary>
+internal sealed record PopupHeadline(ProviderStatus Status, UsageMetric Metric, UsageProjection? Projection);
+
 internal sealed class UsagePopupForm : Form
 {
-    private const int CompactWidthBaseline = 416;
-    private const int FullWidthBaseline = 620;
-    private const int HeaderRowBaseline = 58;
+    private const int CompactWidthBaseline = 384;
+    private const int FullWidthBaseline = 820;
+    // A title row plus two lines of headline: the sentence naming the busiest limit, its value
+    // and when it runs out does not fit one line at popup width.
+    private const int HeaderRowBaseline = 68;
     private const int FooterRowBaseline = 46;
-    private const int DashboardColumns = 2;
-    private const int DashboardRows = 2;
+    private const int CompactColumns = 2;
+    private const int TileGap = 8;
+
+    private static readonly string[] MetricModeOptions = { "All", "Metered", "Important" };
 
     private readonly AppSettings _settings;
     private readonly int? _dpiOverride;
     private readonly TableLayoutPanel _shell;
     private readonly TableLayoutPanel _header;
     private readonly FlowLayoutPanel _content;
+    private readonly SlimScrollHost _contentFrame;
     private readonly Label _titleLabel;
-    private readonly Label _subtitleLabel;
     private readonly Label _summaryLabel;
     private readonly Label _updatedLabel;
-    private readonly ComboBox _metricMode;
+    private readonly SegmentedControl _metricMode;
     private readonly Button _detailsButton;
-    private readonly Button _refreshButton;
-    private readonly Button _settingsButton;
+    private readonly IconButton _refreshButton;
+    private readonly IconButton _settingsButton;
     private readonly TableLayoutPanel _footer;
-    private readonly UsageMarkControl _mark;
     private IReadOnlyList<ProviderStatus> _states = Array.Empty<ProviderStatus>();
     private IReadOnlyList<UsageSample> _history = Array.Empty<UsageSample>();
     private DashboardMode _mode = DashboardMode.Compact;
+    // The DPI the chrome and content were last measured for.
+    private int _layoutDpi;
+    // Where the compact popup was opened from, so a re-measure can place it there again.
+    private Point? _trayAnchor;
     private bool _allowClose;
     private bool _isRefreshing;
     private DateTimeOffset? _lastRefreshed;
     private Rectangle? _dashboardBounds;
     private bool _dashboardWasShown;
     private bool _updatingCardWidths;
+    private bool _needsScroll;
+    private bool _dashboardSizedByUser;
+    private Size _sizeAtResizeBegin;
+    private PopupHeadline? _headline;
     private readonly System.Windows.Forms.Timer _uiTickTimer;
+    private readonly ThemedToolTip _tileToolTip = new();
+    // Shared by every tile and the table, which are rebuilt on updates, so a gauge keeps easing
+    // from what it showed before the rebuild.
+    private readonly MotionTracker _motion = new();
     private readonly System.Windows.Forms.Timer _refreshAnimationTimer;
-    private float _refreshAnimationAngle;
+    private long _refreshAnimationStart;
 
     public UsagePopupForm(AppSettings settings, int? dpiOverride = null)
     {
@@ -77,7 +95,7 @@ internal sealed class UsagePopupForm : Form
             ColumnCount = 1,
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
-            Padding = scale.Pad(16, 14, 16, 12),
+            Padding = ShellPadding(scale),
             RowCount = 3,
         };
         _shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
@@ -86,11 +104,6 @@ internal sealed class UsagePopupForm : Form
         _shell.RowStyles.Add(new RowStyle(SizeType.Absolute, scale[FooterRowBaseline]));
         Controls.Add(_shell);
 
-        _mark = new UsageMarkControl
-        {
-            Dock = DockStyle.Fill,
-            Margin = scale.Pad(0, 2, 12, 2),
-        };
         _titleLabel = new Label
         {
             AutoEllipsis = true,
@@ -98,63 +111,96 @@ internal sealed class UsagePopupForm : Form
             Font = Typography.Display(12F),
             ForeColor = Theme.Text,
             Margin = Padding.Empty,
-            Text = "Usage at a glance",
-            TextAlign = ContentAlignment.BottomLeft,
+            Text = "Usage",
+            TextAlign = ContentAlignment.MiddleLeft,
         };
-        _subtitleLabel = new Label
-        {
-            AutoEllipsis = true,
-            Dock = DockStyle.Fill,
-            Font = Typography.Text(8.2F),
-            ForeColor = Theme.Muted,
-            Margin = Padding.Empty,
-            Text = "Your connected AI accounts",
-            TextAlign = ContentAlignment.TopLeft,
-        };
+
+        // The headline answers the popup's one question - which limit needs attention - in a
+        // sentence, so it is read before any ring.
         _summaryLabel = new Label
         {
             AutoEllipsis = true,
             Dock = DockStyle.Fill,
-            Font = Typography.Mono(7.5F),
-            ForeColor = Theme.Muted,
+            Font = Typography.Text(8.3F),
+            ForeColor = Theme.TextSecondary,
             Margin = Padding.Empty,
-            Text = "CHECKING",
-            TextAlign = ContentAlignment.MiddleRight,
+            Text = "Checking your accounts…",
+            TextAlign = ContentAlignment.TopLeft,
         };
+        // The dashboard's row filter sits in the header, every option in view: one click to
+        // change, where the dropdown took two.
+        _metricMode = new SegmentedControl(MetricModeOptions, (int)_settings.MetricDisplayMode)
+        {
+            AccessibleName = "Dashboard rows",
+            Dock = DockStyle.Fill,
+            DpiOverride = _dpiOverride,
+            Margin = scale.Pad(8, 2, 8, 2),
+            Visible = false,
+        };
+        _metricMode.SelectedIndexChanged += (_, _) =>
+        {
+            _settings.MetricDisplayMode = (MetricDisplayMode)_metricMode.SelectedIndex;
+            _settings.Save();
+            RebuildCards();
+        };
+        _refreshButton = new IconButton(IconGlyph.Refresh, "Refresh")
+        {
+            Dock = DockStyle.Fill,
+            DpiOverride = _dpiOverride,
+            Margin = Padding.Empty,
+        };
+        _refreshButton.Click += (_, _) => RefreshRequested?.Invoke(this, EventArgs.Empty);
+        _settingsButton = new IconButton(IconGlyph.Settings, "Settings")
+        {
+            Dock = DockStyle.Fill,
+            DpiOverride = _dpiOverride,
+            Margin = Padding.Empty,
+        };
+        _settingsButton.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
 
         _header = new TableLayoutPanel
         {
-            ColumnCount = 3,
+            ColumnCount = 4,
             Dock = DockStyle.Fill,
-            Margin = Padding.Empty,
+            // The shell's right edge is open for the scrollbar; this keeps the window's inset.
+            Margin = scale.Pad(0, 0, RightEdge, 0),
             RowCount = 2,
         };
-        _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[46]));
         _header.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[150]));
-        _header.RowStyles.Add(new RowStyle(SizeType.Percent, 52));
-        _header.RowStyles.Add(new RowStyle(SizeType.Percent, 48));
-        _header.Controls.Add(_mark, 0, 0);
-        _header.SetRowSpan(_mark, 2);
-        _header.Controls.Add(_titleLabel, 1, 0);
-        _header.Controls.Add(_subtitleLabel, 1, 1);
-        _header.Controls.Add(_summaryLabel, 2, 0);
-        _header.SetRowSpan(_summaryLabel, 2);
+        _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 0));
+        _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[32]));
+        _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[32]));
+        _header.RowStyles.Add(new RowStyle(SizeType.Absolute, scale[32]));
+        _header.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        _header.Controls.Add(_titleLabel, 0, 0);
+        _header.Controls.Add(_metricMode, 1, 0);
+        _header.Controls.Add(_refreshButton, 2, 0);
+        _header.Controls.Add(_settingsButton, 3, 0);
+        _header.Controls.Add(_summaryLabel, 0, 1);
+        _header.SetColumnSpan(_summaryLabel, 4);
         _shell.Controls.Add(_header, 0, 0);
 
-        _content = new FlowLayoutPanel
+        // Both modes lay out in rows of two; SetMode returns early for the starting mode, so the
+        // flow is set here rather than only there.
+        _content = new ContentPanel
         {
-            AutoScroll = true,
+            AutoScroll = false,
             BackColor = Theme.Night,
             Dock = DockStyle.Fill,
-            FlowDirection = FlowDirection.TopDown,
+            FlowDirection = FlowDirection.LeftToRight,
             Margin = Padding.Empty,
             Padding = Padding.Empty,
-            WrapContents = false,
+            WrapContents = true,
         };
         _content.HandleCreated += OnContentHandleCreated;
         _content.SizeChanged += (_, _) => RefreshDashboardLayout();
-        _shell.Controls.Add(_content, 0, 1);
+        // Scrolls behind a slim scrollbar rather than the system's full-width one.
+        _contentFrame = new SlimScrollHost(_content, _dpiOverride)
+        {
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+        };
+        _shell.Controls.Add(_contentFrame, 0, 1);
 
         _updatedLabel = new Label
         {
@@ -166,71 +212,49 @@ internal sealed class UsagePopupForm : Form
             Text = "Checking accounts...",
             TextAlign = ContentAlignment.MiddleLeft,
         };
-        _metricMode = new ThemedComboBox
-        {
-            AccessibleName = "Dashboard metrics",
-            BackColor = Theme.SurfaceRaised,
-            Dock = DockStyle.Fill,
-            Font = Typography.Text(8.5F),
-            ForeColor = Theme.Text,
-            Margin = scale.Pad(6, 7, 0, 1),
-            Visible = false,
-        };
-        _metricMode.Items.AddRange(new object[] { "All metrics", "Metered only", "Important only" });
-        _metricMode.SelectedIndex = (int)_settings.MetricDisplayMode;
-        _metricMode.SelectedIndexChanged += (_, _) =>
-        {
-            if (_metricMode.SelectedIndex < 0)
-            {
-                return;
-            }
-
-            _settings.MetricDisplayMode = (MetricDisplayMode)_metricMode.SelectedIndex;
-            _settings.Save();
-            RebuildCards();
-        };
-        _detailsButton = CreateButton("Details", scale, primary: false);
+        _detailsButton = CreateButton("Open dashboard", scale, primary: true);
         _detailsButton.Click += (_, _) => ShowNearTray(DashboardMode.Full);
-        _settingsButton = CreateButton("Settings", scale, primary: false);
-        _settingsButton.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
-        _refreshButton = CreateButton("Refresh", scale, primary: true);
-        _refreshButton.Click += (_, _) => RefreshRequested?.Invoke(this, EventArgs.Empty);
-        _refreshButton.ImageAlign = ContentAlignment.MiddleLeft;
-        _refreshButton.TextImageRelation = TextImageRelation.ImageBeforeText;
 
         _footer = new TableLayoutPanel
         {
-            ColumnCount = 5,
+            ColumnCount = 2,
             Dock = DockStyle.Fill,
-            Margin = Padding.Empty,
+            // The shell's right edge is open for the scrollbar; this keeps the window's inset.
+            Margin = scale.Pad(0, 0, RightEdge, 0),
             RowCount = 1,
         };
         _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
-        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 0));
-        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[84]));
-        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[76]));
-        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[84]));
+        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[132]));
         _footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _footer.Controls.Add(_updatedLabel, 0, 0);
-        _footer.Controls.Add(_metricMode, 1, 0);
-        _footer.Controls.Add(_detailsButton, 2, 0);
-        _footer.Controls.Add(_settingsButton, 3, 0);
-        _footer.Controls.Add(_refreshButton, 4, 0);
+        _footer.Controls.Add(_detailsButton, 1, 0);
         _shell.Controls.Add(_footer, 0, 2);
 
         if (_settings.DashboardBounds is { Length: 4 } saved)
         {
             _dashboardBounds = new Rectangle(saved[0], saved[1], saved[2], saved[3]);
+            _dashboardSizedByUser = _settings.DashboardSizedByUser;
         }
 
         Deactivate += (_, _) =>
         {
-            if (_mode == DashboardMode.Compact)
+            if (_mode == DashboardMode.Compact && !StaysOpenWhenInactive)
             {
                 Hide();
             }
         };
-        ResizeEnd += (_, _) => SaveDashboardBounds();
+        // ResizeEnd also ends a move, so only a size that actually changed counts as the user
+        // sizing the dashboard.
+        ResizeBegin += (_, _) => _sizeAtResizeBegin = Size;
+        ResizeEnd += (_, _) =>
+        {
+            if (_mode == DashboardMode.Full && Size != _sizeAtResizeBegin)
+            {
+                _dashboardSizedByUser = true;
+            }
+
+            SaveDashboardBounds();
+        };
         KeyDown += (_, eventArgs) =>
         {
             if (eventArgs.KeyCode == Keys.Escape)
@@ -250,11 +274,18 @@ internal sealed class UsagePopupForm : Form
             }
         };
 
-        _refreshAnimationTimer = new System.Windows.Forms.Timer { Interval = 90 };
+        // The angle follows elapsed time, one turn a second, so a late tick never slows the turn.
+        _refreshAnimationTimer = new System.Windows.Forms.Timer { Interval = 16 };
         _refreshAnimationTimer.Tick += (_, _) =>
         {
-            _refreshAnimationAngle = (_refreshAnimationAngle + 24F) % 360F;
-            UpdateRefreshButtonImage();
+            // Animation effects or High Contrast can be switched on mid-refresh; the arrow stops.
+            if (!Motion.Enabled)
+            {
+                StopRefreshAnimation();
+                return;
+            }
+
+            _refreshButton.Rotation = SpinnerAngle(Environment.TickCount64 - _refreshAnimationStart);
         };
     }
 
@@ -262,7 +293,17 @@ internal sealed class UsagePopupForm : Form
 
     public event EventHandler? SettingsRequested;
 
+    /// <summary>A stale provider's Retry: refresh that provider alone.</summary>
+    public event EventHandler<ProviderCardActionEventArgs>? ProviderRefreshRequested;
+
     public DashboardMode Mode => _mode;
+
+    /// <summary>
+    /// Keeps the compact popup visible when it loses focus. Only the interactive preview sets
+    /// it, so the window can be inspected while another program has the focus.
+    /// </summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal bool StaysOpenWhenInactive { get; init; }
 
     public void SetMode(DashboardMode mode)
     {
@@ -280,21 +321,16 @@ internal sealed class UsagePopupForm : Form
         ConfigureWindowPresentation();
         _detailsButton.Visible = mode == DashboardMode.Compact;
         _metricMode.Visible = mode == DashboardMode.Full;
-        _content.FlowDirection = mode == DashboardMode.Full
-            ? FlowDirection.LeftToRight
-            : FlowDirection.TopDown;
-        _content.WrapContents = mode == DashboardMode.Full;
+        _content.FlowDirection = FlowDirection.LeftToRight;
+        _content.WrapContents = true;
 
-        // The full dashboard is a fixed 2x2 grid whose cards are always resized to the client
-        // area, so there is never anything below the fold to scroll to. Leaving AutoScroll on
-        // let the freshly built, natural-height cards latch a scrollbar before UpdateCardWidths
-        // compacted them, which then stole width from the grid for the rest of the session.
-        _content.AutoScroll = mode == DashboardMode.Compact;
+        // Neither mode scrolls by default: the popup sizes itself to its tiles and the dashboard
+        // window to its table. An automatic scrollbar latched onto freshly built content before
+        // the window had grown to fit it and narrowed the client area under the widths just
+        // computed, so scrolling is switched on explicitly, only when the content cannot fit.
+        _content.AutoScroll = false;
+        _needsScroll = false;
         ApplyScaledChrome();
-        _titleLabel.Text = mode == DashboardMode.Compact ? "Usage at a glance" : "Usage dashboard";
-        _subtitleLabel.Text = mode == DashboardMode.Compact
-            ? "Your connected AI accounts"
-            : "All providers and usage metrics";
         RebuildCards();
     }
 
@@ -308,6 +344,13 @@ internal sealed class UsagePopupForm : Form
         _isRefreshing = isRefreshing;
         _lastRefreshed = lastRefreshed;
         _history = history;
+
+        // The forecast behind the headline changes only with new readings, so it is worked out
+        // here once; the five-second tick only re-words the countdown.
+        var forecastHistory = _settings.ForecastEnabled && _settings.HistoryEnabled
+            ? history
+            : Array.Empty<UsageSample>();
+        _headline = SelectHeadline(states, forecastHistory, DateTimeOffset.Now);
         UpdateStatus();
         RebuildCards();
     }
@@ -315,9 +358,10 @@ internal sealed class UsagePopupForm : Form
     public void ShowNearTray(DashboardMode mode)
     {
         var changedToFull = _mode != DashboardMode.Full && mode == DashboardMode.Full;
-        SetMode(mode);
         var cursor = Cursor.Position;
         var screen = Screen.FromPoint(cursor).WorkingArea;
+        // Mode first: leaving the dashboard saves where the user left it, before anything moves.
+        SetMode(mode);
 
         if (mode == DashboardMode.Full)
         {
@@ -325,22 +369,9 @@ internal sealed class UsagePopupForm : Form
             return;
         }
 
-        ApplyPreferredSize(screen);
-        var scale = Scale();
-        var x = Math.Clamp(
-            cursor.X - Width + scale[24],
-            screen.Left + scale[8],
-            Math.Max(screen.Left + scale[8], screen.Right - Width - scale[8]));
-        var y = Math.Clamp(
-            screen.Bottom - Height - scale[8],
-            screen.Top + scale[8],
-            Math.Max(screen.Top + scale[8], screen.Bottom - Height - scale[8]));
-        if (cursor.Y < screen.Top + Height)
-        {
-            y = screen.Top + scale[8];
-        }
-
-        Location = new Point(x, y);
+        _trayAnchor = cursor;
+        MoveOntoScreen(screen);
+        PlaceNearTray(cursor, screen);
         if (!Visible)
         {
             Show();
@@ -348,6 +379,80 @@ internal sealed class UsagePopupForm : Form
 
         Activate();
     }
+
+    /// <summary>
+    /// Puts the hidden window on the screen it is about to open on before anything is measured.
+    /// Created or left on a monitor at another scale, it would be sized for that DPI and only
+    /// then put here, where Windows rescales a window it creates or moves without reliably
+    /// reporting it; a move while hidden reports the change, and the window is measured for it.
+    /// </summary>
+    private void MoveOntoScreen(Rectangle screen)
+    {
+        if (Visible || _dpiOverride is not null || screen.Contains(Location))
+        {
+            return;
+        }
+
+        _ = Handle;
+        Location = screen.Location;
+    }
+
+    /// <summary>
+    /// Sizes the compact popup and sets it beside the tray: against the screen edge nearest
+    /// <paramref name="anchor"/>, at the bottom, or at the top when the taskbar is there.
+    /// </summary>
+    private void PlaceNearTray(Point anchor, Rectangle screen)
+    {
+        ApplyPreferredSize(screen);
+        var scale = Scale();
+        var x = Math.Clamp(
+            anchor.X - Width + scale[24],
+            screen.Left + scale[8],
+            Math.Max(screen.Left + scale[8], screen.Right - Width - scale[8]));
+        var y = Math.Clamp(
+            screen.Bottom - Height - scale[8],
+            screen.Top + scale[8],
+            Math.Max(screen.Top + scale[8], screen.Bottom - Height - scale[8]));
+        if (anchor.Y < screen.Top + Height)
+        {
+            y = screen.Top + scale[8];
+        }
+
+        Location = new Point(x, y);
+    }
+
+    /// <summary>
+    /// For the README preview: the content area in client coordinates and the dashboard's
+    /// table, so a table taller than any window can still be drawn whole. Null in the popup.
+    /// </summary>
+    internal (Rectangle Content, UsageLedger Table)? PreviewTable =>
+        _content.Controls.OfType<UsageLedger>().FirstOrDefault() is { } table
+            ? (PreviewContentArea(), table)
+            : null;
+
+    /// <summary>
+    /// For the README preview: the content area, its background, and each tile with its bounds
+    /// in client coordinates, so the popup can be drawn whole even when Windows caps the window
+    /// at about the screen's height, as a 192-DPI render on a 768-pixel screen is. Null in the
+    /// dashboard.
+    /// </summary>
+    internal (Rectangle Content, int NaturalHeight, Color Background, (ProviderTile Tile, Rectangle Bounds)[] Tiles)? PreviewTiles =>
+        _content.Controls.OfType<ProviderTile>().ToArray() is { Length: > 0 } tiles
+            ? (PreviewContentArea(),
+                TilesHeight(tiles, Scale()),
+                _content.BackColor,
+                tiles.Select(tile => (tile, RectangleToClient(_content.RectangleToScreen(tile.Bounds)))).ToArray())
+            : null;
+
+    /// <summary>The height the compact popup's tiles fill: whole rows of two with a gap between.</summary>
+    private static int TilesHeight(ProviderTile[] tiles, LayoutScale scale)
+    {
+        var rows = (tiles.Length + CompactColumns - 1) / CompactColumns;
+        return (rows * tiles.Max(tile => tile.NaturalHeight)) + (scale[TileGap] * (rows - 1));
+    }
+
+    private Rectangle PreviewContentArea() =>
+        RectangleToClient(_contentFrame.RectangleToScreen(new Rectangle(Point.Empty, _contentFrame.Size)));
 
     public void CloseForExit()
     {
@@ -392,24 +497,53 @@ internal sealed class UsagePopupForm : Form
             eventArgs.DeviceDpiOld,
             eventArgs.DeviceDpiNew);
         base.OnDpiChanged(eventArgs);
+        ReapplyDpi(Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea, scrollY);
+    }
+
+    /// <summary>
+    /// Measures the window again for the DPI it is on now: after a move to a monitor at another
+    /// scale, and after being created straight onto one, which Windows reports as no change.
+    /// </summary>
+    private void ReapplyDpi(Rectangle workingArea, int scrollY)
+    {
         ApplyScaledChrome();
         RebuildCards();
         _content.AutoScrollPosition = new Point(0, scrollY);
-        var workingArea = Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea;
         if (_mode == DashboardMode.Full)
         {
             ApplyDashboardMinimumSize(workingArea);
+
+            // Until the user sizes the dashboard it fits its table: a window created on one
+            // monitor and shown on another was only scaled by Windows, from a height measured at
+            // the first monitor's DPI, and cut the last provider off.
+            if (!_dashboardSizedByUser)
+            {
+                ApplyPreferredSize(workingArea);
+            }
+
             Bounds = FitDashboardToWorkingArea(Bounds, workingArea);
         }
         else
         {
-            ApplyPreferredSize(workingArea);
+            // Grown or shrunk for the new scale, the popup is set beside the tray again: kept
+            // where it was, a popup opened at the bottom of the screen ran off it.
+            if (_trayAnchor is { } anchor)
+            {
+                PlaceNearTray(anchor, workingArea);
+            }
+            else
+            {
+                ApplyPreferredSize(workingArea);
+            }
         }
     }
 
     protected override void OnPaint(PaintEventArgs e)
     {
         base.OnPaint(e);
+
+        // Painted even where DWM draws a rounded frame of the same colour: DWM clips the corners
+        // away, while previews (DrawToBitmap) and sessions without DWM effects still get an edge.
         using var border = new Pen(Theme.Hairline);
         e.Graphics.DrawRectangle(border, 0, 0, ClientSize.Width - 1, ClientSize.Height - 1);
     }
@@ -418,6 +552,21 @@ internal sealed class UsagePopupForm : Form
     {
         base.OnHandleCreated(e);
         WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
+        WindowThemeHelpers.ApplyWindowFrame(this);
+
+        // Created straight onto a monitor at another scale, the window gets no DPI change and
+        // keeps a layout measured at the start-up DPI. It is measured again once creation has
+        // finished, when the window's own size and scrolling can be decided too.
+        if (_dpiOverride is null && _layoutDpi != 0 && _layoutDpi != DeviceDpi)
+        {
+            BeginInvoke(() =>
+            {
+                if (!IsDisposed && !Disposing && _layoutDpi != DeviceDpi)
+                {
+                    ReapplyDpi(Screen.FromControl(this).WorkingArea, 0);
+                }
+            });
+        }
     }
 
     protected override void OnVisibleChanged(EventArgs e)
@@ -433,6 +582,7 @@ internal sealed class UsagePopupForm : Form
         {
             _uiTickTimer.Stop();
             StopRefreshAnimation();
+            _motion.Reset();
         }
     }
 
@@ -443,6 +593,8 @@ internal sealed class UsagePopupForm : Form
             StopRefreshAnimation();
             _refreshAnimationTimer.Dispose();
             _uiTickTimer.Dispose();
+            _tileToolTip.Dispose();
+            _motion.Dispose();
             Theme.Changed -= OnThemeChanged;
         }
 
@@ -482,6 +634,8 @@ internal sealed class UsagePopupForm : Form
 
         ApplyThemeColors();
         RebuildCards();
+        // Leaving High Contrast during a refresh starts the arrow again.
+        UpdateRefreshAnimationState();
         Invalidate(invalidateChildren: true);
     }
 
@@ -491,79 +645,63 @@ internal sealed class UsagePopupForm : Form
         _shell.BackColor = Theme.Night;
         _content.BackColor = Theme.Night;
         _titleLabel.ForeColor = Theme.Text;
-        _subtitleLabel.ForeColor = Theme.Muted;
+        _summaryLabel.ForeColor = Theme.TextSecondary;
         _updatedLabel.ForeColor = Theme.Muted;
-        _metricMode.BackColor = Theme.SurfaceRaised;
-        _metricMode.ForeColor = Theme.Text;
-        _refreshButton.BackColor = Theme.Accent;
-        _refreshButton.ForeColor = Theme.OnAccent;
-        _refreshButton.FlatAppearance.BorderColor = Theme.Accent;
-        _detailsButton.BackColor = Theme.SurfaceRaised;
-        _detailsButton.ForeColor = Theme.Text;
-        _detailsButton.FlatAppearance.BorderColor = Theme.Hairline;
-        _settingsButton.BackColor = Theme.SurfaceRaised;
-        _settingsButton.ForeColor = Theme.Text;
-        _settingsButton.FlatAppearance.BorderColor = Theme.Hairline;
+        _metricMode.Invalidate();
+        _detailsButton.BackColor = Theme.Accent;
+        _detailsButton.ForeColor = Theme.OnAccent;
+        _detailsButton.FlatAppearance.BorderColor = Theme.Accent;
+        _detailsButton.FlatAppearance.MouseDownBackColor = Theme.Blend(Theme.Accent, Theme.Night, 0.75);
+        _detailsButton.FlatAppearance.MouseOverBackColor = Theme.Blend(Theme.Accent, Theme.Text, 0.88);
+        _refreshButton.Invalidate();
+        _settingsButton.Invalidate();
         WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
+        WindowThemeHelpers.ApplyWindowFrame(this);
         WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
         UpdateStatus();
     }
 
     private void ApplyScaledChrome()
     {
+        _layoutDpi = _dpiOverride ?? DeviceDpi;
         var scale = Scale();
-        _shell.Padding = scale.Pad(16, 14, 16, 12);
+        _shell.Padding = ShellPadding(scale);
+        var edge = scale.Pad(0, 0, RightEdge, 0);
+        _header.Margin = edge;
+        _footer.Margin = edge;
         _shell.RowStyles[0] = new RowStyle(SizeType.Absolute, scale[HeaderRowBaseline]);
         _shell.RowStyles[2] = new RowStyle(SizeType.Absolute, scale[FooterRowBaseline]);
-        _header.ColumnStyles[0] = new ColumnStyle(SizeType.Absolute, scale[46]);
-        _header.ColumnStyles[2] = new ColumnStyle(SizeType.Absolute, scale[150]);
-        _footer.ColumnStyles[1] = new ColumnStyle(SizeType.Absolute, _mode == DashboardMode.Full ? scale[132] : 0);
-        _footer.ColumnStyles[2] = new ColumnStyle(SizeType.Absolute, _mode == DashboardMode.Compact ? scale[76] : 0);
-        _footer.ColumnStyles[3] = new ColumnStyle(SizeType.Absolute, scale[84]);
-        _footer.ColumnStyles[4] = new ColumnStyle(SizeType.Absolute, scale[84]);
+        _header.ColumnStyles[1] = new ColumnStyle(
+            SizeType.Absolute,
+            _mode == DashboardMode.Full ? _metricMode.PreferredWidth + _metricMode.Margin.Horizontal : 0);
+        _header.ColumnStyles[2] = new ColumnStyle(SizeType.Absolute, scale[32]);
+        _header.ColumnStyles[3] = new ColumnStyle(SizeType.Absolute, scale[32]);
+        _header.RowStyles[0] = new RowStyle(SizeType.Absolute, scale[32]);
+        _footer.ColumnStyles[1] = new ColumnStyle(SizeType.Absolute, _mode == DashboardMode.Compact ? scale[132] : 0);
     }
 
     private void RebuildCards()
     {
+        // Held until the window has its new size, so the rebuild shows as one finished frame.
+        using var redraw = WindowThemeHelpers.SuspendRedraw(_content);
         _content.SuspendLayout();
         try
         {
-            // Copy first: disposing a control removes it from the collection being iterated.
-            var previous = _content.Controls.Cast<Control>().ToArray();
-            _content.Controls.Clear();
-            foreach (var control in previous)
-            {
-                control.Dispose();
-            }
+            var forecastHistory = _settings.ForecastEnabled && _settings.HistoryEnabled
+                ? _history
+                : Array.Empty<UsageSample>();
 
-            var visibleStates = _mode == DashboardMode.Full ? _states : CompactStates();
-            if (visibleStates.Count == 0)
+            // The dashboard's table is updated in place: it is rebuilt several times a refresh as
+            // providers publish, and a new control would drop the user's focus and scroll position.
+            if (_mode == DashboardMode.Full &&
+                _content.Controls.Count == 1 &&
+                _content.Controls[0] is UsageLedger existing)
             {
-                _content.Controls.Add(new EmptyProvidersControl
-                {
-                    Height = Scale()[104],
-                    Margin = new Padding(0, 0, 0, 10),
-                });
+                existing.SetData(_states, _settings.MetricDisplayMode, _settings.QuotaDisplay, forecastHistory);
             }
             else
             {
-                var expanded = _mode == DashboardMode.Full;
-                foreach (var state in visibleStates)
-                {
-                    var selectedMetrics = expanded && state.Snapshot is { } snapshot
-                        ? UsageMetricSelection.Select(snapshot.Metrics, _settings.MetricDisplayMode)
-                        : null;
-                    var card = new ProviderUsageCard(
-                        state,
-                        expanded,
-                        _history,
-                        _settings.ForecastEnabled && _settings.HistoryEnabled,
-                        selectedMetrics,
-                        _dpiOverride,
-                        _settings.QuotaDisplay);
-                    card.ActionInvoked += OnCardActionInvoked;
-                    _content.Controls.Add(card);
-                }
+                ReplaceContent(forecastHistory);
             }
         }
         finally
@@ -576,6 +714,98 @@ internal sealed class UsagePopupForm : Form
         {
             ApplyPreferredSize(Screen.FromPoint(Cursor.Position).WorkingArea);
         }
+        else
+        {
+            GrowDashboardToFit();
+        }
+    }
+
+    private void ReplaceContent(IReadOnlyList<UsageSample> forecastHistory)
+    {
+        // Copy first: disposing a control removes it from the collection being iterated.
+        var previous = _content.Controls.Cast<Control>().ToArray();
+        _content.Controls.Clear();
+        foreach (var control in previous)
+        {
+            control.Dispose();
+        }
+
+        if (_mode == DashboardMode.Full)
+        {
+            var ledger = new UsageLedger(
+                _states,
+                _settings.MetricDisplayMode,
+                _settings.QuotaDisplay,
+                forecastHistory,
+                _dpiOverride)
+            {
+                Margin = Padding.Empty,
+                Motion = _motion,
+            };
+            ledger.ActionInvoked += OnCardActionInvoked;
+            _content.Controls.Add(ledger);
+        }
+        else
+        {
+            AddCompactContent();
+        }
+    }
+
+    /// <summary>
+    /// Grows a dashboard the user has not sized when its table outgrows the window: one first
+    /// opened while providers were still loading was sized to their one-line placeholders, and
+    /// would otherwise keep that height and scroll once the real rows arrived. It never shrinks,
+    /// so switching the row filter does not make the window jump.
+    /// </summary>
+    private void GrowDashboardToFit()
+    {
+        if (_mode != DashboardMode.Full ||
+            _dashboardSizedByUser ||
+            WindowState != FormWindowState.Normal ||
+            _content.Controls.OfType<UsageLedger>().FirstOrDefault() is not { } ledger ||
+            ledger.NaturalHeight <= _content.ClientSize.Height)
+        {
+            return;
+        }
+
+        var workingArea = Screen.FromControl(this).WorkingArea;
+        var before = Size;
+        ApplyPreferredSize(workingArea);
+        if (Height < before.Height || Width < before.Width)
+        {
+            Size = new Size(Math.Max(Width, before.Width), Math.Max(Height, before.Height));
+        }
+
+        Bounds = FitDashboardToWorkingArea(Bounds, workingArea);
+    }
+
+    private void AddCompactContent()
+    {
+        var visibleStates = CompactStates();
+        if (visibleStates.Length == 0)
+        {
+            _content.Controls.Add(new EmptyProvidersControl
+            {
+                Height = Scale()[104],
+                Margin = new Padding(0, 0, 0, 10),
+            });
+            return;
+        }
+
+        foreach (var state in visibleStates)
+        {
+            var tile = new ProviderTile(
+                state,
+                _settings.QuotaDisplay,
+                _settings.PopupMetricGroup(state.ProviderId),
+                _dpiOverride,
+                _tileToolTip)
+            {
+                Motion = _motion,
+            };
+            tile.ActionInvoked += OnCardActionInvoked;
+            _content.Controls.Add(tile);
+        }
     }
 
     private void OnCardActionInvoked(object? sender, ProviderCardActionEventArgs eventArgs)
@@ -587,6 +817,12 @@ internal sealed class UsagePopupForm : Form
                 break;
             case ProviderCardAction.OpenAccount when eventArgs.Status.AccountUrl is { } url:
                 TryOpen(url);
+                break;
+            case ProviderCardAction.OpenDetails:
+                ShowNearTray(DashboardMode.Full);
+                break;
+            case ProviderCardAction.Refresh:
+                ProviderRefreshRequested?.Invoke(this, eventArgs);
                 break;
             default:
                 break;
@@ -639,37 +875,104 @@ internal sealed class UsagePopupForm : Form
 
     private void UpdateStatus()
     {
-        var connected = _states.Where(state => state.IsConnected).ToArray();
         _refreshButton.Enabled = !_isRefreshing;
-        _refreshButton.Text = _isRefreshing ? "Reading" : "Refresh";
+        _refreshButton.AccessibleName = _isRefreshing ? "Refreshing" : "Refresh";
         UpdateRefreshAnimationState();
 
-        // The provider with the busiest primary session earns the header slot.
-        var headlineStatus = SelectHeadlineStatus(connected);
-        var headline = headlineStatus is null ? null : Headline(headlineStatus.Snapshot);
-        if (headlineStatus is not null && headline is not null)
-        {
-            _summaryLabel.ForeColor = headline.HasQuota
-                ? Theme.ForUsage(headline.UsedPercent!.Value)
-                : Theme.Muted;
-            _summaryLabel.Text = $"{ShortName(headlineStatus.ProviderName)} {headline.DisplayPrimary(_settings.QuotaDisplay)}".ToUpperInvariant();
-        }
-        else if (_isRefreshing)
-        {
-            _summaryLabel.ForeColor = Theme.Signal;
-            _summaryLabel.Text = "CHECKING";
-        }
-        else
-        {
-            _summaryLabel.ForeColor = Theme.Critical;
-            _summaryLabel.Text = "NOT CONNECTED";
-        }
-
+        _summaryLabel.Text = FormatHeadline(_headline, _states, _isRefreshing, _settings.QuotaDisplay, DateTimeOffset.Now);
         _updatedLabel.Text = RefreshSummary(
             _states,
             _isRefreshing,
             _lastRefreshed,
             DateTimeOffset.Now);
+    }
+
+    /// <summary>
+    /// The busiest metered limit across connected providers: the one the popup headline names.
+    /// Unlike the tray gauge, which follows each provider's primary window, the headline looks
+    /// at every limit, so a weekly window at 92% is not hidden behind a 5-hour one at 40%.
+    /// </summary>
+    internal static (ProviderStatus Status, UsageMetric Metric)? SelectHeadlineMetric(IReadOnlyList<ProviderStatus> states) =>
+        states
+            .Where(state => state.Snapshot is not null)
+            .SelectMany(state => state.Snapshot!.Metrics
+                .Where(metric => metric.HasQuota)
+                .Select(metric => (Status: state, Metric: metric)))
+            .OrderByDescending(entry => entry.Metric.UsedPercent)
+            .Select(entry => ((ProviderStatus Status, UsageMetric Metric)?)entry)
+            .FirstOrDefault();
+
+    /// <summary>
+    /// The limit the popup headline names. A limit forecast to run out before it resets outranks
+    /// one that is merely busy, and among those the one that runs out earliest wins; without a
+    /// forecast it is the busiest limit of all.
+    /// </summary>
+    internal static PopupHeadline? SelectHeadline(
+        IReadOnlyList<ProviderStatus> states,
+        IReadOnlyList<UsageSample> history,
+        DateTimeOffset now)
+    {
+        var runningOut = states
+            .Where(state => state.Snapshot is not null)
+            .SelectMany(state => state.Snapshot!.Metrics
+                .Where(metric => metric.HasQuota)
+                .Select(metric => new PopupHeadline(
+                    state,
+                    metric,
+                    UsageForecast.Project(history, state.ProviderId, metric, now))))
+            .Where(candidate => candidate.Projection is { BeforeReset: true })
+            .OrderBy(candidate => candidate.Projection!.ExhaustedAt)
+            .FirstOrDefault();
+        if (runningOut is not null)
+        {
+            return runningOut;
+        }
+
+        return SelectHeadlineMetric(states) is { } busiest
+            ? new PopupHeadline(busiest.Status, busiest.Metric, null)
+            : null;
+    }
+
+    /// <summary>
+    /// One sentence that answers the popup's question before any ring is read: which limit runs
+    /// out first and when, or, without a forecast, which limit is busiest and when it resets.
+    /// </summary>
+    internal static string HeadlineText(
+        IReadOnlyList<ProviderStatus> states,
+        bool isRefreshing,
+        QuotaDisplay quotaDisplay,
+        IReadOnlyList<UsageSample> history,
+        DateTimeOffset now) =>
+        FormatHeadline(SelectHeadline(states, history, now), states, isRefreshing, quotaDisplay, now);
+
+    private static string FormatHeadline(
+        PopupHeadline? headline,
+        IReadOnlyList<ProviderStatus> states,
+        bool isRefreshing,
+        QuotaDisplay quotaDisplay,
+        DateTimeOffset now)
+    {
+        if (headline is null)
+        {
+            return isRefreshing
+                ? "Checking your accounts…"
+                : states.Any(state => state.IsConnected)
+                    ? "No metered limits reported."
+                    : "No connected providers.";
+        }
+
+        var (status, metric, projection) = headline;
+        var value = metric.DisplayPrimary(quotaDisplay).ToLowerInvariant();
+        var provider = ShortName(status.ProviderName);
+        if (projection is { BeforeReset: true })
+        {
+            return $"{provider} runs out first: {metric.Name} at {value}, around {UsageFormatting.AbsoluteReset(projection.ExhaustedAt, now, System.Globalization.CultureInfo.CurrentCulture)}.";
+        }
+
+        var reset = UsageFormatting.RelativeReset(metric.ResetsAt, now);
+        return string.IsNullOrEmpty(reset)
+            ? $"Busiest: {provider} {metric.Name} at {value}."
+            : $"Busiest: {provider} {metric.Name} at {value}, {reset}.";
     }
 
     internal static string RefreshSummary(
@@ -717,7 +1020,9 @@ internal sealed class UsagePopupForm : Form
 
     private void UpdateRefreshAnimationState()
     {
-        if (!_isRefreshing || !Visible || IsDisposed || Disposing)
+        // Without motion the arrow holds still; the disabled button, its "Refreshing" name and
+        // the status line still say a refresh is running.
+        if (!_isRefreshing || !Visible || IsDisposed || Disposing || !Motion.Enabled)
         {
             StopRefreshAnimation();
             return;
@@ -725,65 +1030,19 @@ internal sealed class UsagePopupForm : Form
 
         if (!_refreshAnimationTimer.Enabled)
         {
-            _refreshAnimationAngle = 0F;
-            UpdateRefreshButtonImage();
+            _refreshAnimationStart = Environment.TickCount64;
+            _refreshButton.Rotation = 0F;
             _refreshAnimationTimer.Start();
         }
     }
 
-    private void UpdateRefreshButtonImage()
-    {
-        if (!_isRefreshing || !Visible || IsDisposed || Disposing)
-        {
-            return;
-        }
-
-        var scale = _dpiOverride is { } dpi ? new LayoutScale(dpi) : new LayoutScale(_refreshButton);
-        var pixels = Math.Max(scale[13], 8);
-        var bitmap = new Bitmap(pixels, pixels);
-        using (var graphics = Graphics.FromImage(bitmap))
-        {
-            graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            graphics.Clear(Color.Transparent);
-            var stroke = Math.Max(scale.Exact(1.6F), 1.4F);
-            var inset = stroke / 2F + scale.Exact(0.7F);
-            var bounds = new RectangleF(inset, inset, pixels - inset * 2F, pixels - inset * 2F);
-            using var pen = new Pen(Theme.OnAccent, stroke)
-            {
-                StartCap = LineCap.Round,
-                EndCap = LineCap.Round,
-            };
-            graphics.DrawArc(pen, bounds, _refreshAnimationAngle, 270F);
-        }
-
-        var previous = _refreshButton.Image;
-        _refreshButton.Image = bitmap;
-        previous?.Dispose();
-    }
+    internal static float SpinnerAngle(long elapsedMilliseconds) =>
+        elapsedMilliseconds <= 0 ? 0F : elapsedMilliseconds % 1000 * 0.36F;
 
     private void StopRefreshAnimation()
     {
         _refreshAnimationTimer.Stop();
-        var previous = _refreshButton.Image;
-        _refreshButton.Image = null;
-        previous?.Dispose();
-    }
-
-    internal static ProviderStatus? SelectHeadlineStatus(IReadOnlyList<ProviderStatus> states) =>
-        states
-            .Where(state => state.Snapshot is not null)
-            .OrderByDescending(state => Headline(state.Snapshot)?.UsedPercent ?? 0)
-            .FirstOrDefault();
-
-    /// <summary>The metric that best represents a provider's active usage session.</summary>
-    private static UsageMetric? Headline(UsageSnapshot? snapshot)
-    {
-        if (snapshot is null)
-        {
-            return null;
-        }
-
-        return snapshot.Primary ?? snapshot.Metrics.FirstOrDefault(metric => metric.HasQuota);
+        _refreshButton.Rotation = 0F;
     }
 
     private static string ShortName(string providerName) =>
@@ -794,32 +1053,44 @@ internal sealed class UsagePopupForm : Form
         var scale = Scale();
         var width = scale[_mode == DashboardMode.Compact ? CompactWidthBaseline : FullWidthBaseline];
         int contentHeight;
-        if (_mode == DashboardMode.Compact || _content.Controls.Count <= 1)
+        var tiles = _content.Controls.OfType<ProviderTile>().ToArray();
+        if (_mode == DashboardMode.Compact && tiles.Length > 0)
+        {
+            contentHeight = TilesHeight(tiles, scale);
+        }
+        else if (_content.Controls.OfType<UsageLedger>().FirstOrDefault() is { } ledger)
+        {
+            contentHeight = ledger.NaturalHeight;
+        }
+        else
         {
             contentHeight = _content.Controls
                 .Cast<Control>()
                 .Sum(control => control.Height + control.Margin.Vertical);
-        }
-        else
-        {
-            var gap = scale[10];
-            var tallestCard = _content.Controls
-                .Cast<Control>()
-                .Select(control => control is ProviderUsageCard card ? card.NaturalHeight : control.Height)
-                .DefaultIfEmpty(scale[104])
-                .Max();
-            var rows = DashboardRowCount(_content.Controls.Count);
-            contentHeight = (rows * tallestCard) + (gap * (rows - 1));
         }
 
         contentHeight = Math.Max(scale[104], contentHeight);
         var chromeHeight = _shell.Padding.Vertical + scale[HeaderRowBaseline] + scale[FooterRowBaseline];
         var nonClientWidth = Width - ClientSize.Width;
         var nonClientHeight = Height - ClientSize.Height;
-        var maximumHeight = Math.Max(scale[260], workingArea.Height - nonClientHeight - scale[32]);
+        // A comfortable minimum, but never more than the screen: at extreme scaling the minimum
+        // alone can exceed the working area, and a window past the screen edge is unreachable.
+        var maximumHeight = Math.Min(
+            workingArea.Height - nonClientHeight,
+            Math.Max(scale[260], workingArea.Height - nonClientHeight - scale[32]));
         var desiredHeight = Math.Min(chromeHeight + contentHeight, maximumHeight);
+        _needsScroll = chromeHeight + contentHeight > maximumHeight;
+        if (_content.AutoScroll != _needsScroll)
+        {
+            _content.AutoScroll = _needsScroll;
+        }
+
         ClientSize = new Size(
-            Math.Min(width, Math.Max(scale[260], workingArea.Width - nonClientWidth - scale[32])),
+            Math.Min(
+                width,
+                Math.Min(
+                    workingArea.Width - nonClientWidth,
+                    Math.Max(scale[260], workingArea.Width - nonClientWidth - scale[32]))),
             desiredHeight);
         UpdateCardWidths();
     }
@@ -837,8 +1108,11 @@ internal sealed class UsagePopupForm : Form
                 ApplyDashboardMinimumSize(Screen.FromPoint(Location).WorkingArea);
                 ShowInTaskbar = true;
                 Text = "UsageAI Dashboard";
+                // Its title bar and taskbar button carry the logo, not the generic placeholder.
+                AppIcon.Apply(this);
                 TopMost = false;
                 WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
+                WindowThemeHelpers.ApplyWindowFrame(this);
                 WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
                 return;
             }
@@ -855,6 +1129,7 @@ internal sealed class UsagePopupForm : Form
             FormBorderStyle = FormBorderStyle.None;
             Text = "UsageAI";
             TopMost = true;
+            WindowThemeHelpers.ApplyWindowFrame(this);
         }
         finally
         {
@@ -924,12 +1199,15 @@ internal sealed class UsagePopupForm : Form
 
         _dashboardBounds = bounds;
         var saved = new[] { bounds.X, bounds.Y, bounds.Width, bounds.Height };
-        if (_settings.DashboardBounds is { Length: 4 } existing && existing.SequenceEqual(saved))
+        if (_settings.DashboardBounds is { Length: 4 } existing &&
+            existing.SequenceEqual(saved) &&
+            _settings.DashboardSizedByUser == _dashboardSizedByUser)
         {
             return;
         }
 
         _settings.DashboardBounds = saved;
+        _settings.DashboardSizedByUser = _dashboardSizedByUser;
         _settings.Save();
     }
 
@@ -951,18 +1229,10 @@ internal sealed class UsagePopupForm : Form
         return new Rectangle(x, y, width, height);
     }
 
-    /// <summary>
-    /// How many rows the grid needs. Four providers are the 2x2 the dashboard is designed around,
-    /// but the column count is what is fixed, not the row count: the panel no longer scrolls, so a
-    /// fifth provider has to earn a third row rather than be laid out past the bottom edge where
-    /// nothing could reach it. Shorter rows are what the cards already compact for.
-    /// </summary>
-    private static int DashboardRowCount(int cardCount) =>
-        Math.Max(DashboardRows, (cardCount + DashboardColumns - 1) / DashboardColumns);
-
     private void UpdateCardWidths()
     {
-        if (_updatingCardWidths || _content.IsDisposed || Disposing || IsDisposed)
+        // The frame is created after the panel, whose first resize can arrive before it exists.
+        if (_updatingCardWidths || _contentFrame is null || _content.IsDisposed || Disposing || IsDisposed)
         {
             return;
         }
@@ -973,9 +1243,25 @@ internal sealed class UsagePopupForm : Form
         {
             var scale = Scale();
 
-            // ClientSize already excludes a visible scrollbar, so it is the usable width in
-            // both modes; subtracting the scrollbar again only left a dead strip on the right.
-            var availableWidth = _content.ClientSize.Width;
+            // The dashboard is resized by hand, so whether its table needs a scrollbar is decided
+            // here from the room it has now. Both modes reserve the scrollbar's width up front
+            // rather than reading a client width that changes the moment the scrollbar appears.
+            var ledger = _content.Controls.OfType<UsageLedger>().FirstOrDefault();
+            if (_mode == DashboardMode.Full && ledger is not null)
+            {
+                _needsScroll = ledger.NaturalHeight > _content.Height;
+                if (_content.AutoScroll != _needsScroll)
+                {
+                    _content.AutoScroll = _needsScroll;
+                }
+            }
+
+            // Sized to the visible frame, less the slim scrollbar's gutter while it scrolls. The
+            // frame runs to the window's edge, so content keeps the window's inset and the
+            // scrollbar sits in that margin.
+            var availableWidth = Math.Min(
+                _contentFrame.ContentWidth(_needsScroll),
+                _contentFrame.Width - scale[RightEdge]);
             if (availableWidth < scale[100])
             {
                 return;
@@ -983,42 +1269,40 @@ internal sealed class UsagePopupForm : Form
 
             if (_mode == DashboardMode.Compact)
             {
-                var cardWidth = Math.Max(scale[220], availableWidth);
-                foreach (Control control in _content.Controls)
-                {
-                    control.Margin = new Padding(0, 0, 0, scale[10]);
-                    if (control.Width != cardWidth)
-                    {
-                        control.Width = cardWidth;
-                    }
-                }
-            }
-            else
-            {
-                var gap = scale[10];
-                var cardWidth = Math.Max(1, (availableWidth - gap) / DashboardColumns);
+                // Tiles sit two to a row; anything else (the empty-state notice) spans the row.
+                var gap = scale[TileGap];
                 var count = _content.Controls.Count;
-                var rows = DashboardRowCount(count);
-                var availableHeight = _content.ClientSize.Height;
-                var availableCardHeight = Math.Max(1, (availableHeight - (gap * (rows - 1))) / rows);
-
+                var rows = (count + CompactColumns - 1) / CompactColumns;
+                // FlowLayoutPanel wraps a row that fits exactly, and a wrapped row adds a scrollbar
+                // that keeps it wrapped, so the row keeps a pixel of slack.
+                var tileWidth = Math.Max(1, (availableWidth - gap - 1) / CompactColumns);
                 for (var i = 0; i < count; i++)
                 {
                     var control = _content.Controls[i];
-                    var colIndex = i % DashboardColumns;
-                    var rowIndex = i / DashboardColumns;
-                    var rightMargin = colIndex == DashboardColumns - 1 ? 0 : gap;
-                    var bottomMargin = rowIndex == rows - 1 ? 0 : gap;
-                    var margin = new Padding(0, 0, rightMargin, bottomMargin);
+                    var isTile = control is ProviderTile;
+                    var column = i % CompactColumns;
+                    var margin = isTile
+                        ? new Padding(0, 0, column == 0 ? gap : 0, i / CompactColumns == rows - 1 ? 0 : gap)
+                        : Padding.Empty;
                     if (control.Margin != margin)
                     {
                         control.Margin = margin;
                     }
 
-                    if (control.Width != cardWidth || control.Height != availableCardHeight)
+                    var width = isTile ? tileWidth : availableWidth;
+                    if (control.Width != width)
                     {
-                        control.Size = new Size(cardWidth, availableCardHeight);
+                        control.Width = width;
                     }
+                }
+            }
+            else if (ledger is not null)
+            {
+                ledger.Margin = Padding.Empty;
+                var size = new Size(availableWidth, ledger.NaturalHeight);
+                if (ledger.Size != size)
+                {
+                    ledger.Size = size;
                 }
             }
         }
@@ -1049,64 +1333,30 @@ internal sealed class UsagePopupForm : Form
 
     private LayoutScale Scale() => _dpiOverride is { } dpi ? new LayoutScale(dpi) : new LayoutScale(this);
 
+    // The popup is a tight flyout; the dashboard window gets more breathing room. The right edge
+    // is open in both, so a scrolling view carries its scrollbar to the window's edge; the
+    // header, footer and content keep the same inset themselves (RightEdge).
+    private Padding ShellPadding(LayoutScale scale) => _mode == DashboardMode.Compact
+        ? scale.Pad(12, 10, 0, 8)
+        : scale.Pad(16, 14, 0, 12);
+
+    /// <summary>The right inset of everything but the scrollbar, at 96 DPI.</summary>
+    private int RightEdge => _mode == DashboardMode.Compact ? 12 : 16;
+
     private void OnContentHandleCreated(object? sender, EventArgs eventArgs) =>
         WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
 
-    private sealed class UsageMarkControl : Control
+    /// <summary>
+    /// The content panel. WinForms scrolls a focused child into view by aligning its top, which for
+    /// the dashboard's table — taller than the view — undid the table's own scroll to its focused
+    /// link. A child that does not fit keeps the current position and scrolls itself.
+    /// </summary>
+    private sealed class ContentPanel : FlowLayoutPanel
     {
-        private static readonly Lazy<Image?> LogoImage = new(() =>
-        {
-            try
-            {
-                var path = Path.Combine(AppContext.BaseDirectory, "Resources", "logo.png");
-                return File.Exists(path) ? Image.FromFile(path) : null;
-            }
-            catch
-            {
-                return null;
-            }
-        });
-
-        public UsageMarkControl()
-        {
-            DoubleBuffered = true;
-            AccessibleName = "UsageAI";
-        }
-
-        protected override void OnPaint(PaintEventArgs e)
-        {
-            base.OnPaint(e);
-            e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
-            e.Graphics.InterpolationMode = InterpolationMode.HighQualityBicubic;
-            var scale = new LayoutScale(this);
-            var side = Math.Min(Width, Height);
-            var box = new Rectangle(0, Math.Max(0, (Height - side) / 2), Math.Max(1, side - 1), Math.Max(1, side - 1));
-
-            var logo = Theme.IsHighContrast ? null : LogoImage.Value;
-            if (logo != null)
-            {
-                using var path = DrawingHelpers.RoundedRectangle(box, scale.Exact(9));
-                var state = e.Graphics.Save();
-                e.Graphics.SetClip(path);
-                e.Graphics.DrawImage(logo, box);
-                e.Graphics.Restore(state);
-                using var pen = new Pen(Theme.Hairline);
-                using var outlinePath = DrawingHelpers.RoundedRectangle(box, scale.Exact(9));
-                e.Graphics.DrawPath(pen, outlinePath);
-            }
-            else
-            {
-                DrawingHelpers.FillCard(e.Graphics, box, Theme.SurfaceRaised, Theme.Hairline, scale.Exact(9));
-                var barWidth = Math.Max(2, box.Width / 9);
-                var baseline = box.Bottom - box.Height / 4;
-                using var codex = new SolidBrush(Theme.Codex);
-                using var claude = new SolidBrush(Theme.Claude);
-                using var copilot = new SolidBrush(Theme.Copilot);
-                e.Graphics.FillRectangle(codex, box.Left + box.Width / 4, baseline - box.Height / 2, barWidth, box.Height / 2);
-                e.Graphics.FillRectangle(claude, box.Left + box.Width / 2 - barWidth / 2, baseline - box.Height / 3, barWidth, box.Height / 3);
-                e.Graphics.FillRectangle(copilot, box.Right - box.Width / 4 - barWidth, baseline - box.Height * 5 / 8, barWidth, box.Height * 5 / 8);
-            }
-        }
+        protected override Point ScrollToControl(Control activeControl) =>
+            activeControl.Height > ClientSize.Height
+                ? DisplayRectangle.Location
+                : base.ScrollToControl(activeControl);
     }
 
     private sealed class EmptyProvidersControl : Control

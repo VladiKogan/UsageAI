@@ -16,26 +16,44 @@ internal static class UsageFormatting
         }
 
         var remaining = resetsAt.Value - now;
-        if (remaining <= TimeSpan.Zero)
-        {
-            return "resetting now";
-        }
-
-        if (remaining.TotalDays >= 1)
-        {
-            return $"resets in {(int)remaining.TotalDays}d {remaining.Hours}h";
-        }
-
-        if (remaining.TotalHours >= 1)
-        {
-            return $"resets in {(int)remaining.TotalHours}h {remaining.Minutes}m";
-        }
-
-        return $"resets in {Math.Max(1, remaining.Minutes)}m";
+        return remaining <= TimeSpan.Zero ? "resetting now" : $"resets in {Countdown(remaining)}";
     }
 
-    /// <summary>The wall-clock reset time, used where the countdown alone is ambiguous.</summary>
-    public static string AbsoluteReset(DateTimeOffset? resetsAt, DateTimeOffset now)
+    /// <summary>
+    /// The countdown alone, for labels too narrow for "resets in …": "2d 17h", "3h 11m", "45m",
+    /// or "now" once the window has rolled over. Empty when the provider reports no reset.
+    /// </summary>
+    public static string CompactReset(DateTimeOffset? resetsAt, DateTimeOffset now)
+    {
+        if (resetsAt is null)
+        {
+            return string.Empty;
+        }
+
+        var remaining = resetsAt.Value - now;
+        return remaining <= TimeSpan.Zero ? "now" : Countdown(remaining);
+    }
+
+    /// <summary>A positive span as the countdown both reset labels share: "2d 17h", "3h 11m", "45m".</summary>
+    private static string Countdown(TimeSpan remaining)
+    {
+        if (remaining.TotalDays >= 1)
+        {
+            return $"{(int)remaining.TotalDays}d {remaining.Hours}h";
+        }
+
+        return remaining.TotalHours >= 1
+            ? $"{(int)remaining.TotalHours}h {remaining.Minutes}m"
+            : $"{Math.Max(1, remaining.Minutes)}m";
+    }
+
+    /// <summary>
+    /// The wall-clock reset time, used where the countdown alone is ambiguous. It keeps the
+    /// user's 12- or 24-hour clock but spells words in English like the rest of the app: the
+    /// culture's own day names and AM/PM put "יום ו׳" or "오후" in the middle of an English sentence.
+    /// </summary>
+    /// <param name="clockCulture">Whose clock to follow: the user's culture, or a fixed one in tests.</param>
+    public static string AbsoluteReset(DateTimeOffset? resetsAt, DateTimeOffset now, CultureInfo clockCulture)
     {
         if (resetsAt is null)
         {
@@ -43,10 +61,10 @@ internal static class UsageFormatting
         }
 
         var local = resetsAt.Value.ToLocalTime();
-        var time = local.ToString("t", CultureInfo.CurrentCulture);
+        var time = local.ToString(clockCulture.DateTimeFormat.ShortTimePattern, CultureInfo.InvariantCulture);
         return local.Date == now.ToLocalTime().Date
             ? time
-            : $"{local.ToString("ddd", CultureInfo.CurrentCulture)} {time}";
+            : $"{local.ToString("ddd", CultureInfo.InvariantCulture)} {time}";
     }
 
     public static string Age(DateTimeOffset when, DateTimeOffset now)

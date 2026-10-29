@@ -244,15 +244,21 @@ internal static class WindowsIntegrationTests
         throw new InvalidOperationException($"Expected {typeof(TException).Name}.");
     }
 
-    private static void True(bool value)
+    private static void True(
+        bool value,
+        [System.Runtime.CompilerServices.CallerFilePath] string file = "",
+        [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
     {
         if (!value)
         {
-            throw new InvalidOperationException("Expected true.");
+            throw new InvalidOperationException($"Expected true at {Path.GetFileName(file)}:{line}.");
         }
     }
 
-    private static void False(bool value) => True(!value);
+    private static void False(
+        bool value,
+        [System.Runtime.CompilerServices.CallerFilePath] string file = "",
+        [System.Runtime.CompilerServices.CallerLineNumber] int line = 0) => True(!value, file, line);
 
     private static void Null(object? value)
     {

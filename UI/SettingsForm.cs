@@ -9,18 +9,25 @@ namespace UsageAI.UI;
 /// </summary>
 internal sealed class SettingsForm : Form
 {
-    private static readonly object[] ThemeChoices = { "Follow Windows", "Dark", "Light" };
-    private static readonly object[] MetricChoices = { "All", "Metered only", "Important only" };
-    private static readonly object[] QuotaChoices = { "Used", "Remaining" };
+    // Indexes match ThemeMode, MetricDisplayMode and QuotaDisplay.
+    private static readonly string[] ThemeOptions = { "System", "Dark", "Light" };
+    private static readonly string[] MetricOptions = { "All", "Metered", "Important" };
+    private static readonly string[] QuotaOptions = { "Used", "Remaining" };
+    private static readonly string[] SectionNames = { "General", "Alerts", "Appearance", "Providers", "History", "About" };
+    private const int NavWidthBaseline = 176;
+    private const string SectionHeaderTag = "section-header";
 
     private readonly List<Font> _ownedFonts = new();
     private readonly CancellationTokenSource _lifetime = new();
     private readonly AppSettings _settings;
     private readonly int? _dpiOverride;
+    private Size _sizeAtResizeBegin;
+    private bool _resizedByUser;
     private readonly Func<CancellationToken, Task<UpdateCheckResult>> _checkForUpdates;
     private readonly Func<UpdateRelease, Task> _promptForUpdate;
     private readonly TableLayoutPanel _shell;
     private readonly Panel _scrollHost;
+    private readonly SlimScrollHost _scrollFrame;
     private readonly TableLayoutPanel _layout;
     private readonly NumericUpDown _refreshInterval;
     private readonly CheckBox _slowWhenHidden;
@@ -30,9 +37,14 @@ internal sealed class SettingsForm : Form
     private readonly CheckBox _notifyOnReset;
     private readonly NumericUpDown _warningPercent;
     private readonly NumericUpDown _criticalPercent;
-    private readonly ComboBox _theme;
-    private readonly ComboBox _metricDisplayMode;
-    private readonly ComboBox _quotaDisplay;
+    private readonly SegmentedControl _theme;
+    private readonly SegmentedControl _metricDisplayMode;
+    private readonly SegmentedControl _quotaDisplay;
+    private readonly SectionNav _nav;
+    private readonly List<Section> _sections = new();
+    private readonly SettingPreview _quotaPreview;
+    private readonly SettingPreview _thresholdPreview;
+    private UpdateTone _updateTone = UpdateTone.Neutral;
     private readonly ComboBox _trayProvider;
     private readonly CheckBox _historyEnabled;
     private readonly CheckBox _forecastEnabled;
@@ -40,6 +52,7 @@ internal sealed class SettingsForm : Form
     private readonly CheckBox _startWithWindows;
     private readonly Label _startupHint;
     private readonly CheckedListBox _providers;
+    private readonly List<PopupGroupPicker> _popupGroupPickers = new();
     private readonly Button _checkForUpdatesButton;
     private readonly Label _updateStatus;
     private readonly Label _versionLabel;
@@ -76,7 +89,8 @@ internal sealed class SettingsForm : Form
         Func<UpdateRelease, Task> promptForUpdate,
         int? dpiOverride = null,
         Func<StartupState>? readStartup = null,
-        Action<bool>? writeStartup = null)
+        Action<bool>? writeStartup = null,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? popupGroups = null)
     {
         _settings = settings;
         _dpiOverride = dpiOverride;
@@ -89,26 +103,32 @@ internal sealed class SettingsForm : Form
         AutoScaleMode = AutoScaleMode.None;
         BackColor = Theme.Night;
         ForeColor = Theme.Text;
-        FormBorderStyle = FormBorderStyle.FixedDialog;
+        // Resizable, since the page scrolls and a taller window shows more of it; not
+        // maximizable, because rows stretched across a whole screen are hard to read.
+        FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = false;
         MinimizeBox = false;
+        SizeGripStyle = SizeGripStyle.Hide;
         ShowInTaskbar = false;
         StartPosition = FormStartPosition.CenterScreen;
         Text = "UsageAI settings";
+        AppIcon.Apply(this);
         var workingArea = Screen.PrimaryScreen?.WorkingArea ?? new Rectangle(0, 0, scale[1920], scale[1080]);
+        var size = settings.SettingsWindowSize is [var width, var height] ? (width, height) : (700, 640);
         ClientSize = new Size(
-            Math.Min(scale[470], Math.Max(320, workingArea.Width - scale[24])),
-            Math.Min(scale[640], Math.Max(280, workingArea.Height - scale[24])));
+            Math.Min(scale[size.Item1], Math.Max(320, workingArea.Width - scale[24])),
+            Math.Min(scale[size.Item2], Math.Max(280, workingArea.Height - scale[24])));
         Font = Own(Typography.Text(9F));
 
         _shell = new TableLayoutPanel
         {
-            ColumnCount = 1,
+            ColumnCount = 2,
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
             Padding = Padding.Empty,
             RowCount = 2,
         };
+        _shell.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[NavWidthBaseline]));
         _shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         _shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _shell.RowStyles.Add(new RowStyle(SizeType.Absolute, scale[52]));
@@ -117,11 +137,32 @@ internal sealed class SettingsForm : Form
         _scrollHost = new Panel
         {
             AutoScroll = true,
-            Dock = DockStyle.Fill,
             Margin = Padding.Empty,
         };
         _scrollHost.HandleCreated += OnScrollableControlHandleCreated;
-        _shell.Controls.Add(_scrollHost, 0, 0);
+        _scrollHost.Scroll += (_, _) => SyncNavToScroll();
+        _scrollHost.MouseWheel += (_, _) => SyncNavToScroll();
+        // The page scrolls behind a slim scrollbar rather than the system's full-width one.
+        _scrollFrame = new SlimScrollHost(_scrollHost, _dpiOverride)
+        {
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+        };
+        _shell.Controls.Add(_scrollFrame, 1, 0);
+
+        // Sections are one long page, so every setting stays findable by scrolling; the list on
+        // the left jumps to a section and marks the one being read.
+        _nav = new SectionNav(SectionNames)
+        {
+            Dock = DockStyle.Fill,
+            DpiOverride = _dpiOverride,
+            Margin = scale.Pad(8, 12, 4, 8),
+        };
+        _nav.SectionChosen += (_, _) => ScrollToSection(_nav.SelectedIndex);
+        _nav.SectionEntered += (_, _) => EnterSection(_nav.SelectedIndex);
+        _shell.Controls.Add(_nav, 0, 0);
+        _nav.TabIndex = 0;
+        _scrollFrame.TabIndex = 1;
 
         _layout = new TableLayoutPanel
         {
@@ -130,10 +171,11 @@ internal sealed class SettingsForm : Form
             ColumnCount = 2,
             Dock = DockStyle.Top,
             Margin = Padding.Empty,
-            Padding = scale.Pad(18, 16, 18, 8),
+            Padding = LayoutPadding(scale),
         };
         _layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
         _layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
+        _layout.Paint += PaintSectionCards;
         _scrollHost.Controls.Add(_layout);
 
         _refreshInterval = CreateNumeric(AppSettings.MinimumRefreshMinutes, AppSettings.MaximumRefreshMinutes);
@@ -145,7 +187,7 @@ internal sealed class SettingsForm : Form
         _warningPercent = CreateNumeric(1, 99);
         _criticalPercent = CreateNumeric(2, 100);
         _historyEnabled = CreateCheckBox("Record usage history on this machine");
-        _forecastEnabled = CreateCheckBox("Show trend and burn-rate forecast");
+        _forecastEnabled = CreateCheckBox("Show burn-rate forecast");
         _hotkeyEnabled = CreateCheckBox("Global hotkey (Win+Alt+U)");
         _startWithWindows = CreateCheckBox("Start with Windows");
         _startupHint = new Label
@@ -154,56 +196,47 @@ internal sealed class SettingsForm : Form
             ForeColor = Theme.Muted,
             Margin = scale.Pad(0, 0, 0, 8),
         };
-        _theme = new ComboBox
-        {
-            BackColor = Theme.SurfaceRaised,
-            Dock = DockStyle.Fill,
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = Theme.Text,
-            Margin = scale.Pad(0, 4, 0, 4),
-        };
-        _theme.Items.AddRange(ThemeChoices);
+        // Short choices are segmented controls: every option visible, one click to change.
+        _theme = CreateSegmented(ThemeOptions, "Theme");
+        _metricDisplayMode = CreateSegmented(MetricOptions, "Dashboard metric display mode");
+        _quotaDisplay = CreateSegmented(QuotaOptions, "Quota display");
 
-        _metricDisplayMode = new ComboBox
+        // Each preview shows what its setting produces, so the choice needs no explanation.
+        _quotaPreview = new SettingPreview(SettingPreviewKind.QuotaRing)
         {
-            AccessibleName = "Dashboard metric display mode",
-            BackColor = Theme.SurfaceRaised,
+            AccessibleName = "Quota display preview",
             Dock = DockStyle.Fill,
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = Theme.Text,
-            Margin = scale.Pad(0, 4, 0, 4),
+            DpiOverride = _dpiOverride,
+            Height = scale[QuotaPreviewHeight],
+            Margin = scale.Pad(0, 0, 0, 6),
         };
-        _metricDisplayMode.Items.AddRange(MetricChoices);
-
-        _quotaDisplay = new ComboBox
+        _quotaDisplay.SelectedIndexChanged += (_, _) => _quotaPreview.ShowRemaining = _quotaDisplay.SelectedIndex == 1;
+        _thresholdPreview = new SettingPreview(SettingPreviewKind.ThresholdBand)
         {
-            AccessibleName = "Quota display",
-            BackColor = Theme.SurfaceRaised,
+            AccessibleName = "Status colour preview",
             Dock = DockStyle.Fill,
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            FlatStyle = FlatStyle.Flat,
-            ForeColor = Theme.Text,
-            Margin = scale.Pad(0, 4, 0, 4),
+            DpiOverride = _dpiOverride,
+            Height = scale[ThresholdPreviewHeight],
+            Margin = scale.Pad(0, 0, 0, 8),
         };
-        _quotaDisplay.Items.AddRange(QuotaChoices);
+        _warningPercent.ValueChanged += (_, _) => UpdateThresholdPreview();
+        _criticalPercent.ValueChanged += (_, _) => UpdateThresholdPreview();
 
-        _trayProvider = new ComboBox
+        _trayProvider = new ThemedComboBox
         {
+            AccessibleName = "Tray icon provider",
             BackColor = Theme.SurfaceRaised,
             Dock = DockStyle.Fill,
-            DropDownStyle = ComboBoxStyle.DropDownList,
-            FlatStyle = FlatStyle.Flat,
             ForeColor = Theme.Text,
             Margin = scale.Pad(0, 4, 0, 4),
         };
         _trayProvider.Items.Add(new ProviderEntry(string.Empty, "Automatic"));
+        _trayProvider.Items.Add(new ProviderEntry(AppSettings.AllProvidersTrayId, "All connected"));
 
         _providers = new CheckedListBox
         {
             BackColor = Theme.SurfaceRaised,
-            BorderStyle = BorderStyle.FixedSingle,
+            BorderStyle = BorderStyle.None,
             CheckOnClick = true,
             Dock = DockStyle.Fill,
             ForeColor = Theme.Text,
@@ -243,9 +276,12 @@ internal sealed class SettingsForm : Form
             Text = "Updates are also checked automatically once a day.",
         };
 
-        AddSection("Refresh");
+        AddSection("General");
         AddRow("Refresh every (minutes)", _refreshInterval);
         AddSpan(_slowWhenHidden);
+        AddSpan(_startWithWindows);
+        AddSpan(_startupHint);
+        AddSpan(_hotkeyEnabled);
 
         AddSection("Alerts");
         AddSpan(_notificationsEnabled);
@@ -255,24 +291,22 @@ internal sealed class SettingsForm : Form
 
         AddSection("Appearance");
         AddRow("Theme", _theme);
-        AddRow("Dashboard metrics", _metricDisplayMode);
-        AddSpan(new Label
-        {
-            AutoSize = true,
-            ForeColor = Theme.Muted,
-            Margin = scale.Pad(0, 0, 0, 8),
-            Text = "Metered shows every percentage limit. Important shows the highest Session, Rolling, and Monthly limit.",
-        });
-        AddRow("Quota display", _quotaDisplay);
-        AddSpan(new Label
-        {
-            AutoSize = true,
-            ForeColor = Theme.Muted,
-            Margin = scale.Pad(0, 0, 0, 8),
-            Text = "Remaining shows what is left on meters, headlines, the tray icon, and alerts. Colours and alert thresholds still follow usage.",
-        });
+        AddRow("Dashboard rows", _metricDisplayMode);
+        AddSpan(CreateHint("Metered shows every percentage limit. Important shows the highest session, rolling and monthly limit."));
+        AddRow("Show quota as", _quotaDisplay);
+        AddSpan(_quotaPreview);
+        AddSpan(CreateHint("Remaining shows what is left on meters, headlines, the tray icon and alerts. Colours and alert thresholds still follow usage."));
         AddRow("Warning colour from (% used)", _warningPercent);
         AddRow("Critical colour from (% used)", _criticalPercent);
+        AddSpan(_thresholdPreview);
+
+        AddSection("Providers");
+        AddRow("Tray icon provider", _trayProvider);
+        AddSpan(CreateHint("Automatic follows the connected provider with the highest active primary usage. All connected shows the UsageAI logo and lists every provider when you point at it."));
+        AddSpan(CreateHint("Tick to show. Drag a provider to reorder it, or use Alt+Up / Alt+Down."));
+        AddSpan(_providers);
+        AddSpan(CreateOrderButtons(scale));
+        AddPopupGroupPickers(providers, popupGroups, scale);
 
         AddSection("History");
         AddSpan(_historyEnabled);
@@ -281,38 +315,14 @@ internal sealed class SettingsForm : Form
         {
             UsageHistoryStore.Clear();
             SnapshotCache.Clear();
-        }));
-
-        AddSection("Providers");
-        AddRow("Tray icon provider", _trayProvider);
-        AddSpan(new Label
-        {
-            AutoSize = true,
-            ForeColor = Theme.Muted,
-            Margin = scale.Pad(0, 0, 0, 8),
-            Text = "Automatic follows the connected provider with the highest active primary usage.",
-        });
-        AddSpan(new Label
-        {
-            AutoSize = true,
-            ForeColor = Theme.Muted,
-            Margin = scale.Pad(0, 0, 0, 4),
-            Text = "Tick to show. Drag a provider to reorder it, or use Alt+Up / Alt+Down.",
-        });
-        AddSpan(_providers);
-        AddSpan(CreateOrderButtons(scale));
-
-        AddSection("System");
-        AddSpan(_startWithWindows);
-        AddSpan(_startupHint);
-        AddSpan(_hotkeyEnabled);
+        }, destructive: true));
 
         AddSection("About");
         _versionLabel = new Label
         {
             AutoSize = true,
-            Font = Own(Typography.Mono(9F)),
-            ForeColor = Theme.Signal,
+            Font = Own(Typography.Figures(10F)),
+            ForeColor = Theme.Text,
             Margin = scale.Pad(0, 8, 0, 4),
             Text = $"v{AppIdentity.Version}",
         };
@@ -320,6 +330,7 @@ internal sealed class SettingsForm : Form
         AddSpan(_checkForUpdatesButton);
         AddSpan(CreateLinkButton("What's new", (_, _) => WhatsNewForm.ShowCurrent(this)));
         AddSpan(_updateStatus);
+        FinishSections();
 
         _buttons = new FlowLayoutPanel
         {
@@ -328,6 +339,7 @@ internal sealed class SettingsForm : Form
             Margin = Padding.Empty,
             Padding = scale.Pad(0, 10, 18, 10),
         };
+        _buttons.Paint += PaintFooterRule;
         _saveButton = CreateDialogButton("Save", scale, primary: true);
         _saveButton.Click += (_, _) => Apply();
         _cancelButton = CreateDialogButton("Cancel", scale, primary: false);
@@ -335,6 +347,8 @@ internal sealed class SettingsForm : Form
         _buttons.Controls.Add(_saveButton);
         _buttons.Controls.Add(_cancelButton);
         _shell.Controls.Add(_buttons, 0, 1);
+        _buttons.TabIndex = 2;
+        _shell.SetColumnSpan(_buttons, 2);
         AcceptButton = _saveButton;
         CancelButton = _cancelButton;
 
@@ -354,7 +368,7 @@ internal sealed class SettingsForm : Form
         _isCheckingForUpdates = true;
         _checkForUpdatesButton.Enabled = false;
         _checkForUpdatesButton.Text = "Checking...";
-        _updateStatus.ForeColor = Theme.Muted;
+        SetUpdateTone(UpdateTone.Neutral);
         _updateStatus.Text = "Contacting GitHub releases...";
 
         try
@@ -370,19 +384,19 @@ internal sealed class SettingsForm : Form
 
             if (!result.Succeeded)
             {
-                _updateStatus.ForeColor = Theme.Warning;
+                SetUpdateTone(UpdateTone.Warning);
                 _updateStatus.Text = "Couldn’t check for updates. Check your connection and try again.";
                 return;
             }
 
             if (result.Release is null)
             {
-                _updateStatus.ForeColor = Theme.Success;
+                SetUpdateTone(UpdateTone.Success);
                 _updateStatus.Text = $"You’re up to date — v{AppIdentity.Version} is the latest version.";
                 return;
             }
 
-            _updateStatus.ForeColor = Theme.Signal;
+            SetUpdateTone(UpdateTone.Available);
             _updateStatus.Text = $"Version {result.Release.Version} is available.";
             await _promptForUpdate(result.Release);
         }
@@ -396,6 +410,28 @@ internal sealed class SettingsForm : Form
             }
         }
     }
+
+    private enum UpdateTone
+    {
+        Neutral,
+        Warning,
+        Success,
+        Available,
+    }
+
+    private void SetUpdateTone(UpdateTone tone)
+    {
+        _updateTone = tone;
+        _updateStatus.ForeColor = UpdateToneColor(tone);
+    }
+
+    private static Color UpdateToneColor(UpdateTone tone) => tone switch
+    {
+        UpdateTone.Warning => Theme.WarningText,
+        UpdateTone.Success => Theme.Success,
+        UpdateTone.Available => Theme.Signal,
+        _ => Theme.Muted,
+    };
 
     private void LoadValues()
     {
@@ -413,6 +449,8 @@ internal sealed class SettingsForm : Form
         _theme.SelectedIndex = (int)_settings.Theme;
         _metricDisplayMode.SelectedIndex = (int)_settings.MetricDisplayMode;
         _quotaDisplay.SelectedIndex = (int)_settings.QuotaDisplay;
+        _quotaPreview.ShowRemaining = _settings.QuotaDisplay == QuotaDisplay.Remaining;
+        UpdateThresholdPreview();
         _historyEnabled.Checked = _settings.HistoryEnabled;
         _forecastEnabled.Checked = _settings.ForecastEnabled;
         _hotkeyEnabled.Checked = _settings.GlobalHotkeyEnabled;
@@ -431,6 +469,61 @@ internal sealed class SettingsForm : Form
             }
         }
     }
+
+    /// <summary>
+    /// One picker per provider that reports more than one model group, choosing which group the
+    /// popup's rings show. Groups come from the provider's last reading, so a provider that has
+    /// not reported yet has no picker until it does.
+    /// </summary>
+    private void AddPopupGroupPickers(
+        IReadOnlyList<(string Id, string DisplayName)> providers,
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? popupGroups,
+        LayoutScale scale)
+    {
+        if (popupGroups is null)
+        {
+            return;
+        }
+
+        foreach (var (id, displayName) in providers)
+        {
+            if (!popupGroups.TryGetValue(id, out var groups) || groups.Count < 2)
+            {
+                continue;
+            }
+
+            var picker = new ThemedComboBox
+            {
+                AccessibleName = $"{displayName} popup rings",
+                BackColor = Theme.SurfaceRaised,
+                Dock = DockStyle.Fill,
+                ForeColor = Theme.Text,
+                Margin = scale.Pad(0, 4, 0, 4),
+            };
+            picker.Items.Add("Closest to its limit");
+            foreach (var group in groups)
+            {
+                picker.Items.Add(group);
+            }
+
+            // Item 0 is automatic; a pinned group the provider no longer reports selects it too.
+            var pinned = _settings.PopupMetricGroup(id);
+            picker.SelectedIndex = groups
+                .Select((group, index) => (group, index))
+                .Where(entry => string.Equals(entry.group, pinned, StringComparison.OrdinalIgnoreCase))
+                .Select(entry => entry.index + 1)
+                .FirstOrDefault();
+            _popupGroupPickers.Add(new PopupGroupPicker(id, picker, groups));
+            AddRow($"{displayName} popup rings", picker);
+        }
+
+        if (_popupGroupPickers.Count > 0)
+        {
+            AddSpan(CreateHint("Which model group's limits the popup's rings show."));
+        }
+    }
+
+    private sealed record PopupGroupPicker(string ProviderId, ComboBox Control, IReadOnlyList<string> Groups);
 
     private void Apply()
     {
@@ -472,17 +565,25 @@ internal sealed class SettingsForm : Form
         }
 
         _settings.ProviderOrder = order.ToArray();
+        foreach (var picker in _popupGroupPickers)
+        {
+            _settings.SetPopupMetricGroup(
+                picker.ProviderId,
+                picker.Control.SelectedIndex > 0 ? picker.Groups[picker.Control.SelectedIndex - 1] : null);
+        }
+
         _settings.Save();
         if (!TryApplyStartupPreference())
         {
             // Every other preference is already saved, so the dialog still closes; only the one
             // thing that failed is reported, and reopening Settings shows the real startup state.
-            MessageBox.Show(
-                this,
-                "Windows startup settings could not be updated.",
-                "UsageAI",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
+            PromptDialog.Ask(
+                "UsageAI settings",
+                "Start with Windows was not changed",
+                "Windows did not accept the change. Your other settings are saved; reopen Settings to see whether UsageAI starts with Windows.",
+                "OK",
+                declineText: null,
+                PromptKind.Warning);
         }
 
         DialogResult = DialogResult.OK;
@@ -514,7 +615,7 @@ internal sealed class SettingsForm : Form
 
     private Color StartupHintColor() =>
         _startupState.Status is StartupStatus.BlockedByWindows or StartupStatus.PathMismatch
-            ? Theme.Warning
+            ? Theme.WarningText
             : Theme.Muted;
 
     /// <summary>
@@ -551,9 +652,13 @@ internal sealed class SettingsForm : Form
             FlowDirection = FlowDirection.LeftToRight,
             Margin = scale.Pad(0, 0, 0, 6),
         };
+        // Spaced on the right, unlike a footer's right-aligned buttons: a left margin indented the
+        // row, and in a window squeezed onto a small screen neither button fit beside it.
         var up = CreateDialogButton("Move up", scale, primary: false);
+        up.Margin = scale.Pad(0, 0, 8, 0);
         up.Click += (_, _) => MoveSelected(-1);
         var down = CreateDialogButton("Move down", scale, primary: false);
+        down.Margin = Padding.Empty;
         down.Click += (_, _) => MoveSelected(1);
         panel.Controls.Add(up);
         panel.Controls.Add(down);
@@ -767,32 +872,208 @@ internal sealed class SettingsForm : Form
         return base.ProcessCmdKey(ref message, keyData);
     }
 
+    /// <summary>
+    /// Starts a section: a heading above a card that holds the section's rows. The card is
+    /// painted behind the rows by <see cref="PaintSectionCards"/>, so the rows stay ordinary
+    /// controls in one table that scrolls as a page.
+    /// </summary>
     private void AddSection(string title)
     {
         var scale = Scale();
         var label = new Label
         {
             AutoSize = true,
-            Font = Own(Typography.Mono(8F)),
-            ForeColor = Theme.Muted,
-            Margin = scale.Pad(0, 14, 0, 6),
-            Text = title.ToUpperInvariant(),
+            Font = Own(Typography.Display(11F)),
+            ForeColor = Theme.Text,
+            Margin = scale.Pad(0, _sections.Count == 0 ? 4 : 22, 0, 10),
+            Tag = SectionHeaderTag,
+            Text = title,
         };
         var row = _layout.RowCount;
+        CloseSection(row - 1);
         _layout.Controls.Add(label, 0, row);
         _layout.SetColumnSpan(label, 2);
         _layout.RowCount = row + 1;
+        _sections.Add(new Section(label, row + 1));
     }
+
+    private void CloseSection(int lastRow)
+    {
+        if (_sections.Count > 0 && _sections[^1].LastRow < 0)
+        {
+            _sections[^1] = _sections[^1] with { LastRow = lastRow };
+        }
+    }
+
+    private void FinishSections()
+    {
+        CloseSection(_layout.RowCount - 1);
+
+        // Tabbing or clicking scrolls the page to the focused control without a Scroll event, so
+        // the section list re-reads the position once that scroll has happened.
+        foreach (Control control in _layout.Controls)
+        {
+            control.Enter += (_, _) =>
+            {
+                if (IsHandleCreated)
+                {
+                    BeginInvoke(SyncNavToScroll);
+                }
+            };
+        }
+    }
+
+    private Label CreateHint(string text) => new()
+    {
+        AutoSize = true,
+        ForeColor = Theme.Muted,
+        Margin = Scale().Pad(0, 0, 0, 8),
+        Tag = HintTag,
+        Text = text,
+    };
+
+    private const string HintTag = "hint";
+
+    private SegmentedControl CreateSegmented(IReadOnlyList<string> options, string accessibleName) =>
+        new(options)
+        {
+            AccessibleName = accessibleName,
+            DpiOverride = _dpiOverride,
+            Dock = DockStyle.Fill,
+            Margin = Scale().Pad(0, 4, 0, 4),
+            MinimumSize = new Size(0, Scale()[32]),
+        };
+
+    private void UpdateThresholdPreview() =>
+        _thresholdPreview.SetThresholds((int)_warningPercent.Value, (int)_criticalPercent.Value);
+
+    /// <summary>Paints each section's card behind its rows.</summary>
+    private void PaintSectionCards(object? sender, PaintEventArgs eventArgs)
+    {
+        if (_sections.Count == 0)
+        {
+            return;
+        }
+
+        eventArgs.Graphics.SmoothingMode = System.Drawing.Drawing2D.SmoothingMode.AntiAlias;
+        var scale = Scale();
+        var heights = _layout.GetRowHeights();
+        var tops = new int[heights.Length + 1];
+        tops[0] = _layout.Padding.Top;
+        for (var index = 0; index < heights.Length; index++)
+        {
+            tops[index + 1] = tops[index] + heights[index];
+        }
+
+        var inset = scale[CardInset];
+        foreach (var section in _sections)
+        {
+            var last = section.LastRow < 0 ? heights.Length - 1 : section.LastRow;
+            if (section.FirstRow > last || last >= heights.Length)
+            {
+                continue;
+            }
+
+            var card = Rectangle.FromLTRB(
+                _layout.Padding.Left - inset,
+                tops[section.FirstRow] - scale[4],
+                _layout.Width - _layout.Padding.Right + inset - 1,
+                tops[last + 1] + scale[4]);
+            DrawingHelpers.FillCard(eventArgs.Graphics, card, Theme.Surface, Theme.Divider, scale.Exact(8));
+        }
+    }
+
+    private void PaintFooterRule(object? sender, PaintEventArgs eventArgs)
+    {
+        using var rule = new Pen(Theme.Divider);
+        eventArgs.Graphics.DrawLine(rule, 0, 0, _buttons.Width, 0);
+    }
+
+    /// <summary>Scrolls the page so a section's heading sits at the top.</summary>
+    private void ScrollToSection(int index)
+    {
+        if (index < 0 || index >= _sections.Count)
+        {
+            return;
+        }
+
+        _scrollHost.AutoScrollPosition = new Point(0, Math.Max(0, _sections[index].Header.Top - Scale()[8]));
+    }
+
+    /// <summary>
+    /// Enter on the section list moves focus to the section's first control, so the list takes a
+    /// keyboard user somewhere; the arrows only scroll, leaving the focus in the list.
+    /// </summary>
+    private void EnterSection(int index)
+    {
+        if (index < 0 || index >= _sections.Count)
+        {
+            return;
+        }
+
+        var section = _sections[index];
+        var last = section.LastRow < 0 ? _layout.RowCount - 1 : section.LastRow;
+        var target = _layout.Controls
+            .Cast<Control>()
+            .Where(control => _layout.GetRow(control) >= section.FirstRow && _layout.GetRow(control) <= last)
+            .OrderBy(control => _layout.GetRow(control))
+            .ThenBy(control => _layout.GetColumn(control))
+            .SelectMany(control => control.CanSelect && control.TabStop ? new[] { control } : control.Controls.Cast<Control>())
+            .FirstOrDefault(control => control.CanSelect && control.TabStop);
+        ScrollToSection(index);
+        target?.Focus();
+    }
+
+    /// <summary>Marks the section whose heading was last scrolled past, as the reader scrolls.</summary>
+    private void SyncNavToScroll()
+    {
+        if (_sections.Count == 0)
+        {
+            return;
+        }
+
+        var top = -_scrollHost.AutoScrollPosition.Y + Scale()[24];
+        var current = 0;
+        for (var index = 0; index < _sections.Count; index++)
+        {
+            if (_sections[index].Header.Top <= top)
+            {
+                current = index;
+            }
+        }
+
+        // At the bottom of the page the last sections can never reach the top; the last one wins.
+        var bottom = _scrollHost.DisplayRectangle.Height - _scrollHost.ClientSize.Height;
+        if (bottom > 0 && -_scrollHost.AutoScrollPosition.Y >= bottom - 1)
+        {
+            current = _sections.Count - 1;
+        }
+
+        _nav.SelectedIndex = current;
+    }
+
+    private const int CardInset = 12;
+    private const int QuotaPreviewHeight = 40;
+    private const int ThresholdPreviewHeight = 48;
+
+    private static Padding LayoutPadding(LayoutScale scale) => scale.Pad(14 + CardInset, 8, 18 + CardInset, 12);
+
+    private sealed record Section(Label Header, int FirstRow, int LastRow = -1);
 
     private void AddRow(string label, Control control)
     {
         var scale = Scale();
+        // The caption fills its cell and centres vertically, so it lines up with a control of
+        // any height beside it.
         var caption = new Label
         {
-            AutoSize = true,
+            AutoEllipsis = true,
+            AutoSize = false,
+            Dock = DockStyle.Fill,
             ForeColor = Theme.Text,
-            Margin = scale.Pad(0, 8, 8, 4),
+            Margin = scale.Pad(0, 0, 8, 0),
             Text = label,
+            TextAlign = ContentAlignment.MiddleLeft,
         };
         var row = _layout.RowCount;
         _layout.Controls.Add(caption, 0, row);
@@ -808,42 +1089,52 @@ internal sealed class SettingsForm : Form
         _layout.RowCount = row + 1;
     }
 
-    private CheckBox CreateCheckBox(string text) => new()
+    private ToggleSwitch CreateCheckBox(string text) => new()
     {
-        AutoSize = true,
-        FlatStyle = FlatStyle.Flat,
-        ForeColor = Theme.Text,
-        Margin = Scale().Pad(0, 4, 0, 4),
+        AccessibleName = text,
+        Dock = DockStyle.Fill,
+        DpiOverride = _dpiOverride,
+        Height = Scale()[34],
+        Margin = Scale().Pad(0, 2, 0, 2),
         Text = text,
     };
 
-    private NumericUpDown CreateNumeric(int minimum, int maximum) => new()
+    // A compact, borderless stepper at the right edge, where the switches and choices sit.
+    private ThemedNumericUpDown CreateNumeric(int minimum, int maximum) => new()
     {
+        Anchor = AnchorStyles.Right,
         BackColor = Theme.SurfaceRaised,
-        BorderStyle = BorderStyle.FixedSingle,
-        Dock = DockStyle.Fill,
+        BorderStyle = BorderStyle.None,
         ForeColor = Theme.Text,
-        Margin = Scale().Pad(0, 4, 0, 4),
+        Margin = Scale().Pad(0, 8, 0, 8),
         Maximum = maximum,
         Minimum = minimum,
+        TextAlign = HorizontalAlignment.Center,
+        Width = Scale()[96],
     };
 
-    private Button CreateLinkButton(string text, EventHandler onClick)
+    private Button CreateLinkButton(string text, EventHandler onClick, bool destructive = false)
     {
         var button = new Button
         {
             AutoSize = true,
-            BackColor = Theme.Night,
+            BackColor = Theme.Surface,
+            Cursor = Cursors.Hand,
             FlatStyle = FlatStyle.Flat,
-            ForeColor = Theme.Signal,
+            ForeColor = destructive ? Theme.CriticalText : Theme.Signal,
             Margin = Scale().Pad(0, 4, 0, 4),
+            Tag = destructive ? DestructiveTag : null,
             Text = text,
             UseVisualStyleBackColor = false,
         };
         button.FlatAppearance.BorderSize = 0;
+        button.FlatAppearance.MouseOverBackColor = Theme.Blend(Theme.Text, Theme.Surface, 0.06);
+        button.FlatAppearance.MouseDownBackColor = Theme.Blend(Theme.Text, Theme.Surface, 0.1);
         button.Click += onClick;
         return button;
     }
+
+    private const string DestructiveTag = "destructive";
 
     private static Button CreateDialogButton(string text, LayoutScale scale, bool primary)
     {
@@ -890,8 +1181,48 @@ internal sealed class SettingsForm : Form
             eventArgs.DeviceDpiNew);
         base.OnDpiChanged(eventArgs);
         ApplyScaledLayout();
-        Bounds = FitToWorkingArea(Bounds, Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea);
+        Bounds = WindowBounds.FitToWorkingArea(Bounds, Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea);
         _scrollHost.AutoScrollPosition = new Point(0, scrollY);
+        SyncNavToScroll();
+    }
+
+    protected override void OnResizeBegin(EventArgs e)
+    {
+        base.OnResizeBegin(e);
+        _sizeAtResizeBegin = Size;
+    }
+
+    // A drag that only moved the window leaves its size alone and is not a size choice.
+    protected override void OnResizeEnd(EventArgs e)
+    {
+        base.OnResizeEnd(e);
+        _resizedByUser |= Size != _sizeAtResizeBegin;
+    }
+
+    /// <summary>
+    /// Remembers a size the user chose, however the window closed: it is how they want the
+    /// window, not one of the settings Save or Cancel decides on. Stored at 96 DPI. A window
+    /// that was only fitted to a smaller screen is not a choice, so it never shrinks the size.
+    /// </summary>
+    protected override void OnFormClosed(FormClosedEventArgs e)
+    {
+        base.OnFormClosed(e);
+        if (!_resizedByUser)
+        {
+            return;
+        }
+
+        var dpi = _dpiOverride ?? DeviceDpi;
+        int[] size =
+        [
+            LayoutScale.ScaleBetweenDpis(ClientSize.Width, dpi, LayoutScale.BaselineDpi),
+            LayoutScale.ScaleBetweenDpis(ClientSize.Height, dpi, LayoutScale.BaselineDpi),
+        ];
+        if (_settings.SettingsWindowSize is not [var width, var height] || width != size[0] || height != size[1])
+        {
+            _settings.SettingsWindowSize = size;
+            _settings.Save();
+        }
     }
 
     private void ApplyScaledLayout()
@@ -899,27 +1230,36 @@ internal sealed class SettingsForm : Form
         var scale = Scale();
         var workingArea = Screen.FromPoint(Location).WorkingArea;
         MinimumSize = new Size(
-            Math.Min(scale[390], workingArea.Width),
+            Math.Min(scale[560], workingArea.Width),
             Math.Min(scale[420], workingArea.Height));
         _shell.RowStyles[1] = new RowStyle(SizeType.Absolute, scale[52]);
-        _layout.Padding = scale.Pad(18, 16, 18, 8);
+        _shell.ColumnStyles[0] = new ColumnStyle(SizeType.Absolute, scale[NavWidthBaseline]);
+        _nav.Margin = scale.Pad(8, 12, 4, 8);
+        _layout.Padding = LayoutPadding(scale);
         _providers.Height = scale[104];
         _checkForUpdatesButton.MinimumSize = new Size(scale[142], scale[30]);
         _buttons.Padding = scale.Pad(0, 10, 18, 10);
         _saveButton.Size = new Size(scale[104], scale[30]);
         _cancelButton.Size = new Size(scale[104], scale[30]);
-        foreach (var numeric in _layout.Controls.OfType<NumericUpDown>()) numeric.Margin = scale.Pad(0, 4, 0, 4);
+        foreach (var numeric in _layout.Controls.OfType<NumericUpDown>())
+        {
+            numeric.Margin = scale.Pad(0, 8, 0, 8);
+            numeric.Width = scale[96];
+        }
         foreach (var combo in _layout.Controls.OfType<ComboBox>()) combo.Margin = scale.Pad(0, 4, 0, 4);
-        foreach (var checkBox in _layout.Controls.OfType<CheckBox>()) checkBox.Margin = scale.Pad(0, 4, 0, 4);
-    }
+        foreach (var toggle in _layout.Controls.OfType<ToggleSwitch>())
+        {
+            toggle.Margin = scale.Pad(0, 2, 0, 2);
+            toggle.Height = toggle.PreferredRowHeight;
+        }
 
-    private static Rectangle FitToWorkingArea(Rectangle bounds, Rectangle workingArea)
-    {
-        var width = Math.Min(bounds.Width, workingArea.Width);
-        var height = Math.Min(bounds.Height, workingArea.Height);
-        var x = Math.Clamp(bounds.X, workingArea.Left, Math.Max(workingArea.Left, workingArea.Right - width));
-        var y = Math.Clamp(bounds.Y, workingArea.Top, Math.Max(workingArea.Top, workingArea.Bottom - height));
-        return new Rectangle(x, y, width, height);
+        _quotaPreview.Height = scale[QuotaPreviewHeight];
+        _thresholdPreview.Height = scale[ThresholdPreviewHeight];
+        foreach (var segmented in _layout.Controls.OfType<SegmentedControl>())
+        {
+            segmented.Margin = scale.Pad(0, 4, 0, 4);
+            segmented.MinimumSize = new Size(0, scale[32]);
+        }
     }
 
     private void OnThemeChanged(object? sender, EventArgs eventArgs)
@@ -932,7 +1272,7 @@ internal sealed class SettingsForm : Form
         BackColor = Theme.Night;
         ForeColor = Theme.Text;
         ApplyControlTheme(_shell);
-        _updateStatus.ForeColor = Theme.Muted;
+        _updateStatus.ForeColor = UpdateToneColor(_updateTone);
         _startupHint.ForeColor = StartupHintColor();
         _saveButton.BackColor = Theme.Accent;
         _saveButton.ForeColor = Theme.OnAccent;
@@ -940,39 +1280,68 @@ internal sealed class SettingsForm : Form
         _cancelButton.BackColor = Theme.SurfaceRaised;
         _cancelButton.ForeColor = Theme.Text;
         _cancelButton.FlatAppearance.BorderColor = Theme.Hairline;
-        _versionLabel.ForeColor = Theme.Signal;
+        _versionLabel.ForeColor = Theme.Text;
+        _nav.Invalidate();
+        _quotaPreview.Invalidate();
+        _thresholdPreview.Invalidate();
         WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
         WindowThemeHelpers.ApplyDarkScrollbar(_scrollHost, Theme.IsDark && !Theme.IsHighContrast);
         WindowThemeHelpers.ApplyDarkScrollbar(_providers, Theme.IsDark && !Theme.IsHighContrast);
         Invalidate(invalidateChildren: true);
     }
 
-    private static void ApplyControlTheme(Control control)
+    private void ApplyControlTheme(Control control)
     {
+        // Rows sit on the section cards; headings, the section list and the footer on the window.
+        var onCard = control.Parent == _layout && !Equals(control.Tag, SectionHeaderTag);
+        var surface = onCard ? Theme.Surface : Theme.Night;
         switch (control)
         {
-            case NumericUpDown or ComboBox or CheckedListBox:
+            case NumericUpDown numeric:
+                numeric.BackColor = Theme.SurfaceRaised;
+                numeric.ForeColor = Theme.Text;
+                numeric.BorderStyle = Theme.IsHighContrast ? BorderStyle.FixedSingle : BorderStyle.None;
+                break;
+            case CheckedListBox list:
+                list.BackColor = Theme.SurfaceRaised;
+                list.ForeColor = Theme.Text;
+                list.BorderStyle = Theme.IsHighContrast ? BorderStyle.FixedSingle : BorderStyle.None;
+                break;
+            case ComboBox:
                 control.BackColor = Theme.SurfaceRaised;
                 control.ForeColor = Theme.Text;
                 break;
-            case CheckBox:
-                control.BackColor = Theme.Night;
+            case ToggleSwitch or SegmentedControl or SettingPreview:
+                control.BackColor = surface;
                 control.ForeColor = Theme.Text;
                 break;
-            case Label label:
+            case Label label when Equals(label.Tag, SectionHeaderTag):
                 label.BackColor = Theme.Night;
-                label.ForeColor = label.Text.Equals(label.Text.ToUpperInvariant(), StringComparison.Ordinal)
-                    ? Theme.Muted
-                    : Theme.Text;
+                label.ForeColor = Theme.Text;
+                break;
+            case Label label when ReferenceEquals(label, _startupHint):
+                label.BackColor = surface;
+                label.ForeColor = StartupHintColor();
+                break;
+            case Label label:
+                label.BackColor = surface;
+                label.ForeColor = Equals(label.Tag, HintTag) ? Theme.Muted : Theme.Text;
                 break;
             case Button button when button.FlatAppearance.BorderSize == 0:
-                button.BackColor = Theme.Night;
-                button.ForeColor = Theme.Signal;
+                button.BackColor = Theme.Surface;
+                button.ForeColor = Equals(button.Tag, DestructiveTag) ? Theme.CriticalText : Theme.Signal;
+                button.FlatAppearance.MouseOverBackColor = Theme.Blend(Theme.Text, Theme.Surface, 0.06);
+                button.FlatAppearance.MouseDownBackColor = Theme.Blend(Theme.Text, Theme.Surface, 0.1);
+                break;
+            case Button button when button.Parent == _buttons:
                 break;
             case Button button:
                 button.BackColor = Theme.SurfaceRaised;
                 button.ForeColor = Theme.Text;
                 button.FlatAppearance.BorderColor = Theme.Hairline;
+                break;
+            case FlowLayoutPanel panel when panel != _buttons && panel.Parent == _layout:
+                panel.BackColor = Theme.Surface;
                 break;
             default:
                 control.BackColor = Theme.Night;

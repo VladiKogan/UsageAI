@@ -8,7 +8,7 @@
     <Nullable>enable</Nullable>
     <AssemblyName>UsageAI</AssemblyName>
     <RootNamespace>UsageAI</RootNamespace>
-    <Version>0.13.0</Version>
+    <Version>0.14.0</Version>
     <ApplicationManifest>app.manifest</ApplicationManifest>
     <ApplicationIcon>Resources\app.ico</ApplicationIcon>
     <ApplicationHighDpiMode>PerMonitorV2</ApplicationHighDpiMode>
@@ -35,6 +35,7 @@
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
     </Content>
     <EmbeddedResource Include="Resources\usageai-providers.ttf" LogicalName="UsageAI.Resources.usageai-providers.ttf" />
+    <EmbeddedResource Include="Resources\app.ico" LogicalName="UsageAI.Resources.app.ico" />
     <EmbeddedResource Include="THIRD-PARTY-NOTICES.md" LogicalName="UsageAI.Resources.THIRD-PARTY-NOTICES.md" />
     <EmbeddedResource Include="Changelog.md" LogicalName="UsageAI.Changelog.md" />
   </ItemGroup>

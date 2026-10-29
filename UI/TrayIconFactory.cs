@@ -5,9 +5,9 @@ using System.Runtime.InteropServices;
 namespace UsageAI.UI;
 
 /// <summary>
-/// Renders the tray icon at the size the shell actually asks for. A fixed 32-pixel bitmap
-/// scaled down to a 16-pixel tray slot loses the arc and turns any glyph into mush, so the
-/// icon is drawn to measure and the glyph appears only when there is room for it.
+/// Renders the tray icon at the size the shell actually asks for: the popup's ring, an arc on a
+/// track. A fixed 32-pixel bitmap scaled down to a 16-pixel tray slot loses the arc, so the icon
+/// is drawn to measure, and an error's "!" appears only where there is room to read it.
 /// </summary>
 internal static class TrayIconFactory
 {
@@ -23,13 +23,12 @@ internal static class TrayIconFactory
     }
 
     /// <summary>
-    /// Draws the gauge. Colour and fill intensity always follow <paramref name="usedPercent"/>;
-    /// the ring sweeps to <paramref name="fillPercent"/> when the quota display shows what is
-    /// left, so the ring and the tooltip number encode the same quantity.
+    /// Draws the gauge. Its colour always follows <paramref name="usedPercent"/>; the arc sweeps
+    /// to <paramref name="fillPercent"/> when the quota display shows what is left, so the ring
+    /// and the tooltip number encode the same quantity.
     /// </summary>
     public static Icon Create(
         int usedPercent,
-        string glyph = "C",
         bool hasError = false,
         int size = 0,
         Color? identityColor = null,
@@ -59,21 +58,16 @@ internal static class TrayIconFactory
                 graphics.DrawEllipse(track, circle);
             }
 
-            var normalizedUsage = Math.Clamp(usedPercent, 0, 100);
+            // A clean arc on the track, the same ring the popup draws: no translucent pie behind
+            // it and no letter inside, which at tray size only blurred the arc.
             var normalizedFill = Math.Clamp(fillPercent ?? usedPercent, 0, 100);
             if (hasError || normalizedFill > 0)
             {
                 var sweep = hasError ? 360F : Math.Max(10F, 360F * normalizedFill / 100F);
-                var fillAlpha = Math.Clamp((int)(55 + normalizedUsage * 0.85), 55, 160);
-                using (var fillBrush = new SolidBrush(Theme.IsHighContrast ? color : Color.FromArgb(fillAlpha, color)))
-                {
-                    graphics.FillPie(fillBrush, circle.X, circle.Y, circle.Width, circle.Height, -90, sweep);
-                }
-
                 using var arc = new Pen(color, ringWidth)
                 {
-                    StartCap = LineCap.Round,
-                    EndCap = LineCap.Round,
+                    StartCap = hasError ? LineCap.Flat : LineCap.Round,
+                    EndCap = hasError ? LineCap.Flat : LineCap.Round,
                 };
                 graphics.DrawArc(arc, circle, -90, sweep);
             }
@@ -96,7 +90,8 @@ internal static class TrayIconFactory
                 graphics.FillEllipse(marker, markerBounds);
             }
 
-            var displayedGlyph = hasError ? "!" : glyph;
+            // Only an error earns a glyph, and only where there is room to read it.
+            var displayedGlyph = hasError ? "!" : string.Empty;
             if (pixels >= MinimumGlyphSize && !string.IsNullOrEmpty(displayedGlyph))
             {
                 using var glyphFont = new Font(
@@ -119,16 +114,77 @@ internal static class TrayIconFactory
             }
         }
 
-        var handle = bitmap.GetHicon();
-        try
+        return ToIcon(bitmap);
+    }
+
+    /// <summary>
+    /// Draws the UsageAI logo — a ring on a dark tile — with its tank filled to
+    /// <paramref name="fillPercent"/>. The water keeps the logo's cyan until
+    /// <paramref name="usedPercent"/> crosses the warning or critical threshold, and from there
+    /// the ring takes the same colour, so a spent quota shown as remaining (an empty tank) still
+    /// reads as critical. The tile is dark whatever the app theme, so the colours are the dark
+    /// palette's. Geometry matches scripts\render-logo.ps1 in its 48-unit tile, with a flat
+    /// waterline at every size, since a wave would read as a second level.
+    /// </summary>
+    public static Icon CreateTank(int usedPercent, int fillPercent, int size = 0)
+    {
+        var pixels = Math.Clamp(size <= 0 ? PreferredSize : size, 16, 64);
+        var small = pixels <= 24;
+        var ringRadius = small ? 15F : 14.5F;
+        var ringWidth = small ? 4.6F : 3.4F;
+        var waterRadius = small ? 10.2F : 10.6F;
+        var highContrast = Theme.IsHighContrast;
+        Color? status = highContrast ? null :
+            Theme.IsCriticalUsage(usedPercent) ? Theme.DarkCritical :
+            Theme.IsWarningUsage(usedPercent) ? Theme.DarkWarning :
+            null;
+        var water = highContrast ? SystemColors.Highlight : status ?? Theme.DarkSignal;
+        var ringColor = highContrast ? SystemColors.WindowText : status ?? Color.FromArgb(241, 241, 239);
+
+        using var bitmap = new Bitmap(pixels, pixels, PixelFormat.Format32bppArgb);
+        using (var graphics = Graphics.FromImage(bitmap))
         {
-            using var icon = Icon.FromHandle(handle);
-            return (Icon)icon.Clone();
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.Clear(Color.Transparent);
+            graphics.ScaleTransform(pixels / 48F, pixels / 48F);
+
+            using (var tile = DrawingHelpers.RoundedRectangle(new RectangleF(0, 0, 48, 48), 10.5F))
+            using (var tileBrush = new SolidBrush(highContrast ? SystemColors.Window : Color.FromArgb(31, 31, 31)))
+            {
+                graphics.FillPath(tileBrush, tile);
+            }
+
+            using (var ring = new Pen(ringColor, ringWidth))
+            {
+                graphics.DrawEllipse(ring, 24 - ringRadius, 24 - ringRadius, ringRadius * 2, ringRadius * 2);
+            }
+
+            var level = Math.Clamp(fillPercent, 0, 100) / 100F;
+            if (level > 0)
+            {
+                // The water is the circle below its waterline: an arc closed by the chord. A clip
+                // region would do the same unsmoothed, and a full tank came out an octagon.
+                using var tank = new GraphicsPath();
+                var bounds = new RectangleF(24 - waterRadius, 24 - waterRadius, waterRadius * 2, waterRadius * 2);
+                if (level >= 1)
+                {
+                    tank.AddEllipse(bounds);
+                }
+                else
+                {
+                    var drop = waterRadius - waterRadius * 2 * level;
+                    var theta = (float)(Math.Asin(drop / waterRadius) * 180 / Math.PI);
+                    tank.AddArc(bounds, theta, 180 - 2 * theta);
+                    tank.CloseFigure();
+                }
+
+                using var waterBrush = new SolidBrush(water);
+                graphics.FillPath(waterBrush, tank);
+            }
         }
-        finally
-        {
-            DestroyIcon(handle);
-        }
+
+        return ToIcon(bitmap);
     }
 
     public static Icon CreateRefreshing(float angleDegrees, int size = 0)
@@ -159,6 +215,11 @@ internal static class TrayIconFactory
             }
         }
 
+        return ToIcon(bitmap);
+    }
+
+    private static Icon ToIcon(Bitmap bitmap)
+    {
         var handle = bitmap.GetHicon();
         try
         {

@@ -124,13 +124,63 @@ internal sealed class AppSettings
     public string[] ProviderOrder { get; set; } = Array.Empty<string>();
 
     /// <summary>
+    /// <see cref="TrayProviderId"/> value that lists every connected provider in the tray tooltip.
+    /// No single gauge stands for them all, so the tray then shows the UsageAI logo.
+    /// </summary>
+    public const string AllProvidersTrayId = "all";
+
+    /// <summary>
     /// Provider whose usage drives the tray gauge. Null means follow the connected provider
-    /// with the highest consumption.
+    /// with the highest consumption; <see cref="AllProvidersTrayId"/> lists them all.
     /// </summary>
     public string? TrayProviderId { get; set; }
 
     /// <summary>Saved dashboard bounds as x, y, width, height.</summary>
     public int[]? DashboardBounds { get; set; }
+
+    /// <summary>
+    /// Whether the saved bounds are a size the user chose. Until they are, the dashboard grows
+    /// to fit its table; bounds saved only because the window was hidden do not count.
+    /// </summary>
+    public bool DashboardSizedByUser { get; set; }
+
+    /// <summary>
+    /// The Settings window's client size as width, height at 96 DPI, so a size chosen on one
+    /// monitor opens the same on another at a different scale. Null opens the default size.
+    /// </summary>
+    public int[]? SettingsWindowSize { get; set; }
+
+    /// <summary>
+    /// The model group each provider's popup rings show, keyed by provider id. A provider with no
+    /// entry, or an entry naming a group it no longer reports, shows its busiest group.
+    /// </summary>
+    public Dictionary<string, string> PopupMetricGroups { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+
+    public string? PopupMetricGroup(string providerId) =>
+        PopupMetricGroups.TryGetValue(providerId, out var group) ? group : null;
+
+    /// <summary>Pins a provider's popup rings to <paramref name="group"/>; null returns to automatic.</summary>
+    public void SetPopupMetricGroup(string providerId, string? group)
+    {
+        var groups = new Dictionary<string, string>(PopupMetricGroups, StringComparer.OrdinalIgnoreCase);
+        if (string.IsNullOrWhiteSpace(group))
+        {
+            groups.Remove(providerId);
+        }
+        else
+        {
+            groups[providerId] = group.Trim();
+        }
+
+        PopupMetricGroups = groups;
+    }
+
+    /// <summary>
+    /// Keeps these settings in memory only. The interactive preview uses throwaway settings
+    /// and must never overwrite the user's real file, whatever the window it opens saves.
+    /// </summary>
+    [JsonIgnore]
+    public bool IsEphemeral { get; init; }
 
     public static AppSettings Load()
     {
@@ -160,6 +210,12 @@ internal sealed class AppSettings
 
     public void Save()
     {
+        if (IsEphemeral)
+        {
+            Validate();
+            return;
+        }
+
         try
         {
             Validate();
@@ -260,6 +316,24 @@ internal sealed class AppSettings
         {
             DashboardBounds = null;
         }
+
+        // Within any plausible screen; the window keeps itself on the screen it opens on.
+        if (SettingsWindowSize is not [>= 200 and <= 8000, >= 200 and <= 8000])
+        {
+            SettingsWindowSize = null;
+        }
+
+        // Deserialisation hands back a case-sensitive dictionary, or null for an explicit null.
+        PopupMetricGroups = (PopupMetricGroups ?? new Dictionary<string, string>())
+            .Where(entry => NormalizeId(entry.Key) is not null &&
+                            !string.IsNullOrWhiteSpace(entry.Value) &&
+                            entry.Value.Trim().Length <= 128)
+            .Take(16)
+            .GroupBy(entry => entry.Key.Trim(), StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => group.Last().Value.Trim(),
+                StringComparer.OrdinalIgnoreCase);
     }
 
     private static string[] NormalizeIds(string[]? ids) => ids is { Length: > 0 }

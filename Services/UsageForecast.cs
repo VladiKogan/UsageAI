@@ -90,24 +90,4 @@ internal static class UsageForecast
         var beforeReset = metric.ResetsAt is { } resetsAt && exhaustedAt < resetsAt;
         return new UsageProjection(percentPerHour, exhaustedAt, beforeReset);
     }
-
-    /// <summary>Recent points for one metric, normalised for the sparkline.</summary>
-    public static IReadOnlyList<int> Trend(
-        IReadOnlyList<UsageSample> samples,
-        string providerId,
-        UsageMetric metric,
-        int maximumPoints = 48)
-    {
-        var series = samples
-            .Where(sample =>
-                string.Equals(sample.ProviderId, providerId, StringComparison.OrdinalIgnoreCase) &&
-                string.Equals(sample.MetricKey, metric.Key, StringComparison.Ordinal))
-            .OrderBy(sample => sample.At)
-            .Select(sample => sample.UsedPercent)
-            .ToArray();
-
-        return series.Length <= maximumPoints
-            ? series
-            : series[^maximumPoints..];
-    }
 }

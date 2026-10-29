@@ -30,9 +30,28 @@ internal static class Typography
         "Courier New",
     };
 
+    // Bahnschrift's figures are tabular and engineered for gauges and signage, which is what
+    // every usage number is. GDI exposes its named weights as separate families.
+    private static readonly string[] FiguresStack =
+    {
+        "Bahnschrift SemiBold",
+        "Bahnschrift",
+        "Segoe UI Variable Display",
+        "Segoe UI",
+        "Tahoma",
+    };
+
     private static readonly string DisplayFamily = Resolve(DisplayStack);
     private static readonly string TextFamily = Resolve(TextStack);
     private static readonly string MonoFamily = Resolve(MonoStack);
+    private static readonly string FiguresFamily = Resolve(FiguresStack);
+
+    /// <summary>
+    /// The weight that reads as semi-bold in the figures face: the SemiBold family already carries
+    /// it, while any fallback needs the bold style to stand above body text.
+    /// </summary>
+    private static readonly FontStyle FiguresStyle =
+        FiguresFamily.Contains("SemiBold", StringComparison.OrdinalIgnoreCase) ? FontStyle.Regular : FontStyle.Bold;
 
     /// <summary>Headings. The caller owns the returned font.</summary>
     public static Font Display(float points, FontStyle style = FontStyle.Bold) =>
@@ -57,6 +76,16 @@ internal static class Typography
     /// <summary>Monospace face realised for one monitor's DPI. The caller owns the returned font.</summary>
     public static Font Mono(float points, int dpi, FontStyle style = FontStyle.Bold) =>
         Create(MonoFamily, points, dpi, style);
+
+    /// <summary>Usage figures for a control's own font, which WinForms rescales. The caller owns it.</summary>
+    public static Font Figures(float points) => Create(FiguresFamily, points, FiguresStyle);
+
+    /// <summary>
+    /// Usage figures — percentages, balances, countdowns — realised for one monitor's DPI. The
+    /// caller owns the returned font.
+    /// </summary>
+    public static Font Figures(float points, int dpi) =>
+        Create(FiguresFamily, points, dpi, FiguresStyle);
 
     /// <summary>
     /// Converts a point size to the em size in pixels for <paramref name="dpi"/>. A point-sized
