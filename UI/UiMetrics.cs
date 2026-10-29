@@ -11,7 +11,17 @@ internal readonly struct LayoutScale
 
     private readonly float _factor;
 
-    public LayoutScale(Control control) => _factor = Math.Clamp(control.DeviceDpi / (float)BaselineDpi, 0.5F, 6F);
+    public LayoutScale(Control control) => _factor = Math.Clamp(DpiOf(control) / (float)BaselineDpi, 0.5F, 6F);
+
+    /// <summary>
+    /// The DPI <paramref name="control"/> is drawn at. A child window always shares its
+    /// top-level window's DPI, but its own <see cref="Control.DeviceDpi"/> lags: before its
+    /// handle exists it is the start-up DPI, and while the window handles a DPI change the
+    /// children still report the old one, so content rebuilt then was measured for the monitor
+    /// the window just left. The top-level window is asked instead whenever it has a handle.
+    /// </summary>
+    public static int DpiOf(Control control) =>
+        control.TopLevelControl is { IsHandleCreated: true } top ? top.DeviceDpi : control.DeviceDpi;
 
     /// <summary>Explicit-DPI seam for deterministic geometry tests and previews.</summary>
     internal LayoutScale(int dpi) => _factor = Math.Clamp(dpi / (float)BaselineDpi, 0.5F, 6F);
@@ -41,4 +51,21 @@ internal readonly struct LayoutScale
 
     public Padding Pad(int left, int top, int right, int bottom) =>
         new(this[left], this[top], this[right], this[bottom]);
+}
+
+/// <summary>Keeps a window on screen when it moves to a monitor or grows.</summary>
+internal static class WindowBounds
+{
+    /// <summary>
+    /// Shrinks <paramref name="bounds"/> to fit <paramref name="workingArea"/> and slides it
+    /// inside, so no edge or button ends up off screen or under the taskbar.
+    /// </summary>
+    public static Rectangle FitToWorkingArea(Rectangle bounds, Rectangle workingArea)
+    {
+        var width = Math.Min(bounds.Width, workingArea.Width);
+        var height = Math.Min(bounds.Height, workingArea.Height);
+        var x = Math.Clamp(bounds.X, workingArea.Left, Math.Max(workingArea.Left, workingArea.Right - width));
+        var y = Math.Clamp(bounds.Y, workingArea.Top, Math.Max(workingArea.Top, workingArea.Bottom - height));
+        return new Rectangle(x, y, width, height);
+    }
 }

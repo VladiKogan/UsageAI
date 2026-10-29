@@ -56,7 +56,7 @@ internal static class DrawingHelpers
     public static void DrawCapacityMeter(
         Graphics graphics,
         Rectangle bounds,
-        int usedPercent,
+        float usedPercent,
         Color fill,
         Color track)
     {
@@ -72,7 +72,7 @@ internal static class DrawingHelpers
             graphics.FillPath(trackBrush, trackPath);
         }
 
-        var used = Math.Clamp(usedPercent, 0, 100);
+        var used = Math.Clamp(usedPercent, 0F, 100F);
         var width = (int)Math.Round(bounds.Width * used / 100D);
         if (width <= 0)
         {
@@ -87,63 +87,42 @@ internal static class DrawingHelpers
         graphics.FillPath(fillBrush, fillPath);
     }
 
-    /// <summary>An indeterminate marker for balances, which have no percentage to meter.</summary>
-    public static void DrawBalanceMarker(Graphics graphics, Rectangle bounds, Color color)
-    {
-        if (bounds.Width <= 0 || bounds.Height <= 0)
-        {
-            return;
-        }
-
-        var width = Math.Min(bounds.Width, bounds.Height * 8);
-        using var path = RoundedRectangle(
-            new Rectangle(bounds.X, bounds.Y, width, bounds.Height),
-            bounds.Height / 2F);
-        using var brush = new SolidBrush(Theme.IsHighContrast ? color : Color.FromArgb(150, color));
-        graphics.FillPath(brush, path);
-    }
-
     /// <summary>
-    /// Plots recent usage percentages. Values are drawn as consumption, so the line rises as
-    /// the quota is spent.
+    /// Draws a ring gauge: a full track and an arc from twelve o'clock clockwise for
+    /// <paramref name="percent"/>. A tiny value keeps a visible cap, and a zero draws no arc at
+    /// all, so an unused limit never looks like it has started.
     /// </summary>
-    public static void DrawSparkline(
+    public static void DrawRing(
         Graphics graphics,
-        Rectangle bounds,
-        IReadOnlyList<int> values,
-        Color color)
+        RectangleF circle,
+        float strokeWidth,
+        float percent,
+        Color fill,
+        Color track)
     {
-        if (values.Count < 2 || bounds.Width <= 2 || bounds.Height <= 2)
+        if (circle.Width <= strokeWidth || circle.Height <= strokeWidth)
         {
             return;
-        }
-
-        var points = new PointF[values.Count];
-        var step = bounds.Width / (float)(values.Count - 1);
-        for (var index = 0; index < values.Count; index++)
-        {
-            var value = Math.Clamp(values[index], 0, 100) / 100F;
-            points[index] = new PointF(
-                bounds.Left + step * index,
-                bounds.Bottom - value * bounds.Height);
         }
 
         var previousMode = graphics.SmoothingMode;
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
-        using (var pen = new Pen(Theme.IsHighContrast ? color : Color.FromArgb(190, color), 1.4F)
-               {
-                   LineJoin = LineJoin.Round,
-                   StartCap = LineCap.Round,
-                   EndCap = LineCap.Round,
-               })
+        var path = RectangleF.Inflate(circle, -strokeWidth / 2F, -strokeWidth / 2F);
+        using (var trackPen = new Pen(track, strokeWidth))
         {
-            graphics.DrawLines(pen, points);
+            graphics.DrawEllipse(trackPen, path);
         }
 
-        using (var dot = new SolidBrush(color))
+        var clamped = Math.Clamp(percent, 0F, 100F);
+        if (clamped > 0F)
         {
-            var last = points[^1];
-            graphics.FillEllipse(dot, last.X - 1.8F, last.Y - 1.8F, 3.6F, 3.6F);
+            var sweep = clamped >= 100F ? 360F : Math.Max(6F, 360F * clamped / 100F);
+            using var fillPen = new Pen(fill, strokeWidth)
+            {
+                StartCap = clamped >= 100F ? LineCap.Flat : LineCap.Round,
+                EndCap = clamped >= 100F ? LineCap.Flat : LineCap.Round,
+            };
+            graphics.DrawArc(fillPen, path, -90F, sweep);
         }
 
         graphics.SmoothingMode = previousMode;

@@ -72,41 +72,53 @@ npm.cmd run package:vsix
 
 ## 👀 What you'll see
 
-**A tray icon that actually tells you something.** It fills up like a gauge as you burn through your limit and shifts colour along the way — green under 50%, blue up to 71%, amber to 89%, red once you're at 90% and it's time to pace yourself.
+**A tray icon that actually tells you something.** A ring that fills as you burn through your limit, the same gauge the popup draws. It stays one calm colour while you're fine, turns amber at your warning threshold (72% by default) and red at the critical one (90%), and shows `!` when no provider can be reached.
+
+**Or every provider at once.** Set the tray icon provider to **All connected** and the icon becomes the UsageAI logo, its tank filled to the busiest limit it lists and turning amber and red at the same thresholds. Point at it for one line per provider, the same limits the popup shows:
+
+```text
+UsageAI
+Codex 10% | 22%
+Claude 5% | 40%
+Copilot 33%
+Gemini 60% | 30%
+```
 
 **Every window each provider reports — not just one number.** Codex 5-hour, weekly, credits and reset credits. Claude 5-hour, weekly, weekly Opus and extra usage. Copilot AI credits or premium requests, chat and completions. Gemini model groups (Gemini Models, Claude and GPT models) or Cloud Code API quotas.
 
-**"At this pace, empty by 15:20."** A trend sparkline plus a burn-rate forecast, so you find out you're running hot *before* the wall, not after it.
+**"At this pace, out by 15:20."** A burn-rate forecast for every limit, so you find out you're running hot *before* the wall, not after it.
 
 **A heads-up before it matters.** Tray notifications when a limit crosses the threshold you picked — and again when it resets and you're free to go.
 
 **Reset countdowns, plan and account** for each provider, so you always know what you're on and how long until it refills.
 
-**The providers look like themselves.** Codex, Claude, GitHub Copilot, and Gemini use the same recognizable monochrome brand marks in the Windows dashboard and editor Status Bar, coloured by the surrounding native theme.
+**The providers look like themselves.** Codex, Claude, GitHub Copilot, and Gemini carry their recognizable brand marks in the popup and dashboard, and monochrome versions coloured by the theme in the editor Status Bar.
 
-**One glance or the full picture.** Left-click for a compact popup; open the dashboard for a fixed 2×2 grid of Codex, Claude Code, GitHub Copilot, and Google Gemini. Resize or maximize the window and all four provider cards—and the usage details inside them—resize together to fill the available space.
+**One glance or the full picture.** Left-click for a compact popup of ring gauges, two providers to a row; open the dashboard for one table of every limit from Codex, Claude Code, GitHub Copilot, and Google Gemini, in columns that line up — usage, what is used or left, when it resets, and where the current pace lands.
 
 <p align="center">
   <img src="usageai-dashboard-preview.png?v=0.13.0" alt="UsageAI 0.13.0 dashboard" width="750" />
 </p>
 
-**It never goes blank.** If a refresh fails, UsageAI keeps the last good reading and marks it **stale**, with the provider's own error message attached. The card labels when that good reading was captured and when the next automatic retry is due. Each failed provider wakes independently after its backoff, instead of waiting for the regular polling interval or hammering a rate-limited API.
+**It never goes blank.** If a refresh fails, UsageAI keeps the last good reading and marks it **stale**, with the provider's own error message attached. The dashboard says when that good reading was captured and when the next automatic retry is due, with a **Retry** link for that provider alone; the popup dims its rings and explains on hover. Each failed provider wakes independently after its backoff, instead of waiting for the regular polling interval or hammering a rate-limited API.
 
-**It looks like it belongs on your desktop.** Native Windows dark title bars and scrollbars, light/dark/follow-Windows themes, your Windows accent colour, and window size and position remembered between runs.
+**It looks like it belongs on your desktop.** Windows 11 rounded corners, context menus and slim scrollbars, native dark title bars, light/dark/follow-Windows themes, your Windows accent colour, Windows High Contrast, and window size and position remembered between runs. Gauges ease to new readings, and stay still when Windows' animation effects are off.
 
 ## 🖱️ Living in the tray
 
 | Do this | Get this |
 | --- | --- |
 | Left-click the tray icon | Compact view of every connected provider |
+| Point at the tray icon | Usage of the tray provider, or of every provider with **All connected** |
 | **Win+Alt+U** | Same thing, from anywhere |
-| Right-click ▸ **Open** | Full dashboard, all providers and metrics |
-| Right-click ▸ **Settings...** | Preferences |
+| Right-click ▸ **Open dashboard** | Full dashboard, all providers and metrics |
+| Right-click ▸ **Settings…** | Preferences |
 | Launch UsageAI again | Brings the running window forward |
 | `Esc` | Back to the tray |
-| `Tab` / `Enter` on a card | Opens that provider's usage page — or copies its sign-in command if it's disconnected |
+| `Enter` on a popup provider | Opens the dashboard |
+| `Tab` / `Enter` in the dashboard | Walks its links and buttons: open a provider's usage page, copy a sign-in command, or retry one provider |
 
-The dashboard is a normal Windows window: move it, resize it, maximize it, or close it back to the tray. Its provider layout always remains two columns by two rows; at shorter sizes, metric rows tighten their spacing and drop trend details before allowing a provider card to leave the visible grid.
+The dashboard is a normal Windows window: move it, resize it, maximize it, or close it back to the tray. It grows to fit the table, scrolls only when the table is taller than the window, and drops the forecast column on narrow windows rather than squeezing every cell.
 
 ## 🔌 Works with what you already use
 
@@ -117,7 +129,7 @@ The dashboard is a normal Windows window: move it, resize it, maximize it, or cl
 | **GitHub Copilot** | Signed in through a Copilot IDE extension or Copilot CLI |
 | **Google Gemini** | Signed in through Google's Antigravity VS Code extension, `agy` (recommended), the `gemini` CLI, or Antigravity IDE |
 
-One is enough to get going. Connect the rest whenever you like — cards appear as providers show up.
+One is enough to get going. Connect the rest whenever you like — each provider appears as soon as it connects.
 
 Codex and Claude Code don't need a separate CLI install: if only their editor extension is installed in VS Code, VS Code Insiders, VSCodium, Cursor, Windsurf, or Antigravity, UsageAI uses the CLI that extension ships.
 
@@ -174,7 +186,7 @@ The key is kept in memory, is never forwarded to provider CLI child processes, a
 
 ## ⚙️ Make it yours
 
-**Settings...** in the tray menu lets you tune:
+**Settings…** in the tray menu lets you tune:
 
 - How often it refreshes — and whether to ease off while no window is open
 - Alert thresholds, and whether resets get announced
@@ -183,8 +195,10 @@ The key is kept in memory, is never forwarded to provider CLI child processes, a
   **remaining** — colours and alert thresholds always follow usage
 - Which metrics the full dashboard shows: all reported metrics, metered limits only, or the most
   important Session, Rolling, and Monthly limit
-- Whether history is recorded, and whether the trend and forecast are shown
-- Which provider drives the tray icon (or let it follow whichever is running hottest), which providers appear, and in what order
+- Whether history is recorded, and whether the burn-rate forecast is shown
+- Which provider drives the tray icon (or let it follow whichever is running hottest, or list
+  **All connected** in its tooltip), which providers appear, and in what order
+- Which model group the popup shows for a provider that reports several, such as Gemini
 - The global hotkey, and whether UsageAI starts with Windows
 - The installed desktop-app version, with manual **What's new** and **Check for updates** actions
   under **About**
@@ -194,9 +208,9 @@ the popup, dashboard, or Settings. A clean first install stays quiet. Windows Hi
 overrides the selected app theme, and the desktop windows rescale when moved between monitors.
 
 UsageAI checks GitHub for a newer release once per day while it is running. You can also open
-**Settings...** and use **About** → **Check for updates** at any time. The result says whether your
+**Settings…** and use **About** → **Check for updates** at any time. The result says whether your
 installed version is current, a newer version is available, or the check could not be completed.
-When an update exists, UsageAI asks before downloading or installing anything; choosing **No** leaves
+When an update exists, UsageAI asks before downloading or installing anything; choosing **Later** leaves
 the current version untouched.
 Installed builds can download the matching Setup.exe, verify its published SHA-256, and ask Windows
 to install it. During an in-app upgrade, Windows closes the running tray process, replaces the
@@ -214,9 +228,9 @@ restart it automatically.
 - **"Claude Code is not signed in"** — run `claude` or sign in through the Claude Code extension, or use the session-key method above, then hit **Refresh**.
 - **"Google Gemini usage is unavailable"** — UsageAI tried the Antigravity IDE, the `agy` CLI, and the Gemini CLI, and the message says which of them returned nothing. Run `agy` to check that it is signed in, then hit **Refresh**.
 - **"Copilot is not signed in"** — sign in through a Copilot IDE extension or Copilot CLI, then hit **Refresh**.
-- **A card says "stale"** — the provider's latest check failed, so you're looking at its previous good reading. The card shows when that reading succeeded, the provider's error, and when UsageAI will retry automatically. The retry runs independently as soon as its backoff or provider-supplied wait time expires; **Refresh** remains available for an immediate manual check.
-- **The hotkey does nothing** — another app already owns Win+Alt+U. Turn it off in **Settings...** to release it.
-- **It didn't start with Windows** — open **Settings...** ▸ **System**. **Start with Windows** shows what Windows would actually do, so if it reads off with a warning underneath, Windows Startup Apps has switched UsageAI off or the entry belongs to another copy of it. Tick the box and save to repair it.
+- **A provider says "stale"** — its latest check failed, so you're looking at its previous good reading. The dashboard shows when that reading succeeded, the provider's error, and when UsageAI will retry automatically. The retry runs independently as soon as its backoff or provider-supplied wait time expires; **Retry** beside it, or **Refresh** for every provider, checks immediately.
+- **The hotkey does nothing** — another app already owns Win+Alt+U. Turn it off in **Settings…** to release it.
+- **It didn't start with Windows** — open **Settings…** ▸ **General**. **Start with Windows** shows what Windows would actually do, so if it reads off with a warning underneath, Windows Startup Apps has switched UsageAI off or the entry belongs to another copy of it. Turn it on and save to repair it.
 - **No tray icon** — open the Windows tray overflow menu and pin UsageAI.
 
 </details>
@@ -273,7 +287,23 @@ dotnet run --project .\UsageAI.csproj -- --render-preview .\usageai-preview.png
 dotnet run --project .\UsageAI.csproj -- --render-preview .\usageai-dashboard-preview.png --full
 ```
 
-Add `--quota-display remaining` to either command to render the remaining-quota view.
+Both render at 192 DPI from sample data, with no accounts needed. Add `--quota-display remaining` for the remaining-quota view, `--theme light` or `--theme dark`, or `--dpi 96|192|288`.
+
+**Try a window by hand** with the same sample data, at your monitor's own scale and next to an installed copy:
+
+```powershell
+dotnet run --project .\UsageAI.csproj -- --preview-window popup --theme dark --states mixed
+```
+
+`--preview-window` also takes `dashboard`, `settings`, `whatsnew`, `prompt`, `warning` and `menu`. In the popup and dashboard, **Refresh** alternates between two sets of readings, so the gauges have somewhere to move.
+
+**Film the tray** with the whole app running on sample providers — tray icon, tooltip, popup, dashboard, Settings and alerts, with no accounts, update checks or startup registration:
+
+```powershell
+dotnet run --project .\UsageAI.csproj -- --preview-tray --theme dark
+```
+
+The tray starts on **All connected** with every limit calm. Each **Refresh** steps the readings to between the warning and critical thresholds, then past critical, then back to calm, so the tank fills and changes colour on cue. The stages aim at whatever thresholds Settings holds, and automatic polls or a refresh after sleep never change them. Exit the installed copy first so there is one UsageAI icon, and drag the new icon out of the taskbar's overflow (`^`), where Windows puts every new tray icon. **Exit** in the tray menu ends the preview.
 
 **Build the portable executable:**
 

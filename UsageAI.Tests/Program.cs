@@ -18,6 +18,10 @@ namespace UsageAI.Tests;
 internal static class Program
 {
     private static readonly string[] ProviderIds = { "codex", "claude", "copilot", "gemini" };
+    private static readonly int[] EphemeralBounds = { 1, 2, 3, 4 };
+    private static readonly string[] PreviewDashboardArgs = { "--preview-window", "dashboard" };
+    private static readonly string[] PreviewFlagFollowedByFlagArgs = { "--preview-window", "--theme", "dark" };
+    private static readonly string[] TrailingThemeFlagArgs = { "--theme" };
 
     private static readonly (string Name, Func<Task> Run)[] Tests =
     {
@@ -42,6 +46,7 @@ internal static class Program
         ("settings content clears the fixed footer", TestSettingsScrollLayoutAsync),
         ("provider order and visibility", TestProviderOrderAsync),
         ("tray provider selection, tooltip, and empty icon", TestTrayProviderSelectionAsync),
+        ("tray preview steps sample providers on requested refreshes", TestTrayPreviewStagesAsync),
         ("usage history round trip", TestUsageHistoryAsync),
         ("snapshot cache round trip", TestSnapshotCacheAsync),
         ("burn-rate projection", TestForecastAsync),
@@ -51,16 +56,34 @@ internal static class Program
         ("dashboard metric display selection", TestMetricDisplaySelectionAsync),
         ("bundled release notes and upgrade state", TestReleaseNotesAsync),
         ("High Contrast palette and extreme DPI scale", TestHighContrastAndDpiAsync),
-        ("painted card text and rows follow the monitor DPI", TestCardDpiTypographyAsync),
+        ("painted tile and table text follow the monitor DPI", TestCardDpiTypographyAsync),
         ("dashboard metric mode UI and settings isolation", CoverageExpansionTests.TestDashboardMetricModeUiAsync),
         ("quota display flips presentation only", CoverageExpansionTests.TestQuotaDisplayAsync),
         ("release notes parser boundary cases", CoverageExpansionTests.TestReleaseNotesBoundariesAsync),
         ("release note bullet summaries", CoverageExpansionTests.TestReleaseNoteSummariesAsync),
         ("What's New first-interaction lifecycle", CoverageExpansionTests.TestWhatsNewLifecycleAsync),
+        ("a provider update after the app is disposed is dropped", CoverageExpansionTests.TestUpdateAfterDisposeIsDroppedAsync),
         ("runtime High Contrast surface propagation", CoverageExpansionTests.TestRuntimeHighContrastAsync),
         ("owned-window extreme DPI geometry", CoverageExpansionTests.TestExtremeDpiGeometryAsync),
         ("Primary metric prioritization in tray and header", TestPrimaryMetricTrayTooltipAsync),
         ("Theme usage fill colors and tray pie icon", TestThemeUsageColorsAsync),
+        ("redesign foundation: accent legibility, critical threshold, preview isolation", TestRedesignFoundationAsync),
+        ("popup rings pick one model group, shortest window first", RedesignTests.TestPopupRingSelectionAsync),
+        ("popup model-group setting round trip and validation", RedesignTests.TestPopupGroupSettingAsync),
+        ("compact reset label and popup headline sentence", RedesignTests.TestCompactResetAndHeadlineAsync),
+        ("provider tile states, indicator and actions at every DPI", RedesignTests.TestProviderTileStatesAsync),
+        ("settings pins a provider's popup model group", RedesignTests.TestSettingsPopupGroupPickerAsync),
+        ("ring gauge, icon buttons and themed tooltip drawing", RedesignTests.TestRingAndIconDrawingAsync),
+        ("dashboard table rows, columns, forecasts and keyboard", RedesignTests.TestUsageLedgerAsync),
+        ("dashboard refits its table after a DPI change until the user sizes it", RedesignTests.TestDashboardRefitsOnDpiChangeAsync),
+        ("dashboard keeps focus and scroll across updates and retries one provider", RedesignTests.TestDashboardKeepsStateAcrossUpdatesAsync),
+        ("settings page sections, toggles and previews", RedesignTests.TestSettingsPageAsync),
+        ("prompt dialog, tray menu and ring-only tray icon", RedesignTests.TestPromptMenuAndTrayAsync),
+        ("gauges ease to new values and respect reduced motion", RedesignTests.TestMotionAsync),
+        ("controls measure at their window's DPI and repaint once after a rebuild", RedesignTests.TestWindowDpiAndRedrawAsync),
+        ("settings number fields draw themed spin buttons", RedesignTests.TestThemedStepperAsync),
+        ("settings window resizes and remembers a size the user chose", RedesignTests.TestSettingsWindowSizeAsync),
+        ("scrolling views use a slim scrollbar", RedesignTests.TestSlimScrollBarAsync),
         ("model formatting and provider status states", CoverageExpansionTests.TestModelFormattingAsync),
         ("refresh orchestration, alerts, history, and backoff", CoverageExpansionTests.TestRefreshOrchestrationAsync),
         ("scheduled stale-provider recovery", CoverageExpansionTests.TestScheduledStaleRecoveryAsync),
@@ -83,8 +106,8 @@ internal static class Program
         ("corrupt local state recovery", CoverageExpansionTests.TestCorruptLocalStateAsync),
         ("security utility edge cases", CoverageExpansionTests.TestSecurityUtilityEdgesAsync),
         ("custom UI rendering paths", CoverageExpansionTests.TestUiRenderingAsync),
-        ("dashboard keeps a responsive two-by-two provider grid", CoverageExpansionTests.TestDashboardFixedGridAsync),
-        ("dashboard grid never shows a scrollbar", CoverageExpansionTests.TestDashboardNeverScrollsAsync),
+        ("dashboard table follows the window width", CoverageExpansionTests.TestDashboardTableWidthAsync),
+        ("dashboard table scrolls only when taller than the window", CoverageExpansionTests.TestDashboardScrollsOnlyWhenTallerAsync),
         ("settings provider list reorders by drag", CoverageExpansionTests.TestProviderDragReorderAsync),
         ("settings startup preference", CoverageExpansionTests.TestSettingsStartupPreferenceAsync),
         ("application context lifecycle and tray updates", CoverageExpansionTests.TestApplicationContextAsync),
@@ -178,6 +201,10 @@ internal static class Program
         var startupRoot = $@"Software\UsageAI-Tests-{Guid.NewGuid():N}";
         StartupManager.SetRegistryRootForTests(startupRoot);
 
+        // An exception in a UI callback fails the check that pumped it, rather than opening
+        // WinForms' crash dialog on the desktop and leaving the run waiting on it.
+        Application.SetUnhandledExceptionMode(UnhandledExceptionMode.ThrowException);
+
         var selectedTests = Tests.AsEnumerable();
         var filterIndex = Array.IndexOf(args, "--filter");
         if (filterIndex >= 0)
@@ -203,6 +230,11 @@ internal static class Program
         var failures = 0;
         foreach (var (name, run) in testsToRun)
         {
+            // Constructing a WinForms control installs a WindowsFormsSynchronizationContext on the
+            // current thread, and this harness never pumps a message loop. A UI check that leaves
+            // one behind would strand the continuation of the next asynchronous check, so every
+            // check starts without one, whatever ran before it.
+            SynchronizationContext.SetSynchronizationContext(null);
             try
             {
                 await run();
@@ -1148,11 +1180,17 @@ internal static class Program
         shell.PerformLayout();
         Equal(2, shell.RowCount);
 
-        var content = shell.GetControlFromPosition(0, 0) as Panel
+        // The section list sits beside the scrolling page, and the footer spans both.
+        True(shell.GetControlFromPosition(0, 0) is SectionNav);
+        // The page scrolls inside a slim-scrollbar frame, which is what the shell lays out.
+        var frame = shell.GetControlFromPosition(1, 0) as SlimScrollHost
+            ?? throw new InvalidOperationException("The settings content frame is missing.");
+        var content = frame.Target as Panel
             ?? throw new InvalidOperationException("The settings content area is missing.");
         var footer = shell.GetControlFromPosition(0, 1)
             ?? throw new InvalidOperationException("The settings footer is missing.");
-        Equal(content.Bottom, footer.Top);
+        Equal(frame.Bottom, footer.Top);
+        Equal(frame.Height, content.Height);
         Equal(shell.ClientSize.Height, footer.Bottom);
 
         content.PerformLayout();
@@ -1201,6 +1239,191 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static void TestAllProvidersTrayTooltip(DateTimeOffset now)
+    {
+        static ProviderStatus Status(string id, string name, params UsageMetric[] metrics) =>
+            new(id, name, new UsageSnapshot("Plan", metrics, DateTimeOffset.Now, id, name), null, false);
+
+        var codex = Status(
+            "codex",
+            "Codex",
+            new UsageMetric("Weekly", UsageMetricKind.Rolling, 22, now.AddDays(3), 10_080),
+            new UsageMetric("5-hour", UsageMetricKind.Session, 10, now.AddHours(2), 300));
+        var claude = Status(
+            "claude",
+            "Claude Code",
+            new UsageMetric("5-hour", UsageMetricKind.Session, 5, now.AddHours(2), 300),
+            new UsageMetric("Weekly", UsageMetricKind.Rolling, 40, now.AddDays(3), 10_080));
+        var copilot = Status(
+            "copilot",
+            "GitHub Copilot",
+            new UsageMetric("AI credits", UsageMetricKind.Monthly, 33, now.AddDays(3)),
+            new UsageMetric("Chat", UsageMetricKind.Monthly, 0, now.AddDays(3), IsUnlimited: true));
+        var gemini = Status(
+            "gemini",
+            "Gemini",
+            new UsageMetric("Gemini Models (5-hour)", UsageMetricKind.Session, 3, now.AddHours(1), 300),
+            new UsageMetric("Gemini Models (Weekly)", UsageMetricKind.Rolling, 7, now.AddDays(2), 10_080),
+            new UsageMetric("Claude and GPT models (5-hour)", UsageMetricKind.Session, 60, now.AddHours(1), 300),
+            new UsageMetric("Claude and GPT models (Weekly)", UsageMetricKind.Rolling, 30, now.AddDays(2), 10_080));
+        var credits = Status("credits", "Credits", new UsageMetric("Balance", UsageMetricKind.Balance, null));
+        var offline = new ProviderStatus("offline", "Offline", null, "Sign in", false);
+        var statuses = new[] { codex, claude, offline, copilot, gemini, credits };
+        var settings = new AppSettings { TrayProviderId = "ALL" };
+
+        // Each line carries the popup tile's rings under the editor Status Bar's label, shortest
+        // window first, and a multi-group provider reads its busiest group unless one is pinned.
+        True(UsageApplicationContext.ShowsAllProviders(settings));
+        Equal(
+            "UsageAI\nCodex 10% | 22%\nClaude 5% | 40%\nCopilot 33%\nGemini 60% | 30%\nCredits no metered limit",
+            UsageApplicationContext.TrayTooltipAll(statuses, settings));
+        Equal((60, 60), UsageApplicationContext.TankLevel(statuses, settings));
+        settings.SetPopupMetricGroup("gemini", "Gemini Models");
+        settings.QuotaDisplay = QuotaDisplay.Remaining;
+        Equal(
+            "UsageAI\nCodex 90% | 78% left\nClaude 95% | 60% left\nCopilot 67% left\nGemini 97% | 93% left\nCredits no metered limit",
+            UsageApplicationContext.TrayTooltipAll(statuses, settings));
+        Equal((40, 60), UsageApplicationContext.TankLevel(statuses, settings));
+        Equal((0, 0), UsageApplicationContext.TankLevel(new[] { credits }, settings));
+        False(UsageApplicationContext.ShowsAllProviders(new AppSettings { TrayProviderId = "codex" }));
+
+        // Providers that would overrun the shell's 127 characters are counted, never cut mid-line.
+        var crowded = Enumerable.Range(1, 12)
+            .Select(index => codex with { ProviderId = $"provider{index}", ProviderName = $"Provider {index}" })
+            .ToArray();
+        var tooltip = UsageApplicationContext.TrayTooltipAll(crowded, settings);
+        True(tooltip.Length <= 127);
+        var lines = tooltip.Split('\n');
+        Equal($"+{crowded.Length - (lines.Length - 2)} more", lines[^1]);
+        True(lines[1..^1].All(line => line.EndsWith("left", StringComparison.Ordinal)));
+
+        // The tank fills from the bottom and changes colour at the Settings thresholds.
+        Theme.Apply(ThemeMode.Dark, 72, 90);
+        static Color TankPixel(int used, int fill, double heightFraction)
+        {
+            using var icon = TrayIconFactory.CreateTank(used, fill, size: 32);
+            using var bitmap = icon.ToBitmap();
+            return bitmap.GetPixel(16, (int)(32 * heightFraction));
+        }
+
+        var tile = Color.FromArgb(31, 31, 31).ToArgb();
+        Equal(tile, TankPixel(0, 0, 0.5).ToArgb());
+        Equal(Color.FromArgb(96, 205, 255).ToArgb(), TankPixel(10, 25, 0.68).ToArgb());
+        Equal(tile, TankPixel(10, 25, 0.5).ToArgb());
+        Equal(Color.FromArgb(232, 165, 75).ToArgb(), TankPixel(80, 80, 0.5).ToArgb());
+        Equal(Color.FromArgb(240, 96, 90).ToArgb(), TankPixel(95, 95, 0.5).ToArgb());
+        Equal(Color.FromArgb(240, 96, 90).ToArgb(), TankPixel(95, 30, 0.68).ToArgb());
+        Equal(tile, TankPixel(95, 30, 0.5).ToArgb());
+
+        // The ring takes the status colour too, so a spent quota shown as remaining (an empty
+        // tank) still reads as critical rather than as the calm logo.
+        Equal(Color.FromArgb(241, 241, 239).ToArgb(), TankPixel(10, 25, 0.79).ToArgb());
+        Equal(Theme.DarkWarning.ToArgb(), TankPixel(80, 20, 0.79).ToArgb());
+        Equal(Theme.DarkCritical.ToArgb(), TankPixel(100, 0, 0.79).ToArgb());
+        using var small = TrayIconFactory.CreateTank(50, 50, size: 16);
+        True(small.Width == 16);
+
+        // High Contrast draws every status in one system colour, so the tooltips carry the
+        // popup's "!" and "!!" marks instead.
+        var hot = Status(
+            "claude",
+            "Claude Code",
+            new UsageMetric("5-hour", UsageMetricKind.Session, 95, now.AddHours(2), 300),
+            new UsageMetric("Weekly", UsageMetricKind.Rolling, 75, now.AddDays(3), 10_080));
+        var warm = Status("codex", "Codex", new UsageMetric("Weekly", UsageMetricKind.Rolling, 80, now.AddDays(3), 10_080));
+        var used = new AppSettings { TrayProviderId = AppSettings.AllProvidersTrayId };
+        Equal("UsageAI\nClaude 95% | 75%\nCodex 80%\nCopilot 33%", UsageApplicationContext.TrayTooltipAll(new[] { hot, warm, copilot }, used));
+        Theme.SetHighContrastProbe(static () => true);
+        try
+        {
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+            Equal(
+                "UsageAI\n!! Claude 95% | 75%\n! Codex 80%\nCopilot 33%",
+                UsageApplicationContext.TrayTooltipAll(new[] { hot, warm, copilot }, used));
+            Equal("UsageAI - Claude: !! 95% used", UsageApplicationContext.TrayTooltip(hot));
+            Equal("UsageAI - Copilot: 33% used", UsageApplicationContext.TrayTooltip(copilot));
+            Equal(SystemColors.Highlight.ToArgb(), TankPixel(95, 95, 0.5).ToArgb());
+        }
+        finally
+        {
+            Theme.SetHighContrastProbe(null);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+        }
+    }
+
+    private static async Task TestTrayPreviewStagesAsync()
+    {
+        Theme.Apply(ThemeMode.Dark, 72, 90);
+        var (states, _, _) = PreviewRenderer.SampleData(DateTimeOffset.Now);
+        var settings = new AppSettings { TrayProviderId = AppSettings.AllProvidersTrayId };
+        var stages = new PreviewTrayStages(settings);
+        var clients = states.Select(state => new PreviewUsageClient(state, stages, TimeSpan.Zero)).ToArray();
+
+        async Task<(int UsedPercent, int FillPercent)> Poll()
+        {
+            var polled = new List<ProviderStatus>();
+            foreach (var (client, state) in clients.Zip(states))
+            {
+                polled.Add(state with { Snapshot = await client.GetUsageAsync() });
+            }
+
+            return UsageApplicationContext.TankLevel(polled, settings);
+        }
+
+        // The preview starts calm and polls repeat the stage; each Refresh the user asks for steps
+        // to between warning and critical, then past critical, then round again.
+        var calm = await Poll();
+        Equal((36, 36), calm);
+        Equal(calm, await Poll());
+        False(Theme.IsWarningUsage(calm.UsedPercent));
+        stages.Advance();
+        var warning = await Poll();
+        Equal((81, 81), warning);
+        True(Theme.IsWarningUsage(warning.UsedPercent) && !Theme.IsCriticalUsage(warning.UsedPercent));
+        stages.Advance();
+        var critical = await Poll();
+        Equal((94, 94), critical);
+        True(Theme.IsCriticalUsage(critical.UsedPercent));
+        stages.Advance();
+        Equal(calm, await Poll());
+
+        // Stages follow thresholds changed in the preview's Settings, up to a full 100%.
+        settings.WarningPercent = 85;
+        settings.CriticalPercent = 98;
+        True(PreviewTrayStages.Targets(settings.WarningPercent, settings.CriticalPercent).SequenceEqual(new[] { 42, 91, 100 }));
+        stages.Advance();
+        stages.Advance();
+        Equal((100, 100), await Poll());
+        True(PreviewTrayStages.Targets(89, 90).SequenceEqual(new[] { 44, 89, 94 }));
+
+        // Each poll rebuilds the sample, so reset times stay ahead of the clock.
+        var polledAt = DateTimeOffset.Now;
+        True((await clients[1].GetUsageAsync()).Metrics.All(metric => metric.ResetsAt is not { } reset || reset > polledAt));
+
+        // Only a Refresh the user asks for raises the stepping event; sleep, unlock and startup
+        // refreshes are forced too, which is why the preview no longer steps on a forced refresh.
+        settings.GlobalHotkeyEnabled = false;
+        using (var context = new UsageApplicationContext(clients, settings, showTrayIcon: false, answerRelaunch: false))
+        {
+            var raised = 0;
+            context.UserRefreshRequested += (_, _) => raised++;
+            var menu = (ContextMenuStrip)typeof(UsageApplicationContext)
+                .GetField("_menu", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                .GetValue(context)!;
+            menu.Items.Cast<ToolStripItem>().First(item => item.Text == "Refresh").PerformClick();
+            Equal(1, raised);
+        }
+
+        // Only metered limits scale, and a scaled one drops usage text that stated sample figures.
+        var copilot = PreviewRenderer.Scale(states[2].Snapshot!, 0.5, DateTimeOffset.Now);
+        Equal(32, copilot.Metrics[0].UsedPercent);
+        Null(copilot.Metrics[0].UsageText);
+        Equal(states[2].Snapshot!.Metrics[1], copilot.Metrics[1]);
+        Equal("540 of 1,500 left", PreviewRenderer.Scale(states[2].Snapshot!, 1, DateTimeOffset.Now).Metrics[0].UsageText);
+        Equal("copilot", clients[2].SignInCommand);
+        True(clients[2].AccountUrl.Host.Length > 0);
+    }
+
     private static Task TestTrayProviderSelectionAsync()
     {
         var now = DateTimeOffset.Now;
@@ -1226,11 +1449,11 @@ internal static class Program
         Equal("codex", UsageApplicationContext.SelectTrayStatus(connected, "CODEX")!.ProviderId);
         Equal("claude", UsageApplicationContext.SelectTrayStatus(connected, "copilot")!.ProviderId);
         Null(UsageApplicationContext.SelectTrayStatus(Array.Empty<ProviderStatus>(), "codex"));
-        Equal("UsageAI - Claude Code: 80% used", UsageApplicationContext.TrayTooltip(claude));
+        Equal("UsageAI - Claude: 80% used", UsageApplicationContext.TrayTooltip(claude));
+        TestAllProvidersTrayTooltip(now);
 
         using var emptyIcon = TrayIconFactory.Create(
             0,
-            "A",
             size: 16,
             identityColor: Theme.ForProvider("claude"));
         using var emptyBitmap = emptyIcon.ToBitmap();
@@ -1339,10 +1562,6 @@ internal static class Program
         True(projection!.PercentPerHour > 20 && projection.PercentPerHour < 28);
         True(projection.BeforeReset);
         True(projection.ExhaustedAt > now && projection.ExhaustedAt < now.AddHours(4));
-
-        var trend = UsageForecast.Trend(samples, "codex", metric);
-        Equal(6, trend.Count);
-        Equal(50, trend[^1]);
         return Task.CompletedTask;
     }
 
@@ -1423,12 +1642,11 @@ internal static class Program
         var now = DateTimeOffset.Now;
         var snapshot = new UsageSnapshot("Free", new[] { metrics[0] }, now, "codex", "Codex");
         var status = new ProviderStatus("codex", "Codex", snapshot, null, false);
-        using var filteredEmpty = new ProviderUsageCard(
-            status,
-            expanded: true,
-            Array.Empty<UsageSample>(),
-            showTrend: false,
-            metrics: UsageMetricSelection.Select(snapshot.Metrics, MetricDisplayMode.MeteredOnly))
+        using var filteredEmpty = new UsageLedger(
+            new[] { status },
+            MetricDisplayMode.MeteredOnly,
+            QuotaDisplay.Used,
+            Array.Empty<UsageSample>())
         {
             Width = 520,
         };
@@ -1560,20 +1778,6 @@ internal static class Program
         Equal(Typography.PixelSize(13.5F, 600), Typography.PixelSize(13.5F, 4800));
         Equal(Typography.PixelSize(48F, 96), Typography.PixelSize(400F, 96));
 
-        // The height the user's 1080p-class dashboard leaves each metric row of a four-limit
-        // provider. It is under the preferred row height but above what the full stack needs, so
-        // the row keeps its detail line and meter instead of dropping to the compressed layout.
-        foreach (var dpi in new[] { 96, 192, 288 })
-        {
-            var scale = new LayoutScale(dpi);
-            True(ProviderUsageCard.FitsFullLayout(scale[51], scale));
-            False(ProviderUsageCard.FitsFullLayout(scale[40], scale));
-            False(ProviderUsageCard.FitsTrend(scale[51], 0, scale));
-            True(ProviderUsageCard.FitsTrend(scale[72], 0, scale));
-            // A centred content block pushes the trend down with it, so the offset counts.
-            False(ProviderUsageCard.FitsTrend(scale[72], scale[8], scale));
-        }
-
         var now = DateTimeOffset.Now;
         var snapshot = new UsageSnapshot(
             "Google AI Pro",
@@ -1613,137 +1817,80 @@ internal static class Program
             null,
             false);
 
-        var headlineWidth = new Dictionary<int, int>();
+        // Painting the same table at two DPIs has to scale the text with the geometry: every
+        // glyph doubles in both directions, so the ink in a row grows about four times. A face
+        // pinned to whichever DPI this machine started at would leave the ink nearly unchanged.
+        var ink = new Dictionary<int, int>();
         foreach (var dpi in new[] { 96, 192 })
         {
             var scale = new LayoutScale(dpi);
-            using var card = new ProviderUsageCard(
-                single,
-                expanded: true,
+            using var ledger = new UsageLedger(
+                new[] { single },
+                MetricDisplayMode.All,
+                QuotaDisplay.Used,
                 Array.Empty<UsageSample>(),
-                showTrend: false,
-                dpiOverride: dpi)
+                dpi)
             {
-                Width = scale[340],
+                Width = scale[700],
             };
-
-            using var bitmap = new Bitmap(card.Width, card.Height);
-            card.DrawToBitmap(bitmap, card.ClientRectangle);
-
-            // The row's headline band: below the header divider, above the detail line. The card
-            // surface is whatever colour fills most of that band, so the scan calibrates itself
-            // against the active theme rather than against a hard-coded colour or a border pixel.
-            var top = scale[46] + scale[6];
-            var bottom = scale[46] + scale[24];
-            var histogram = new Dictionary<int, int>();
-            for (var y = top; y < bottom; y++)
-            {
-                for (var x = bitmap.Width / 2; x < bitmap.Width; x++)
-                {
-                    var argb = bitmap.GetPixel(x, y).ToArgb();
-                    histogram[argb] = histogram.GetValueOrDefault(argb) + 1;
-                }
-            }
-
-            var surface = histogram.MaxBy(entry => entry.Value).Key;
-            var leftmost = bitmap.Width;
-            for (var y = top; y < bottom; y++)
-            {
-                for (var x = bitmap.Width / 2; x < bitmap.Width; x++)
-                {
-                    if (bitmap.GetPixel(x, y).ToArgb() != surface)
-                    {
-                        leftmost = Math.Min(leftmost, x);
-                        break;
-                    }
-                }
-            }
-
-            True(leftmost > bitmap.Width / 2 && leftmost < bitmap.Width);
-            headlineWidth[dpi] = bitmap.Width - leftmost;
+            Equal(scale[32] + scale[46] + scale[40], ledger.NaturalHeight);
+            using var bitmap = new Bitmap(ledger.Width, ledger.Height);
+            ledger.DrawToBitmap(bitmap, ledger.ClientRectangle);
+            ink[dpi] = InkPixels(bitmap, new Rectangle(0, scale[32 + 46], bitmap.Width, scale[40]));
         }
 
-        var growth = headlineWidth[192] / (double)headlineWidth[96];
-        True(growth is > 1.8 and < 2.2);
+        var growth = ink[192] / (double)ink[96];
+        True(growth is > 3.0 and < 5.0);
 
+        // A provider with two model groups gets a sub-heading per group, and the table's height
+        // is known before it is laid out: it never depends on the width.
         foreach (var dpi in new[] { 96, 192 })
         {
             var scale = new LayoutScale(dpi);
-            using var quadCard = new ProviderUsageCard(
-                status,
-                expanded: true,
-                history,
-                showTrend: true,
-                dpiOverride: dpi)
+            using var grouped = new UsageLedger(new[] { status }, MetricDisplayMode.All, QuotaDisplay.Used, history, dpi)
             {
                 Width = scale[340],
             };
-            Equal(scale[46] + scale[8] + (4 * scale[72]), quadCard.NaturalHeight);
+            Equal(scale[32] + scale[46] + (2 * scale[28]) + (4 * scale[40]), grouped.NaturalHeight);
+            grouped.Width = scale[900];
+            Equal(scale[32] + scale[46] + (2 * scale[28]) + (4 * scale[40]), grouped.NaturalHeight);
         }
 
-        // A dashboard cell is never as tall as four trend rows want to be, so the squeezed card has
-        // to keep painting inside itself rather than run past the bottom edge.
-        using var squeezedCard = new ProviderUsageCard(
-            status,
-            expanded: true,
-            history,
-            showTrend: true,
-            dpiOverride: 96)
-        {
-            Width = 340,
-        };
-        // The real order: the dashboard grid assigns the cell height while the card is still
-        // handle-less, and the handle lands afterwards. Re-resolving the DPI there must not take
-        // the squeeze back, or the grid's bottom row ends up past a client area that never scrolls.
-        squeezedCard.Height = 252;
-        _ = squeezedCard.Handle;
-        Equal(252, squeezedCard.Height);
-        using var squeezed = new Bitmap(squeezedCard.Width, squeezedCard.Height);
-        squeezedCard.DrawToBitmap(squeezed, squeezedCard.ClientRectangle);
-
-        // A compact card carrying a height measured at another monitor's DPI is what clipped the
-        // popup's detail line and hid its meter: the card painted for the monitor it had moved to
-        // inside a box measured for the one the process started on. Every hook WinForms offers for
-        // that moment has to put the height back, and the card has to take its own measurement
-        // because the popup sizes itself by adding those heights up.
+        // A tile or table measured before it knew its monitor takes its own height back on every
+        // hook WinForms offers for the moment a control learns which monitor it is really on: the
+        // popup and dashboard size themselves by adding those heights up.
         foreach (var hook in new[] { "OnHandleCreated", "OnDpiChangedAfterParent", "RescaleConstantsForDpi" })
         {
-            using var compact = new ProviderUsageCard(
-                single,
-                expanded: false,
-                Array.Empty<UsageSample>(),
-                showTrend: false)
-            {
-                Width = 340,
-            };
-            Equal(new LayoutScale(compact.DeviceDpi)[98], compact.NaturalHeight);
+            using var tile = new ProviderTile(single) { Width = 340 };
+            Equal(new LayoutScale(tile.DeviceDpi)[156], tile.NaturalHeight);
+            tile.Height = 10;
+            InvokeHook(tile, hook);
+            Equal(tile.NaturalHeight, tile.Height);
 
-            // The height and faces a card measured before it knew which monitor it was going to.
-            SetPrivateField(compact, "_measuredDpi", compact.DeviceDpi * 2);
-            compact.Height = 10;
-            InvokeHook(compact, hook);
-            Equal(compact.NaturalHeight, compact.Height);
+            using var table = new UsageLedger(new[] { status }, MetricDisplayMode.All, QuotaDisplay.Used, history) { Width = 340 };
+            table.Height = 10;
+            InvokeHook(table, hook);
+            Equal(table.NaturalHeight, table.Height);
         }
 
-        // An expanded card is the opposite case: the dashboard grid has already given it a cell
-        // height, and re-resolving the DPI has to carry that squeeze across rather than take the
-        // natural height back, which would push the grid's bottom row out of a view that never
-        // scrolls. Here the card was squeezed to 252 at twice the DPI, so it lands on half of it.
-        using var gridded = new ProviderUsageCard(
-            status,
-            expanded: true,
-            history,
-            showTrend: true)
-        {
-            Width = 340,
-        };
-        SetPrivateField(gridded, "_measuredDpi", gridded.DeviceDpi * 2);
-        gridded.Height = 252;
-        InvokeHook(gridded, "OnHandleCreated");
-        Equal(126, gridded.Height);
-        True(gridded.Height < gridded.NaturalHeight);
-
         return Task.CompletedTask;
+    }
+
+    /// <summary>Pixels in <paramref name="band"/> that differ from the band's most common colour.</summary>
+    private static int InkPixels(Bitmap bitmap, Rectangle band)
+    {
+        var histogram = new Dictionary<int, int>();
+        for (var y = band.Top; y < band.Bottom; y++)
+        {
+            for (var x = band.Left; x < band.Right; x++)
+            {
+                var argb = bitmap.GetPixel(x, y).ToArgb();
+                histogram[argb] = histogram.GetValueOrDefault(argb) + 1;
+            }
+        }
+
+        var surface = histogram.MaxBy(entry => entry.Value).Key;
+        return histogram.Where(entry => entry.Key != surface).Sum(entry => entry.Value);
     }
 
     private static void InvokeHook(Control target, string name) =>
@@ -1927,15 +2074,21 @@ internal static class Program
         throw new InvalidOperationException($"Expected {typeof(TException).Name}.");
     }
 
-    private static void True(bool value)
+    private static void True(
+        bool value,
+        [System.Runtime.CompilerServices.CallerFilePath] string file = "",
+        [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
     {
         if (!value)
         {
-            throw new InvalidOperationException("Expected true.");
+            throw new InvalidOperationException($"Expected true at {Path.GetFileName(file)}:{line}.");
         }
     }
 
-    private static void False(bool value) => True(!value);
+    private static void False(
+        bool value,
+        [System.Runtime.CompilerServices.CallerFilePath] string file = "",
+        [System.Runtime.CompilerServices.CallerLineNumber] int line = 0) => True(!value, file, line);
 
     private static void Null(object? value)
     {
@@ -1980,30 +2133,91 @@ internal static class Program
         var competingStatus = new ProviderStatus("codex", "Codex", competingSnapshot, null, false);
         var statuses = new[] { status, competingStatus };
 
-        Equal("UsageAI - Claude Code: 8% used", UsageApplicationContext.TrayTooltip(status));
+        Equal("UsageAI - Claude: 8% used", UsageApplicationContext.TrayTooltip(status));
         Equal(8, UsageApplicationContext.TrayUsedPercent(status));
         Equal("codex", UsageApplicationContext.SelectTrayStatus(statuses, null)!.ProviderId);
         Equal("claude", UsageApplicationContext.SelectTrayStatus(statuses, "claude")!.ProviderId);
-        Equal("codex", UsagePopupForm.SelectHeadlineStatus(statuses)!.ProviderId);
+        // The tray follows each provider's primary window, but the popup headline names the
+        // busiest limit of all, so Claude's weekly window at 92% is not hidden behind Codex's 40%.
+        var headline = UsagePopupForm.SelectHeadlineMetric(statuses)!.Value;
+        Equal("claude", headline.Status.ProviderId);
+        Equal("Weekly", headline.Metric.Name);
         return Task.CompletedTask;
     }
 
     private static Task TestThemeUsageColorsAsync()
     {
+        // One calm colour below the warning threshold: only a limit at risk draws the eye.
         Equal(Theme.Success, Theme.ForUsage(8));
         Equal(Theme.Success, Theme.ForUsage(45));
-        Equal(Theme.Signal, Theme.ForUsage(50));
-        Equal(Theme.Signal, Theme.ForUsage(70));
+        Equal(Theme.Success, Theme.ForUsage(50));
+        Equal(Theme.Success, Theme.ForUsage(70));
         Equal(Theme.Warning, Theme.ForUsage(75));
         Equal(Theme.Critical, Theme.ForUsage(92));
 
+        // A fine figure reads as ordinary text, so colour on a number always means attention.
+        Equal(Theme.Text, Theme.TextForUsage(70));
+        Equal(Theme.WarningText, Theme.TextForUsage(75));
+        Equal(Theme.CriticalText, Theme.TextForUsage(92));
+
         using var filledIcon = TrayIconFactory.Create(
             45,
-            "A",
             size: 24,
             identityColor: Theme.ForProvider("claude"));
         using var bitmap = filledIcon.ToBitmap();
         True(bitmap.Width == 24 && bitmap.Height == 24);
+        return Task.CompletedTask;
+    }
+
+    private static Task TestRedesignFoundationAsync()
+    {
+        // Critical is decided by percentage, never by colour: High Contrast paints every status
+        // in WindowText, which once made a 60% limit look critical.
+        Theme.SetHighContrastProbe(static () => true);
+        try
+        {
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+            Equal(Theme.Success, Theme.Critical);
+            False(Theme.IsCriticalUsage(60));
+            True(Theme.IsCriticalUsage(90));
+        }
+        finally
+        {
+            Theme.SetHighContrastProbe(null);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+        }
+
+        // A pale accent on a light window and a deep one on a dark window are both moved until
+        // the button stands out (3:1) and its label reads (4.5:1).
+        foreach (var (accent, dark) in new[]
+                 {
+                     (Color.FromArgb(255, 214, 10), false),
+                     (Color.FromArgb(255, 241, 118), false),
+                     (Color.FromArgb(10, 20, 80), true),
+                     (Color.FromArgb(0, 103, 192), false),
+                 })
+        {
+            var legible = Theme.LegibleAccent(accent, dark);
+            var background = dark ? Theme.Night : Color.White;
+            True(Theme.ContrastRatio(legible, background) >= 3);
+            True(Math.Max(
+                Theme.ContrastRatio(legible, Color.FromArgb(12, 16, 22)),
+                Theme.ContrastRatio(legible, Color.FromArgb(250, 252, 255))) >= 4.5);
+        }
+
+        // Windows' own light-mode accent already passes and is left exactly as Windows draws it.
+        Equal(Color.FromArgb(0, 103, 192), Theme.LegibleAccent(Color.FromArgb(0, 103, 192), dark: false));
+        True(Math.Abs(Theme.ContrastRatio(Color.Black, Color.White) - 21) < 0.01);
+
+        // Preview settings never reach the user's file, whatever the window saves.
+        var path = AppPaths.SettingsFile;
+        var before = File.Exists(path) ? File.ReadAllText(path) : null;
+        new AppSettings { IsEphemeral = true, RefreshIntervalMinutes = 77, DashboardBounds = EphemeralBounds }.Save();
+        Equal(before, File.Exists(path) ? File.ReadAllText(path) : null);
+
+        Equal("dashboard", global::UsageAI.Program.ValueAfter(PreviewDashboardArgs, "--preview-window"));
+        Equal<string?>(null, global::UsageAI.Program.ValueAfter(PreviewFlagFollowedByFlagArgs, "--preview-window"));
+        Equal<string?>(null, global::UsageAI.Program.ValueAfter(TrailingThemeFlagArgs, "--theme"));
         return Task.CompletedTask;
     }
 

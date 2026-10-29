@@ -13,21 +13,15 @@ internal static class ProviderIconPainter
 
     internal static bool IsBrandFontAvailable => IconFont.Value is not null;
 
+    /// <summary>
+    /// Draws the provider's glyph in its brand colour, scaled so its ink fills
+    /// <paramref name="bounds"/>. There is no tile behind it: brand colour identifies the
+    /// provider, and every other colour in the UI is left to mean usage status.
+    /// </summary>
     public static void Draw(Graphics graphics, Rectangle bounds, string providerId)
     {
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var color = Theme.ForProvider(providerId);
-
-        // A tint that reads on a near-black card is nearly invisible on a white one.
-        using var background = new SolidBrush(Theme.IsHighContrast
-            ? Theme.Surface
-            : Color.FromArgb(Theme.IsDark ? 32 : 40, color));
-        using var border = new Pen(Theme.IsHighContrast
-            ? Theme.Hairline
-            : Color.FromArgb(Theme.IsDark ? 105 : 125, color), 1F);
-        using var shape = DrawingHelpers.RoundedRectangle(bounds, bounds.Width * 0.26F);
-        graphics.FillPath(background, shape);
-        graphics.DrawPath(border, shape);
 
         var loadedFont = IconFont.Value;
         if (loadedFont is null)
@@ -43,7 +37,7 @@ internal static class ProviderIconPainter
             GlyphFor(providerId),
             loadedFont.Family,
             (int)FontStyle.Regular,
-            Math.Max(1F, bounds.Width * 0.54F),
+            Math.Max(1F, bounds.Width),
             Point.Empty,
             format);
 
@@ -54,10 +48,13 @@ internal static class ProviderIconPainter
             return;
         }
 
+        // The glyphs have different side bearings, so fitting the ink rather than the em box is
+        // what makes four different marks read as the same size.
+        var fit = Math.Min(bounds.Width / inkBounds.Width, bounds.Height / inkBounds.Height);
         using var transform = new Matrix();
-        transform.Translate(
-            bounds.Left + bounds.Width / 2F - (inkBounds.Left + inkBounds.Width / 2F),
-            bounds.Top + bounds.Height / 2F - (inkBounds.Top + inkBounds.Height / 2F));
+        transform.Translate(bounds.Left + bounds.Width / 2F, bounds.Top + bounds.Height / 2F);
+        transform.Scale(fit, fit);
+        transform.Translate(-(inkBounds.Left + inkBounds.Width / 2F), -(inkBounds.Top + inkBounds.Height / 2F));
         glyphPath.Transform(transform);
         graphics.FillPath(brush, glyphPath);
         GC.KeepAlive(loadedFont);
@@ -76,7 +73,7 @@ internal static class ProviderIconPainter
         var label = string.IsNullOrWhiteSpace(providerId) ? "?" : providerId[..1].ToUpperInvariant();
         using var font = new Font(
             FontFamily.GenericSansSerif,
-            Math.Max(1F, bounds.Width * 0.4F),
+            Math.Max(1F, bounds.Width * 0.75F),
             FontStyle.Bold,
             GraphicsUnit.Pixel);
         using var brush = new SolidBrush(color);

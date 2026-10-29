@@ -4,6 +4,177 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **The tray can list every connected provider when you point at it.** Choose **All connected**
+  under Settings → Providers → Tray icon provider and the tooltip shows one line per provider with
+  the limits its popup tile draws, shortest window first — `Codex 10% | 22%`, `Copilot 33%` — under
+  the same short names as the editor extension's Status Bar items. A multi-group provider such as
+  Gemini reads the same model group as its popup tile, **Show quota as: Remaining** adds one
+  trailing `left`, and a provider without a metered limit says so rather than reading 0% or 100%
+  left. Windows caps a tray tooltip at 127 characters, so providers that would overrun it are
+  counted in a closing `+N more` line rather than cut off mid-reading.
+- **In that mode the tray icon is the UsageAI logo, with its tank filled to the busiest limit it
+  lists.** No single provider's ring stands for every provider, so the logo's tank holds the
+  highest percentage the tooltip lists — or what is left of it when quotas show as remaining. Its
+  water and ring turn amber and then red at the Warning and Critical colour thresholds in
+  Settings; the ring changes too so that a spent quota shown as remaining, an empty tank, still
+  reads as critical. Under Windows High Contrast, which draws every status in one system colour,
+  the tooltip marks those limits with `!` and `!!` as the popup does, and the single-provider
+  tooltip now does the same. The tank is drawn live at the size the taskbar asks for with the
+  logo's own geometry, and the refresh spinner and the no-providers warning still replace it.
+- **`--preview-tray` runs the whole tray app on sample providers.** The other previews open one
+  window and never put an icon in the tray, so the tray icon, its tooltip and the alerts could only
+  be seen with real accounts at whatever usage they happened to report. This mode runs the real app
+  — tray, popup, dashboard, Settings and notifications — on four sample providers, with the update
+  check and startup registration stubbed and settings kept out of the user's profile. Each
+  **Refresh** from the popup or tray menu steps the readings from calm to between the warning and
+  critical thresholds, then past critical, and round again, aiming at whatever thresholds Settings
+  holds. Automatic polls and the refreshes after sleep or unlock leave the stage alone, the sample
+  reset times move with the clock, and the preview never answers a relaunch meant for an installed
+  copy, so a screenshot or a screen recording shows the tank change on cue.
+
+### Changed
+
+- **The tray tooltip uses the editor extension's short provider names.** Claude Code reads as
+  "Claude" and Google Gemini as "Gemini", as on the extension's Status Bar, so a provider reads the
+  same on both sides.
+- **UsageAI has a new logo: a ring holding the quota that is left.** The old neon gradient ring
+  and glowing spark blurred into a smudge at the 16 px taskbar and title-bar sizes, and its
+  gradient-and-glow look read as a generic AI app rather than a usage meter. The new mark is a
+  light ring with a level of cyan inside it on a dark tile, so it reads on light and dark taskbars
+  alike, and at 24 px and below it switches to a thicker ring and a flat waterline so it stays
+  crisp. `Resources\app.ico` now carries 16, 20, 24, 32, 40, 48, 64, 128 and 256 px frames, adding
+  the 20, 24 and 40 px sizes Windows picks at 125% and 150% scaling instead of scaling a
+  neighbouring frame. `Resources\logo.png` is now a real PNG with transparent corners; it was a
+  JPEG with a `.png` name. All of them, and the new vector master `Resources\logo.svg`, come from
+  `scripts\render-logo.ps1`, which uses only `System.Drawing`, so the icon and the logos cannot
+  drift apart. Settings, What's New, the dashboard and the update prompts now show the logo in
+  their title bars and taskbar buttons, where they showed Windows' generic window icon.
+- **The tray app has a quieter, Windows 11 look.** The navy palette and a hue per usage band read
+  as dated and made every card compete for attention; windows now use a neutral charcoal (or
+  white) palette where only a limit at risk is coloured. Meters below the warning threshold share
+  one calm colour instead of switching to blue at 50%, and a figure is coloured only when its
+  limit needs attention, in shades chosen to keep 4.5:1 contrast on its surface. Usage figures use
+  Bahnschrift, the gauge face that ships with Windows, and metric names are shown as providers
+  report them instead of in upper case. Provider icons drop their tinted tile so brand colour only
+  identifies the provider. The popup gets Windows 11's rounded corners and a theme-coloured frame,
+  while the dashboard, Settings and What's New keep the system frame and any accent-coloured
+  border the user has turned on. The accent colour now comes from the same light and dark shades
+  Windows 11 derives for its own controls, and is adjusted until the button stands out at 3:1 and
+  its label reads at 4.5:1, so a pale yellow or deep navy accent no longer gives an invisible
+  button or an unreadable label.
+- **The tray popup shows each provider as ring gauges, two providers to a row.** The popup used to
+  stack one tall card per provider with a single `92% USED` headline, so a second limit (Claude's
+  weekly window behind its 5-hour one) never appeared until the dashboard was opened. Each tile
+  now carries the provider's glyph and up to two rings side by side, shortest window first, each
+  with its figure inside and its window and countdown beneath; a one-ring provider uses the free
+  space for its balance or what is left of its allowance. The rings follow the dashboard's
+  Important selection, so the two views never disagree, and choosing a tile opens the dashboard.
+  A provider that reports more than one model group shows one group's limits, by default the group
+  closest to its limit, and an ⓘ beside its name explains which group and lists each limit in full;
+  the group can be pinned per provider in **Settings ▸ Providers**. A sentence above the tiles
+  names the limit forecast to run out first, or without a forecast the busiest limit of all, in
+  place of the `CODEX 92% USED` tag that followed each provider's first window. Refresh and Settings become icon
+  buttons beside the title, the refresh arrow spins while a refresh runs, and the footer keeps the
+  last-updated time and an Open dashboard button. Stale tiles dim their rings and show a warning
+  indicator whose tooltip says how old the reading is, the tooltips use the app's colours, and the
+  popup scrolls only when the screen cannot hold it.
+- **The dashboard is one table of every limit, in columns that line up.** The 2×2 grid of cards
+  squeezed a provider with four limits into the same cell as a provider with one, clipped long
+  names such as "Claude and GPT models (5-ho…", and put each figure wherever its card's layout
+  landed. The dashboard now lists every provider in one table with fixed columns — limit, usage
+  bar, used (or left), resets in, and at this pace — so values compare straight down the page.
+  Each provider is a group led by its glyph, name (a link to its usage page), plan and account,
+  and its status: connected and how long ago, the last good reading and the next retry with a
+  **Retry** link that refreshes that provider alone, or not connected with the sign-in command to
+  copy. A provider with several model
+  groups gets a sub-heading per group, so names are never cut to fit. The forecast column says
+  when a limit runs out ("Out by 17:47") or that it resets first, and narrow windows drop it
+  rather than squeeze every cell. The All / Metered / Important filter moves from a dropdown in
+  the footer to a segmented control in the header, every option one click away. The table scrolls
+  only when the window is shorter than it, keeps its scroll position and keyboard focus as each
+  provider's reading arrives, and Tab walks its links and buttons in reading order. Until the
+  dashboard is resized by hand it grows to fit its rows, including after moving to a monitor with
+  a different scale; a size the user picks is kept. The per-card trend sparkline is gone with the
+  cards: the forecast column says where the current pace leads, and the Settings option is now
+  **Show burn-rate forecast**.
+- **Settings is organised into sections on cards, with a section list to jump between them.** The
+  dialog was one narrow column of checkboxes and dropdowns under upper-case headings, and a setting
+  near the bottom took a long scroll to find. It is now wider, with General, Alerts, Appearance,
+  Providers, History and About listed on the left: choosing one scrolls to it, and the list marks
+  the section being read as the page scrolls. Each section is a card. On/off settings are Windows
+  11 toggle switches, short choices (theme, dashboard rows, show quota as) are segmented controls
+  with every option in view, number fields are compact steppers, and the dropdowns are themed. The
+  quota display shows a small ring flipping between "92% used" and "8% left", and the status-colour
+  thresholds show where fine, warning and critical begin on the scale as they are typed.
+  Refresh, startup and the hotkey move together under General; Delete recorded history reads as
+  a destructive action. The window can now be resized, so a taller one shows more of the page,
+  and it reopens at the size it was last given, on any monitor; it opened at one fixed size before.
+- **The tray icon, tray menu, update prompts and What's New match the new look.** The tray gauge
+  is now a clean arc on its track, the same ring the popup draws, without the translucent pie
+  behind it or the provider letter inside, which at tray size only blurred the arc; an error still
+  shows `!` where there is room to read it. The tray menu is drawn like a Windows 11 context menu,
+  with rounded corners, roomier rows, a rounded highlight and quiet dividers, and its first item
+  is now named **Open dashboard** and shown in bold as the default action. Update questions — a
+  new version is available, the install failed, the release page did not open — used system
+  message boxes that ignored the app's theme; they are now themed dialogs with plain-language
+  buttons (**Install update**, **Later**, **Open release page**), marked with the app's logo for
+  a question and a warning sign for a failure; so is the notice when Settings cannot change Start
+  with Windows. What's New is headed "What's
+  new", shows the notes on the window itself instead of in a bordered box, names sections in
+  sentence case behind a coloured dot, closes with **Got it**, and links to the full changelog
+  instead of offering it as a second button.
+- **Scrollbars are slim and stay out of the way.** The system scrollbar can only be themed light
+  or dark, so the dashboard, popup, Settings and What's New showed a full-width track down the
+  whole window, even when the content overflowed by a few pixels. They now show a thin rounded
+  thumb in the Windows 11 style at the window's right edge, with no track until it is pointed at,
+  widening on hover; it drags, pages on a click above or below, and scrolls with the wheel. Content
+  keeps its margin, so the thumb never covers it, and content that fits shows no scrollbar at all.
+  High Contrast keeps the system scrollbar.
+- **Gauges move to new readings instead of jumping.** When a refresh brings a new value, the
+  popup's rings and the dashboard's bars ease to it over 0.4 s and a limit crossing into warning or
+  critical crossfades its colour, while the figure shows the new number at once. Opening the popup
+  draws everything in place, the refresh arrow now turns smoothly instead of in 24° steps, and all
+  motion stops when Windows' animation effects are turned off or High Contrast is on.
+- `--render-preview` accepts `--theme light|dark`, and the new `--preview-window popup|dashboard|settings|whatsnew|prompt|warning|menu`
+  opens the real window with sample data at the monitor's own DPI, with no tray icon, provider
+  access or settings file, so a UI change can be tried by hand next to an installed copy.
+  `--render-preview` now draws at the requested DPI instead of enlarging a 96-DPI image, which
+  blurred the README screenshots and, on a display scaled above 100%, clipped their text; the
+  dashboard image is as tall as its whole table rather than the screen.
+
+### Fixed
+
+- **Large usage figures are no longer cut off at the bottom.** The headline value was drawn in a
+  box shorter than the font's line height, so `92% USED` and `UNLIMITED` lost the bottom of every
+  glyph at every display scale. The box is now sized from the font itself.
+- **The popup and dashboard fit a second monitor at a different display scale.** Opened on a
+  monitor whose scale differed from the main one, the popup was sized for the main monitor and
+  then grown in place, so its second row of providers ran off the bottom of the screen, and the
+  dashboard kept its main-monitor size, cutting the row filter to "Meter…" and "Import…" and
+  dropping the forecast column. Both are now measured for the monitor they open on. Controls
+  rebuilt during a scale change also took the old scale from their parent; they now ask the window.
+- **Exiting while a refresh is running no longer shows a crash dialog.** A provider that answered
+  just as UsageAI shut down still delivered its update to the tray icon, which had already been
+  disposed, and WinForms reported the `NullReferenceException`. Updates that arrive after shutdown
+  are now dropped.
+- **Settings' number fields no longer show white arrow buttons in the dark theme.** Windows draws
+  a number field's up and down buttons in its light style whatever the app's theme; they now take
+  the field's own colour, with quiet chevrons that shade on hover and press. High Contrast keeps
+  the system's buttons.
+- **What's New has a dark scrollbar in the dark theme.** The window asked for one when it was
+  created, before the release-notes box inside it existed, so the request never reached that box
+  and its scrollbar stayed white. The box now asks for it itself as soon as it is created.
+- **Forecast times no longer mix in day names from the Windows language.** "Out by" and the
+  popup's "runs out first … around" took the weekday and AM/PM from the Windows display
+  language, so a Hebrew system showed "Out by 21:52 יום ו׳" inside an English sentence. They now
+  read "Out by Fri 21:52", keeping the user's 12- or 24-hour clock.
+- **The popup no longer flashes empty when providers update.** Its tiles are rebuilt on each
+  update, and the panel was painted bare between removing the old tiles and adding the new ones.
+
 ## [0.13.0] - 2026-10-21
 
 ### Added

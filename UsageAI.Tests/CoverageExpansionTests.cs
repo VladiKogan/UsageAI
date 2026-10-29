@@ -18,10 +18,8 @@ namespace UsageAI.Tests;
 
 internal static class CoverageExpansionTests
 {
-    private static readonly int[] SparklineValues = { -10, 25, 120 };
-    private static readonly int[] SingleSparklineValue = { 10 };
+    private static readonly string[] SingleSegment = { "Only" };
     private static readonly string[] IconProviderIds = { "codex", "claude", "copilot", "gemini" };
-    private static readonly string[] UserProfileScope = { "user:profile" };
     private static readonly string[] CopilotTokenPair = { "token-one", "token-two" };
     private static readonly string[] SingleCopilotToken = { "synthetic-copilot-token" };
     private static readonly ushort[] CandidatePorts = { 51_234, 51_234, 51_235 };
@@ -41,9 +39,18 @@ internal static class CoverageExpansionTests
         Equal("resets in 2d 3h", UsageFormatting.RelativeReset(now.AddDays(2).AddHours(3), now));
         Equal("resets in 4h 12m", UsageFormatting.RelativeReset(now.AddHours(4).AddMinutes(12), now));
         Equal("resets in 1m", UsageFormatting.RelativeReset(now.AddSeconds(20), now));
-        True(UsageFormatting.AbsoluteReset(now.AddHours(2), now).Length > 0);
-        True(UsageFormatting.AbsoluteReset(now.AddDays(2), now).Length > 0);
-        Equal(string.Empty, UsageFormatting.AbsoluteReset(null, now));
+        True(UsageFormatting.AbsoluteReset(now.AddHours(2), now, CultureInfo.CurrentCulture).Length > 0);
+        True(UsageFormatting.AbsoluteReset(now.AddDays(2), now, CultureInfo.CurrentCulture).Length > 0);
+        Equal(string.Empty, UsageFormatting.AbsoluteReset(null, now, CultureInfo.CurrentCulture));
+
+        // A Hebrew or Korean clock keeps its 24- or 12-hour form, but the words stay English.
+        var friday = new DateTimeOffset(2026, 10, 30, 21, 52, 0, TimeZoneInfo.Local.GetUtcOffset(new DateTime(2026, 10, 30, 21, 52, 0)));
+        var monday = friday.AddDays(-4);
+        Equal("Fri 21:52", UsageFormatting.AbsoluteReset(friday, monday, CultureInfo.GetCultureInfo("he-IL")));
+        Equal("Fri 9:52 PM", UsageFormatting.AbsoluteReset(friday, monday, CultureInfo.GetCultureInfo("en-US")));
+        True(UsageFormatting.AbsoluteReset(friday, monday, CultureInfo.GetCultureInfo("ko-KR")).StartsWith("Fri ", StringComparison.Ordinal));
+        False(UsageFormatting.AbsoluteReset(friday, monday, CultureInfo.GetCultureInfo("ko-KR")).Contains('오'));
+        Equal("21:52", UsageFormatting.AbsoluteReset(friday, friday.AddHours(-2), CultureInfo.GetCultureInfo("he-IL")));
         Equal("just now", UsageFormatting.Age(now.AddSeconds(-10), now));
         Equal("42 min ago", UsageFormatting.Age(now.AddMinutes(-42), now));
         Equal("3h ago", UsageFormatting.Age(now.AddHours(-3), now));
@@ -2410,10 +2417,6 @@ internal static class CoverageExpansionTests
             DrawingHelpers.DrawCapacityMeter(graphics, new Rectangle(5, 65, 120, 8), 1, Color.Red, Color.Gray);
             DrawingHelpers.DrawCapacityMeter(graphics, new Rectangle(5, 80, 120, 8), 150, Color.Red, Color.Gray);
             DrawingHelpers.DrawCapacityMeter(graphics, Rectangle.Empty, 50, Color.Red, Color.Gray);
-            DrawingHelpers.DrawBalanceMarker(graphics, new Rectangle(5, 95, 120, 8), Color.Blue);
-            DrawingHelpers.DrawBalanceMarker(graphics, Rectangle.Empty, Color.Blue);
-            DrawingHelpers.DrawSparkline(graphics, new Rectangle(5, 110, 140, 30), SparklineValues, Color.Green);
-            DrawingHelpers.DrawSparkline(graphics, Rectangle.Empty, SingleSparklineValue, Color.Green);
             True(ProviderIconPainter.IsBrandFontAvailable);
             foreach (var provider in IconProviderIds)
             {
@@ -2461,49 +2464,40 @@ internal static class CoverageExpansionTests
                 new Uri("https://example.com/claude"));
             var loading = disconnected with { ProviderId = "gemini", ProviderName = "Google Gemini", IsLoading = true };
 
-            using var compact = new ProviderUsageCard(connected, expanded: false, history, showTrend: false)
+            using var compact = new ProviderTile(connected)
             {
                 Width = 420,
             };
             DrawControl(compact);
 
-            using var expanded = new ProviderUsageCard(stale, expanded: true, history, showTrend: true)
+            // The dashboard table carries every state at once: stale with its error, signed out
+            // with a copyable command, and still loading.
+            using var ledger = new UsageLedger(
+                new[] { stale, disconnected, loading },
+                MetricDisplayMode.All,
+                QuotaDisplay.Used,
+                history)
             {
                 Width = 620,
             };
-            DrawControl(expanded);
-            True(expanded.AccessibleDescription!.Contains("Temporary provider failure.", StringComparison.Ordinal));
+            DrawControl(ledger);
+            True(ledger.AccessibleDescription!.Contains("Temporary provider failure.", StringComparison.Ordinal));
+            True(ledger.AccessibleDescription.Contains("Sign in required.", StringComparison.Ordinal));
+            True(ledger.AccessibleDescription.Contains("Reading Google Gemini usage", StringComparison.Ordinal));
 
-            var actionCount = 0;
-            using var disconnectedCard = new ProviderUsageCard(
-                disconnected,
-                expanded: true,
-                Array.Empty<UsageSample>(),
-                showTrend: false)
+            // Tab walks the table's actions in order and Enter takes the focused one.
+            var actions = new List<ProviderCardAction>();
+            ledger.ActionInvoked += (_, eventArgs) => actions.Add(eventArgs.Action);
+            InvokeProtected(ledger, "OnGotFocus", EventArgs.Empty);
+            var copyIndex = ledger.Actions.ToList().FindIndex(action => action.Action == ProviderCardAction.CopyCommand);
+            True(copyIndex > 0);
+            for (var step = 0; step < copyIndex; step++)
             {
-                Width = 520,
-            };
-            disconnectedCard.ActionInvoked += (_, eventArgs) =>
-            {
-                actionCount++;
-                Equal(ProviderCardAction.CopyCommand, eventArgs.Action);
-            };
-            DrawControl(disconnectedCard);
-            InvokeProtected(disconnectedCard, "OnKeyDown", new KeyEventArgs(Keys.Enter));
-            if (actionCount != 1)
-            {
-                throw new InvalidOperationException($"Expected one card action, got {actionCount}.");
+                InvokeProtected(ledger, "OnKeyDown", new KeyEventArgs(Keys.Tab));
             }
 
-            using var loadingCard = new ProviderUsageCard(
-                loading,
-                expanded: true,
-                Array.Empty<UsageSample>(),
-                showTrend: false)
-            {
-                Width = 520,
-            };
-            DrawControl(loadingCard);
+            InvokeProtected(ledger, "OnKeyDown", new KeyEventArgs(Keys.Enter));
+            Equal(ProviderCardAction.CopyCommand, actions.Single());
 
             var settings = new AppSettings
             {
@@ -2528,14 +2522,18 @@ internal static class CoverageExpansionTests
             Application.DoEvents();
             DrawControl(popup);
 
-            var readingButton = Descendants(popup)
-                .OfType<Button>()
-                .Single(button => button.Text == "Reading");
-            NotNull(readingButton.Image);
+            // While a refresh runs the header's refresh icon is disabled and says so to a screen
+            // reader; it spins instead of swapping in a bitmap.
+            var refreshButton = Descendants(popup)
+                .OfType<IconButton>()
+                .Single(button => button.Text == "Refresh");
+            False(refreshButton.Enabled);
+            Equal("Refreshing", refreshButton.AccessibleName);
+            DrawControl(refreshButton);
 
             foreach (var button in Descendants(popup).OfType<Button>())
             {
-                if (button.Text is "Refresh" or "Reading")
+                if (button.Text is "Refresh")
                 {
                     InvokeProtected(button, "OnClick", EventArgs.Empty);
                 }
@@ -2552,7 +2550,9 @@ internal static class CoverageExpansionTests
             }
             popup.SetMode(DashboardMode.Compact);
             popup.SetStates(Array.Empty<ProviderStatus>(), false, null, Array.Empty<UsageSample>());
-            Null(readingButton.Image);
+            True(refreshButton.Enabled);
+            Equal("Refresh", refreshButton.AccessibleName);
+            Equal(0F, refreshButton.Rotation);
             Application.DoEvents();
             DrawControl(popup);
             popup.CloseForExit();
@@ -2652,7 +2652,7 @@ internal static class CoverageExpansionTests
             var box = GetPrivateField<CheckBox>(dialog, "_startWithWindows");
             var hint = GetPrivateField<Label>(dialog, "_startupHint");
             False(box.Checked);
-            Equal(Theme.Warning, hint.ForeColor);
+            Equal(Theme.WarningText, hint.ForeColor);
             True(hint.Text.Length > 0);
 
             // Left alone, the entry another copy of UsageAI owns is not deleted by a Save the
@@ -2667,7 +2667,7 @@ internal static class CoverageExpansionTests
 
             // A theme change must not repaint the warning as ordinary body text.
             InvokePrivate(dialog, "ApplyThemeColors");
-            Equal(Theme.Warning, hint.ForeColor);
+            Equal(Theme.WarningText, hint.ForeColor);
         }
 
         // A registry the user cannot write is reported, not thrown out of the dialog.
@@ -2923,7 +2923,7 @@ internal static class CoverageExpansionTests
     /// are laid out at their natural height before the grid compacts them, and that transient
     /// overflow latched a scrollbar which then stole width from every card.
     /// </summary>
-    public static Task TestDashboardNeverScrollsAsync()
+    public static Task TestDashboardScrollsOnlyWhenTallerAsync()
     {
         var now = DateTimeOffset.Now;
         var providers = new[]
@@ -2954,37 +2954,50 @@ internal static class CoverageExpansionTests
         Application.DoEvents();
 
         var content = GetPrivateField<FlowLayoutPanel>(popup, "_content");
-        False(content.AutoScroll);
+        var frame = GetPrivateField<SlimScrollHost>(popup, "_contentFrame");
 
-        // The smallest sizes are where the cards overflow their natural height by the most,
-        // which is exactly where the old layout gave up and scrolled instead of compacting.
-        foreach (var size in new[] { new Size(1_020, 820), new Size(760, 620), new Size(600, 420) })
+        // The table spans the window at every size, never with a horizontal scrollbar. Its frame
+        // runs to the window's edge so the slim scrollbar can sit there; the table keeps the
+        // window's 16 px inset, which the thumb's gutter fits inside.
+        // It scrolls exactly when it is taller than the window, and stays fully reachable then.
+        foreach (var size in new[] { new Size(1_020, 820), new Size(760, 620), new Size(600, 300) })
         {
             popup.ClientSize = size;
             popup.PerformLayout();
             Application.DoEvents();
 
-            False(content.VerticalScroll.Visible);
+            var ledger = content.Controls.OfType<UsageLedger>().Single();
+            Equal(ledger.NaturalHeight, ledger.Height);
             False(content.HorizontalScroll.Visible);
-            var cards = content.Controls.OfType<ProviderUsageCard>().ToArray();
-            Equal(4, cards.Length);
-            True(cards.All(card => card.Bottom <= content.ClientSize.Height));
-
-            // No scrollbar means no dead strip: the right column reaches the client edge,
-            // give or take the integer division that splits the row into two equal cards.
-            True(cards.Max(card => card.Right) >= content.ClientSize.Width - 2);
+            Equal(ledger.NaturalHeight > content.Height, content.AutoScroll);
+            True(ledger.Right <= content.ClientSize.Width);
+            Equal(frame.Width - 16, ledger.Right);
+            True(frame.ScrollInset <= 16);
+            True(content.DisplayRectangle.Height >= ledger.Height);
         }
 
+        // The popup sizes itself to its tiles and scrolls only when the screen cannot hold them;
+        // an automatic scrollbar used to latch on before the window grew and wrap every row.
         popup.SetMode(DashboardMode.Compact);
         Application.DoEvents();
+        popup.ApplyPreferredSize(new Rectangle(0, 0, 1_920, 1_080));
+        False(content.AutoScroll);
+        var tiles = content.Controls.OfType<ProviderTile>().ToArray();
+        Equal(4, tiles.Length);
+        Equal(tiles[0].Top, tiles[1].Top);
+        True(tiles[2].Top > tiles[0].Bottom);
+
+        popup.ApplyPreferredSize(new Rectangle(0, 0, 1_920, 300));
+        Application.DoEvents();
         True(content.AutoScroll);
+        Equal(tiles[0].Top, tiles[1].Top);
+        True(tiles[1].Right <= content.ClientSize.Width);
 
         popup.CloseForExit();
 
-        // First open is the ordering that catches a card re-measuring itself out of its cell: the
-        // form has no handle yet, so the cards are built and squeezed into the restored bounds
-        // before Show() gives any of them a handle. A card that took its natural height back at
-        // that point would lay the bottom row past a client area that has no scrollbar to reach it.
+        // First open builds the table before the form has a handle, then shows it in restored
+        // bounds that are too short for it: it must keep its natural height and scroll, not be
+        // squeezed into the window or laid out where nothing can reach it.
         using (var firstOpen = new UsagePopupForm(new AppSettings(), 96)
         {
             StartPosition = FormStartPosition.Manual,
@@ -2995,25 +3008,23 @@ internal static class CoverageExpansionTests
             firstOpen.SetMode(DashboardMode.Full);
             False(firstOpen.IsHandleCreated);
             var pending = GetPrivateField<FlowLayoutPanel>(firstOpen, "_content");
-            False(pending.Controls.OfType<ProviderUsageCard>().Any(card => card.IsHandleCreated));
+            False(pending.Controls.OfType<UsageLedger>().Single().IsHandleCreated);
 
             // Bounds saved from a session that had more room than this one does.
             SetPrivateField(firstOpen, "_dashboardBounds", new Rectangle(0, 0, 700, 340));
             InvokePrivate(firstOpen, "ShowDashboard", new Rectangle(0, 0, 1_024, 768), false);
             Application.DoEvents();
 
-            var opened = pending.Controls.OfType<ProviderUsageCard>().ToArray();
-            Equal(4, opened.Length);
-            True(opened.All(card => card.IsHandleCreated));
-            True(opened.Any(card => card.Height < card.NaturalHeight));
-            True(opened.All(card => card.Bottom <= pending.ClientSize.Height));
-            False(pending.VerticalScroll.Visible);
+            var opened = pending.Controls.OfType<UsageLedger>().Single();
+            True(opened.IsHandleCreated);
+            Equal(opened.NaturalHeight, opened.Height);
+            True(pending.AutoScroll);
+            True(pending.DisplayRectangle.Height >= opened.Height);
+            False(pending.HorizontalScroll.Visible);
             firstOpen.CloseForExit();
         }
 
-        // Four providers are the 2x2 the dashboard is designed around, but with no scrollbar a
-        // fifth must earn a third row: laid out past the bottom edge it would be unreachable
-        // rather than merely awkward, which is what the scrollbar used to paper over.
+        // However many providers there are, each gets its group in the one table.
         foreach (var count in new[] { 5, 6 })
         {
             var extra = Enumerable.Range(0, count)
@@ -3038,24 +3049,16 @@ internal static class CoverageExpansionTests
             wide.PerformLayout();
             Application.DoEvents();
 
-            var grid = GetPrivateField<FlowLayoutPanel>(wide, "_content");
-            var extraCards = grid.Controls.OfType<ProviderUsageCard>().ToArray();
-            Equal(count, extraCards.Length);
-            False(grid.VerticalScroll.Visible);
-            True(extraCards.All(card => card.Bottom <= grid.ClientSize.Height));
-            True(extraCards.All(card => card.Right <= grid.ClientSize.Width));
-
-            // Still two columns, just more rows, and every card the same size as its neighbours.
-            Equal(2, extraCards.Select(card => card.Left).Distinct().Count());
-            Equal(3, extraCards.Select(card => card.Top).Distinct().Count());
-            Equal(1, extraCards.Select(card => card.Size).Distinct().Count());
+            var table = GetPrivateField<FlowLayoutPanel>(wide, "_content").Controls.OfType<UsageLedger>().Single();
+            Equal(count, table.Rows.Count(row => row.Kind == UsageLedger.RowKind.Provider));
+            True(table.Right <= GetPrivateField<FlowLayoutPanel>(wide, "_content").ClientSize.Width);
             wide.CloseForExit();
         }
 
         return Task.CompletedTask;
     }
 
-    public static Task TestDashboardFixedGridAsync()
+    public static Task TestDashboardTableWidthAsync()
     {
         var now = DateTimeOffset.Now;
         var providers = new[]
@@ -3085,42 +3088,22 @@ internal static class CoverageExpansionTests
         popup.Show();
         Application.DoEvents();
 
+        // The table follows the window's width, and a narrow window drops the forecast column
+        // rather than squeezing every cell.
         var content = GetPrivateField<FlowLayoutPanel>(popup, "_content");
-        popup.ClientSize = new Size(760, 620);
-        popup.PerformLayout();
-        Application.DoEvents();
-        var initialCards = content.Controls.OfType<ProviderUsageCard>().ToArray();
-        Equal(4, initialCards.Length);
-        Equal(2, initialCards.Select(card => card.Left).Distinct().Count());
-        Equal(2, initialCards.Select(card => card.Top).Distinct().Count());
-        Equal(1, initialCards.Select(card => card.Width).Distinct().Count());
-        Equal(1, initialCards.Select(card => card.Height).Distinct().Count());
-        var initialSize = initialCards[0].Size;
+        var widths = new List<int>();
+        foreach (var (size, forecast) in new[] { (new Size(760, 620), true), (new Size(1_020, 820), true), (new Size(560, 620), false) })
+        {
+            popup.ClientSize = size;
+            popup.PerformLayout();
+            Application.DoEvents();
+            var ledger = content.Controls.OfType<UsageLedger>().Single();
+            widths.Add(ledger.Width);
+            Equal(forecast, ledger.ShowsForecastColumn);
+            DrawControl(ledger);
+        }
 
-        popup.ClientSize = new Size(1_020, 820);
-        popup.PerformLayout();
-        Application.DoEvents();
-        var resizedCards = content.Controls.OfType<ProviderUsageCard>().ToArray();
-        Equal(2, resizedCards.Select(card => card.Left).Distinct().Count());
-        Equal(2, resizedCards.Select(card => card.Top).Distinct().Count());
-        Equal(1, resizedCards.Select(card => card.Width).Distinct().Count());
-        Equal(1, resizedCards.Select(card => card.Height).Distinct().Count());
-        True(resizedCards[0].Width > initialSize.Width);
-        True(resizedCards[0].Height > initialSize.Height);
-        var resizedSize = resizedCards[0].Size;
-
-        popup.ClientSize = new Size(600, 420);
-        popup.PerformLayout();
-        Application.DoEvents();
-        var compactedCards = content.Controls.OfType<ProviderUsageCard>().ToArray();
-        Equal(2, compactedCards.Select(card => card.Left).Distinct().Count());
-        Equal(2, compactedCards.Select(card => card.Top).Distinct().Count());
-        Equal(1, compactedCards.Select(card => card.Width).Distinct().Count());
-        Equal(1, compactedCards.Select(card => card.Height).Distinct().Count());
-        True(compactedCards.All(card => card.Right <= content.ClientSize.Width));
-        True(compactedCards.All(card => card.Bottom <= content.ClientSize.Height));
-        True(compactedCards[0].Width < resizedSize.Width);
-        True(compactedCards[0].Height < resizedSize.Height);
+        True(widths[1] > widths[0] && widths[0] > widths[2]);
         DrawControl(popup);
         popup.CloseForExit();
 
@@ -3253,12 +3236,12 @@ internal static class CoverageExpansionTests
         settings.GlobalHotkeyEnabled = false;
         InvokePrivate(context, "ApplyHotkeySetting");
 
-        var colorTableType = typeof(UsageApplicationContext).GetNestedType(
-            "DarkColorTable",
+        var colorTableType = typeof(MenuRenderer).GetNestedType(
+            "MenuColorTable",
             BindingFlags.NonPublic)
-            ?? throw new InvalidOperationException("DarkColorTable was not found.");
+            ?? throw new InvalidOperationException("MenuColorTable was not found.");
         var colorTable = Activator.CreateInstance(colorTableType)
-            ?? throw new InvalidOperationException("DarkColorTable could not be created.");
+            ?? throw new InvalidOperationException("MenuColorTable could not be created.");
         foreach (var property in colorTableType.GetProperties(
                      BindingFlags.Instance | BindingFlags.Public))
         {
@@ -3330,9 +3313,13 @@ internal static class CoverageExpansionTests
             var compactPath = Path.Combine(directory, "compact.png");
             var compact96Path = Path.Combine(directory, "compact-96.png");
             var fullPath = Path.Combine(directory, "full.png");
+            // Rendering creates forms, which install WinForms' synchronization context; Render
+            // must hand the thread back without it, or the awaits below deadlock.
+            var callerContext = SynchronizationContext.Current;
             PreviewRenderer.Render(new[] { "--render-preview", compactPath });
             PreviewRenderer.Render(new[] { "--render-preview", compact96Path, "--dpi", "96" });
             PreviewRenderer.Render(new[] { "--render-preview", fullPath, "--full" });
+            True(ReferenceEquals(callerContext, SynchronizationContext.Current));
             True(new FileInfo(compactPath).Length > 1_000);
             True(new FileInfo(compact96Path).Length > 1_000);
             True(new FileInfo(fullPath).Length > 1_000);
@@ -3341,6 +3328,24 @@ internal static class CoverageExpansionTests
             {
                 Equal(compact96.Width * 2, compact.Width);
                 Equal(compact96.Height * 2, compact.Height);
+            }
+
+            // Windows caps a window at about the screen's height, which cut a high-DPI popup short
+            // on a small screen; the render extends the content and draws every tile whole.
+            using (var capped = new UsagePopupForm(new AppSettings(), 96))
+            {
+                capped.ShowNearTray(DashboardMode.Compact);
+                capped.SetStates(PreviewRenderer.SampleData(DateTimeOffset.Now).States, false, DateTimeOffset.Now, Array.Empty<UsageSample>());
+                capped.ApplyPreferredSize(new Rectangle(0, 0, 4000, 4000));
+                var whole = capped.ClientSize;
+                capped.ClientSize = new Size(whole.Width, whole.Height - 120);
+                capped.Location = new Point(-30_000, -30_000);
+                Application.DoEvents();
+                using var window = new Bitmap(capped.ClientSize.Width, capped.ClientSize.Height);
+                capped.DrawToBitmap(window, capped.ClientRectangle);
+                using var composed = InvokePrivateStatic<Bitmap>(typeof(PreviewRenderer), "ComposeAllTiles", capped, window);
+                Equal(whole, composed.Size);
+                capped.Hide();
             }
 
             var applicationAssembly = typeof(ProviderStatus).Assembly.Location;
@@ -4343,64 +4348,50 @@ internal static class CoverageExpansionTests
             null,
             "claude",
             new Uri("https://example.com/account"));
-        using (var card = new ProviderUsageCard(
-                   disconnected,
-                   expanded: true,
-                   Array.Empty<UsageSample>(),
-                   showTrend: false)
+        using (var table = new UsageLedger(
+                   new[] { disconnected },
+                   MetricDisplayMode.All,
+                   QuotaDisplay.Used,
+                   Array.Empty<UsageSample>())
                {
                    Width = 500,
                })
         {
             var actions = new List<ProviderCardAction>();
-            card.ActionInvoked += (_, eventArgs) => actions.Add(eventArgs.Action);
-            DrawControl(card);
-            var actionBounds = GetPrivateField<Rectangle>(card, "_actionBounds");
-            True(actionBounds.Width > 0);
-            InvokeProtected(card, "OnMouseMove", new MouseEventArgs(
-                MouseButtons.None,
-                0,
-                actionBounds.Left + 1,
-                actionBounds.Top + 1,
-                0));
-            InvokeProtected(card, "OnMouseDown", new MouseEventArgs(
-                MouseButtons.Left,
-                1,
-                actionBounds.Left + 1,
-                actionBounds.Top + 1,
-                0));
-            InvokeProtected(card, "OnMouseClick", new MouseEventArgs(
-                MouseButtons.Left,
-                1,
-                actionBounds.Left + 1,
-                actionBounds.Top + 1,
-                0));
+            table.ActionInvoked += (_, eventArgs) => actions.Add(eventArgs.Action);
+            DrawControl(table);
+            var copy = table.Actions.Single(action => action.Action == ProviderCardAction.CopyCommand).Bounds;
+            var inside = new MouseEventArgs(MouseButtons.None, 0, copy.Left + 1, copy.Top + 1, 0);
+            InvokeProtected(table, "OnMouseMove", inside);
+            DrawControl(table);
+            InvokeProtected(table, "OnMouseClick", new MouseEventArgs(MouseButtons.Left, 1, copy.Left + 1, copy.Top + 1, 0));
             Equal(ProviderCardAction.CopyCommand, actions.Single());
-            InvokeProtected(card, "OnMouseClick", new MouseEventArgs(
-                MouseButtons.Right,
-                1,
-                actionBounds.Left + 1,
-                actionBounds.Top + 1,
-                0));
+            InvokeProtected(table, "OnMouseClick", new MouseEventArgs(MouseButtons.Right, 1, copy.Left + 1, copy.Top + 1, 0));
+            InvokeProtected(table, "OnMouseClick", new MouseEventArgs(MouseButtons.Left, 1, 1, 1, 0));
             Equal(1, actions.Count);
-            InvokeProtected(card, "OnKeyDown", new KeyEventArgs(Keys.F2));
-            InvokeProtected(card, "OnGotFocus", EventArgs.Empty);
-            InvokeProtected(card, "OnLostFocus", EventArgs.Empty);
-            InvokeProtected(card, "OnDpiChangedAfterParent", EventArgs.Empty);
-            True((bool)(InvokePrivate(card, "IsInputKey", Keys.Enter) ?? false));
-            False((bool)(InvokePrivate(card, "IsInputKey", Keys.F2) ?? true));
+            InvokeProtected(table, "OnMouseMove", new MouseEventArgs(MouseButtons.None, 0, 1, 1, 0));
+            InvokeProtected(table, "OnMouseLeave", EventArgs.Empty);
+            InvokeProtected(table, "OnKeyDown", new KeyEventArgs(Keys.F2));
+            False((bool)(InvokePrivate(table, "IsInputKey", Keys.Enter) ?? true));
+            InvokeProtected(table, "OnGotFocus", EventArgs.Empty);
+            True((bool)(InvokePrivate(table, "IsInputKey", Keys.Enter) ?? false));
+            False((bool)(InvokePrivate(table, "IsInputKey", Keys.F2) ?? true));
+            DrawControl(table);
+            InvokeProtected(table, "OnLostFocus", EventArgs.Empty);
+            False((bool)(InvokePrivate(table, "IsInputKey", Keys.Enter) ?? true));
+            InvokeProtected(table, "OnDpiChangedAfterParent", EventArgs.Empty);
         }
 
-        using (var tinyCard = new ProviderUsageCard(
-                   disconnected,
-                   expanded: false,
-                   Array.Empty<UsageSample>(),
-                   showTrend: false)
+        using (var tiny = new UsageLedger(
+                   new[] { disconnected },
+                   MetricDisplayMode.All,
+                   QuotaDisplay.Used,
+                   Array.Empty<UsageSample>())
                {
                    Size = new Size(30, 10),
                })
         {
-            DrawControl(tinyCard);
+            DrawControl(tiny);
         }
 
         var settings = new AppSettings
@@ -4426,42 +4417,35 @@ internal static class CoverageExpansionTests
             now,
             "codex login",
             new Uri("http://not-https.example"));
-        using (var connectedCard = new ProviderUsageCard(
-                   connected,
-                   expanded: true,
-                   Array.Empty<UsageSample>(),
-                   showTrend: false)
+        using (var connectedTable = new UsageLedger(
+                   new[] { connected, connected with { Error = "stale", LastUpdated = null } },
+                   MetricDisplayMode.All,
+                   QuotaDisplay.Used,
+                   Array.Empty<UsageSample>())
                {
                    Width = 500,
                })
         {
-            ProviderCardAction? action = null;
-            connectedCard.ActionInvoked += (_, eventArgs) => action = eventArgs.Action;
-            DrawControl(connectedCard);
-            var linkBounds = GetPrivateField<Rectangle>(connectedCard, "_linkBounds");
-            True(linkBounds.Width > 0);
-            InvokeProtected(connectedCard, "OnMouseClick", new MouseEventArgs(
-                MouseButtons.Left,
-                1,
-                linkBounds.Left + 1,
-                linkBounds.Top + 1,
-                0));
-            Equal(ProviderCardAction.OpenAccount, action);
-            var staleWithoutTime = connected with
+            var actions = new List<ProviderCardAction>();
+            connectedTable.ActionInvoked += (_, eventArgs) => actions.Add(eventArgs.Action);
+            DrawControl(connectedTable);
+
+            // The provider name links to its account page; a stale provider offers Retry, and
+            // without a last-good time says only that it is stale.
+            foreach (var target in connectedTable.Actions)
             {
-                Error = "stale",
-                LastUpdated = null,
-            };
-            using var staleCard = new ProviderUsageCard(
-                staleWithoutTime,
-                expanded: true,
-                Array.Empty<UsageSample>(),
-                showTrend: false);
-            Equal("stale", InvokePrivate<string?>(
-                staleCard,
-                "DetailRight",
-                (object?)null));
+                InvokeProtected(connectedTable, "OnMouseClick", new MouseEventArgs(
+                    MouseButtons.Left,
+                    1,
+                    target.Bounds.Left + 1,
+                    target.Bounds.Top + 1,
+                    0));
+            }
+
+            Equal("OpenAccount|OpenAccount|Refresh", string.Join('|', actions));
+            True(connectedTable.AccessibleDescription!.Contains("Codex, Stale", StringComparison.Ordinal));
         }
+
         popup.SetStates(new[] { connected, disconnected }, false, now, Array.Empty<UsageSample>());
         popup.SetMode(DashboardMode.Full);
         popup.SetMode(DashboardMode.Full);
@@ -4514,10 +4498,16 @@ internal static class CoverageExpansionTests
         InvokePrivate(popup, "UpdateStatus");
         popup.SetStates(Array.Empty<ProviderStatus>(), false, null, Array.Empty<UsageSample>());
         InvokePrivate(popup, "UpdateStatus");
-        Null(InvokePrivateStatic<UsageMetric?>(
-            typeof(UsagePopupForm),
-            "Headline",
-            (object?)null));
+        Equal("No connected providers.", UsagePopupForm.HeadlineText(
+            Array.Empty<ProviderStatus>(), false, QuotaDisplay.Used, Array.Empty<UsageSample>(), now));
+        Equal("Checking your accounts…", UsagePopupForm.HeadlineText(
+            Array.Empty<ProviderStatus>(), true, QuotaDisplay.Used, Array.Empty<UsageSample>(), now));
+        Equal("No metered limits reported.", UsagePopupForm.HeadlineText(
+            new[] { connected with { Snapshot = connected.Snapshot! with { Metrics = Array.Empty<UsageMetric>() } } },
+            false,
+            QuotaDisplay.Used,
+            Array.Empty<UsageSample>(),
+            now));
 
         popup.SetStates(new[] { connected, disconnected }, false, now, Array.Empty<UsageSample>());
         popup.SetMode(DashboardMode.Full);
@@ -4587,7 +4577,7 @@ internal static class CoverageExpansionTests
                 .Single(button => button.Text == "Delete recorded history");
             InvokeProtected(deleteHistory, "OnClick", EventArgs.Empty);
 
-            GetPrivateField<ComboBox>(settingsForm, "_theme").SelectedIndex = 1;
+            GetPrivateField<SegmentedControl>(settingsForm, "_theme").SelectedIndex = 1;
             InvokePrivate(settingsForm, "Apply");
             Equal(ThemeMode.Dark, darkSettings.Theme);
         }
@@ -4595,7 +4585,7 @@ internal static class CoverageExpansionTests
         var lightSettings = new AppSettings();
         using (var settingsForm = new SettingsForm(lightSettings, providerEntries))
         {
-            GetPrivateField<ComboBox>(settingsForm, "_theme").SelectedIndex = 2;
+            GetPrivateField<SegmentedControl>(settingsForm, "_theme").SelectedIndex = 2;
             InvokePrivate(settingsForm, "Apply");
             Equal(ThemeMode.Light, lightSettings.Theme);
         }
@@ -4627,7 +4617,7 @@ internal static class CoverageExpansionTests
             var version = Descendants(settingsForm)
                 .OfType<Label>()
                 .Single(label => label.Text == $"v{AppIdentity.Version}");
-            Equal(Theme.Signal, version.ForeColor);
+            Equal(Theme.Text, version.ForeColor);
 
             await InvokePrivateTaskAsync(settingsForm, "CheckForUpdatesAsync");
             var status = GetPrivateField<Label>(settingsForm, "_updateStatus");
@@ -4636,7 +4626,7 @@ internal static class CoverageExpansionTests
 
             await InvokePrivateTaskAsync(settingsForm, "CheckForUpdatesAsync");
             True(status.Text.Contains("Couldn’t check", StringComparison.Ordinal));
-            Equal(Theme.Warning, status.ForeColor);
+            Equal(Theme.WarningText, status.ForeColor);
 
             await InvokePrivateTaskAsync(settingsForm, "CheckForUpdatesAsync");
             True(status.Text.Contains("99.0.0", StringComparison.Ordinal));
@@ -4691,11 +4681,13 @@ internal static class CoverageExpansionTests
         Equal("retry in 1d", UsageFormatting.RetryCountdown(now.AddHours(25), now));
         Equal("retry in 2h", UsageFormatting.RetryCountdown(now.AddHours(2.5), now));
 
-        using var card = new ProviderUsageCard(staleOne, expanded: true, Array.Empty<UsageSample>(), showTrend: false);
-        var detail = InvokePrivate<string>(card, "DetailRight", snapshot.Primary);
-        True(detail.StartsWith("retry in ", StringComparison.Ordinal));
-        True(card.AccessibleDescription?.Contains("Last successful update", StringComparison.Ordinal) == true);
-        True(card.AccessibleDescription?.Contains("retry in ", StringComparison.Ordinal) == true);
+        // The dashboard row and the popup tile both say how old the values are and when the next
+        // attempt is due.
+        using var table = new UsageLedger(new[] { staleOne }, MetricDisplayMode.All, QuotaDisplay.Used, Array.Empty<UsageSample>());
+        True(table.AccessibleDescription?.Contains("Last good", StringComparison.Ordinal) == true);
+        True(table.AccessibleDescription?.Contains("retry in ", StringComparison.Ordinal) == true);
+        using var tile = new ProviderTile(staleOne);
+        True(tile.IndicatorText?.Contains("Next try: retry in ", StringComparison.Ordinal) == true);
         return Task.CompletedTask;
     }
 
@@ -4949,98 +4941,136 @@ internal static class CoverageExpansionTests
         popup.SetStates(new[] { status }, false, now, Array.Empty<UsageSample>());
         popup.Show();
         Application.DoEvents();
-        var modeControl = GetPrivateField<ComboBox>(popup, "_metricMode");
+        var modeControl = GetPrivateField<SegmentedControl>(popup, "_metricMode");
         False(modeControl.Visible);
         var content = GetPrivateField<FlowLayoutPanel>(popup, "_content");
-        var compactCard = content.Controls.OfType<ProviderUsageCard>().Single();
-        Equal(6, GetPrivateField<IReadOnlyList<UsageMetric>>(compactCard, "_metrics").Count);
+        // The popup picks its rings itself — the busiest session, then rolling limit — and the
+        // dashboard's row filter never reaches it.
+        var compactTile = content.Controls.OfType<ProviderTile>().Single();
+        Equal("Session highest|Rolling", string.Join('|', compactTile.Rings!.Rings.Select(metric => metric.Name)));
 
+        // The dashboard's filter is a segmented control in its header; switching it re-filters
+        // the table, saves the choice, and never touches the snapshot itself.
         popup.SetMode(DashboardMode.Full);
         True(modeControl.Visible);
-        True(modeControl is ThemedComboBox);
-        Equal(DrawMode.OwnerDrawFixed, modeControl.DrawMode);
-        using (var pickerBitmap = new Bitmap(modeControl.Width, modeControl.Height))
-        {
-            modeControl.DrawToBitmap(pickerBitmap, modeControl.ClientRectangle);
-            False(pickerBitmap.GetPixel(modeControl.Width - 4, 4).ToArgb() == Color.White.ToArgb());
-        }
-
-        InvokeProtected(modeControl, "OnMouseEnter", EventArgs.Empty);
-        InvokeProtected(modeControl, "OnMouseLeave", EventArgs.Empty);
-        InvokeProtected(modeControl, "OnGotFocus", EventArgs.Empty);
-        InvokeProtected(modeControl, "OnLostFocus", EventArgs.Empty);
-        InvokeProtected(modeControl, "OnDropDown", EventArgs.Empty);
-        InvokeProtected(modeControl, "OnDropDownClosed", EventArgs.Empty);
-        InvokeProtected(modeControl, "OnDpiChangedAfterParent", EventArgs.Empty);
-        using (var itemBitmap = new Bitmap(180, 30))
-        using (var itemGraphics = Graphics.FromImage(itemBitmap))
-        {
-            InvokeProtected(
-                modeControl,
-                "OnDrawItem",
-                new DrawItemEventArgs(
-                    itemGraphics,
-                    modeControl.Font,
-                    new Rectangle(0, 0, itemBitmap.Width, itemBitmap.Height),
-                    0,
-                    DrawItemState.Selected | DrawItemState.Focus));
-            modeControl.Enabled = false;
-            InvokeProtected(
-                modeControl,
-                "OnDrawItem",
-                new DrawItemEventArgs(
-                    itemGraphics,
-                    modeControl.Font,
-                    new Rectangle(0, 0, itemBitmap.Width, itemBitmap.Height),
-                    0,
-                    DrawItemState.ComboBoxEdit));
-            InvokeProtected(
-                modeControl,
-                "OnDrawItem",
-                new DrawItemEventArgs(
-                    itemGraphics,
-                    modeControl.Font,
-                    Rectangle.Empty,
-                    -1,
-                    DrawItemState.None));
-            modeControl.Enabled = true;
-        }
-
-        var importantCard = content.Controls.OfType<ProviderUsageCard>().Single();
-        Equal(
-            "Session highest|Rolling|Monthly",
-            string.Join('|', GetPrivateField<IReadOnlyList<UsageMetric>>(importantCard, "_metrics").Select(metric => metric.Name)));
+        Equal("All|Metered|Important", string.Join('|', modeControl.Options));
+        Equal(2, modeControl.SelectedIndex);
+        static string Names(FlowLayoutPanel host) => string.Join('|', host.Controls
+            .OfType<UsageLedger>()
+            .Single()
+            .Rows
+            .Where(row => row.Kind == UsageLedger.RowKind.Metric)
+            .Select(row => row.Metric!.Name));
+        Equal("Session highest|Rolling|Monthly", Names(content));
         Equal(6, snapshot.Metrics.Count);
         True(ReferenceEquals(metrics, snapshot.Metrics));
 
         modeControl.SelectedIndex = 1;
         Equal(MetricDisplayMode.MeteredOnly, settings.MetricDisplayMode);
-        var meteredCard = content.Controls.OfType<ProviderUsageCard>().Single();
-        Equal(
-            "Session lower|Rolling|Session highest|Monthly",
-            string.Join('|', GetPrivateField<IReadOnlyList<UsageMetric>>(meteredCard, "_metrics").Select(metric => metric.Name)));
+        Equal("Session lower|Rolling|Session highest|Monthly", Names(content));
         Equal(MetricDisplayMode.MeteredOnly, AppSettings.Load().MetricDisplayMode);
+
+        // Arrow keys, Home and End move the selection; a click picks a segment.
+        InvokeProtected(modeControl, "OnKeyDown", new KeyEventArgs(Keys.Right));
+        Equal(2, modeControl.SelectedIndex);
+        InvokeProtected(modeControl, "OnKeyDown", new KeyEventArgs(Keys.Right));
+        Equal(2, modeControl.SelectedIndex);
+        InvokeProtected(modeControl, "OnKeyDown", new KeyEventArgs(Keys.Home));
+        Equal(0, modeControl.SelectedIndex);
+        InvokeProtected(modeControl, "OnKeyDown", new KeyEventArgs(Keys.End));
+        Equal(2, modeControl.SelectedIndex);
+        InvokeProtected(modeControl, "OnKeyDown", new KeyEventArgs(Keys.Left));
+        Equal(1, modeControl.SelectedIndex);
+        True((bool)(InvokePrivate(modeControl, "IsInputKey", Keys.Left) ?? false));
+        False((bool)(InvokePrivate(modeControl, "IsInputKey", Keys.F2) ?? true));
+        var first = modeControl.SegmentBounds(0);
+        InvokeProtected(modeControl, "OnMouseMove", new MouseEventArgs(MouseButtons.None, 0, first.Left + 2, first.Top + 2, 0));
+        DrawControl(modeControl);
+        InvokeProtected(modeControl, "OnMouseDown", new MouseEventArgs(MouseButtons.Right, 1, first.Left + 2, first.Top + 2, 0));
+        Equal(1, modeControl.SelectedIndex);
+        InvokeProtected(modeControl, "OnMouseDown", new MouseEventArgs(MouseButtons.Left, 1, first.Left + 2, first.Top + 2, 0));
+        Equal(0, modeControl.SelectedIndex);
+        Equal(MetricDisplayMode.All, settings.MetricDisplayMode);
+        InvokeProtected(modeControl, "OnMouseDown", new MouseEventArgs(MouseButtons.Left, 1, -5, -5, 0));
+        Equal(0, modeControl.SelectedIndex);
+        InvokeProtected(modeControl, "OnMouseLeave", EventArgs.Empty);
+        InvokeProtected(modeControl, "OnGotFocus", EventArgs.Empty);
+        InvokeProtected(modeControl, "OnLostFocus", EventArgs.Empty);
+        InvokeProtected(modeControl, "OnDpiChangedAfterParent", EventArgs.Empty);
+        True(modeControl.PreferredWidth > 0);
+        True(modeControl.AccessibleDescription!.StartsWith("All selected, 1 of 3", StringComparison.Ordinal));
+        modeControl.Enabled = false;
+        DrawControl(modeControl);
+        modeControl.Enabled = true;
+        Theme.SetHighContrastProbe(static () => true);
+        try
+        {
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+            DrawControl(modeControl);
+        }
+        finally
+        {
+            Theme.SetHighContrastProbe(null);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+        }
+
+        using (var single = new SegmentedControl(SingleSegment, 5))
+        {
+            Equal(0, single.SelectedIndex);
+        }
+
+        Throws<ArgumentException>(() =>
+        {
+            using var none = new SegmentedControl(Array.Empty<string>());
+        });
 
         popup.SetMode(DashboardMode.Compact);
         False(modeControl.Visible);
-        Equal(6, GetPrivateField<IReadOnlyList<UsageMetric>>(
-            content.Controls.OfType<ProviderUsageCard>().Single(), "_metrics").Count);
+        Equal("Session highest|Rolling", string.Join('|',
+            content.Controls.OfType<ProviderTile>().Single().Rings!.Rings.Select(metric => metric.Name)));
 
         var balanceSnapshot = snapshot with { Metrics = new[] { metrics[0] } };
         var balanceStatus = status with { Snapshot = balanceSnapshot };
-        using var emptyCard = new ProviderUsageCard(
-            balanceStatus,
-            expanded: true,
+        using var emptyTable = new UsageLedger(
+            new[] { balanceStatus },
+            MetricDisplayMode.MeteredOnly,
+            QuotaDisplay.Used,
             Array.Empty<UsageSample>(),
-            showTrend: false,
-            metrics: UsageMetricSelection.Select(balanceSnapshot.Metrics, MetricDisplayMode.MeteredOnly),
-            dpiOverride: 96)
+            96)
         {
             Width = 520,
         };
-        Equal(0, GetPrivateField<IReadOnlyList<UsageMetric>>(emptyCard, "_metrics").Count);
-        True(emptyCard.AccessibleDescription!.Contains("No metered limits reported", StringComparison.Ordinal));
-        DrawControl(emptyCard);
+        Equal(0, emptyTable.Rows.Count(row => row.Kind == UsageLedger.RowKind.Metric));
+        True(emptyTable.AccessibleDescription!.Contains("No metered limits reported", StringComparison.Ordinal));
+        DrawControl(emptyTable);
+
+        // The themed dropdown Settings uses paints its own field and list items.
+        using (var combo = new ThemedComboBox { Width = 160 })
+        {
+            combo.Items.AddRange(new object[] { "Automatic", "Codex" });
+            combo.SelectedIndex = 0;
+            Equal(DrawMode.OwnerDrawFixed, combo.DrawMode);
+            using (var pickerBitmap = new Bitmap(combo.Width, combo.Height))
+            {
+                combo.CreateControl();
+                combo.DrawToBitmap(pickerBitmap, combo.ClientRectangle);
+                False(pickerBitmap.GetPixel(combo.Width - 4, 4).ToArgb() == Color.White.ToArgb());
+            }
+
+            InvokeProtected(combo, "OnMouseEnter", EventArgs.Empty);
+            InvokeProtected(combo, "OnMouseLeave", EventArgs.Empty);
+            InvokeProtected(combo, "OnGotFocus", EventArgs.Empty);
+            InvokeProtected(combo, "OnLostFocus", EventArgs.Empty);
+            InvokeProtected(combo, "OnDropDown", EventArgs.Empty);
+            InvokeProtected(combo, "OnDropDownClosed", EventArgs.Empty);
+            InvokeProtected(combo, "OnDpiChangedAfterParent", EventArgs.Empty);
+            using var itemBitmap = new Bitmap(180, 30);
+            using var itemGraphics = Graphics.FromImage(itemBitmap);
+            InvokeProtected(combo, "OnDrawItem", new DrawItemEventArgs(itemGraphics, combo.Font, new Rectangle(0, 0, 180, 30), 0, DrawItemState.Selected | DrawItemState.Focus));
+            combo.Enabled = false;
+            InvokeProtected(combo, "OnDrawItem", new DrawItemEventArgs(itemGraphics, combo.Font, new Rectangle(0, 0, 180, 30), 0, DrawItemState.ComboBoxEdit));
+            InvokeProtected(combo, "OnDrawItem", new DrawItemEventArgs(itemGraphics, combo.Font, Rectangle.Empty, -1, DrawItemState.None));
+        }
 
         var settingsCopy = new AppSettings();
         using var dialog = new SettingsForm(
@@ -5049,7 +5079,7 @@ internal static class CoverageExpansionTests
             _ => Task.FromResult(new UpdateCheckResult(true, null)),
             _ => Task.CompletedTask,
             96);
-        var settingsMode = GetPrivateField<ComboBox>(dialog, "_metricDisplayMode");
+        var settingsMode = GetPrivateField<SegmentedControl>(dialog, "_metricDisplayMode");
         Equal(0, settingsMode.SelectedIndex);
         settingsMode.SelectedIndex = 2;
         InvokePrivate(dialog, "Apply");
@@ -5115,7 +5145,8 @@ internal static class CoverageExpansionTests
             var document = GetPrivateField<RichTextBox>(rendered, "_content").Text;
             // Angle brackets are never markup here, so the HTML survives verbatim.
             True(document.Contains("<b>literal HTML</b>", StringComparison.Ordinal));
-            True(document.Contains("SECURITY", StringComparison.Ordinal));
+            True(document.Contains("Security", StringComparison.Ordinal));
+            False(document.Contains("SECURITY", StringComparison.Ordinal));
             True(document.Contains("UsageAI 3.0.0", StringComparison.Ordinal));
             // The strong delimiters become a bold face, so the word is left without them.
             True(document.Contains("and Markdown as text.", StringComparison.Ordinal));
@@ -5224,6 +5255,31 @@ internal static class CoverageExpansionTests
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// A provider update posted to the UI thread just before the context is disposed — the app
+    /// exiting mid-refresh — is dropped instead of reaching the disposed tray icon, which threw
+    /// a NullReferenceException from NotifyIcon.UpdateIcon.
+    /// </summary>
+    public static Task TestUpdateAfterDisposeIsDroppedAsync()
+    {
+        SynchronizationContext.SetSynchronizationContext(new WindowsFormsSynchronizationContext());
+        var client = new QueueUsageClient("codex", "Codex");
+        client.Enqueue(Snapshot("codex", "Codex", 20, DateTimeOffset.Now));
+        var context = new UsageApplicationContext(
+            new[] { client },
+            new AppSettings { GlobalHotkeyEnabled = false, LastRunVersion = AppIdentity.Version },
+            showTrayIcon: false,
+            enableAutomaticUpdateChecks: false,
+            profileExisted: true);
+
+        // From another thread the update is posted, not run, so it lands after Dispose.
+        Task.Run(() => InvokePrivate(context, "OnServiceUpdated", null, EventArgs.Empty)).Wait();
+        Task.Run(() => InvokePrivate(context, "OnAlertsRaised", null, new UsageAlertEventArgs(Array.Empty<UsageAlert>()))).Wait();
+        context.Dispose();
+        Application.DoEvents();
+        return Task.CompletedTask;
+    }
+
     public static Task TestWhatsNewLifecycleAsync()
     {
         if (File.Exists(AppPaths.SettingsFile))
@@ -5313,7 +5369,8 @@ internal static class CoverageExpansionTests
             Equal(SystemColors.Window, popup.BackColor);
             Equal(SystemColors.Window, dialog.BackColor);
             Equal(SystemColors.Window, whatsNew.BackColor);
-            Equal(SystemColors.Control, GetPrivateField<ComboBox>(dialog, "_theme").BackColor);
+            Equal(SystemColors.Control, GetPrivateField<ComboBox>(dialog, "_trayProvider").BackColor);
+            Equal(SystemColors.Window, GetPrivateField<SegmentedControl>(dialog, "_theme").BackColor);
             Equal(SystemColors.Window, GetPrivateField<RichTextBox>(whatsNew, "_content").BackColor);
             Equal(SystemColors.Highlight, GetPrivateField<Button>(whatsNew, "_close").BackColor);
             Equal(SystemColors.HighlightText, GetPrivateField<Button>(whatsNew, "_close").ForeColor);
@@ -5321,7 +5378,7 @@ internal static class CoverageExpansionTests
             Equal(SystemColors.WindowText, Theme.ForProvider("gemini"));
             Equal(Color.Red, Theme.Blend(Color.Red, Color.Blue, 0.5));
 
-            using var icon = TrayIconFactory.Create(92, "G", size: 24, identityColor: Theme.Gemini);
+            using var icon = TrayIconFactory.Create(92, size: 24, identityColor: Theme.Gemini);
             using var iconBitmap = icon.ToBitmap();
             True(iconBitmap.Width == 24 && iconBitmap.Height == 24);
             DrawControl(popup);
@@ -5395,20 +5452,16 @@ internal static class CoverageExpansionTests
         foreach (var dpi in new[] { 96, 192, 288 })
         {
             var scale = new LayoutScale(dpi);
-            using var card = new ProviderUsageCard(
-                status,
-                expanded: true,
-                Array.Empty<UsageSample>(),
-                showTrend: false,
-                dpiOverride: dpi)
+            using var table = new UsageLedger(new[] { status }, MetricDisplayMode.All, QuotaDisplay.Used, Array.Empty<UsageSample>(), dpi)
             {
                 Width = scale[520],
             };
-            Equal(scale[46] + scale[8] + 2 * scale[54], card.NaturalHeight);
-            True(card.NaturalHeight > previousCardHeight);
-            previousCardHeight = card.NaturalHeight;
-            DrawControl(card);
+            Equal(scale[32] + scale[46] + 2 * scale[40], table.NaturalHeight);
+            True(table.NaturalHeight > previousCardHeight);
+            previousCardHeight = table.NaturalHeight;
+            DrawControl(table);
 
+            // The sign-in action lands inside the table at every scale, where a click can reach it.
             var disconnected = new ProviderStatus(
                 "claude",
                 "Claude Code",
@@ -5416,24 +5469,14 @@ internal static class CoverageExpansionTests
                 "Sign in required",
                 false,
                 SignInCommand: "claude");
-            using var actionCard = new ProviderUsageCard(
-                disconnected,
-                expanded: true,
-                Array.Empty<UsageSample>(),
-                showTrend: false,
-                dpiOverride: dpi)
+            using var actionTable = new UsageLedger(new[] { disconnected }, MetricDisplayMode.All, QuotaDisplay.Used, Array.Empty<UsageSample>(), dpi)
             {
                 Width = scale[520],
             };
-            DrawControl(actionCard);
-            var actionBounds = GetPrivateField<Rectangle>(actionCard, "_actionBounds");
+            DrawControl(actionTable);
+            var actionBounds = actionTable.Actions.Single(action => action.Action == ProviderCardAction.CopyCommand).Bounds;
             True(actionBounds.Width > 0 && actionBounds.Height > 0);
-            True(actionCard.ClientRectangle.Contains(actionBounds));
-            Equal(
-                ProviderCardAction.CopyCommand,
-                InvokePrivate<ProviderCardAction>(actionCard, "HitTest", new Point(
-                    actionBounds.Left + actionBounds.Width / 2,
-                    actionBounds.Top + actionBounds.Height / 2)));
+            True(actionTable.ClientRectangle.Contains(actionBounds));
 
             using var popup = new UsagePopupForm(new AppSettings(), dpi)
             {
@@ -5560,39 +5603,30 @@ internal static class CoverageExpansionTests
         True(remainingPixels > 0);
         True(remainingPixels * 2 < usedPixels);
 
-        using (var remainingCard = new ProviderUsageCard(
-                   hotStatus,
-                   expanded: true,
+        using (var remainingTable = new UsageLedger(
+                   new[] { hotStatus },
+                   MetricDisplayMode.All,
+                   QuotaDisplay.Remaining,
                    Array.Empty<UsageSample>(),
-                   showTrend: false,
-                   dpiOverride: 96,
-                   quotaDisplay: QuotaDisplay.Remaining))
+                   96))
         {
-            True(remainingCard.AccessibleDescription!.Contains("Weekly: 5% LEFT, 95% USED", StringComparison.Ordinal));
+            True(remainingTable.AccessibleDescription!.Contains("Weekly: 5% left", StringComparison.Ordinal));
         }
 
-        using (var usedCard = new ProviderUsageCard(
-                   hotStatus,
-                   expanded: true,
+        using (var usedTable = new UsageLedger(
+                   new[] { hotStatus },
+                   MetricDisplayMode.All,
+                   QuotaDisplay.Used,
                    Array.Empty<UsageSample>(),
-                   showTrend: false,
-                   dpiOverride: 96))
+                   96))
         {
-            True(usedCard.AccessibleDescription!.Contains("Weekly: 95% USED, 5% LEFT", StringComparison.Ordinal));
+            True(usedTable.AccessibleDescription!.Contains("Weekly: 95% used", StringComparison.Ordinal));
         }
 
-        using (var compactCard = new ProviderUsageCard(
-                   hotStatus,
-                   expanded: false,
-                   Array.Empty<UsageSample>(),
-                   showTrend: false,
-                   dpiOverride: 96,
-                   quotaDisplay: QuotaDisplay.Remaining)
-               {
-                   Width = 360,
-               })
+        using (var remainingTile = new ProviderTile(hotStatus, QuotaDisplay.Remaining, dpiOverride: 96) { Width = 180 })
         {
-            DrawControl(compactCard);
+            True(remainingTile.AccessibleDescription!.Contains("Weekly: 5% left", StringComparison.Ordinal));
+            DrawControl(remainingTile);
         }
 
         // The popup header flips with the cards, while the hottest provider is still chosen by usage.
@@ -5604,7 +5638,7 @@ internal static class CoverageExpansionTests
             "Codex");
         var coolStatus = new ProviderStatus("codex", "Codex", cool, null, false);
         var statuses = new[] { coolStatus, hotStatus };
-        Equal("claude", UsagePopupForm.SelectHeadlineStatus(statuses)!.ProviderId);
+        Equal("claude", UsagePopupForm.SelectHeadlineMetric(statuses)!.Value.Status.ProviderId);
         var settings = new AppSettings { QuotaDisplay = QuotaDisplay.Remaining, GlobalHotkeyEnabled = false };
         using (var popup = new UsagePopupForm(settings, 96))
         {
@@ -5612,14 +5646,16 @@ internal static class CoverageExpansionTests
             popup.Location = new Point(-10_000, -10_000);
             popup.SetStates(statuses, false, now, Array.Empty<UsageSample>());
             var summary = GetPrivateField<Label>(popup, "_summaryLabel");
-            Equal("CLAUDE CODE 5% LEFT", summary.Text);
-            Equal(critical, summary.ForeColor);
+            True(summary.Text.StartsWith("Busiest: Claude Code Weekly at 5% left", StringComparison.Ordinal));
+            var tiles = GetPrivateField<FlowLayoutPanel>(popup, "_content").Controls.OfType<ProviderTile>().ToArray();
+            Equal(2, tiles.Length);
+            True(tiles.All(tile => GetPrivateField<QuotaDisplay>(tile, "_quotaDisplay") == QuotaDisplay.Remaining));
             popup.SetMode(DashboardMode.Full);
             popup.Show();
             Application.DoEvents();
-            var cards = GetPrivateField<FlowLayoutPanel>(popup, "_content").Controls.OfType<ProviderUsageCard>().ToArray();
-            Equal(2, cards.Length);
-            True(cards.All(card => GetPrivateField<QuotaDisplay>(card, "_quotaDisplay") == QuotaDisplay.Remaining));
+            var table = GetPrivateField<FlowLayoutPanel>(popup, "_content").Controls.OfType<UsageLedger>().Single();
+            Equal(2, table.Rows.Count(row => row.Kind == UsageLedger.RowKind.Provider));
+            Equal(QuotaDisplay.Remaining, GetPrivateField<QuotaDisplay>(table, "_quotaDisplay"));
             popup.Hide();
         }
 
@@ -5628,8 +5664,8 @@ internal static class CoverageExpansionTests
         Equal(95, UsageApplicationContext.TrayUsedPercent(hotStatus));
         Equal(95, UsageApplicationContext.TrayDisplayedPercent(hotStatus, QuotaDisplay.Used));
         Equal(5, UsageApplicationContext.TrayDisplayedPercent(hotStatus, QuotaDisplay.Remaining));
-        Equal("UsageAI - Claude Code: 95% used", UsageApplicationContext.TrayTooltip(hotStatus));
-        Equal("UsageAI - Claude Code: 5% left", UsageApplicationContext.TrayTooltip(hotStatus, QuotaDisplay.Remaining));
+        Equal("UsageAI - Claude: 95% used", UsageApplicationContext.TrayTooltip(hotStatus));
+        Equal("UsageAI - Claude: 5% left", UsageApplicationContext.TrayTooltip(hotStatus, QuotaDisplay.Remaining));
         var balanceOnly = new ProviderStatus(
             "copilot",
             "GitHub Copilot",
@@ -5640,10 +5676,9 @@ internal static class CoverageExpansionTests
         Equal("UsageAI - Copilot: no metered limit", UsageApplicationContext.TrayTooltip(balanceOnly, QuotaDisplay.Remaining));
         Equal("UsageAI - Copilot: 0% used", UsageApplicationContext.TrayTooltip(balanceOnly));
 
-        using (var usedRing = TrayIconFactory.Create(95, "A", size: 32, identityColor: Theme.ForProvider("claude")))
+        using (var usedRing = TrayIconFactory.Create(95, size: 32, identityColor: Theme.ForProvider("claude")))
         using (var remainingRing = TrayIconFactory.Create(
                    95,
-                   "A",
                    size: 32,
                    identityColor: Theme.ForProvider("claude"),
                    fillPercent: 5))
@@ -5663,7 +5698,7 @@ internal static class CoverageExpansionTests
                    _ => Task.CompletedTask,
                    96))
         {
-            var combo = GetPrivateField<ComboBox>(dialog, "_quotaDisplay");
+            var combo = GetPrivateField<SegmentedControl>(dialog, "_quotaDisplay");
             Equal(0, combo.SelectedIndex);
             combo.SelectedIndex = 1;
             InvokePrivate(dialog, "Apply");
@@ -5677,7 +5712,7 @@ internal static class CoverageExpansionTests
                    _ => Task.CompletedTask,
                    96))
         {
-            Equal(1, GetPrivateField<ComboBox>(reopened, "_quotaDisplay").SelectedIndex);
+            Equal(1, GetPrivateField<SegmentedControl>(reopened, "_quotaDisplay").SelectedIndex);
         }
 
         // Alerts still fire on the used threshold in both modes; only their wording flips.
@@ -5709,14 +5744,14 @@ internal static class CoverageExpansionTests
 
         // An empty remaining quota draws an empty ring, not the minimum-sweep sliver; a full one
         // draws more ring than a half-full one. 16px has no glyph, so only the ring is counted.
-        using (var emptyRing = TrayIconFactory.Create(100, "A", size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 0))
+        using (var emptyRing = TrayIconFactory.Create(100, size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 0))
         {
             Equal(0, OpaquePixels(emptyRing, Theme.ForUsage(100)));
         }
 
         var success = Theme.ForUsage(0);
-        using (var fullRing = TrayIconFactory.Create(0, "A", size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 100))
-        using (var halfRing = TrayIconFactory.Create(0, "A", size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 50))
+        using (var fullRing = TrayIconFactory.Create(0, size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 100))
+        using (var halfRing = TrayIconFactory.Create(0, size: 16, identityColor: Theme.ForProvider("claude"), fillPercent: 50))
         {
             True(OpaquePixels(halfRing, success) > 0);
             True(OpaquePixels(fullRing, success) > OpaquePixels(halfRing, success));
@@ -5749,11 +5784,11 @@ internal static class CoverageExpansionTests
             popup.Location = new Point(-10_000, -10_000);
             popup.SetStates(statuses, false, now, Array.Empty<UsageSample>());
             var summary = GetPrivateField<Label>(popup, "_summaryLabel");
-            Equal("CLAUDE CODE 95% USED", summary.Text);
+            True(summary.Text.StartsWith("Busiest: Claude Code Weekly at 95% used", StringComparison.Ordinal));
             var usedColour = summary.ForeColor;
             switching.QuotaDisplay = QuotaDisplay.Remaining;
             popup.SetStates(statuses, false, now, Array.Empty<UsageSample>());
-            Equal("CLAUDE CODE 5% LEFT", summary.Text);
+            True(summary.Text.StartsWith("Busiest: Claude Code Weekly at 5% left", StringComparison.Ordinal));
             Equal(usedColour, summary.ForeColor);
         }
 
@@ -5770,19 +5805,17 @@ internal static class CoverageExpansionTests
                 {
                     foreach (var display in new[] { QuotaDisplay.Used, QuotaDisplay.Remaining })
                     {
-                        foreach (var expanded in new[] { false, true })
+                        using (var tile = new ProviderTile(hotStatus, display, dpiOverride: dpi) { Width = new LayoutScale(dpi)[180] })
                         {
-                            using var card = new ProviderUsageCard(
-                                hotStatus,
-                                expanded,
-                                Array.Empty<UsageSample>(),
-                                showTrend: false,
-                                dpiOverride: dpi,
-                                quotaDisplay: display)
-                            {
-                                Width = new LayoutScale(dpi)[420],
-                            };
-                            DrawControl(card);
+                            DrawControl(tile);
+                        }
+
+                        using (var table = new UsageLedger(new[] { hotStatus }, MetricDisplayMode.All, display, Array.Empty<UsageSample>(), dpi)
+                        {
+                            Width = new LayoutScale(dpi)[620],
+                        })
+                        {
+                            DrawControl(table);
                         }
 
                         using var popup = new UsagePopupForm(
@@ -5825,13 +5858,7 @@ internal static class CoverageExpansionTests
 
     private static int CardPixels(ProviderStatus status, QuotaDisplay display, Color color)
     {
-        using var card = new ProviderUsageCard(
-            status,
-            expanded: true,
-            Array.Empty<UsageSample>(),
-            showTrend: false,
-            dpiOverride: 96,
-            quotaDisplay: display)
+        using var card = new UsageLedger(new[] { status }, MetricDisplayMode.All, display, Array.Empty<UsageSample>(), 96)
         {
             Width = 520,
         };
@@ -6286,15 +6313,21 @@ internal static class CoverageExpansionTests
         throw new InvalidOperationException($"Expected {typeof(TException).Name}.");
     }
 
-    private static void True(bool value)
+    private static void True(
+        bool value,
+        [System.Runtime.CompilerServices.CallerFilePath] string file = "",
+        [System.Runtime.CompilerServices.CallerLineNumber] int line = 0)
     {
         if (!value)
         {
-            throw new InvalidOperationException("Expected true.");
+            throw new InvalidOperationException($"Expected true at {Path.GetFileName(file)}:{line}.");
         }
     }
 
-    private static void False(bool value) => True(!value);
+    private static void False(
+        bool value,
+        [System.Runtime.CompilerServices.CallerFilePath] string file = "",
+        [System.Runtime.CompilerServices.CallerLineNumber] int line = 0) => True(!value, file, line);
 
     private static void Null(object? value)
     {

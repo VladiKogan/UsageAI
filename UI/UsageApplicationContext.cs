@@ -28,12 +28,16 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private readonly System.Windows.Forms.Timer _tickTimer;
     private readonly System.Windows.Forms.Timer _refreshAnimationTimer;
     private readonly bool _automaticUpdateChecksEnabled;
+    private readonly Func<CancellationToken, Task<UpdateCheckResult>> _checkForUpdates;
+    private readonly Func<StartupState>? _readStartup;
+    private readonly Action<bool>? _writeStartup;
     private readonly UpgradeNotice _upgradeNotice;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly SynchronizationContext _syncContext = SynchronizationContext.Current ?? new WindowsFormsSynchronizationContext();
     private Icon? _currentIcon;
     private float _refreshAnimationAngle;
     private bool _isExiting;
+    private bool _disposed;
     private bool _updateCheckRunning;
 
     public UsageApplicationContext(IEnumerable<IUsageClient> clients, AppSettings settings, bool profileExisted)
@@ -46,10 +50,17 @@ internal sealed class UsageApplicationContext : ApplicationContext
         AppSettings settings,
         bool showTrayIcon,
         bool enableAutomaticUpdateChecks = false,
-        bool profileExisted = false)
+        bool profileExisted = false,
+        Func<CancellationToken, Task<UpdateCheckResult>>? checkForUpdates = null,
+        Func<StartupState>? readStartup = null,
+        Action<bool>? writeStartup = null,
+        bool answerRelaunch = true)
     {
         _settings = settings;
         _automaticUpdateChecksEnabled = enableAutomaticUpdateChecks;
+        _checkForUpdates = checkForUpdates ?? UpdateChecker.CheckForUpdateAsync;
+        _readStartup = readStartup;
+        _writeStartup = writeStartup;
         _clients = clients.ToArray();
         Theme.Apply(_settings.Theme, _settings.WarningPercent, _settings.CriticalPercent);
         _upgradeNotice = UpgradeNotice.Create(
@@ -63,31 +74,18 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _service.AlertsRaised += OnAlertsRaised;
 
         _popup = new UsagePopupForm(_settings);
-        _popup.RefreshRequested += async (_, _) => await RefreshAsync(force: true);
+        _popup.RefreshRequested += async (_, _) => await RefreshRequestedByUserAsync();
+        _popup.ProviderRefreshRequested += async (_, eventArgs) => await RetryProviderAsync(eventArgs.Status.ProviderId);
         _popup.SettingsRequested += (_, _) => OpenSettings();
         PushStateToPopup();
 
-        _menu = new ContextMenuStrip
-        {
-            BackColor = Theme.Surface,
-            ForeColor = Theme.Text,
-            Renderer = CreateMenuRenderer(),
-            ShowImageMargin = false,
-            Padding = new Padding(4),
-        };
-        var openItem = new ToolStripMenuItem("Open")
-        {
-            Font = new Font(SystemFonts.MenuFont ?? SystemFonts.DefaultFont, FontStyle.Bold),
-        };
-        openItem.Click += (_, _) => OpenDashboard();
-        _menu.Items.Add(openItem);
-        _menu.Items.Add("Refresh", null, async (_, _) => await RefreshAsync(force: true));
-        _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add("Settings...", null, (_, _) => OpenSettings());
-        _menu.Items.Add(new ToolStripSeparator());
-        _menu.Items.Add("Exit", null, (_, _) => Exit());
+        _menu = TrayMenu.Create(
+            open: OpenDashboard,
+            refresh: () => _ = RefreshRequestedByUserAsync(),
+            settings: OpenSettings,
+            exit: Exit);
 
-        _currentIcon = TrayIconFactory.Create(0, "U");
+        _currentIcon = TrayIconFactory.Create(0);
         _trayIcon = new NotifyIcon
         {
             ContextMenuStrip = _menu,
@@ -99,7 +97,11 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _trayIcon.BalloonTipClicked += (_, _) => OpenDashboard();
 
         _messageWindow = new MessageWindow();
-        _messageWindow.ShowRequested += (_, _) => OpenDashboard();
+        if (answerRelaunch)
+        {
+            _messageWindow.ShowRequested += (_, _) => OpenDashboard();
+        }
+
         _messageWindow.HotkeyPressed += (_, _) => ToggleCompactPopup();
         ApplyHotkeySetting();
 
@@ -161,6 +163,28 @@ internal sealed class UsageApplicationContext : ApplicationContext
         await _service.RefreshAsync(force, _popup.Visible);
     }
 
+    /// <summary>
+    /// Raised when the user asks for a refresh from the popup or the tray menu, before it starts.
+    /// Refreshes after sleep, unlock or startup are forced too, so they cannot stand for this.
+    /// </summary>
+    internal event EventHandler? UserRefreshRequested;
+
+    private Task RefreshRequestedByUserAsync()
+    {
+        UserRefreshRequested?.Invoke(this, EventArgs.Empty);
+        return RefreshAsync(force: true);
+    }
+
+    private async Task RetryProviderAsync(string providerId)
+    {
+        if (_isExiting)
+        {
+            return;
+        }
+
+        await _service.RefreshProviderAsync(providerId, _popup.Visible);
+    }
+
     private void OnServiceUpdated(object? sender, EventArgs eventArgs) => RunOnUi(() =>
     {
         if (_isExiting)
@@ -217,8 +241,16 @@ internal sealed class UsageApplicationContext : ApplicationContext
         var connected = statuses.Where(status => status.Snapshot is not null).ToArray();
         if (connected.Length == 0)
         {
-            ReplaceIcon(TrayIconFactory.Create(100, "!", hasError: true));
+            ReplaceIcon(TrayIconFactory.Create(100, hasError: true));
             _trayIcon.Text = "UsageAI - no connected providers";
+            return;
+        }
+
+        if (ShowsAllProviders(_settings))
+        {
+            var tank = TankLevel(connected, _settings);
+            ReplaceIcon(TrayIconFactory.CreateTank(tank.UsedPercent, tank.FillPercent));
+            _trayIcon.Text = TrayTooltipAll(connected, _settings);
             return;
         }
 
@@ -226,7 +258,6 @@ internal sealed class UsageApplicationContext : ApplicationContext
         var usedPercent = TrayUsedPercent(trayStatus);
         ReplaceIcon(TrayIconFactory.Create(
             usedPercent,
-            ProviderGlyph(trayStatus.ProviderId),
             identityColor: Theme.ForProvider(trayStatus.ProviderId),
             fillPercent: TrayDisplayedPercent(trayStatus, _settings.QuotaDisplay) ?? 0));
         _trayIcon.Text = TrayTooltip(trayStatus, _settings.QuotaDisplay);
@@ -290,8 +321,11 @@ internal sealed class UsageApplicationContext : ApplicationContext
         using var dialog = new SettingsForm(
             _settings,
             _clients.Select(client => (client.Id, client.DisplayName)).ToArray(),
-            UpdateChecker.CheckForUpdateAsync,
-            PromptForUpdateAsync);
+            _checkForUpdates,
+            PromptForUpdateAsync,
+            readStartup: _readStartup,
+            writeStartup: _writeStartup,
+            popupGroups: PopupGroups(_service.Statuses));
         if (dialog.ShowDialog() != DialogResult.OK)
         {
             return;
@@ -316,6 +350,16 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
         _ = CheckForUpdatesIfDueAsync();
     }
+
+    /// <summary>The model groups each provider reported last, for Settings' popup-ring pickers.</summary>
+    internal static IReadOnlyDictionary<string, IReadOnlyList<string>> PopupGroups(IReadOnlyList<ProviderStatus> statuses) =>
+        statuses
+            .Where(status => status.Snapshot is not null)
+            .GroupBy(status => status.ProviderId, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(
+                group => group.Key,
+                group => PopupMetricSelection.Groups(group.First().Snapshot!.Metrics),
+                StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The settings that decide which providers are fetched and how often.</summary>
     internal static string PollingInputs(AppSettings settings) => string.Join(
@@ -390,17 +434,15 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private async Task PromptForUpdateAsync(UpdateRelease release)
     {
         var canInstall = release.Installer is not null && release.Checksum is not null;
-        var choice = MessageBox.Show(
+        var accepted = PromptDialog.Ask(
+            "UsageAI update",
+            $"UsageAI {release.Version} is available",
             canInstall
-                ? $"UsageAI {release.Version} is available. You are running {AppIdentity.Version}.\n\n" +
-                  "Download the verified installer and install it now?"
-                : $"UsageAI {release.Version} is available. You are running {AppIdentity.Version}.\n\n" +
-                  "The automatic installer is unavailable. Open the release page?",
-            "UsageAI update available",
-            MessageBoxButtons.YesNo,
-            MessageBoxIcon.Information,
-            MessageBoxDefaultButton.Button1);
-        if (choice != DialogResult.Yes || _isExiting)
+                ? $"You are running {AppIdentity.Version}. Download the verified installer and install it now?"
+                : $"You are running {AppIdentity.Version}. The automatic installer is unavailable, so the release page has the download.",
+            canInstall ? "Install update" : "Open release page",
+            "Later");
+        if (!accepted || _isExiting)
         {
             return;
         }
@@ -432,13 +474,14 @@ internal sealed class UsageApplicationContext : ApplicationContext
                 return;
             }
 
-            var openPage = MessageBox.Show(
-                $"{exception.Message}\n\nOpen the GitHub release page instead?",
+            var openPage = PromptDialog.Ask(
                 "UsageAI update",
-                MessageBoxButtons.YesNo,
-                MessageBoxIcon.Warning,
-                MessageBoxDefaultButton.Button1);
-            if (openPage == DialogResult.Yes)
+                "The update could not be installed",
+                $"{exception.Message} The GitHub release page has the installer to download by hand.",
+                "Open release page",
+                "Close",
+                PromptKind.Warning);
+            if (openPage)
             {
                 OpenReleasePage(release.ReleasePageUrl);
             }
@@ -457,11 +500,13 @@ internal sealed class UsageApplicationContext : ApplicationContext
         catch (Exception exception) when (exception is InvalidOperationException
                                               or System.ComponentModel.Win32Exception)
         {
-            MessageBox.Show(
-                "Windows could not open the UsageAI release page.",
+            PromptDialog.Ask(
                 "UsageAI update",
-                MessageBoxButtons.OK,
-                MessageBoxIcon.Warning);
+                "The release page did not open",
+                "Windows could not open the UsageAI release page in a browser.",
+                "OK",
+                declineText: null,
+                PromptKind.Warning);
         }
     }
 
@@ -497,17 +542,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         });
     }
 
-    private void ApplyMenuTheme()
-    {
-        _menu.BackColor = Theme.Surface;
-        _menu.ForeColor = Theme.Text;
-        _menu.Renderer = CreateMenuRenderer();
-        _menu.Invalidate(invalidateChildren: true);
-    }
-
-    private static ToolStripRenderer CreateMenuRenderer() => Theme.IsHighContrast
-        ? new ToolStripSystemRenderer()
-        : new ToolStripProfessionalRenderer(new DarkColorTable());
+    private void ApplyMenuTheme() => TrayMenu.ApplyTheme(_menu);
 
     private void RunOnUi(Action action)
     {
@@ -517,7 +552,17 @@ internal sealed class UsageApplicationContext : ApplicationContext
         }
         else
         {
-            _syncContext.Post(_ => action(), null);
+            // A provider can finish after the context is disposed — the app exiting mid-refresh —
+            // and its update must not reach the disposed tray icon and popup.
+            _syncContext.Post(
+                _ =>
+                {
+                    if (!_disposed)
+                    {
+                        action();
+                    }
+                },
+                null);
         }
     }
 
@@ -537,6 +582,8 @@ internal sealed class UsageApplicationContext : ApplicationContext
     {
         if (disposing)
         {
+            _disposed = true;
+            _isExiting = true;
             Application.Idle -= RefreshOnFirstIdle;
             SystemEvents.PowerModeChanged -= OnPowerModeChanged;
             SystemEvents.SessionSwitch -= OnSessionSwitch;
@@ -559,11 +606,98 @@ internal sealed class UsageApplicationContext : ApplicationContext
     }
 
     internal static string TrayTooltip(ProviderStatus status, QuotaDisplay display = QuotaDisplay.Used) => Trim(
-        $"UsageAI - {ShortProviderName(status.ProviderName)}: " +
+        $"UsageAI - {ShortProviderName(status)}: " +
         (TrayDisplayedPercent(status, display) is { } percent
-            ? $"{percent}% {(display == QuotaDisplay.Remaining ? "left" : "used")}"
+            ? $"{HighContrastCue(TrayUsedPercent(status))}{percent}% {(display == QuotaDisplay.Remaining ? "left" : "used")}"
             : "no metered limit"),
         MaximumTooltipLength);
+
+    /// <summary>
+    /// The "! " or "!! " High Contrast puts before a limit past the warning or critical
+    /// threshold, as the popup and dashboard do, since there the tray icon draws every status in
+    /// the same system colour.
+    /// </summary>
+    private static string HighContrastCue(int usedPercent) =>
+        Theme.IsHighContrast ? Theme.UsageCue(usedPercent) : string.Empty;
+
+    internal static bool ShowsAllProviders(AppSettings settings) =>
+        string.Equals(settings.TrayProviderId, AppSettings.AllProvidersTrayId, StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// The tooltip that lists every connected provider, one line each, with the limits its popup
+    /// tile draws ("Codex 10% | 22%"). A provider that would push the text past the shell's limit
+    /// is counted in a closing "+N more" line instead of being cut off mid-reading.
+    /// </summary>
+    internal static string TrayTooltipAll(IReadOnlyList<ProviderStatus> connected, AppSettings settings)
+    {
+        var lines = connected
+            .Where(status => status.Snapshot is not null)
+            .Select(status =>
+                $"{HighContrastCue(TrayRings(status, settings).Max(metric => metric.UsedPercent) ?? 0)}" +
+                $"{ShortProviderName(status)} {TrayReadings(status, settings)}")
+            .ToArray();
+        var text = "UsageAI";
+        for (var index = 0; index < lines.Length; index++)
+        {
+            var candidate = $"{text}\n{lines[index]}";
+            var later = lines.Length - index - 1;
+            var reserve = later > 0 ? $"\n+{later} more".Length : 0;
+            if (candidate.Length + reserve > MaximumTooltipLength)
+            {
+                return Trim($"{text}\n+{lines.Length - index} more", MaximumTooltipLength);
+            }
+
+            text = candidate;
+        }
+
+        return text;
+    }
+
+    /// <summary>
+    /// How full the logo's tank is when the tray lists every provider: the busiest limit the
+    /// tooltip shows sets the colour, and the tank holds that limit's used share — or, when
+    /// quotas show as remaining, what is left of it. With no metered limit the tank stays empty
+    /// rather than claiming 100% left.
+    /// </summary>
+    internal static (int UsedPercent, int FillPercent) TankLevel(
+        IReadOnlyList<ProviderStatus> connected,
+        AppSettings settings)
+    {
+        var busiest = connected
+            .Where(status => status.Snapshot is not null)
+            .SelectMany(status => TrayRings(status, settings))
+            .Max(metric => metric.UsedPercent);
+        if (busiest is not { } used)
+        {
+            return (0, 0);
+        }
+
+        used = Math.Clamp(used, 0, 100);
+        return (used, settings.QuotaDisplay == QuotaDisplay.Remaining ? 100 - used : used);
+    }
+
+    /// <summary>
+    /// The popup tile's rings, so the tooltip, the tank and the popup agree on which limits and
+    /// which model group matter.
+    /// </summary>
+    private static IReadOnlyList<UsageMetric> TrayRings(ProviderStatus status, AppSettings settings) =>
+        PopupMetricSelection.Select(status.Snapshot!.Metrics, settings.PopupMetricGroup(status.ProviderId)).Rings;
+
+    /// <summary>
+    /// The rings as figures. Remaining mode carries one trailing unit, as the editor Status Bar
+    /// does, and a provider without a metered limit says so rather than reading 0% or 100% left.
+    /// </summary>
+    private static string TrayReadings(ProviderStatus status, AppSettings settings)
+    {
+        var rings = TrayRings(status, settings);
+        if (rings.Count == 0)
+        {
+            return "no metered limit";
+        }
+
+        var readings = string.Join(" | ", rings.Select(metric => $"{metric.DisplayedPercent(settings.QuotaDisplay)}%"));
+        return settings.QuotaDisplay == QuotaDisplay.Remaining ? $"{readings} left" : readings;
+    }
 
     /// <summary>Drives tray selection and gauge colour, so both stay on what is used.</summary>
     internal static int TrayUsedPercent(ProviderStatus status) =>
@@ -609,28 +743,16 @@ internal sealed class UsageApplicationContext : ApplicationContext
             .FirstOrDefault();
     }
 
-    private static string ProviderGlyph(string providerId) => providerId.ToLowerInvariant() switch
+    /// <summary>The editor Status Bar's labels, so "Claude Code" reads as Claude in both.</summary>
+    private static string ShortProviderName(ProviderStatus status) => status.ProviderId.ToLowerInvariant() switch
     {
-        "claude" => "A",
-        "copilot" => "G",
-        _ => "C",
+        "codex" => "Codex",
+        "claude" => "Claude",
+        "copilot" => "Copilot",
+        "gemini" => "Gemini",
+        _ => status.ProviderName,
     };
-
-    private static string ShortProviderName(string providerName) =>
-        providerName.Equals("GitHub Copilot", StringComparison.OrdinalIgnoreCase) ? "Copilot" : providerName;
 
     private static string Trim(string value, int maximumLength) =>
         value.Length <= maximumLength ? value : value[..(maximumLength - 3)] + "...";
-
-    private sealed class DarkColorTable : ProfessionalColorTable
-    {
-        public override Color MenuItemSelected => Theme.SurfaceRaised;
-        public override Color MenuItemBorder => Theme.Hairline;
-        public override Color ToolStripDropDownBackground => Theme.Surface;
-        public override Color ImageMarginGradientBegin => Theme.Surface;
-        public override Color ImageMarginGradientMiddle => Theme.Surface;
-        public override Color ImageMarginGradientEnd => Theme.Surface;
-        public override Color SeparatorDark => Theme.Hairline;
-        public override Color SeparatorLight => Theme.Hairline;
-    }
 }
