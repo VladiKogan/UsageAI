@@ -231,6 +231,7 @@ internal sealed class SettingsForm : Form
             Margin = scale.Pad(0, 4, 0, 4),
         };
         _trayProvider.Items.Add(new ProviderEntry(string.Empty, "Automatic"));
+        _trayProvider.Items.Add(new ProviderEntry(AppSettings.AllProvidersTrayId, "All connected"));
 
         _providers = new CheckedListBox
         {
@@ -301,7 +302,7 @@ internal sealed class SettingsForm : Form
 
         AddSection("Providers");
         AddRow("Tray icon provider", _trayProvider);
-        AddSpan(CreateHint("Automatic follows the connected provider with the highest active primary usage."));
+        AddSpan(CreateHint("Automatic follows the connected provider with the highest active primary usage. All connected shows the UsageAI logo and lists every provider when you point at it."));
         AddSpan(CreateHint("Tick to show. Drag a provider to reorder it, or use Alt+Up / Alt+Down."));
         AddSpan(_providers);
         AddSpan(CreateOrderButtons(scale));

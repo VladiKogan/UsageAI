@@ -22,7 +22,7 @@ internal static class Program
             return;
         }
 
-        if (HasFlag(args, "--render-preview") || HasFlag(args, "--preview-window"))
+        if (HasFlag(args, "--render-preview") || HasFlag(args, "--preview-window") || HasFlag(args, "--preview-tray"))
         {
             // Previews open real windows, and some of their buttons write local state (Settings'
             // Delete recorded history). Point them at a throwaway folder before anything reads
@@ -39,6 +39,12 @@ internal static class Program
         if (HasFlag(args, "--preview-window"))
         {
             PreviewRenderer.ShowWindow(args);
+            return;
+        }
+
+        if (HasFlag(args, "--preview-tray"))
+        {
+            PreviewRenderer.ShowTray(args);
             return;
         }
 
@@ -100,6 +106,10 @@ internal static class Program
                                              (--states mixed for loading, stale and
                                              signed-out providers),
                                              without a tray icon or provider access.
+          UsageAI.exe --preview-tray [--theme light|dark] [--quota-display used|remaining]
+                                             Run the tray app on sample providers. Each
+                                             Refresh steps the readings calm, warning,
+                                             critical, so the tray icon can be filmed.
           UsageAI.exe --version              Print the application version.
           UsageAI.exe --help                 Show this help.
 

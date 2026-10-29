@@ -5646,8 +5646,8 @@ internal static class CoverageExpansionTests
         Equal(95, UsageApplicationContext.TrayUsedPercent(hotStatus));
         Equal(95, UsageApplicationContext.TrayDisplayedPercent(hotStatus, QuotaDisplay.Used));
         Equal(5, UsageApplicationContext.TrayDisplayedPercent(hotStatus, QuotaDisplay.Remaining));
-        Equal("UsageAI - Claude Code: 95% used", UsageApplicationContext.TrayTooltip(hotStatus));
-        Equal("UsageAI - Claude Code: 5% left", UsageApplicationContext.TrayTooltip(hotStatus, QuotaDisplay.Remaining));
+        Equal("UsageAI - Claude: 95% used", UsageApplicationContext.TrayTooltip(hotStatus));
+        Equal("UsageAI - Claude: 5% left", UsageApplicationContext.TrayTooltip(hotStatus, QuotaDisplay.Remaining));
         var balanceOnly = new ProviderStatus(
             "copilot",
             "GitHub Copilot",

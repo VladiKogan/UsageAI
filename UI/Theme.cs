@@ -26,6 +26,16 @@ internal static class Theme
 
     public static event EventHandler? Changed;
 
+    /// <summary>
+    /// The dark palette's signal and status colours, also used by surfaces that are dark whatever
+    /// the app theme, such as the logo tile in the tray.
+    /// </summary>
+    public static readonly Color DarkSignal = Color.FromArgb(96, 205, 255);
+
+    public static readonly Color DarkWarning = Color.FromArgb(232, 165, 75);
+
+    public static readonly Color DarkCritical = Color.FromArgb(240, 96, 90);
+
     public static bool IsDark { get; private set; } = true;
 
     public static bool IsHighContrast { get; private set; }
@@ -139,10 +149,10 @@ internal static class Theme
             TextSecondary = Color.FromArgb(214, 214, 210);
             Muted = Color.FromArgb(165, 166, 161);
             Faint = Color.FromArgb(150, 151, 146);
-            Signal = Color.FromArgb(96, 205, 255);
+            Signal = DarkSignal;
             Success = Color.FromArgb(143, 176, 142);
-            Warning = Color.FromArgb(232, 165, 75);
-            Critical = Color.FromArgb(240, 96, 90);
+            Warning = DarkWarning;
+            Critical = DarkCritical;
             WarningText = Color.FromArgb(242, 191, 114);
             CriticalText = Color.FromArgb(255, 138, 132);
             Codex = Color.FromArgb(110, 211, 180);
@@ -233,6 +243,9 @@ internal static class Theme
     /// comparing colours, because High Contrast gives every status the same colour.
     /// </summary>
     public static bool IsCriticalUsage(int usedPercent) => usedPercent >= _criticalPercent;
+
+    /// <summary>Whether a usage level is past the warning threshold, critical included.</summary>
+    public static bool IsWarningUsage(int usedPercent) => usedPercent >= _warningPercent;
 
     public static string UsageCue(int usedPercent) =>
         usedPercent >= _criticalPercent ? "!! " :

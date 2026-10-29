@@ -149,6 +149,67 @@ internal static class PreviewRenderer
     }
 
     /// <summary>
+    /// Runs the real tray app on the sample providers — tray icon, tooltip, popup, dashboard,
+    /// Settings and alerts — with no provider access, update check or startup registration. The
+    /// tray starts on All connected, and each Refresh the user asks for steps the readings to the
+    /// next <see cref="PreviewTrayStages"/> stage, so the tank can be filmed filling and changing
+    /// colour; automatic polls and the refreshes after sleep or unlock leave the stage alone. It
+    /// never answers a relaunch, which belongs to an installed copy. Exit in the tray menu ends it.
+    /// </summary>
+    public static void ShowTray(string[] args)
+    {
+        UseInvariantCulture();
+        var settings = PreviewSettings(args);
+        settings.TrayProviderId = AppSettings.AllProvidersTrayId;
+        var stages = new PreviewTrayStages(settings);
+        var (states, _, _) = SampleData(DateTimeOffset.Now);
+
+        // Staggered answers, so the spinner turns and providers land one at a time as they do live.
+        var clients = states
+            .Select((state, index) => new PreviewUsageClient(state, stages, TimeSpan.FromMilliseconds(400 + 300 * index)))
+            .ToArray();
+        using var context = new UsageApplicationContext(
+            clients,
+            settings,
+            showTrayIcon: true,
+            checkForUpdates: static _ => Task.FromResult(new UpdateCheckResult(true, null)),
+            readStartup: static () => new StartupState(StartupStatus.Enabled, null),
+            writeStartup: static _ => { },
+            answerRelaunch: false);
+        context.UserRefreshRequested += (_, _) => stages.Advance();
+        Application.Run(context);
+    }
+
+    /// <summary>The busiest metered limit in the sample data, which the tray stages scale from.</summary>
+    internal static int BusiestSample(IReadOnlyList<ProviderStatus> states) => states
+        .Where(state => state.Snapshot is not null)
+        .SelectMany(state => state.Snapshot!.Metrics)
+        .Where(metric => metric.HasQuota)
+        .Max(metric => metric.UsedPercent!.Value);
+
+    /// <summary>
+    /// <paramref name="snapshot"/> with every metered limit at <paramref name="share"/> of its
+    /// sample reading, up to 100%. A changed limit drops its usage text, which stated the
+    /// sample's figures.
+    /// </summary>
+    internal static UsageSnapshot Scale(UsageSnapshot snapshot, double share, DateTimeOffset fetchedAt) => snapshot with
+    {
+        FetchedAt = fetchedAt,
+        Metrics = snapshot.Metrics
+            .Select(metric =>
+            {
+                if (!metric.HasQuota)
+                {
+                    return metric;
+                }
+
+                var scaled = Math.Clamp((int)Math.Round(metric.UsedPercent!.Value * share), 0, 100);
+                return scaled == metric.UsedPercent ? metric : metric with { UsedPercent = scaled, UsageText = null };
+            })
+            .ToArray(),
+    };
+
+    /// <summary>
     /// The What's New window as an upgrade across up to the two newest bundled releases shows it:
     /// from the release before them, or from nothing when there are only two.
     /// </summary>
@@ -551,4 +612,71 @@ internal static class PreviewRenderer
         string.Equals(Program.ValueAfter(args, "--quota-display"), "remaining", StringComparison.OrdinalIgnoreCase)
             ? QuotaDisplay.Remaining
             : QuotaDisplay.Used;
+}
+
+/// <summary>
+/// The tray preview's script: the stage every sample provider reads at, which only a Refresh the
+/// user asks for advances. Each stage puts the busiest sample limit at a target taken from the
+/// current thresholds: calm, between warning and critical, then past critical. Thresholds changed
+/// in the preview's Settings therefore still produce all three states.
+/// </summary>
+internal sealed class PreviewTrayStages
+{
+    public const int Count = 3;
+
+    private readonly AppSettings _settings;
+
+    public PreviewTrayStages(AppSettings settings) => _settings = settings;
+
+    public int Stage { get; private set; }
+
+    /// <summary>The busiest limit's reading at the current stage.</summary>
+    public int Target => Targets(_settings.WarningPercent, _settings.CriticalPercent)[Stage];
+
+    public void Advance() => Stage = (Stage + 1) % Count;
+
+    /// <summary>Settings keep critical above warning, so the middle target lands between them.</summary>
+    internal static int[] Targets(int warningPercent, int criticalPercent) => new[]
+    {
+        Math.Max(1, warningPercent / 2),
+        (warningPercent + criticalPercent) / 2,
+        Math.Min(100, Math.Max(criticalPercent + 4, 94)),
+    };
+}
+
+/// <summary>
+/// One sample provider for the tray preview, reading at the current <see cref="PreviewTrayStages"/>
+/// stage. The sample is rebuilt on every poll, so its reset times stay ahead of the clock however
+/// long the preview runs.
+/// </summary>
+internal sealed class PreviewUsageClient : IUsageClient
+{
+    private readonly ProviderStatus _sample;
+    private readonly PreviewTrayStages _stages;
+    private readonly TimeSpan _latency;
+
+    public PreviewUsageClient(ProviderStatus sample, PreviewTrayStages stages, TimeSpan latency)
+    {
+        _sample = sample;
+        _stages = stages;
+        _latency = latency;
+    }
+
+    public string Id => _sample.ProviderId;
+
+    public string DisplayName => _sample.ProviderName;
+
+    public string SignInCommand => _sample.SignInCommand ?? _sample.ProviderId;
+
+    public Uri AccountUrl => _sample.AccountUrl ?? new Uri("https://example.com/");
+
+    public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default)
+    {
+        await Task.Delay(_latency, cancellationToken).ConfigureAwait(false);
+        var now = DateTimeOffset.Now;
+        var (states, _, _) = PreviewRenderer.SampleData(now);
+        var sample = states.First(state => state.ProviderId.Equals(Id, StringComparison.OrdinalIgnoreCase));
+        var share = (double)_stages.Target / PreviewRenderer.BusiestSample(states);
+        return PreviewRenderer.Scale(sample.Snapshot!, share, now);
+    }
 }

@@ -114,16 +114,77 @@ internal static class TrayIconFactory
             }
         }
 
-        var handle = bitmap.GetHicon();
-        try
+        return ToIcon(bitmap);
+    }
+
+    /// <summary>
+    /// Draws the UsageAI logo — a ring on a dark tile — with its tank filled to
+    /// <paramref name="fillPercent"/>. The water keeps the logo's cyan until
+    /// <paramref name="usedPercent"/> crosses the warning or critical threshold, and from there
+    /// the ring takes the same colour, so a spent quota shown as remaining (an empty tank) still
+    /// reads as critical. The tile is dark whatever the app theme, so the colours are the dark
+    /// palette's. Geometry matches scripts\render-logo.ps1 in its 48-unit tile, with a flat
+    /// waterline at every size, since a wave would read as a second level.
+    /// </summary>
+    public static Icon CreateTank(int usedPercent, int fillPercent, int size = 0)
+    {
+        var pixels = Math.Clamp(size <= 0 ? PreferredSize : size, 16, 64);
+        var small = pixels <= 24;
+        var ringRadius = small ? 15F : 14.5F;
+        var ringWidth = small ? 4.6F : 3.4F;
+        var waterRadius = small ? 10.2F : 10.6F;
+        var highContrast = Theme.IsHighContrast;
+        Color? status = highContrast ? null :
+            Theme.IsCriticalUsage(usedPercent) ? Theme.DarkCritical :
+            Theme.IsWarningUsage(usedPercent) ? Theme.DarkWarning :
+            null;
+        var water = highContrast ? SystemColors.Highlight : status ?? Theme.DarkSignal;
+        var ringColor = highContrast ? SystemColors.WindowText : status ?? Color.FromArgb(241, 241, 239);
+
+        using var bitmap = new Bitmap(pixels, pixels, PixelFormat.Format32bppArgb);
+        using (var graphics = Graphics.FromImage(bitmap))
         {
-            using var icon = Icon.FromHandle(handle);
-            return (Icon)icon.Clone();
+            graphics.SmoothingMode = SmoothingMode.AntiAlias;
+            graphics.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            graphics.Clear(Color.Transparent);
+            graphics.ScaleTransform(pixels / 48F, pixels / 48F);
+
+            using (var tile = DrawingHelpers.RoundedRectangle(new RectangleF(0, 0, 48, 48), 10.5F))
+            using (var tileBrush = new SolidBrush(highContrast ? SystemColors.Window : Color.FromArgb(31, 31, 31)))
+            {
+                graphics.FillPath(tileBrush, tile);
+            }
+
+            using (var ring = new Pen(ringColor, ringWidth))
+            {
+                graphics.DrawEllipse(ring, 24 - ringRadius, 24 - ringRadius, ringRadius * 2, ringRadius * 2);
+            }
+
+            var level = Math.Clamp(fillPercent, 0, 100) / 100F;
+            if (level > 0)
+            {
+                // The water is the circle below its waterline: an arc closed by the chord. A clip
+                // region would do the same unsmoothed, and a full tank came out an octagon.
+                using var tank = new GraphicsPath();
+                var bounds = new RectangleF(24 - waterRadius, 24 - waterRadius, waterRadius * 2, waterRadius * 2);
+                if (level >= 1)
+                {
+                    tank.AddEllipse(bounds);
+                }
+                else
+                {
+                    var drop = waterRadius - waterRadius * 2 * level;
+                    var theta = (float)(Math.Asin(drop / waterRadius) * 180 / Math.PI);
+                    tank.AddArc(bounds, theta, 180 - 2 * theta);
+                    tank.CloseFigure();
+                }
+
+                using var waterBrush = new SolidBrush(water);
+                graphics.FillPath(waterBrush, tank);
+            }
         }
-        finally
-        {
-            DestroyIcon(handle);
-        }
+
+        return ToIcon(bitmap);
     }
 
     public static Icon CreateRefreshing(float angleDegrees, int size = 0)
@@ -154,6 +215,11 @@ internal static class TrayIconFactory
             }
         }
 
+        return ToIcon(bitmap);
+    }
+
+    private static Icon ToIcon(Bitmap bitmap)
+    {
         var handle = bitmap.GetHicon();
         try
         {

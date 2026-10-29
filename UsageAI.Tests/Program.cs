@@ -46,6 +46,7 @@ internal static class Program
         ("settings content clears the fixed footer", TestSettingsScrollLayoutAsync),
         ("provider order and visibility", TestProviderOrderAsync),
         ("tray provider selection, tooltip, and empty icon", TestTrayProviderSelectionAsync),
+        ("tray preview steps sample providers on requested refreshes", TestTrayPreviewStagesAsync),
         ("usage history round trip", TestUsageHistoryAsync),
         ("snapshot cache round trip", TestSnapshotCacheAsync),
         ("burn-rate projection", TestForecastAsync),
@@ -1238,6 +1239,191 @@ internal static class Program
         return Task.CompletedTask;
     }
 
+    private static void TestAllProvidersTrayTooltip(DateTimeOffset now)
+    {
+        static ProviderStatus Status(string id, string name, params UsageMetric[] metrics) =>
+            new(id, name, new UsageSnapshot("Plan", metrics, DateTimeOffset.Now, id, name), null, false);
+
+        var codex = Status(
+            "codex",
+            "Codex",
+            new UsageMetric("Weekly", UsageMetricKind.Rolling, 22, now.AddDays(3), 10_080),
+            new UsageMetric("5-hour", UsageMetricKind.Session, 10, now.AddHours(2), 300));
+        var claude = Status(
+            "claude",
+            "Claude Code",
+            new UsageMetric("5-hour", UsageMetricKind.Session, 5, now.AddHours(2), 300),
+            new UsageMetric("Weekly", UsageMetricKind.Rolling, 40, now.AddDays(3), 10_080));
+        var copilot = Status(
+            "copilot",
+            "GitHub Copilot",
+            new UsageMetric("AI credits", UsageMetricKind.Monthly, 33, now.AddDays(3)),
+            new UsageMetric("Chat", UsageMetricKind.Monthly, 0, now.AddDays(3), IsUnlimited: true));
+        var gemini = Status(
+            "gemini",
+            "Gemini",
+            new UsageMetric("Gemini Models (5-hour)", UsageMetricKind.Session, 3, now.AddHours(1), 300),
+            new UsageMetric("Gemini Models (Weekly)", UsageMetricKind.Rolling, 7, now.AddDays(2), 10_080),
+            new UsageMetric("Claude and GPT models (5-hour)", UsageMetricKind.Session, 60, now.AddHours(1), 300),
+            new UsageMetric("Claude and GPT models (Weekly)", UsageMetricKind.Rolling, 30, now.AddDays(2), 10_080));
+        var credits = Status("credits", "Credits", new UsageMetric("Balance", UsageMetricKind.Balance, null));
+        var offline = new ProviderStatus("offline", "Offline", null, "Sign in", false);
+        var statuses = new[] { codex, claude, offline, copilot, gemini, credits };
+        var settings = new AppSettings { TrayProviderId = "ALL" };
+
+        // Each line carries the popup tile's rings under the editor Status Bar's label, shortest
+        // window first, and a multi-group provider reads its busiest group unless one is pinned.
+        True(UsageApplicationContext.ShowsAllProviders(settings));
+        Equal(
+            "UsageAI\nCodex 10% | 22%\nClaude 5% | 40%\nCopilot 33%\nGemini 60% | 30%\nCredits no metered limit",
+            UsageApplicationContext.TrayTooltipAll(statuses, settings));
+        Equal((60, 60), UsageApplicationContext.TankLevel(statuses, settings));
+        settings.SetPopupMetricGroup("gemini", "Gemini Models");
+        settings.QuotaDisplay = QuotaDisplay.Remaining;
+        Equal(
+            "UsageAI\nCodex 90% | 78% left\nClaude 95% | 60% left\nCopilot 67% left\nGemini 97% | 93% left\nCredits no metered limit",
+            UsageApplicationContext.TrayTooltipAll(statuses, settings));
+        Equal((40, 60), UsageApplicationContext.TankLevel(statuses, settings));
+        Equal((0, 0), UsageApplicationContext.TankLevel(new[] { credits }, settings));
+        False(UsageApplicationContext.ShowsAllProviders(new AppSettings { TrayProviderId = "codex" }));
+
+        // Providers that would overrun the shell's 127 characters are counted, never cut mid-line.
+        var crowded = Enumerable.Range(1, 12)
+            .Select(index => codex with { ProviderId = $"provider{index}", ProviderName = $"Provider {index}" })
+            .ToArray();
+        var tooltip = UsageApplicationContext.TrayTooltipAll(crowded, settings);
+        True(tooltip.Length <= 127);
+        var lines = tooltip.Split('\n');
+        Equal($"+{crowded.Length - (lines.Length - 2)} more", lines[^1]);
+        True(lines[1..^1].All(line => line.EndsWith("left", StringComparison.Ordinal)));
+
+        // The tank fills from the bottom and changes colour at the Settings thresholds.
+        Theme.Apply(ThemeMode.Dark, 72, 90);
+        static Color TankPixel(int used, int fill, double heightFraction)
+        {
+            using var icon = TrayIconFactory.CreateTank(used, fill, size: 32);
+            using var bitmap = icon.ToBitmap();
+            return bitmap.GetPixel(16, (int)(32 * heightFraction));
+        }
+
+        var tile = Color.FromArgb(31, 31, 31).ToArgb();
+        Equal(tile, TankPixel(0, 0, 0.5).ToArgb());
+        Equal(Color.FromArgb(96, 205, 255).ToArgb(), TankPixel(10, 25, 0.68).ToArgb());
+        Equal(tile, TankPixel(10, 25, 0.5).ToArgb());
+        Equal(Color.FromArgb(232, 165, 75).ToArgb(), TankPixel(80, 80, 0.5).ToArgb());
+        Equal(Color.FromArgb(240, 96, 90).ToArgb(), TankPixel(95, 95, 0.5).ToArgb());
+        Equal(Color.FromArgb(240, 96, 90).ToArgb(), TankPixel(95, 30, 0.68).ToArgb());
+        Equal(tile, TankPixel(95, 30, 0.5).ToArgb());
+
+        // The ring takes the status colour too, so a spent quota shown as remaining (an empty
+        // tank) still reads as critical rather than as the calm logo.
+        Equal(Color.FromArgb(241, 241, 239).ToArgb(), TankPixel(10, 25, 0.79).ToArgb());
+        Equal(Theme.DarkWarning.ToArgb(), TankPixel(80, 20, 0.79).ToArgb());
+        Equal(Theme.DarkCritical.ToArgb(), TankPixel(100, 0, 0.79).ToArgb());
+        using var small = TrayIconFactory.CreateTank(50, 50, size: 16);
+        True(small.Width == 16);
+
+        // High Contrast draws every status in one system colour, so the tooltips carry the
+        // popup's "!" and "!!" marks instead.
+        var hot = Status(
+            "claude",
+            "Claude Code",
+            new UsageMetric("5-hour", UsageMetricKind.Session, 95, now.AddHours(2), 300),
+            new UsageMetric("Weekly", UsageMetricKind.Rolling, 75, now.AddDays(3), 10_080));
+        var warm = Status("codex", "Codex", new UsageMetric("Weekly", UsageMetricKind.Rolling, 80, now.AddDays(3), 10_080));
+        var used = new AppSettings { TrayProviderId = AppSettings.AllProvidersTrayId };
+        Equal("UsageAI\nClaude 95% | 75%\nCodex 80%\nCopilot 33%", UsageApplicationContext.TrayTooltipAll(new[] { hot, warm, copilot }, used));
+        Theme.SetHighContrastProbe(static () => true);
+        try
+        {
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+            Equal(
+                "UsageAI\n!! Claude 95% | 75%\n! Codex 80%\nCopilot 33%",
+                UsageApplicationContext.TrayTooltipAll(new[] { hot, warm, copilot }, used));
+            Equal("UsageAI - Claude: !! 95% used", UsageApplicationContext.TrayTooltip(hot));
+            Equal("UsageAI - Copilot: 33% used", UsageApplicationContext.TrayTooltip(copilot));
+            Equal(SystemColors.Highlight.ToArgb(), TankPixel(95, 95, 0.5).ToArgb());
+        }
+        finally
+        {
+            Theme.SetHighContrastProbe(null);
+            Theme.Apply(ThemeMode.Dark, 72, 90);
+        }
+    }
+
+    private static async Task TestTrayPreviewStagesAsync()
+    {
+        Theme.Apply(ThemeMode.Dark, 72, 90);
+        var (states, _, _) = PreviewRenderer.SampleData(DateTimeOffset.Now);
+        var settings = new AppSettings { TrayProviderId = AppSettings.AllProvidersTrayId };
+        var stages = new PreviewTrayStages(settings);
+        var clients = states.Select(state => new PreviewUsageClient(state, stages, TimeSpan.Zero)).ToArray();
+
+        async Task<(int UsedPercent, int FillPercent)> Poll()
+        {
+            var polled = new List<ProviderStatus>();
+            foreach (var (client, state) in clients.Zip(states))
+            {
+                polled.Add(state with { Snapshot = await client.GetUsageAsync() });
+            }
+
+            return UsageApplicationContext.TankLevel(polled, settings);
+        }
+
+        // The preview starts calm and polls repeat the stage; each Refresh the user asks for steps
+        // to between warning and critical, then past critical, then round again.
+        var calm = await Poll();
+        Equal((36, 36), calm);
+        Equal(calm, await Poll());
+        False(Theme.IsWarningUsage(calm.UsedPercent));
+        stages.Advance();
+        var warning = await Poll();
+        Equal((81, 81), warning);
+        True(Theme.IsWarningUsage(warning.UsedPercent) && !Theme.IsCriticalUsage(warning.UsedPercent));
+        stages.Advance();
+        var critical = await Poll();
+        Equal((94, 94), critical);
+        True(Theme.IsCriticalUsage(critical.UsedPercent));
+        stages.Advance();
+        Equal(calm, await Poll());
+
+        // Stages follow thresholds changed in the preview's Settings, up to a full 100%.
+        settings.WarningPercent = 85;
+        settings.CriticalPercent = 98;
+        True(PreviewTrayStages.Targets(settings.WarningPercent, settings.CriticalPercent).SequenceEqual(new[] { 42, 91, 100 }));
+        stages.Advance();
+        stages.Advance();
+        Equal((100, 100), await Poll());
+        True(PreviewTrayStages.Targets(89, 90).SequenceEqual(new[] { 44, 89, 94 }));
+
+        // Each poll rebuilds the sample, so reset times stay ahead of the clock.
+        var polledAt = DateTimeOffset.Now;
+        True((await clients[1].GetUsageAsync()).Metrics.All(metric => metric.ResetsAt is not { } reset || reset > polledAt));
+
+        // Only a Refresh the user asks for raises the stepping event; sleep, unlock and startup
+        // refreshes are forced too, which is why the preview no longer steps on a forced refresh.
+        settings.GlobalHotkeyEnabled = false;
+        using (var context = new UsageApplicationContext(clients, settings, showTrayIcon: false, answerRelaunch: false))
+        {
+            var raised = 0;
+            context.UserRefreshRequested += (_, _) => raised++;
+            var menu = (ContextMenuStrip)typeof(UsageApplicationContext)
+                .GetField("_menu", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                .GetValue(context)!;
+            menu.Items.Cast<ToolStripItem>().First(item => item.Text == "Refresh").PerformClick();
+            Equal(1, raised);
+        }
+
+        // Only metered limits scale, and a scaled one drops usage text that stated sample figures.
+        var copilot = PreviewRenderer.Scale(states[2].Snapshot!, 0.5, DateTimeOffset.Now);
+        Equal(32, copilot.Metrics[0].UsedPercent);
+        Null(copilot.Metrics[0].UsageText);
+        Equal(states[2].Snapshot!.Metrics[1], copilot.Metrics[1]);
+        Equal("540 of 1,500 left", PreviewRenderer.Scale(states[2].Snapshot!, 1, DateTimeOffset.Now).Metrics[0].UsageText);
+        Equal("copilot", clients[2].SignInCommand);
+        True(clients[2].AccountUrl.Host.Length > 0);
+    }
+
     private static Task TestTrayProviderSelectionAsync()
     {
         var now = DateTimeOffset.Now;
@@ -1263,7 +1449,8 @@ internal static class Program
         Equal("codex", UsageApplicationContext.SelectTrayStatus(connected, "CODEX")!.ProviderId);
         Equal("claude", UsageApplicationContext.SelectTrayStatus(connected, "copilot")!.ProviderId);
         Null(UsageApplicationContext.SelectTrayStatus(Array.Empty<ProviderStatus>(), "codex"));
-        Equal("UsageAI - Claude Code: 80% used", UsageApplicationContext.TrayTooltip(claude));
+        Equal("UsageAI - Claude: 80% used", UsageApplicationContext.TrayTooltip(claude));
+        TestAllProvidersTrayTooltip(now);
 
         using var emptyIcon = TrayIconFactory.Create(
             0,
@@ -1946,7 +2133,7 @@ internal static class Program
         var competingStatus = new ProviderStatus("codex", "Codex", competingSnapshot, null, false);
         var statuses = new[] { status, competingStatus };
 
-        Equal("UsageAI - Claude Code: 8% used", UsageApplicationContext.TrayTooltip(status));
+        Equal("UsageAI - Claude: 8% used", UsageApplicationContext.TrayTooltip(status));
         Equal(8, UsageApplicationContext.TrayUsedPercent(status));
         Equal("codex", UsageApplicationContext.SelectTrayStatus(statuses, null)!.ProviderId);
         Equal("claude", UsageApplicationContext.SelectTrayStatus(statuses, "claude")!.ProviderId);

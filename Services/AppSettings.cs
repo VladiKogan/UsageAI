@@ -124,8 +124,14 @@ internal sealed class AppSettings
     public string[] ProviderOrder { get; set; } = Array.Empty<string>();
 
     /// <summary>
+    /// <see cref="TrayProviderId"/> value that lists every connected provider in the tray tooltip.
+    /// No single gauge stands for them all, so the tray then shows the UsageAI logo.
+    /// </summary>
+    public const string AllProvidersTrayId = "all";
+
+    /// <summary>
     /// Provider whose usage drives the tray gauge. Null means follow the connected provider
-    /// with the highest consumption.
+    /// with the highest consumption; <see cref="AllProvidersTrayId"/> lists them all.
     /// </summary>
     public string? TrayProviderId { get; set; }
 

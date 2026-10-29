@@ -74,6 +74,16 @@ npm.cmd run package:vsix
 
 **A tray icon that actually tells you something.** A ring that fills as you burn through your limit, the same gauge the popup draws. It stays one calm colour while you're fine, turns amber at your warning threshold (72% by default) and red at the critical one (90%), and shows `!` when no provider can be reached.
 
+**Or every provider at once.** Set the tray icon provider to **All connected** and the icon becomes the UsageAI logo, its tank filled to the busiest limit it lists and turning amber and red at the same thresholds. Point at it for one line per provider, the same limits the popup shows:
+
+```text
+UsageAI
+Codex 10% | 22%
+Claude 5% | 40%
+Copilot 33%
+Gemini 60% | 30%
+```
+
 **Every window each provider reports — not just one number.** Codex 5-hour, weekly, credits and reset credits. Claude 5-hour, weekly, weekly Opus and extra usage. Copilot AI credits or premium requests, chat and completions. Gemini model groups (Gemini Models, Claude and GPT models) or Cloud Code API quotas.
 
 **"At this pace, out by 15:20."** A burn-rate forecast for every limit, so you find out you're running hot *before* the wall, not after it.
@@ -99,6 +109,7 @@ npm.cmd run package:vsix
 | Do this | Get this |
 | --- | --- |
 | Left-click the tray icon | Compact view of every connected provider |
+| Point at the tray icon | Usage of the tray provider, or of every provider with **All connected** |
 | **Win+Alt+U** | Same thing, from anywhere |
 | Right-click ▸ **Open dashboard** | Full dashboard, all providers and metrics |
 | Right-click ▸ **Settings…** | Preferences |
@@ -185,7 +196,8 @@ The key is kept in memory, is never forwarded to provider CLI child processes, a
 - Which metrics the full dashboard shows: all reported metrics, metered limits only, or the most
   important Session, Rolling, and Monthly limit
 - Whether history is recorded, and whether the burn-rate forecast is shown
-- Which provider drives the tray icon (or let it follow whichever is running hottest), which providers appear, and in what order
+- Which provider drives the tray icon (or let it follow whichever is running hottest, or list
+  **All connected** in its tooltip), which providers appear, and in what order
 - Which model group the popup shows for a provider that reports several, such as Gemini
 - The global hotkey, and whether UsageAI starts with Windows
 - The installed desktop-app version, with manual **What's new** and **Check for updates** actions
@@ -284,6 +296,14 @@ dotnet run --project .\UsageAI.csproj -- --preview-window popup --theme dark --s
 ```
 
 `--preview-window` also takes `dashboard`, `settings`, `whatsnew`, `prompt`, `warning` and `menu`. In the popup and dashboard, **Refresh** alternates between two sets of readings, so the gauges have somewhere to move.
+
+**Film the tray** with the whole app running on sample providers — tray icon, tooltip, popup, dashboard, Settings and alerts, with no accounts, update checks or startup registration:
+
+```powershell
+dotnet run --project .\UsageAI.csproj -- --preview-tray --theme dark
+```
+
+The tray starts on **All connected** with every limit calm. Each **Refresh** steps the readings to between the warning and critical thresholds, then past critical, then back to calm, so the tank fills and changes colour on cue. The stages aim at whatever thresholds Settings holds, and automatic polls or a refresh after sleep never change them. Exit the installed copy first so there is one UsageAI icon, and drag the new icon out of the taskbar's overflow (`^`), where Windows puts every new tray icon. **Exit** in the tray menu ends the preview.
 
 **Build the portable executable:**
 

@@ -6,8 +6,41 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **The tray can list every connected provider when you point at it.** Choose **All connected**
+  under Settings → Providers → Tray icon provider and the tooltip shows one line per provider with
+  the limits its popup tile draws, shortest window first — `Codex 10% | 22%`, `Copilot 33%` — under
+  the same short names as the editor extension's Status Bar items. A multi-group provider such as
+  Gemini reads the same model group as its popup tile, **Show quota as: Remaining** adds one
+  trailing `left`, and a provider without a metered limit says so rather than reading 0% or 100%
+  left. Windows caps a tray tooltip at 127 characters, so providers that would overrun it are
+  counted in a closing `+N more` line rather than cut off mid-reading.
+- **In that mode the tray icon is the UsageAI logo, with its tank filled to the busiest limit it
+  lists.** No single provider's ring stands for every provider, so the logo's tank holds the
+  highest percentage the tooltip lists — or what is left of it when quotas show as remaining. Its
+  water and ring turn amber and then red at the Warning and Critical colour thresholds in
+  Settings; the ring changes too so that a spent quota shown as remaining, an empty tank, still
+  reads as critical. Under Windows High Contrast, which draws every status in one system colour,
+  the tooltip marks those limits with `!` and `!!` as the popup does, and the single-provider
+  tooltip now does the same. The tank is drawn live at the size the taskbar asks for with the
+  logo's own geometry, and the refresh spinner and the no-providers warning still replace it.
+- **`--preview-tray` runs the whole tray app on sample providers.** The other previews open one
+  window and never put an icon in the tray, so the tray icon, its tooltip and the alerts could only
+  be seen with real accounts at whatever usage they happened to report. This mode runs the real app
+  — tray, popup, dashboard, Settings and notifications — on four sample providers, with the update
+  check and startup registration stubbed and settings kept out of the user's profile. Each
+  **Refresh** from the popup or tray menu steps the readings from calm to between the warning and
+  critical thresholds, then past critical, and round again, aiming at whatever thresholds Settings
+  holds. Automatic polls and the refreshes after sleep or unlock leave the stage alone, the sample
+  reset times move with the clock, and the preview never answers a relaunch meant for an installed
+  copy, so a screenshot or a screen recording shows the tank change on cue.
+
 ### Changed
 
+- **The tray tooltip uses the editor extension's short provider names.** Claude Code reads as
+  "Claude" and Google Gemini as "Gemini", as on the extension's Status Bar, so a provider reads the
+  same on both sides.
 - **UsageAI has a new logo: a ring holding the quota that is left.** The old neon gradient ring
   and glowing spark blurred into a smudge at the 16 px taskbar and title-bar sizes, and its
   gradient-and-glow look read as a generic AI app rather than a usage meter. The new mark is a
