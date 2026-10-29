@@ -556,6 +556,19 @@ internal static class RedesignTests
         {
             Draw(walk);
             Equal("OpenAccount|Refresh|OpenAccount", string.Join('|', walk.Actions.Select(action => action.Action)));
+
+            // Focus arriving by Shift+Tab starts at the last action, walking back into the table.
+            UsageLedger.SetShiftProbe(static () => true);
+            try
+            {
+                Invoke(walk, "OnGotFocus", EventArgs.Empty);
+                Equal(2, Field<int>(walk, "_focusIndex"));
+            }
+            finally
+            {
+                UsageLedger.SetShiftProbe(static () => false);
+            }
+
             Invoke(walk, "OnGotFocus", EventArgs.Empty);
             Invoke(walk, "OnKeyDown", new KeyEventArgs(Keys.Tab));
             Invoke(walk, "OnKeyDown", new KeyEventArgs(Keys.Tab));
