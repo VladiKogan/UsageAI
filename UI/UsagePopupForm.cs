@@ -427,8 +427,32 @@ internal sealed class UsagePopupForm : Form
     /// </summary>
     internal (Rectangle Content, UsageLedger Table)? PreviewTable =>
         _content.Controls.OfType<UsageLedger>().FirstOrDefault() is { } table
-            ? (RectangleToClient(_contentFrame.RectangleToScreen(new Rectangle(Point.Empty, _contentFrame.Size))), table)
+            ? (PreviewContentArea(), table)
             : null;
+
+    /// <summary>
+    /// For the README preview: the content area, its background, and each tile with its bounds
+    /// in client coordinates, so the popup can be drawn whole even when Windows caps the window
+    /// at about the screen's height, as a 192-DPI render on a 768-pixel screen is. Null in the
+    /// dashboard.
+    /// </summary>
+    internal (Rectangle Content, int NaturalHeight, Color Background, (ProviderTile Tile, Rectangle Bounds)[] Tiles)? PreviewTiles =>
+        _content.Controls.OfType<ProviderTile>().ToArray() is { Length: > 0 } tiles
+            ? (PreviewContentArea(),
+                TilesHeight(tiles, Scale()),
+                _content.BackColor,
+                tiles.Select(tile => (tile, RectangleToClient(_content.RectangleToScreen(tile.Bounds)))).ToArray())
+            : null;
+
+    /// <summary>The height the compact popup's tiles fill: whole rows of two with a gap between.</summary>
+    private static int TilesHeight(ProviderTile[] tiles, LayoutScale scale)
+    {
+        var rows = (tiles.Length + CompactColumns - 1) / CompactColumns;
+        return (rows * tiles.Max(tile => tile.NaturalHeight)) + (scale[TileGap] * (rows - 1));
+    }
+
+    private Rectangle PreviewContentArea() =>
+        RectangleToClient(_contentFrame.RectangleToScreen(new Rectangle(Point.Empty, _contentFrame.Size)));
 
     public void CloseForExit()
     {
@@ -1032,9 +1056,7 @@ internal sealed class UsagePopupForm : Form
         var tiles = _content.Controls.OfType<ProviderTile>().ToArray();
         if (_mode == DashboardMode.Compact && tiles.Length > 0)
         {
-            var rows = (tiles.Length + CompactColumns - 1) / CompactColumns;
-            var tileHeight = tiles.Max(tile => tile.NaturalHeight);
-            contentHeight = (rows * tileHeight) + (scale[TileGap] * (rows - 1));
+            contentHeight = TilesHeight(tiles, scale);
         }
         else if (_content.Controls.OfType<UsageLedger>().FirstOrDefault() is { } ledger)
         {

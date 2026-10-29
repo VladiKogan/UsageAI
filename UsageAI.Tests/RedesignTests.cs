@@ -1654,6 +1654,23 @@ internal static class RedesignTests
 
         form.Hide();
 
+        // A view shorter than the minimum thumb, as at high scaling on a small screen, paints a
+        // thumb as long as its track instead of throwing from Math.Clamp mid-paint.
+        using (var shortForm = new Form { ShowInTaskbar = false, StartPosition = FormStartPosition.Manual, Location = new Point(-10_000, -10_000), ClientSize = new Size(300, 60) })
+        {
+            var shortPanel = new Panel { AutoScroll = true };
+            shortPanel.Controls.Add(new Panel { Bounds = new Rectangle(0, 0, 200, 4000) });
+            using var shortHost = new SlimScrollHost(shortPanel, dpiOverride: 480) { Dock = DockStyle.Fill };
+            shortForm.Controls.Add(shortHost);
+            shortForm.Show();
+            Application.DoEvents();
+            shortHost.Sync();
+            var shortThumb = shortHost.Bar.ThumbBounds;
+            True(shortThumb.Height > 0 && shortThumb.Bottom <= shortHost.Bar.Height);
+            Draw(shortHost.Bar);
+            shortForm.Hide();
+        }
+
         // What's New's notes are a rich text box, read and scrolled through its own scrollbar.
         var releases = ReleaseNotes.LoadBundled();
         using (var notes = new WhatsNewForm(ReleaseNotes.ForUpgrade(releases, releases[0].DisplayVersion, new Version(0, 0)), 96)

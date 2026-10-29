@@ -66,7 +66,7 @@ internal static class PreviewRenderer
         form.PerformLayout();
         using var window = new Bitmap(form.ClientSize.Width, form.ClientSize.Height);
         form.DrawToBitmap(window, form.ClientRectangle);
-        using var image = ComposeWholeTable(form, window);
+        using var image = isFull ? ComposeWholeTable(form, window) : ComposeAllTiles(form, window);
         image.SetResolution(previewDpi, previewDpi);
         image.Save(outputPath, System.Drawing.Imaging.ImageFormat.Png);
         form.Hide();
@@ -559,6 +559,54 @@ internal static class PreviewRenderer
         graphics.DrawImage(window, new Rectangle(0, content.Top, window.Width, table.Height), new Rectangle(0, content.Top, window.Width, 1), GraphicsUnit.Pixel);
         graphics.DrawImage(tableImage, content.Left, content.Top, tableImage.Width, tableImage.Height);
         graphics.DrawImage(window, new Rectangle(0, content.Bottom + extra, window.Width, below.Height), below, GraphicsUnit.Pixel);
+        return image;
+    }
+
+    /// <summary>
+    /// The compact popup at its full height. Windows caps a window at about the screen's height,
+    /// so on a small screen a high-DPI render came out short with its last tiles cut off; the
+    /// content area is extended by what the cap took, and every tile is drawn whole where the
+    /// layout put it. A popup that fits is copied as it is.
+    /// </summary>
+    private static Bitmap ComposeAllTiles(UsagePopupForm form, Bitmap window)
+    {
+        if (form.PreviewTiles is not ({ } content, var naturalHeight, var background, { } tiles))
+        {
+            return new Bitmap(window);
+        }
+
+        var extra = Math.Max(0, naturalHeight - content.Height);
+        if (extra == 0)
+        {
+            return new Bitmap(window);
+        }
+
+        var image = new Bitmap(window.Width, window.Height + extra);
+        using var graphics = Graphics.FromImage(image);
+        var aboveBottom = new Rectangle(0, 0, window.Width, content.Bottom);
+        var below = Rectangle.FromLTRB(0, content.Bottom, window.Width, window.Height);
+        graphics.DrawImage(window, aboveBottom, aboveBottom, GraphicsUnit.Pixel);
+
+        // The added band: the content's background, between the window's own sides.
+        using (var fill = new SolidBrush(background))
+        {
+            graphics.FillRectangle(fill, content.Left, content.Bottom, content.Width, extra);
+        }
+
+        var left = new Rectangle(0, content.Top, content.Left, 1);
+        var right = new Rectangle(content.Right, content.Top, window.Width - content.Right, 1);
+        graphics.DrawImage(window, new Rectangle(0, content.Bottom, left.Width, extra), left, GraphicsUnit.Pixel);
+        graphics.DrawImage(window, new Rectangle(right.Left, content.Bottom, right.Width, extra), right, GraphicsUnit.Pixel);
+        graphics.DrawImage(window, new Rectangle(0, content.Bottom + extra, window.Width, below.Height), below, GraphicsUnit.Pixel);
+
+        // Each tile whole, over the window's clipped copy of it.
+        foreach (var (tile, bounds) in tiles)
+        {
+            using var tileImage = new Bitmap(bounds.Width, bounds.Height);
+            tile.DrawToBitmap(tileImage, new Rectangle(Point.Empty, tileImage.Size));
+            graphics.DrawImage(tileImage, bounds.Location);
+        }
+
         return image;
     }
 

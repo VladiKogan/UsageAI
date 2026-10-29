@@ -3330,6 +3330,24 @@ internal static class CoverageExpansionTests
                 Equal(compact96.Height * 2, compact.Height);
             }
 
+            // Windows caps a window at about the screen's height, which cut a high-DPI popup short
+            // on a small screen; the render extends the content and draws every tile whole.
+            using (var capped = new UsagePopupForm(new AppSettings(), 96))
+            {
+                capped.ShowNearTray(DashboardMode.Compact);
+                capped.SetStates(PreviewRenderer.SampleData(DateTimeOffset.Now).States, false, DateTimeOffset.Now, Array.Empty<UsageSample>());
+                capped.ApplyPreferredSize(new Rectangle(0, 0, 4000, 4000));
+                var whole = capped.ClientSize;
+                capped.ClientSize = new Size(whole.Width, whole.Height - 120);
+                capped.Location = new Point(-30_000, -30_000);
+                Application.DoEvents();
+                using var window = new Bitmap(capped.ClientSize.Width, capped.ClientSize.Height);
+                capped.DrawToBitmap(window, capped.ClientRectangle);
+                using var composed = InvokePrivateStatic<Bitmap>(typeof(PreviewRenderer), "ComposeAllTiles", capped, window);
+                Equal(whole, composed.Size);
+                capped.Hide();
+            }
+
             var applicationAssembly = typeof(ProviderStatus).Assembly.Location;
             var applicationExecutable = Path.ChangeExtension(applicationAssembly, ".exe");
             True(File.Exists(applicationExecutable));

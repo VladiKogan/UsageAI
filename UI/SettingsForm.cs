@@ -652,9 +652,13 @@ internal sealed class SettingsForm : Form
             FlowDirection = FlowDirection.LeftToRight,
             Margin = scale.Pad(0, 0, 0, 6),
         };
+        // Spaced on the right, unlike a footer's right-aligned buttons: a left margin indented the
+        // row, and in a window squeezed onto a small screen neither button fit beside it.
         var up = CreateDialogButton("Move up", scale, primary: false);
+        up.Margin = scale.Pad(0, 0, 8, 0);
         up.Click += (_, _) => MoveSelected(-1);
         var down = CreateDialogButton("Move down", scale, primary: false);
+        down.Margin = Padding.Empty;
         down.Click += (_, _) => MoveSelected(1);
         panel.Controls.Add(up);
         panel.Controls.Add(down);

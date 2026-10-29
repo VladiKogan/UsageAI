@@ -387,7 +387,9 @@ internal sealed class SlimScrollHost : Control
                 var viewport = Math.Max(1, _host.ViewportHeight);
                 var inset = scale[3];
                 var track = Math.Max(1, Height - 2 * inset);
-                var length = Math.Clamp((int)Math.Round(track * (double)viewport / content), scale[24], track);
+                // A track shorter than the minimum thumb, as in a short view at high scaling, gets a
+                // thumb as long as the track; Clamp throws when its minimum passes its maximum.
+                var length = Math.Clamp((int)Math.Round(track * (double)viewport / content), Math.Min(scale[24], track), track);
                 var travel = Math.Max(0, track - length);
                 var maximum = Math.Max(1, content - viewport);
                 var top = inset + (int)Math.Round(travel * Math.Clamp(_host.Offset / (double)maximum, 0, 1));
