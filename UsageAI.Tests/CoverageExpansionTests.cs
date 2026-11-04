@@ -1967,13 +1967,14 @@ internal static class CoverageExpansionTests
         using (var document = JsonDocument.Parse(
                    """
                    {
-                     "fiveHour":{"utilization":0.25,"resetsAt":"not-a-date"},
+                     "fiveHour":{"utilization":1.0,"resetsAt":"not-a-date"},
                      "extraUsage":{"isEnabled":false}
                    }
                    """))
         {
             var snapshot = ClaudeCodeUsageClient.ParseSnapshot(document.RootElement);
-            Equal(25, snapshot.Primary!.UsedPercent);
+            // Utilization is a percentage: 1.0 is 1% used, not a fraction meaning 100%.
+            Equal(1, snapshot.Primary!.UsedPercent);
             Equal(1, snapshot.Metrics.Count);
         }
 

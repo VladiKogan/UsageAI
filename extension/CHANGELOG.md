@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Claude no longer reads 100% when a limit is only 1% used.** Anthropic reports utilization as
+  a percentage, but values up to 1 were taken for a fraction and multiplied by 100, so a fresh
+  5-hour window at 1% showed as full until it passed 1%.
+
 ### Changed
 
 - **The extension uses UsageAI's new logo: a ring holding the quota that is left.** The

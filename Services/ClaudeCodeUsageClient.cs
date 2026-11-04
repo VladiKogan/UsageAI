@@ -780,11 +780,9 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             : $"{used} / {FormatCurrency(limitCents.Value / 100, currency)}";
     }
 
-    private static int NormalizeUtilization(double utilization)
-    {
-        var percent = utilization > 0 && utilization <= 1 ? utilization * 100 : utilization;
-        return (int)Math.Round(Math.Clamp(percent, 0, 100), MidpointRounding.AwayFromZero);
-    }
+    // Anthropic reports utilization as a percentage (0-100), never a fraction: 1.0 means 1% used.
+    private static int NormalizeUtilization(double utilization) =>
+        (int)Math.Round(Math.Clamp(utilization, 0, 100), MidpointRounding.AwayFromZero);
 
     private static DateTimeOffset? ParseTimestamp(string? value) =>
         DateTimeOffset.TryParse(
