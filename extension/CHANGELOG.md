@@ -1,12 +1,6 @@
 # Changelog
 
-## Unreleased
-
-### Fixed
-
-- **Claude no longer reads 100% when a limit is only 1% used.** Anthropic reports utilization as
-  a percentage, but values up to 1 were taken for a fraction and multiplied by 100, so a fresh
-  5-hour window at 1% showed as full until it passed 1%.
+## 0.1.18
 
 ### Changed
 
@@ -34,6 +28,17 @@
   reaches `qs` through `typed-rest-client`, and 6.16.0 could throw from `qs.stringify` on crafted
   array elements (GHSA-6pq8-jhm2-2vcw). The fix sits inside the range `typed-rest-client` already
   allows, so only the lock file moves, and nothing in the published VSIX changes.
+- **The packaging tools pick up `@azure/msal-node` 7.1.2, clearing a high-severity advisory.**
+  `@vscode/vsce` reaches it through `@azure/identity`, and versions before 7.1.0 could disclose
+  authorization-code parameters to an attacker-controlled endpoint (GHSA-xcx6-jx8p-x3h5). The fix
+  sits inside the ranges already allowed, so only the lock file moves, and nothing in the published
+  VSIX changes.
+
+### Fixed
+
+- **Claude no longer reads 100% when a limit is only 1% used.** Anthropic reports utilization as
+  a percentage, but values up to 1 were taken for a fraction and multiplied by 100, so a fresh
+  5-hour window at 1% showed as full until it passed 1%.
 
 ## 0.1.17
 

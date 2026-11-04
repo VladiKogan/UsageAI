@@ -56,7 +56,7 @@ export async function requestJson<T = unknown>(
   const body = options.body;
   const headers: Record<string, string> = {
     Accept: "application/json",
-    "User-Agent": "UsageAI-VSCode/0.1.17",
+    "User-Agent": "UsageAI-VSCode/0.1.18",
     ...options.headers,
   };
   if (body !== undefined) {
