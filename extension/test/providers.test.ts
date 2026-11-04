@@ -293,7 +293,8 @@ test("provider parsers reject malformed data and preserve fallback semantics", (
   assert.throws(() => parseClaudeCredentials("{}"), /no OAuth access token/i);
 
   const camelCase = parseClaudeSnapshot({
-    fiveHour: { utilization: 0.5, resetsAt: "2030-01-01T00:00:00Z" },
+    // Utilization is a percentage: 1.0 is 1% used, not a fraction meaning 100%.
+    fiveHour: { utilization: 1.0, resetsAt: "2030-01-01T00:00:00Z" },
     limits: [
       null,
       { kind: "weekly_all", group: "monthly", percent: 90 },
@@ -303,7 +304,7 @@ test("provider parsers reject malformed data and preserve fallback semantics", (
     extraUsage: { isEnabled: true },
   }, "Claude Team");
   assert.deepEqual(camelCase.metrics.map((metric) => [metric.name, metric.usedPercent]), [
-    ["5-hour", 50],
+    ["5-hour", 1],
     ["Weekly", 25],
     ["Extra usage", null],
   ]);

@@ -2,6 +2,12 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Claude no longer reads 100% when a limit is only 1% used.** Anthropic reports utilization as
+  a percentage, but values up to 1 were taken for a fraction and multiplied by 100, so a fresh
+  5-hour window at 1% showed as full until it passed 1%.
+
 ### Changed
 
 - Google Gemini now reads usage from the `agy` server Google's Antigravity editor extension already
@@ -24,6 +30,10 @@
   PNG with transparent corners instead of a JPEG with a `.png` name, and the Activity Bar icon
   (`media/activity.svg`) is a one-colour version of it in place of the old dial, so the sidebar,
   the Marketplace listing and the tray app read as one product.
+- **The packaging tools pick up `qs` 6.17.1, clearing a medium-severity advisory.** `@vscode/vsce`
+  reaches `qs` through `typed-rest-client`, and 6.16.0 could throw from `qs.stringify` on crafted
+  array elements (GHSA-6pq8-jhm2-2vcw). The fix sits inside the range `typed-rest-client` already
+  allows, so only the lock file moves, and nothing in the published VSIX changes.
 
 ## 0.1.17
 

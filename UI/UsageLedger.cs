@@ -31,6 +31,8 @@ internal sealed class UsageLedger : Control
     private const int PaceColumnMinimumTableWidth = 540;
     private const int UsageDetailMinimumWidth = 220;
 
+    private static Func<bool> _shiftProbe = static () => (ModifierKeys & Keys.Shift) == Keys.Shift;
+
     private IReadOnlyList<Row> _rows;
     private QuotaDisplay _quotaDisplay;
     private readonly int? _dpiOverride;
@@ -210,9 +212,17 @@ internal sealed class UsageLedger : Control
         base.OnGotFocus(e);
         if (_actions.Count > 0)
         {
-            MoveFocus((ModifierKeys & Keys.Shift) == Keys.Shift ? _actions.Count - 1 : 0);
+            MoveFocus(_shiftProbe() ? _actions.Count - 1 : 0);
         }
     }
+
+    /// <summary>
+    /// Replaces the live Shift-key reading that decides whether focus arriving by Shift+Tab starts
+    /// at the last action; null restores it. The test harness pins it, since the real key state
+    /// belongs to whoever is at the machine, and a held Shift once failed a Tab-walk check.
+    /// </summary>
+    internal static void SetShiftProbe(Func<bool>? probe) =>
+        _shiftProbe = probe ?? (static () => (ModifierKeys & Keys.Shift) == Keys.Shift);
 
     protected override void OnLostFocus(EventArgs e)
     {
