@@ -127,7 +127,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         // retry agy immediately so a manual refresh can recover from sleep in one attempt.
         try
         {
-            return await GetGeminiCliUsageAsync(cancellationToken);
+            return (await GetGeminiCliUsageAsync(cancellationToken)) with { Source = "gemini-cli" };
         }
         catch (GeminiUsageException exception)
         {
@@ -169,8 +169,8 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
     internal static string CombinedError(bool agyInstalled, string geminiCliMessage)
     {
         var tried = agyInstalled
-            ? "The Antigravity IDE and `agy` returned no usage"
-            : "The Antigravity IDE returned no usage and `agy` is not installed";
+            ? "Antigravity (IDE or editor extension) and `agy` returned no usage"
+            : "Antigravity (IDE or editor extension) returned no usage and `agy` is not installed";
         var expired = geminiCliMessage == SignInAgainMessage;
         if (expired || geminiCliMessage == NotSignedInMessage)
         {
@@ -251,6 +251,16 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         IReadOnlyList<BoundAntigravityCandidate> candidates) =>
         Prioritize(candidates, _lastAnsweringCandidate);
 
+    /// <summary>
+    /// Antigravity IDE language servers first, as before; then editor-extension hubs; then hubs other
+    /// UsageAI instances started, which on a host without a shared sign-in are the signed-out ones.
+    /// This process's own hub child is already asked by the serving-hub short cut, so it is skipped.
+    /// </summary>
+    internal static IEnumerable<ProcessInfo> OrderCandidateProcesses(IEnumerable<ProcessInfo> processes, int? ownHubProcessId) =>
+        processes
+            .Where(process => process.HubPort is null || process.Pid != (uint?)ownHubProcessId)
+            .OrderBy(process => process.HubPort is null ? 0 : process.EditorHub ? 1 : 2);
+
     private static async Task<UsageSnapshot?> TryFetchAntigravityLocalSnapshotAsync(CancellationToken cancellationToken)
     {
         try
@@ -271,7 +281,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
                 Timeout = TimeSpan.FromSeconds(5),
             };
 
-            foreach (var proc in processes)
+            foreach (var proc in OrderCandidateProcesses(processes, AgyUsageProbe.OwnHubProcessId))
             {
                 foreach (var candidate in Prioritize(proc.GetBoundCandidates()))
                 {
@@ -284,15 +294,22 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
                         continue;
                     }
 
-                    var snapshot = await TryQueryAntigravityPortAsync(
-                        localClient,
-                        candidate.Port,
-                        candidate.Token,
-                        cancellationToken);
+                    var snapshot = candidate.Hub
+                        ? await AgyUsageProbe.TryQueryDiscoveredHubAsync(candidate.Port, candidate.Token, cancellationToken)
+                        : await TryQueryAntigravityPortAsync(
+                            localClient,
+                            candidate.Port,
+                            candidate.Token,
+                            cancellationToken);
                     if (snapshot is not null)
                     {
                         _lastAnsweringCandidate = candidate;
-                        return snapshot;
+                        return snapshot with
+                        {
+                            Source = !candidate.Hub ? "antigravity-ide"
+                                : proc.EditorHub ? "antigravity-extension-hub"
+                                : "usageai-hub",
+                        };
                     }
                 }
             }
@@ -1386,11 +1403,21 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             ? value
             : null;
 
+    /// <param name="HubPort">
+    /// Set for an <c>agy --hub</c>, which is queried over plain HTTP on exactly this port, never on its
+    /// other listening ports. Unset for an Antigravity IDE language server.
+    /// </param>
+    /// <param name="EditorHub">
+    /// The hub was started with <c>--app_data_dir</c>, as Google's Antigravity editor extension does.
+    /// UsageAI never passes it to its own hubs, so a hub without it belongs to another UsageAI instance.
+    /// </param>
     internal sealed record ProcessInfo(
         string CsrfToken,
         string? ExtensionServerCsrfToken,
         ushort? ExtensionPort,
-        uint? Pid)
+        uint? Pid,
+        ushort? HubPort = null,
+        bool EditorHub = false)
     {
         /// <summary>
         /// Command lines are fixed for the life of a process, so a language server that was
@@ -1457,6 +1484,9 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         internal static Dictionary<uint, long> FindLiveLanguageServers()
         {
             var live = new Dictionary<uint, long>();
+            // UsageAI's own hub is never a candidate, so it must not keep the "nothing running" short
+            // cut below from applying, or force a command-line query of its own.
+            var ownHub = AgyUsageProbe.OwnHubProcessId;
             Process[] processes;
             try
             {
@@ -1471,7 +1501,9 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             {
                 try
                 {
-                    if (process.ProcessName.Contains("language_server", StringComparison.OrdinalIgnoreCase))
+                    // agy is the backend Google's Antigravity editor extension runs as "agy --hub".
+                    if (process.ProcessName.Contains("language_server", StringComparison.OrdinalIgnoreCase) ||
+                        (process.ProcessName.Equals("agy", StringComparison.OrdinalIgnoreCase) && process.Id != ownHub))
                     {
                         // A process whose start time cannot be read still counts; it just
                         // cannot be cached across refreshes, so it re-queries each time.
@@ -1545,7 +1577,9 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
                 var startInfo = new ProcessStartInfo
                 {
                     FileName = powershellExe,
-                    Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command \"Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*language_server_windows*' -or $_.Name -like 'language_server.exe' } | ForEach-Object { \\\"$($_.ProcessId)`t$($_.CommandLine)\\\" }\"",
+                    // The WQL filter is evaluated by the provider: about 390 ms against about 700 ms for
+                    // listing every process and filtering it with Where-Object.
+                    Arguments = "-NoProfile -NonInteractive -ExecutionPolicy Bypass -Command " + CommandLineQuery,
                     UseShellExecute = false,
                     CreateNoWindow = true,
                     RedirectStandardOutput = true,
@@ -1561,37 +1595,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
                 var stdout = process.StandardOutput.ReadToEnd();
                 process.WaitForExit(3000);
 
-                var csrfRegex = new Regex(@"--csrf_token(?:\s+|\s*=\s*)(\S+)");
-                var extCsrfRegex = new Regex(@"--extension_server_csrf_token(?:\s+|\s*=\s*)(\S+)");
-                var portRegex = new Regex(@"--extension_server_port(?:\s+|\s*=\s*)(\S+)");
-
-                foreach (var line in stdout.Split('\n'))
-                {
-                    if (!line.Contains("--csrf_token"))
-                    {
-                        continue;
-                    }
-
-                    var parts = line.Split('\t', 2);
-                    uint? pid = parts.Length == 2 && uint.TryParse(parts[0].Trim(), out var p) ? p : null;
-                    var commandLine = parts.Length == 2 ? parts[1] : line;
-
-                    var csrfMatch = csrfRegex.Match(commandLine);
-                    if (!csrfMatch.Success)
-                    {
-                        continue;
-                    }
-
-                    var csrfToken = csrfMatch.Groups[1].Value;
-
-                    var extCsrfMatch = extCsrfRegex.Match(commandLine);
-                    var extCsrfToken = extCsrfMatch.Success ? extCsrfMatch.Groups[1].Value : null;
-
-                    var portMatch = portRegex.Match(commandLine);
-                    ushort? extPort = portMatch.Success && ushort.TryParse(portMatch.Groups[1].Value, out var portVal) ? portVal : null;
-
-                    list.Add(new ProcessInfo(csrfToken, extCsrfToken, extPort, pid));
-                }
+                list = ParseCommandLines(stdout);
             }
             catch
             {
@@ -1599,6 +1603,68 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             }
 
             return list;
+        }
+
+        /// <summary>
+        /// The PowerShell command, as one quoted argument: Antigravity IDE language servers and the
+        /// <c>agy</c> processes editor extensions run, as <c>pid`tcommand line</c> rows. Another user's
+        /// process comes back without a command line, so it can never become a candidate.
+        /// </summary>
+        internal const string CommandLineQuery =
+            "\"Get-CimInstance Win32_Process -Filter \\\"Name LIKE '%language_server%' OR Name = 'agy.exe'\\\" | ForEach-Object { \\\"$($_.ProcessId)`t$($_.CommandLine)\\\" }\"";
+
+        private static readonly Regex HubFlag = new(@"(?:^|\s)""?--hub(?:""|\s|$)", RegexOptions.CultureInvariant);
+
+        internal static List<ProcessInfo> ParseCommandLines(string stdout)
+        {
+            var list = new List<ProcessInfo>();
+            foreach (var line in stdout.Split('\n'))
+            {
+                if (!line.Contains("--csrf_token", StringComparison.Ordinal))
+                {
+                    continue;
+                }
+
+                var parts = line.TrimEnd('\r').Split('\t', 2);
+                uint? pid = parts.Length == 2 && uint.TryParse(parts[0].Trim(), out var p) ? p : null;
+                var commandLine = parts.Length == 2 ? parts[1] : line;
+                if (FlagValue(commandLine, "csrf_token") is not { } csrfToken)
+                {
+                    continue;
+                }
+
+                if (HubFlag.IsMatch(commandLine))
+                {
+                    // An editor extension's "agy --hub": usable only with the port it serves on. An agy
+                    // without --hub is a one-off run, an updater or an interactive session.
+                    if (ushort.TryParse(FlagValue(commandLine, "hub-port"), out var hubPort) && hubPort != 0)
+                    {
+                        list.Add(new ProcessInfo(csrfToken, null, null, pid, hubPort, FlagValue(commandLine, "app_data_dir") is not null));
+                    }
+
+                    continue;
+                }
+
+                if (!commandLine.Contains("language_server", StringComparison.OrdinalIgnoreCase))
+                {
+                    continue;
+                }
+
+                var extCsrfToken = FlagValue(commandLine, "extension_server_csrf_token");
+                ushort? extPort = ushort.TryParse(FlagValue(commandLine, "extension_server_port"), out var portVal) ? portVal : null;
+                list.Add(new ProcessInfo(csrfToken, extCsrfToken, extPort, pid));
+            }
+
+            return list;
+        }
+
+        private static string? FlagValue(string commandLine, string flag)
+        {
+            var match = Regex.Match(
+                commandLine,
+                @"(?:^|\s)""?--" + Regex.Escape(flag) + @"(?:\s+|\s*=\s*)""?([^\s""]+)",
+                RegexOptions.CultureInvariant);
+            return match.Success ? match.Groups[1].Value : null;
         }
 
         public IReadOnlyList<BoundAntigravityCandidate> GetBoundCandidates() =>
@@ -1617,10 +1683,12 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             }
 
             var tokens = GetCandidateTokens();
+            // A hub serves only on the port its command line names; its other sockets are not the API.
             return pidOwnedPorts
                 .Distinct()
+                .Where(port => HubPort is not { } hubPort || port == hubPort)
                 .SelectMany(port => tokens.Select(token =>
-                    new BoundAntigravityCandidate(pid, port, token)))
+                    new BoundAntigravityCandidate(pid, port, token, HubPort is not null)))
                 .ToArray();
         }
 
@@ -1666,7 +1734,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             ListeningPortTable.ForProcess(pid);
     }
 
-    internal sealed record BoundAntigravityCandidate(uint Pid, ushort Port, string Token);
+    internal sealed record BoundAntigravityCandidate(uint Pid, ushort Port, string Token, bool Hub = false);
 
     private sealed record OAuthClientCredentials(string ClientId, string ClientSecret);
 

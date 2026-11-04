@@ -100,13 +100,19 @@ internal sealed record UsageMetric(
     public string Key => $"{Kind}:{Name}";
 }
 
+/// <param name="Source">
+/// Which retrieval path produced the reading, for providers with more than one, such as Gemini's
+/// <c>antigravity-ide</c>, <c>antigravity-extension-hub</c>, <c>usageai-hub</c>, <c>agy-print</c> and
+/// <c>gemini-cli</c>. It appears in <c>--diagnose</c> output only and is never shown in the UI.
+/// </param>
 internal sealed record UsageSnapshot(
     string Plan,
     IReadOnlyList<UsageMetric> Metrics,
     DateTimeOffset FetchedAt,
     string ProviderId = "codex",
     string ProviderName = "Codex",
-    string? AccountName = null)
+    string? AccountName = null,
+    string? Source = null)
 {
     private static readonly JsonSerializerOptions DiagnosticJsonOptions = new()
     {

@@ -1,6 +1,6 @@
 import type { ChildProcessWithoutNullStreams } from "node:child_process";
 import { randomUUID } from "node:crypto";
-import { access, readdir } from "node:fs/promises";
+import { access, readdir, readFile, readlink } from "node:fs/promises";
 import { createServer } from "node:net";
 import * as path from "node:path";
 import { UsageProviderError } from "../errors";
@@ -53,8 +53,8 @@ interface GeminiUsageDependencies {
  */
 export function combinedGeminiError(agyInstalled: boolean, geminiCliMessage: string): string {
   const tried = agyInstalled
-    ? "The Antigravity IDE and `agy` returned no usage"
-    : "The Antigravity IDE returned no usage and `agy` is not installed";
+    ? "Antigravity (IDE or editor extension) and `agy` returned no usage"
+    : "Antigravity (IDE or editor extension) returned no usage and `agy` is not installed";
   const expired = geminiCliMessage === signInAgainMessage;
   if (expired || geminiCliMessage === notSignedInMessage) {
     // Only the Gemini CLI is known to be signed out: agy may be signed in but slow or backing off,
@@ -74,12 +74,37 @@ export interface AntigravityProcess {
   readonly pid: number;
   readonly tokens: readonly string[];
   readonly hintedPort?: number;
+  /**
+   * Set for an `agy --hub` an editor extension runs: it is queried over plain HTTP on exactly this
+   * port, never on its other listening ports. Unset for an Antigravity IDE language server.
+   */
+  readonly hubPort?: number;
+  /**
+   * The hub was started with `--app_data_dir`, as Google's Antigravity editor extension does. UsageAI
+   * never passes it to its own hubs, so a hub without it belongs to another UsageAI instance: still
+   * usable, but tried last, since on a host without a shared sign-in it is the signed-out one.
+   */
+  readonly editorHub?: boolean;
+}
+
+/** The candidate that answered last, so a later refresh can skip the process listing. */
+export interface AntigravityCandidate {
+  readonly pid: number;
+  readonly port: number;
+  readonly token: string;
+  readonly hub: boolean;
 }
 
 export interface AntigravityProbeDependencies {
   readonly detectProcesses: () => Promise<readonly AntigravityProcess[]>;
   readonly listeningPorts: (pid: number) => Promise<readonly number[]>;
   readonly query: (port: number, token: string, signal?: AbortSignal) => Promise<UsageSnapshot | undefined>;
+  /** Queries an editor extension's hub. Without it, hub candidates are skipped. */
+  readonly queryHub?: (port: number, token: string, signal?: AbortSignal) => Promise<UsageSnapshot | undefined>;
+  /** UsageAI's own hub child, which the serving-hub short cut already asks; it is never a candidate. */
+  readonly ownHubPid?: () => number | undefined;
+  /** Where the last answering candidate is remembered; the default lives for the session. */
+  readonly memory?: { last?: AntigravityCandidate | undefined };
 }
 
 export class GeminiUsageClient implements UsageClient {
@@ -377,20 +402,58 @@ export function parseAntigravityUserStatus(root: unknown): UsageSnapshot | undef
   };
 }
 
+const antigravityMemory: { last?: AntigravityCandidate | undefined } = {};
+
 export async function tryFetchAntigravitySnapshot(
   signal?: AbortSignal,
   dependencies: AntigravityProbeDependencies = {
     detectProcesses: detectAntigravityProcesses,
     listeningPorts,
     query: queryAntigravity,
+    queryHub: queryDiscoveredHub,
+    ownHubPid: () => activeHub?.child.pid,
+    memory: antigravityMemory,
   },
 ): Promise<UsageSnapshot | undefined> {
+  const ask = (candidate: AntigravityCandidate) =>
+    (candidate.hub ? dependencies.queryHub : dependencies.query)?.(candidate.port, candidate.token, signal);
   try {
-    for (const processInfo of await dependencies.detectProcesses()) {
+    // The candidate that answered last skips the process listing, which costs a PowerShell child
+    // on Windows. Its token came from that pid's command line, which cannot change while the
+    // process lives, and ownership is still re-read right before the token is sent.
+    const remembered = dependencies.memory?.last;
+    if (remembered) {
+      if ((await dependencies.listeningPorts(remembered.pid)).includes(remembered.port)) {
+        const snapshot = await ask(remembered);
+        if (snapshot) {
+          return snapshot;
+        }
+      }
+      if (dependencies.memory) {
+        dependencies.memory.last = undefined;
+      }
+    }
+
+    const ownHub = dependencies.ownHubPid?.();
+    // Antigravity IDE language servers first, as before; then editor-extension hubs; then hubs other
+    // UsageAI instances started.
+    const rank = (processInfo: AntigravityProcess) =>
+      processInfo.hubPort === undefined ? 0 : processInfo.editorHub ? 1 : 2;
+    const processes = [...await dependencies.detectProcesses()]
+      .filter((processInfo) => processInfo.pid !== ownHub && (processInfo.hubPort === undefined || dependencies.queryHub))
+      .sort((left, right) => rank(left) - rank(right));
+    for (const processInfo of processes) {
+      const hub = processInfo.hubPort !== undefined;
       const ownedPorts = await dependencies.listeningPorts(processInfo.pid);
-      const ports = processInfo.hintedPort && ownedPorts.includes(processInfo.hintedPort)
-        ? [processInfo.hintedPort, ...ownedPorts.filter((port) => port !== processInfo.hintedPort)]
-        : ownedPorts;
+      const ports = hub
+        // A hub serves only on the port its command line names; its other sockets are not the API.
+        ? ownedPorts.filter((port) => port === processInfo.hubPort)
+        : processInfo.hintedPort && ownedPorts.includes(processInfo.hintedPort)
+          ? [processInfo.hintedPort, ...ownedPorts.filter((port) => port !== processInfo.hintedPort)]
+          : ownedPorts;
+      if (ports.length === 0) {
+        continue;
+      }
       // Ownership is re-read after the candidate list is built and before any token is sent, so
       // a port the process has released in between is never handed a CSRF token. Here that is
       // one `netstat` child process per language server: the desktop re-reads per candidate
@@ -402,8 +465,12 @@ export async function tryFetchAntigravitySnapshot(
           continue;
         }
         for (const token of processInfo.tokens) {
-          const snapshot = await dependencies.query(port, token, signal);
+          const candidate = { pid: processInfo.pid, port, token, hub };
+          const snapshot = await ask(candidate);
           if (snapshot) {
+            if (dependencies.memory) {
+              dependencies.memory.last = candidate;
+            }
             return snapshot;
           }
         }
@@ -552,11 +619,18 @@ async function reserveLoopbackPort(): Promise<number | undefined> {
   });
 }
 
+/**
+ * A hub fetches the quota summary from Google on its first request and caches it: measured against
+ * an editor extension's cold hub, that first call took 1.4 s once and passed 5 s once, then 1-2 ms.
+ */
+export const hubQuotaSummaryTimeoutMs = 15_000;
+
 async function requestHub<T = unknown>(
   port: number,
   token: string,
   method: string,
   signal?: AbortSignal,
+  timeoutMs = 5_000,
 ): Promise<T | undefined> {
   try {
     const response = await requestJson<T>(
@@ -565,7 +639,7 @@ async function requestHub<T = unknown>(
         method: "POST",
         allowedHosts: ["127.0.0.1"],
         allowLoopbackPlaintext: true,
-        timeoutMs: 5_000,
+        timeoutMs,
         headers: {
           "Connect-Protocol-Version": "1",
           "X-Codeium-Csrf-Token": token,
@@ -586,13 +660,33 @@ async function queryHubQuotaSummary(
   port: number,
   token: string,
   signal?: AbortSignal,
+  timeoutMs?: number,
 ): Promise<readonly UsageMetric[] | undefined> {
-  const data = await requestHub(port, token, "RetrieveUserQuotaSummary", signal);
+  const data = await requestHub(port, token, "RetrieveUserQuotaSummary", signal, timeoutMs);
   if (data === undefined) {
     return undefined;
   }
   const metrics = parseAntigravityQuotaSummary(data);
   return metrics.length > 0 ? metrics : undefined;
+}
+
+/**
+ * An editor extension's `agy --hub`, found by the Antigravity probe. Unlike UsageAI's own hub it may
+ * be cold, so this follows the IDE probe: the fast `GetUserStatus` is required, and the quota summary
+ * gets a longer wait and is merged when it answers. Without it this refresh still returns the status
+ * reading rather than falling through to starting a second hub; the next one gets the cached summary.
+ */
+export async function queryDiscoveredHub(
+  port: number,
+  token: string,
+  signal?: AbortSignal,
+): Promise<UsageSnapshot | undefined> {
+  const status = parseAntigravityUserStatus(await requestHub(port, token, "GetUserStatus", signal));
+  if (!status) {
+    return undefined;
+  }
+  const summary = await queryHubQuotaSummary(port, token, signal, hubQuotaSummaryTimeoutMs);
+  return summary ? { ...status, metrics: mergeQuotaSummary(status.metrics, summary) } : status;
 }
 
 /**
@@ -984,23 +1078,54 @@ async function detectAntigravityProcesses(): Promise<AntigravityProcess[]> {
     } catch {
       powershell = await findExecutable(["powershell.exe"]) ?? preferred;
     }
-    const script = "Get-CimInstance Win32_Process | Where-Object { $_.Name -like '*language_server_windows*' -or $_.Name -like 'language_server.exe' } | ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }";
-    const result = await collectProcessOutput(spawnSecure(powershell, ["-NoProfile", "-NonInteractive", "-Command", script]), 3_000, 262_144);
+    const result = await collectProcessOutput(
+      spawnSecure(powershell, ["-NoProfile", "-NonInteractive", "-Command", antigravityProcessQuery]),
+      3_000,
+      262_144,
+    );
     return parseAntigravityProcessLines(result.stdout);
   }
 
   const ps = await findExecutable(["ps"]);
-  if (!ps) {
+  if (!ps || typeof process.getuid !== "function") {
     return [];
   }
-  const result = await collectProcessOutput(spawnSecure(ps, ["-ax", "-ww", "-o", "pid=,command="]), 3_000, 262_144);
-  return parseAntigravityProcessLines(result.stdout);
+  const result = await collectProcessOutput(spawnSecure(ps, ["-ax", "-ww", "-o", "uid=,pid=,command="]), 3_000, 262_144);
+  return parseAntigravityProcessLines(ownProcessLines(result.stdout, process.getuid()));
+}
+
+/**
+ * One CIM query for both kinds of candidate. The WQL `-Filter` is evaluated by the provider, which
+ * measured about 390 ms against about 700 ms for listing every process and filtering it with
+ * `Where-Object`. Other users' processes come back without a command line, so they never qualify.
+ */
+export const antigravityProcessQuery =
+  "Get-CimInstance Win32_Process -Filter \"Name LIKE '%language_server%' OR Name = 'agy.exe'\" | ForEach-Object { \"$($_.ProcessId)`t$($_.CommandLine)\" }";
+
+/**
+ * Keeps the `pid command` part of `ps -o uid=,pid=,command=` rows owned by `uid`. `ps -ax` lists every
+ * user's processes, and on a shared host another user could run a look-alike that would otherwise
+ * feed UsageAI made-up quota data.
+ */
+export function ownProcessLines(stdout: string, uid: number): string {
+  const lines: string[] = [];
+  for (const line of stdout.split(/\r?\n/)) {
+    const match = line.match(/^\s*(\d+)\s+(\d+\s+.*)$/);
+    if (match?.[1] && match[2] && Number(match[1]) === uid) {
+      lines.push(match[2]);
+    }
+  }
+  return lines.join("\n");
+}
+
+function flagValue(command: string, flag: string): string | undefined {
+  return command.match(new RegExp(`(?:^|\\s)"?--${flag}(?:\\s+|\\s*=\\s*)"?([^\\s"]+)`))?.[1];
 }
 
 export function parseAntigravityProcessLines(stdout: string): AntigravityProcess[] {
   const results: AntigravityProcess[] = [];
   for (const line of stdout.split(/\r?\n/)) {
-    if (!/language_server/i.test(line) || !line.includes("--csrf_token")) {
+    if (!line.includes("--csrf_token")) {
       continue;
     }
     const match = line.match(/^\s*(\d+)\s+(.*)$/);
@@ -1009,12 +1134,24 @@ export function parseAntigravityProcessLines(stdout: string): AntigravityProcess
     }
     const pid = Number(match[1]);
     const command = match[2];
-    const csrf = command.match(/--csrf_token(?:\s+|\s*=\s*)(\S+)/)?.[1];
-    const extensionCsrf = command.match(/--extension_server_csrf_token(?:\s+|\s*=\s*)(\S+)/)?.[1];
-    const hintedPort = Number(command.match(/--extension_server_port(?:\s+|\s*=\s*)(\d+)/)?.[1]);
-    const tokens = [...new Set([extensionCsrf, csrf].filter((value): value is string => Boolean(value)))];
-    if (Number.isInteger(pid) && pid > 0 && tokens.length > 0) {
-      results.push({ pid, tokens, ...(Number.isInteger(hintedPort) && hintedPort > 0 ? { hintedPort } : {}) });
+    if (!Number.isInteger(pid) || pid <= 0) {
+      continue;
+    }
+    const csrf = flagValue(command, "csrf_token");
+    if (/(?:^|\s)"?--hub(?:"|\s|$)/.test(command)) {
+      // An editor extension's `agy --hub`: usable only with the port it serves on. An `agy` without
+      // `--hub` is a one-off run or an interactive session, not a server.
+      const hubPort = Number(flagValue(command, "hub-port"));
+      if (csrf && validPort(hubPort)) {
+        results.push({ pid, tokens: [csrf], hubPort, editorHub: flagValue(command, "app_data_dir") !== undefined });
+      }
+    } else if (/language_server/i.test(command)) {
+      const extensionCsrf = flagValue(command, "extension_server_csrf_token");
+      const hintedPort = Number(flagValue(command, "extension_server_port"));
+      const tokens = [...new Set([extensionCsrf, csrf].filter((value): value is string => Boolean(value)))];
+      if (tokens.length > 0) {
+        results.push({ pid, tokens, ...(validPort(hintedPort) ? { hintedPort } : {}) });
+      }
     }
     if (results.length >= 16) {
       break;
@@ -1081,6 +1218,13 @@ async function listeningPorts(pid: number): Promise<number[]> {
       return [];
     }
   }
+  if (process.platform === "linux") {
+    try {
+      return await procListeningPorts(pid);
+    } catch {
+      // The socket tables are unreadable (an unusual mount or sandbox): try lsof below.
+    }
+  }
   const lsof = await findExecutable(["lsof"]);
   if (!lsof) {
     return [];
@@ -1095,6 +1239,82 @@ async function listeningPorts(pid: number): Promise<number[]> {
   } catch {
     return [];
   }
+}
+
+/**
+ * LISTEN sockets from `/proc/net/tcp` or `/proc/net/tcp6`, keyed by socket inode. Columns:
+ * `sl local_address rem_address st ... uid timeout inode`, addresses as hex `ip:port`, `0A` is LISTEN.
+ */
+export function parseProcNetListeners(text: string): Map<string, number> {
+  const listeners = new Map<string, number>();
+  for (const line of text.split(/\r?\n/).slice(1)) {
+    const columns = line.trim().split(/\s+/);
+    if (columns.length < 10 || columns[3] !== "0A") {
+      continue;
+    }
+    const port = parseInt(columns[1]?.split(":")[1] ?? "", 16);
+    const inode = columns[9];
+    if (validPort(port) && inode && inode !== "0") {
+      listeners.set(inode, port);
+    }
+  }
+  return listeners;
+}
+
+/** The file-system calls `procListeningPorts` makes, so tests can supply a fake `/proc`. */
+export interface ProcFileSystem {
+  readonly readFile: (path: string) => Promise<string>;
+  readonly readdir: (path: string) => Promise<readonly string[]>;
+  readonly readlink: (path: string) => Promise<string>;
+}
+
+const realProc: ProcFileSystem = {
+  readFile: (file) => readFile(file, "utf8"),
+  readdir: (directory) => readdir(directory),
+  readlink: (link) => readlink(link),
+};
+
+/**
+ * Linux ports a pid listens on, read straight from `/proc`: no tool to spawn, and it works on
+ * servers without `lsof`, where the probe used to find nothing. Throws only when neither socket table
+ * can be read, so the caller can try `lsof` instead. A pid whose descriptors cannot be listed, such as
+ * another user's or one that just exited, owns nothing: `lsof` could not see more.
+ */
+export async function procListeningPorts(pid: number, proc: ProcFileSystem = realProc): Promise<number[]> {
+  const listeners = new Map<string, number>();
+  let tablesRead = 0;
+  for (const table of ["/proc/net/tcp", "/proc/net/tcp6"]) {
+    try {
+      for (const [inode, port] of parseProcNetListeners(await proc.readFile(table))) {
+        listeners.set(inode, port);
+      }
+      tablesRead += 1;
+    } catch {
+      // A kernel without IPv6 has no tcp6 table.
+    }
+  }
+  if (tablesRead === 0) {
+    throw new Error("The /proc socket tables are unreadable.");
+  }
+  let descriptors: readonly string[];
+  try {
+    descriptors = await proc.readdir(`/proc/${pid}/fd`);
+  } catch {
+    return [];
+  }
+  const ports = new Set<number>();
+  for (const descriptor of descriptors) {
+    try {
+      const inode = (await proc.readlink(`/proc/${pid}/fd/${descriptor}`)).match(/^socket:\[(\d+)\]$/)?.[1];
+      const port = inode ? listeners.get(inode) : undefined;
+      if (port) {
+        ports.add(port);
+      }
+    } catch {
+      // The descriptor closed while it was being read.
+    }
+  }
+  return [...ports];
 }
 
 function validPort(value: number): boolean {
