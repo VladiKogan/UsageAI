@@ -4,6 +4,14 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Fixed
+
+- **Claude no longer reads 100% when a limit is only 1% used.** Anthropic reports utilization as
+  a percentage, but values up to 1 were taken for a fraction and multiplied by 100, so a fresh
+  5-hour window at 1% showed as full until it passed 1%.
+
 ## [0.14.0] - 2026-10-29
 
 ### Added

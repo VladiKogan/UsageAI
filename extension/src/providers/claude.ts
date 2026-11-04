@@ -502,12 +502,12 @@ function parseWindow(
   if (!window || utilization === undefined) {
     return undefined;
   }
-  const percent = utilization > 0 && utilization <= 1 ? utilization * 100 : utilization;
   const resetsAt = parseDate(getString(window, "resets_at") ?? getString(window, "resetsAt"));
   return {
     name: displayName,
     kind,
-    usedPercent: clampPercent(percent),
+    // Anthropic reports utilization as a percentage (0-100), never a fraction: 1.0 means 1% used.
+    usedPercent: clampPercent(utilization),
     ...(resetsAt ? { resetsAt } : {}),
     durationMinutes,
   };
