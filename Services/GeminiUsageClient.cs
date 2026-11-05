@@ -496,8 +496,11 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
                     continue;
                 }
 
-                var remainingFraction = GetDouble(quotaInfo, "remainingFraction") ?? 0.0;
                 var resetTime = ParseIsoDate(GetString(quotaInfo, "resetTime"));
+                if (QuotaFraction(GetDouble(quotaInfo, "remainingFraction"), resetTime) is not { } remainingFraction)
+                {
+                    continue;
+                }
                 var groupKey = GetModelGroupName(label);
 
                 if (!groupQuotas.TryGetValue(groupKey, out var quotaList))
@@ -666,7 +669,6 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             }
 
             var modelId = GetString(bucket, "modelId");
-            var remainingFraction = GetDouble(bucket, "remainingFraction") ?? 0.0;
             if (string.IsNullOrWhiteSpace(modelId))
             {
                 continue;
@@ -674,6 +676,10 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
 
             var resetTimeString = GetString(bucket, "resetTime");
             var resetTime = ParseIsoDate(resetTimeString);
+            if (QuotaFraction(GetDouble(bucket, "remainingFraction"), resetTime) is not { } remainingFraction)
+            {
+                continue;
+            }
 
             if (!modelQuotas.TryGetValue(modelId, out var existing) || remainingFraction < existing.RemainingFraction)
             {
@@ -804,6 +810,15 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             .ToArray();
     }
 
+    /// <summary>
+    /// A model's remaining fraction. Google's protobuf JSON omits a zero value, so a quota block that
+    /// still has its reset time but no fraction is exhausted (commit ee68e33). A block with neither,
+    /// such as a model that has no quota at all ("Gemini 4 Argon"), says nothing and is skipped
+    /// rather than shown as 100% used.
+    /// </summary>
+    internal static double? QuotaFraction(double? remainingFraction, DateTimeOffset? resetTime) =>
+        remainingFraction ?? (resetTime is null ? null : 0.0);
+
     internal static IReadOnlyList<UsageMetric> MergeAntigravityQuotaSummaryMetrics(
         IReadOnlyList<UsageMetric> currentMetrics,
         IReadOnlyList<UsageMetric> summaryMetrics)
@@ -819,29 +834,14 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             .ToArray();
         var merged = new List<UsageMetric>();
 
+        // The summary names every window a group has ("gemini-weekly", "gemini-5h"), so it is the
+        // whole answer for that group. The status reading carries no window name; it once stood in
+        // for a missing 5-hour bucket, but on a weekly-only plan (Google AI Plus) it is the weekly
+        // window again, and borrowing it showed the same limit twice as "5-hour" and "Weekly".
         foreach (var groupName in summaryGroups)
         {
-            var groupSummary = summaryMetrics
-                .Where(metric => QuotaSummaryGroupName(metric.Name)
-                    .Equals(groupName, StringComparison.OrdinalIgnoreCase))
-                .ToArray();
-
-            if (!groupSummary.Any(metric => metric.Kind == UsageMetricKind.Session))
-            {
-                var existingFiveHour = currentMetrics.FirstOrDefault(metric =>
-                    BelongsToQuotaSummaryGroup(metric.Name, groupName));
-                if (existingFiveHour is not null)
-                {
-                    merged.Add(existingFiveHour with
-                    {
-                        Name = $"{groupName} (5-hour)",
-                        Kind = UsageMetricKind.Session,
-                        DurationMinutes = 300,
-                    });
-                }
-            }
-
-            merged.AddRange(groupSummary);
+            merged.AddRange(summaryMetrics.Where(metric => QuotaSummaryGroupName(metric.Name)
+                .Equals(groupName, StringComparison.OrdinalIgnoreCase)));
         }
 
         merged.AddRange(currentMetrics.Where(metric =>

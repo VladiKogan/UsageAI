@@ -125,6 +125,7 @@ internal static class Program
         ("Gemini local probe and fallback branches", CoverageExpansionTests.TestGeminiDeepBranchesAsync),
         ("Gemini names every failed path", CoverageExpansionTests.TestGeminiCombinedErrorAsync),
         ("Gemini consumer-tier shutdown and Code Assist project", CoverageExpansionTests.TestGeminiConsumerTierShutdownAsync),
+        ("Gemini weekly-only plans show only weekly limits", CoverageExpansionTests.TestGeminiWeeklyOnlyPlanAsync),
         ("Antigravity editor hub discovery and query", CoverageExpansionTests.TestAntigravityEditorHubDiscoveryAsync),
         ("Codex and Claude CLIs bundled in an editor extension", CoverageExpansionTests.TestEditorBundledClisAsync),
         ("remaining UI interaction branches", CoverageExpansionTests.TestRemainingUiBranchesAsync),

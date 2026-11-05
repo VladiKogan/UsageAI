@@ -1089,6 +1089,49 @@ internal static class CoverageExpansionTests
         }
     }
 
+    public static Task TestGeminiWeeklyOnlyPlanAsync()
+    {
+        // A Google AI Plus account's real answers: the summary names only weekly windows, and the
+        // status call repeats the same weekly fractions without any window name, plus a model with
+        // an empty quota block.
+        using var summary = JsonDocument.Parse(
+            """
+            {"response":{"groups":[
+              {"displayName":"Gemini Models","buckets":[{"bucketId":"gemini-weekly","window":"weekly","remainingFraction":1,"resetTime":"2026-11-12T06:22:21Z"}]},
+              {"displayName":"Claude and GPT models","buckets":[{"bucketId":"3p-weekly","window":"weekly","remainingFraction":0.060413,"resetTime":"2026-11-10T06:16:45Z"}]}]}}
+            """);
+        using var status = JsonDocument.Parse(
+            """
+            {"userStatus":{"cascadeModelConfigData":{"clientModelConfigs":[
+              {"label":"Gemini 3.8 Flash (High)","quotaInfo":{"remainingFraction":1,"resetTime":"2026-11-12T06:22:21Z"}},
+              {"label":"Claude Sonnet 4.6 (Thinking)","quotaInfo":{"remainingFraction":0.060413,"resetTime":"2026-11-10T06:16:45Z"}},
+              {"label":"GPT-OSS 120B (Medium)","quotaInfo":{"remainingFraction":0.060413,"resetTime":"2026-11-10T06:16:45Z"}},
+              {"label":"Gemini 4 Argon","quotaInfo":{}}]}}}
+            """);
+        var statusSnapshot = GeminiUsageClient.ParseAntigravityUserStatus(status.RootElement)!;
+
+        // The empty quota block is skipped rather than read as an exhausted Gemini Models limit.
+        Equal(
+            "Gemini Models|Claude and GPT models",
+            string.Join('|', statusSnapshot.Metrics.Select(metric => metric.Name)));
+        Equal(0, statusSnapshot.Metrics[0].UsedPercent);
+
+        // The summary is the whole answer: weekly only, never a "5-hour" row borrowed from the status call.
+        var merged = GeminiUsageClient.MergeAntigravityQuotaSummaryMetrics(
+            statusSnapshot.Metrics,
+            GeminiUsageClient.ParseQuotaSummaryResponse(summary.RootElement));
+        Equal(
+            "Gemini Models (Weekly)|Claude and GPT models (Weekly)",
+            string.Join('|', merged.Select(metric => metric.Name)));
+        Equal(94, merged[1].UsedPercent);
+
+        // An omitted fraction that still has its reset time remains an exhausted limit (commit ee68e33).
+        Equal(0.0, GeminiUsageClient.QuotaFraction(null, DateTimeOffset.UtcNow));
+        Null(GeminiUsageClient.QuotaFraction(null, null));
+        Equal(0.4, GeminiUsageClient.QuotaFraction(0.4, null));
+        return Task.CompletedTask;
+    }
+
     public static async Task TestGeminiConsumerTierShutdownAsync()
     {
         static GeminiUsageClient.CodeAssistInfo Parse(string json, string? hostedDomain = null)
