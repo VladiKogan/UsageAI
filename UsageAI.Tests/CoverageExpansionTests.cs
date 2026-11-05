@@ -5488,6 +5488,22 @@ internal static class CoverageExpansionTests
         True(table.AccessibleDescription?.Contains("retry in ", StringComparison.Ordinal) == true);
         using var tile = new ProviderTile(staleOne);
         True(tile.IndicatorText?.Contains("Next try: retry in ", StringComparison.Ordinal) == true);
+
+        // A status-page incident leads the tile's indicator text (and so its accessible description),
+        // with the stale explanation after it, and names it in the dashboard header.
+        var reported = staleOne with { IncidentSummary = "Partial outage: Elevated errors", IncidentIsOutage = true };
+        using var incidentTile = new ProviderTile(reported);
+        True(incidentTile.IndicatorText!.StartsWith("Status page: Partial outage: Elevated errors\n", StringComparison.Ordinal));
+        True(incidentTile.IndicatorText.Contains("Next try: retry in ", StringComparison.Ordinal));
+        True(incidentTile.AccessibleDescription?.Contains("Status page: Partial outage", StringComparison.Ordinal) == true);
+        var healthy = Snapshot("codex", "Codex", 30, now);
+        using var healthyTile = new ProviderTile(new ProviderStatus("codex", "Codex", healthy, null, false, now)
+        {
+            IncidentSummary = "Degraded: Codex tasks are slow",
+        });
+        Equal("Status page: Degraded: Codex tasks are slow", healthyTile.IndicatorText);
+        using var incidentTable = new UsageLedger(new[] { reported }, MetricDisplayMode.All, QuotaDisplay.Used, Array.Empty<UsageSample>());
+        True(incidentTable.AccessibleDescription?.Contains("Partial outage: Elevated errors · stale", StringComparison.Ordinal) == true);
         return Task.CompletedTask;
     }
 

@@ -76,10 +76,23 @@ internal sealed class ProviderTile : Control
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
     internal MotionTracker? Motion { get; init; }
 
-    /// <summary>What hovering or focusing the ⓘ (or stale) indicator explains.</summary>
-    internal string? IndicatorText => _status.IsStale
-        ? StaleText()
-        : _rings is { HasGroupChoice: true } ? GroupText(_rings) : null;
+    /// <summary>
+    /// What hovering or focusing the ⓘ (or "!") indicator explains. A provider's own status-page
+    /// incident leads, because it explains a stale or busy card better than anything UsageAI knows;
+    /// the stale or group explanation follows on its own line.
+    /// </summary>
+    internal string? IndicatorText
+    {
+        get
+        {
+            var detail = _status.IsStale
+                ? StaleText()
+                : _rings is { HasGroupChoice: true } ? GroupText(_rings) : null;
+            return _status.IncidentSummary is { } incident
+                ? detail is null ? $"Status page: {incident}" : $"Status page: {incident}\n{detail}"
+                : detail;
+        }
+    }
 
     protected override void OnParentChanged(EventArgs e)
     {
@@ -257,8 +270,14 @@ internal sealed class ProviderTile : Control
         }
 
         _indicatorBounds = Rectangle.Inflate(indicator, scale[3], scale[3]);
-        var stale = _status.IsStale;
-        var color = stale ? Theme.WarningText : Theme.Muted;
+
+        // An incident or a stale reading is an alert ("!"): critical for an outage, warning for
+        // degraded service or a stale card. The glyph and the hover text carry the meaning, so
+        // High Contrast, which draws both in system colours, loses nothing.
+        var alert = _status.IsStale || _status.IncidentSummary is not null;
+        var color = _status.IncidentSummary is not null && _status.IncidentIsOutage ? Theme.CriticalText
+            : alert ? Theme.WarningText
+            : Theme.Muted;
         using (var ring = new Pen(color, Math.Max(1F, scale.Exact(1.2F))))
         {
             graphics.DrawEllipse(ring, RectangleF.Inflate(indicator, -scale.Exact(1), -scale.Exact(1)));
@@ -266,7 +285,7 @@ internal sealed class ProviderTile : Control
 
         DrawingHelpers.DrawText(
             graphics,
-            stale ? "!" : "i",
+            alert ? "!" : "i",
             _fonts.Indicator,
             color,
             indicator,
