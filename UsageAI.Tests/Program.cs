@@ -143,13 +143,11 @@ internal static class Program
     {
         if (args.FirstOrDefault() == "app-server")
         {
-            // UsageAI always starts the server sandboxed; a bare `app-server` means it no longer does.
-            return 4;
-        }
-
-        if (args.Length >= 5 && args.AsSpan(0, 5).SequenceEqual(["-s", "read-only", "-a", "never", "app-server"]))
-        {
-            return await RunFakeCodexAppServerAsync();
+            // UsageAI always starts the server with a read-only sandbox and no approvals, as config
+            // overrides on the subcommand; an `app-server` without them means it no longer does.
+            return args.Length >= 5 && args.AsSpan(1, 4).SequenceEqual(["-c", "sandbox_mode=\"read-only\"", "-c", "approval_policy=\"never\""])
+                ? await RunFakeCodexAppServerAsync()
+                : 4;
         }
 
         // Mirrors the real Claude CLI: `auth status` only reports the login and never refreshes an
@@ -603,8 +601,7 @@ internal static class Program
         Equal(63, snapshot.HighestUsedPercent);
         Null(snapshot.AccountName);
 
-        // Model-specific buckets such as Spark become their own named groups, and the main bucket
-        // is then named too, so the popup can offer each as a ring group.
+        // Model-specific buckets such as Spark are shown too, named after the label Codex gives them.
         using var multiBucket = JsonDocument.Parse(
             """
             {
@@ -630,15 +627,15 @@ internal static class Program
             """{"account":{"type":"chatgpt","email":"dev@example.com","planType":"plus"}}""");
         var grouped = CodexUsageClient.ParseSnapshot(multiBucket.RootElement, account.RootElement);
         Equal(
-            "Codex (5-hour)|Codex (Weekly)|GPT-5.3-Codex-Spark (5-hour)|GPT-5.3-Codex-Spark (Weekly)|gpt-mini preview (Weekly)|Codex Unnamed (5-hour)",
+            "5-hour|Weekly|GPT-5.3-Codex-Spark 5-hour|GPT-5.3-Codex-Spark Weekly|gpt-mini preview Weekly|Codex Unnamed 5-hour",
             string.Join('|', grouped.Metrics.Select(metric => metric.Name)));
         Equal(91, grouped.Metrics[2].UsedPercent);
         // The rate-limit response's plan wins over the account's; the account only names who is signed in.
         Equal("Pro", grouped.Plan);
         Equal("dev@example.com", grouped.AccountName);
-        Equal(
-            "Codex|GPT-5.3-Codex-Spark|gpt-mini preview|Codex Unnamed",
-            string.Join('|', PopupMetricSelection.Groups(grouped.Metrics)));
+        // The main limits keep their names, so nothing keyed on them moves when Spark appears, and the
+        // extra ones carry no parenthesised group, so the popup is not split into groups.
+        Equal(0, PopupMetricSelection.Groups(grouped.Metrics).Count);
         return Task.CompletedTask;
     }
 
@@ -1758,6 +1755,17 @@ internal static class Program
             new UsageSample(now, "codex", "Rolling:Weekly", 20),
         };
         Equal(5.0, Math.Round(UsageForecast.Estimate(samples, "codex", Weekly(20), now)!.PercentPerHour, 3));
+
+        // History that shows use has stopped is an answer: the window average must not override it
+        // with a run-out (70% used early in the window, then flat for hours).
+        var flat = new[]
+        {
+            new UsageSample(now.AddHours(-2), "codex", "Rolling:Weekly", 70),
+            new UsageSample(now.AddHours(-1), "codex", "Rolling:Weekly", 70),
+            new UsageSample(now, "codex", "Rolling:Weekly", 70),
+        };
+        NotNull(UsageForecast.ProjectFromWindow(Weekly(70), now));
+        Null(UsageForecast.Estimate(flat, "codex", Weekly(70), now));
 
         // The popup hands the forecast the right source for each setting.
         IReadOnlyList<UsageSample> history = samples;

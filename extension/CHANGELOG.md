@@ -12,7 +12,7 @@
 - **Google Gemini says when Google has stopped serving Gemini CLI quota for a plan.** Since June
   2026 Google no longer answers Gemini CLI usage requests for personal, Google AI Pro and Ultra
   accounts, and UsageAI took the refusal for an expired sign-in. It now recognises Google's
-  `UNSUPPORTED_CLIENT` answer and points to Antigravity or `agy` instead; Standard, paid Code Assist
+  `UNSUPPORTED_CLIENT` answer and points to Antigravity or `agy` instead. Code Assist Standard or Enterprise
   and Workspace accounts keep the sign-in message.
 - **A Claude plan without usage limits no longer shows as an error.** Free and some education plans
   report no five-hour or weekly window, and the card showed a parsing error; it now says Claude
@@ -39,8 +39,8 @@
   reset countdown, how use compares with the time its window has run: "On pace", "12% under pace" or
   "8% over pace", once 5% of the window has passed.
 - **Codex shows model-specific limits such as Spark.** Codex reports a separate rate-limit bucket for
-  some models, and UsageAI read only the main one. Every bucket now shows as its own group, named
-  the way Codex names it. Accounts with only the main limit look exactly as before.
+  some models, and UsageAI read only the main one. Each extra bucket now shows its own limits, named
+  the way Codex names it ("GPT-5.3-Codex-Spark 5-hour"); the main limits keep their names.
 - **The Codex card names the signed-in account.** UsageAI asks the Codex CLI which account is signed
   in, without refreshing the login; an older CLI that cannot answer still shows usage.
 - **Claude shows your saved limit resets.** Claude grants some accounts free limit resets, and UsageAI
@@ -60,7 +60,8 @@
 - The Gemini CLI fallback now asks for quota on the Code Assist project Google reports for the
   account, rather than leaving Google to pick a default project.
 - The Codex server UsageAI starts now runs with a read-only sandbox and never asks for approval
-  (`-s read-only -a never`), so it can never be asked to run or approve anything.
+  (`-c sandbox_mode="read-only" -c approval_policy="never"` on `app-server` itself), so it can never
+  be asked to run or approve anything, whatever sandbox your own Codex configuration uses.
 - **The `agy` server UsageAI starts no longer updates itself.** It runs for as long as the editor
   does, so it kept the CLI's background updater alive too; UsageAI now sets
   `AGY_CLI_DISABLE_AUTO_UPDATE` for every `agy` it starts, and `agy` sessions you run yourself

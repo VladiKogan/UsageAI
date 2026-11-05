@@ -105,7 +105,9 @@ export function parseStatuspage(root: unknown, providerId: string, page: string,
       }
       const listed = getArray(entry, "components") ?? [];
       const affected = listed.filter((component) => counts(getString(component, "name")));
-      if (listed.length > 0 && affected.length === 0) {
+      // Only an incident that names an allowlisted component counts: one opened before components are
+      // attached may be about any product, and the component status reports it once attributed.
+      if (affected.length === 0) {
         continue;
       }
       const severity = planned
@@ -176,6 +178,7 @@ export class ProviderIncidentService {
   private current = new Map<string, ProviderIncident>();
   private nextCheckAt = 0;
   private running = false;
+  private generation = 0;
   private readonly listeners = new Set<() => void>();
 
   public constructor(private readonly sources: readonly IncidentSource[] = incidentSources) {}
@@ -191,6 +194,9 @@ export class ProviderIncidentService {
 
   public async refreshIfDue(enabled: boolean, now = Date.now()): Promise<void> {
     if (!enabled) {
+      // A check still in flight sees the new generation and drops its result, so turning the setting
+      // off cannot be undone by an answer that arrives a moment later.
+      this.generation += 1;
       this.nextCheckAt = 0;
       this.publish(new Map());
       return;
@@ -200,9 +206,13 @@ export class ProviderIncidentService {
     }
     this.running = true;
     this.nextCheckAt = now + incidentCheckIntervalMs;
+    const generation = this.generation;
     try {
-      const next = new Map(this.current);
       const results = await Promise.all(this.sources.map(async (source) => ({ source, ...(await this.check(source)) })));
+      if (generation !== this.generation) {
+        return;
+      }
+      const next = new Map(this.current);
       for (const { source, answered, incident } of results) {
         if (!answered) continue;
         if (incident) next.set(source.providerId, incident);

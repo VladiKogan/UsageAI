@@ -899,11 +899,6 @@ internal sealed class UsagePopupForm : Form
             .FirstOrDefault();
 
     /// <summary>
-    /// The limit the popup headline names. A limit forecast to run out before it resets outranks
-    /// one that is merely busy, and among those the one that runs out earliest wins; without a
-    /// forecast it is the busiest limit of all.
-    /// </summary>
-    /// <summary>
     /// What the forecasts work from: <see cref="UsageForecast.Disabled"/> when the forecast is off,
     /// no samples when history is off (the window's own average then still gives an estimate and
     /// a pace), and the recorded history otherwise.
@@ -913,6 +908,11 @@ internal sealed class UsagePopupForm : Form
         : settings.HistoryEnabled ? history
         : Array.Empty<UsageSample>();
 
+    /// <summary>
+    /// The limit the popup headline names. A limit forecast to run out before it resets outranks
+    /// one that is merely busy, and among those the one that runs out earliest wins; without a
+    /// forecast it is the busiest limit of all.
+    /// </summary>
     internal static PopupHeadline? SelectHeadline(
         IReadOnlyList<ProviderStatus> states,
         IReadOnlyList<UsageSample> history,

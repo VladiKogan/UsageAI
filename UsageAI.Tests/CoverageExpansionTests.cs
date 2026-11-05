@@ -1105,7 +1105,9 @@ internal static class CoverageExpansionTests
         Equal("proj-9", consumer.Project);
 
         // Accounts that keep Gemini CLI access are never told it was shut down.
-        False(Parse("""{"paidTier":{"name":"Gemini Code Assist Pro"},"ineligibleTiers":[{"reasonCode":"UNSUPPORTED_CLIENT"}]}""").IsConsumerTierShutDown);
+        // A paid personal plan (AI Pro, Ultra) is exactly what the shutdown covers; Enterprise is exempt.
+        True(Parse("""{"paidTier":{"name":"Google AI Pro"},"currentTier":{"id":"free-tier"},"ineligibleTiers":[{"reasonCode":"UNSUPPORTED_CLIENT"}]}""").IsConsumerTierShutDown);
+        False(Parse("""{"currentTier":{"id":"enterprise-tier"},"ineligibleTiers":[{"reasonCode":"UNSUPPORTED_CLIENT"}]}""").IsConsumerTierShutDown);
         False(Parse("""{"currentTier":{"id":"standard-tier"},"ineligibleTiers":[{"reasonCode":"UNSUPPORTED_CLIENT"}]}""").IsConsumerTierShutDown);
         False(Parse(shutDown, hostedDomain: "school.example").IsConsumerTierShutDown);
         False(Parse("""{"currentTier":{"id":"free-tier"},"ineligibleTiers":[{"reasonCode":"RESTRICTED_AGE"}]}""").IsConsumerTierShutDown);
@@ -1439,6 +1441,12 @@ internal static class CoverageExpansionTests
         True(componentOnly.IsOutage);
         Equal("Claude API (api.anthropic.com): partial outage", componentOnly.Title);
 
+        // An incident opened before components are attached may be about any product, so it is not
+        // pinned on Copilot ("Incident with Actions" usually starts like this).
+        Null(ProviderIncidentService.ParseStatuspage(Json(
+            """{"components":[{"name":"Copilot","status":"operational"}],"incidents":[{"id":"x1","name":"Incident with Actions","status":"investigating","impact":"minor","components":[]}],"scheduled_maintenances":[]}"""),
+            "copilot", new Uri("https://www.githubstatus.com/"), ["Copilot"]));
+
         // Maintenance in progress counts; scheduled maintenance does not yet.
         Equal(IncidentSeverity.Maintenance, ProviderIncidentService.ParseStatuspage(Json(
             """{"components":[],"incidents":[],"scheduled_maintenances":[{"id":"m1","name":"Copilot maintenance","status":"in_progress","components":[{"name":"Copilot","status":"under_maintenance"}]}]}"""),
@@ -1497,6 +1505,13 @@ internal static class CoverageExpansionTests
         // The tray tooltip names the incident on its own line; the icon draws the dot.
         var tooltip = UsageApplicationContext.WithIncident("UsageAI - Copilot: 40% used", service.For("copilot") ?? incident with { ProviderId = "copilot" });
         True(tooltip.Contains("\nCopilot degraded: ", StringComparison.Ordinal));
+
+        // In the all-providers tooltip, which already fills most of the shell's 127 characters, the
+        // incident line goes right after the first line and survives; usage lines are trimmed instead.
+        var full = "UsageAI\nCodex 10% | 22%\nClaude 34% | 78%\nCopilot 64%\nGemini 14% | 48%\nOne more provider line to fill it up";
+        var withLongIncident = UsageApplicationContext.WithIncident(full, new ProviderIncident("claude", IncidentSeverity.MajorOutage, new string('x', 200), new Uri("https://status.claude.com/")));
+        True(withLongIncident.Length <= 127);
+        True(withLongIncident.StartsWith("UsageAI\nClaude outage: xxx", StringComparison.Ordinal));
         Equal("UsageAI - Copilot: 40% used", UsageApplicationContext.WithIncident("UsageAI - Copilot: 40% used", null));
         using var plain = TrayIconFactory.Create(40, size: 32);
         using var marked = TrayIconFactory.Create(40, size: 32, incident: IncidentSeverity.MajorOutage);
@@ -1504,6 +1519,45 @@ internal static class CoverageExpansionTests
         using var markedBitmap = marked.ToBitmap();
         True(plainBitmap.GetPixel(29, 2).A < markedBitmap.GetPixel(29, 2).A);
         using var tank = TrayIconFactory.CreateTank(40, 40, size: 32, incident: IncidentSeverity.Degraded);
+
+        // Turning incidents off while a check is still in flight is not undone by its late answer.
+        var release = new TaskCompletionSource();
+        using var slow = new HttpClient(new StubHttpHandler(async (_, _, _) =>
+        {
+            await release.Task;
+            return JsonResponse(HttpStatusCode.OK, degraded);
+        }));
+        var racing = new ProviderIncidentService(slow, [ProviderIncidentService.Sources.Single(source => source.ProviderId == "copilot")]);
+        var inFlight = racing.RefreshIfDueAsync(enabled: true, now);
+        await racing.RefreshIfDueAsync(enabled: false, now);
+        release.SetResult();
+        await inFlight;
+        Null(racing.For("copilot"));
+
+        // Like provider polling, status pages are not read while the session is locked; unlocking
+        // checks them at once.
+        var lockedRequests = 0;
+        using var lockedHttp = new HttpClient(new StubHttpHandler((_, _, _) =>
+        {
+            lockedRequests++;
+            return Task.FromResult(JsonResponse(HttpStatusCode.OK, degraded));
+        }));
+        var lockedClient = new QueueUsageClient("copilot", "GitHub Copilot");
+        for (var index = 0; index < 4; index++)
+        {
+            lockedClient.Enqueue(Snapshot("copilot", "GitHub Copilot", 40, DateTimeOffset.Now));
+        }
+
+        using var context = new UsageApplicationContext(
+            new IUsageClient[] { lockedClient },
+            new AppSettings { GlobalHotkeyEnabled = false, HistoryEnabled = false, NotificationsEnabled = false },
+            showTrayIcon: false,
+            incidents: new ProviderIncidentService(lockedHttp, [ProviderIncidentService.Sources.Single(source => source.ProviderId == "copilot")]));
+        context.HandleSessionSwitch(Microsoft.Win32.SessionSwitchReason.SessionLock);
+        await InvokePrivateTaskAsync(context, "RefreshIncidentsIfDueAsync");
+        Equal(0, lockedRequests);
+        context.HandleSessionSwitch(Microsoft.Win32.SessionSwitchReason.SessionUnlock);
+        await WaitForConditionAsync(() => lockedRequests == 1);
     }
 
     public static async Task TestDiagnosticAttemptsAsync()
@@ -1713,16 +1767,17 @@ internal static class CoverageExpansionTests
             """);
         var snapshot = ClaudeCodeUsageClient.ParseSnapshot(usage, "Pro", now);
         Equal(
-            "5-hour|Weekly|Weekly Opus 5|Weekly claude-haiku-5|Weekly Opus|Weekly Sonnet|Reset credits",
+            "5-hour|Weekly|Weekly Opus 5|Weekly claude-haiku-5|Weekly Sonnet|Reset credits",
             string.Join('|', snapshot.Metrics.Select(metric => metric.Name)));
         Equal(46, snapshot.Metrics[1].UsedPercent);
+        // The scoped "Weekly Opus 5" already covers the legacy seven_day_opus reading, so it is not shown twice.
         Equal(61, snapshot.Metrics[2].UsedPercent);
         Equal(UsageMetricKind.Rolling, snapshot.Metrics[2].Kind);
-        Equal(15, snapshot.Metrics[5].UsedPercent);
+        Equal(15, snapshot.Metrics[4].UsedPercent);
         // Two resets from the live grant plus one from the open-ended one; paused, unflagged, not yet
         // started and expired grants do not count.
-        Equal("3", snapshot.Metrics[6].RemainingText);
-        Equal(UsageMetricKind.Balance, snapshot.Metrics[6].Kind);
+        Equal("3", snapshot.Metrics[5].RemainingText);
+        Equal(UsageMetricKind.Balance, snapshot.Metrics[5].Kind);
 
         // An implausible total is treated as malformed rather than shown.
         Equal(0, ClaudeCodeUsageClient.CountResetGrants(
@@ -1921,7 +1976,7 @@ internal static class CoverageExpansionTests
             Equal("Pro", parsed.Plan);
             Equal("dev@example.com", parsed.AccountName);
             Equal(
-                "Codex (5-hour)|Codex (Weekly)|GPT-5.3-Codex-Spark (5-hour)|Credits|Reset credits",
+                "5-hour|Weekly|GPT-5.3-Codex-Spark 5-hour|Credits|Reset credits",
                 string.Join('|', parsed.Metrics.Select(metric => metric.Name)));
             Equal(13, parsed.Metrics[0].UsedPercent);
             Equal(300L, parsed.Metrics[0].DurationMinutes);
@@ -2017,7 +2072,7 @@ internal static class CoverageExpansionTests
             Equal(61, snapshot.Metrics[1].UsedPercent);
             // The sandboxed server (the fixture refuses a bare `app-server`) names the account.
             Equal("dev@example.com", snapshot.AccountName);
-            Equal("-s read-only -a never app-server --listen stdio://", string.Join(' ', CodexUsageClient.AppServerArguments));
+            Equal("app-server -c sandbox_mode=\"read-only\" -c approval_policy=\"never\" --listen stdio://", string.Join(' ', CodexUsageClient.AppServerArguments));
 
             // An older CLI without account/read still returns usage, just without the account.
             Environment.SetEnvironmentVariable("CODEX_HOME", "usageai-test-account-error");

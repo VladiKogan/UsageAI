@@ -52,17 +52,25 @@ internal static class UsageForecast
     public static bool IsDisabled(IReadOnlyList<UsageSample> samples) => ReferenceEquals(samples, Disabled);
 
     /// <summary>
-    /// The best projection available: the burn rate from recorded samples, else the window's own
-    /// average since it began. Null when the forecast is off.
+    /// The best projection available: the burn rate from recorded samples when there are enough of
+    /// them, else the window's own average since it began. Enough history that shows use has
+    /// stopped or slowed to nothing is an answer — no run-out — and is not overridden by the
+    /// average. Null when the forecast is off.
     /// </summary>
     public static UsageProjection? Estimate(
         IReadOnlyList<UsageSample> samples,
         string providerId,
         UsageMetric metric,
-        DateTimeOffset now) =>
-        IsDisabled(samples)
-            ? null
-            : Project(samples, providerId, metric, now) ?? ProjectFromWindow(metric, now);
+        DateTimeOffset now)
+    {
+        if (IsDisabled(samples))
+        {
+            return null;
+        }
+
+        var (projection, sufficient) = ProjectFromHistory(samples, providerId, metric, now);
+        return sufficient ? projection : ProjectFromWindow(metric, now);
+    }
 
     /// <summary>How far through its window a metric is, as a fraction, or null when unknown.</summary>
     private static double? ElapsedFraction(UsageMetric metric, DateTimeOffset now)
@@ -136,17 +144,28 @@ internal static class UsageForecast
         IReadOnlyList<UsageSample> samples,
         string providerId,
         UsageMetric metric,
+        DateTimeOffset now) =>
+        ProjectFromHistory(samples, providerId, metric, now).Projection;
+
+    /// <summary>
+    /// The history burn-rate projection, and whether there was enough history (samples and span
+    /// since the last reset) for its answer — including "no run-out" — to count.
+    /// </summary>
+    private static (UsageProjection? Projection, bool Sufficient) ProjectFromHistory(
+        IReadOnlyList<UsageSample> samples,
+        string providerId,
+        UsageMetric metric,
         DateTimeOffset now)
     {
         if (!metric.HasQuota)
         {
-            return null;
+            return (null, false);
         }
 
         var used = metric.UsedPercent!.Value;
         if (used >= 100)
         {
-            return null;
+            return (null, false);
         }
 
         var series = samples
@@ -172,35 +191,36 @@ internal static class UsageForecast
 
         if (series.Count < MinimumSamples)
         {
-            return null;
+            return (null, false);
         }
 
         var span = series[^1].At - series[0].At;
         if (span < MinimumSpan)
         {
-            return null;
+            return (null, false);
         }
 
+        // From here the history is enough to answer, and "use has stopped" is an answer too.
         var delta = series[^1].UsedPercent - series[0].UsedPercent;
         if (delta <= 0)
         {
-            return null;
+            return (null, true);
         }
 
         var percentPerHour = delta / span.TotalHours;
         if (percentPerHour < MinimumPercentPerHour)
         {
-            return null;
+            return (null, true);
         }
 
         var hoursRemaining = (100 - used) / percentPerHour;
         if (hoursRemaining > MaximumProjectionHours)
         {
-            return null;
+            return (null, true);
         }
 
         var exhaustedAt = now.AddHours(hoursRemaining);
         var beforeReset = metric.ResetsAt is { } resetsAt && exhaustedAt < resetsAt;
-        return new UsageProjection(percentPerHour, exhaustedAt, beforeReset);
+        return (new UsageProjection(percentPerHour, exhaustedAt, beforeReset), true);
     }
 }

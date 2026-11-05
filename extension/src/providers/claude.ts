@@ -607,9 +607,16 @@ export function parseModelWeeklyLimits(root: unknown): UsageMetric[] {
     const resetsAt = parseDate(getString(limit, "resets_at") ?? getString(limit, "resetsAt"));
     add({ name: `Weekly ${label}`, kind: "rolling", usedPercent: clampPercent(percent), ...(resetsAt ? { resetsAt } : {}), durationMinutes: 10_080 });
   }
-  add(findLimit(root, ["weekly_opus"], "Weekly Opus", false));
-  add(parseWindow(root, "seven_day_opus", "sevenDayOpus", "Weekly Opus", "rolling", 10_080));
-  add(parseWindow(root, "seven_day_sonnet", "sevenDaySonnet", "Weekly Sonnet", "rolling", 10_080));
+  // The legacy fields describe the same limits as the scoped entries, so they fill in only a model
+  // family no scoped entry has named ("Weekly Opus 4.5" already covers "Weekly Opus").
+  const named = (family: string): boolean => found.some((metric) => metric.name.toLowerCase().includes(family));
+  if (!named("opus")) {
+    add(findLimit(root, ["weekly_opus"], "Weekly Opus", false));
+    add(parseWindow(root, "seven_day_opus", "sevenDayOpus", "Weekly Opus", "rolling", 10_080));
+  }
+  if (!named("sonnet")) {
+    add(parseWindow(root, "seven_day_sonnet", "sevenDaySonnet", "Weekly Sonnet", "rolling", 10_080));
+  }
   return found;
 }
 

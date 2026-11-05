@@ -379,11 +379,14 @@ internal sealed class CodexUsageClient : IUsageClient
     }
 
     /// <summary>
-    /// The arguments ahead of <c>app-server</c>: a read-only sandbox and no approval prompts, so the
-    /// server UsageAI starts can never be asked to run or approve anything.
+    /// The <c>app-server</c> command with a read-only sandbox and no approval prompts, so the server
+    /// UsageAI starts can never be asked to run or approve anything. They are <c>-c</c> config
+    /// overrides on the subcommand itself: <c>-s</c> and <c>-a</c> belong to the interactive CLI and
+    /// are not passed on to <c>app-server</c>, so they would leave the user's own configured sandbox
+    /// and approval policy in force.
     /// </summary>
     internal static readonly string[] AppServerArguments =
-        ["-s", "read-only", "-a", "never", "app-server", "--listen", "stdio://"];
+        ["app-server", "-c", "sandbox_mode=\"read-only\"", "-c", "approval_policy=\"never\"", "--listen", "stdio://"];
 
     private static Process StartAppServer(CodexLaunch launch)
     {
@@ -490,11 +493,12 @@ internal sealed class CodexUsageClient : IUsageClient
         var (mainKey, rateLimits) = SelectCodexBucket(result);
         var extraBuckets = ExtraBuckets(result, mainKey);
 
-        // With model-specific buckets such as Spark, every bucket becomes a named group, so the popup
-        // offers Codex and Spark as separate ring groups the way it does Gemini's model groups. An
-        // account with only the main bucket keeps the plain "5-hour" / "Weekly" names.
+        // The main bucket always keeps the plain "5-hour" / "Weekly" names, so its history, alert memory
+        // and pinned choices never change when a model-specific bucket such as Spark appears or goes.
+        // Extra buckets read "<label> 5-hour": distinct, with no parenthesised group that would split
+        // the popup into groups.
         var metrics = new List<UsageMetric>();
-        AddWindows(metrics, rateLimits, extraBuckets.Count > 0 ? "Codex" : null, AppServerFields);
+        AddWindows(metrics, rateLimits, null, AppServerFields);
         foreach (var (group, bucket) in extraBuckets)
         {
             AddWindows(metrics, bucket, group, AppServerFields);
@@ -568,7 +572,7 @@ internal sealed class CodexUsageClient : IUsageClient
         }
 
         var metrics = new List<UsageMetric>();
-        AddWindows(metrics, rateLimit, extras.Count > 0 ? "Codex" : null, HttpFields);
+        AddWindows(metrics, rateLimit, null, HttpFields);
         foreach (var (group, bucket) in extras)
         {
             AddWindows(metrics, bucket, group, HttpFields);
@@ -650,7 +654,7 @@ internal sealed class CodexUsageClient : IUsageClient
         {
             if (window is not null)
             {
-                metrics.Add(group is null ? window : window with { Name = $"{group} ({window.Name})" });
+                metrics.Add(group is null ? window : window with { Name = $"{group} {window.Name}" });
             }
         }
     }

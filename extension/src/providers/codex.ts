@@ -246,7 +246,7 @@ export function parseCodexHttpSnapshot(data: unknown): UsageSnapshot {
   }
 
   const metrics: UsageMetric[] = [];
-  addWindows(metrics, rateLimit, extras.length > 0 ? "Codex" : undefined, httpFields);
+  addWindows(metrics, rateLimit, undefined, httpFields);
   for (const { group, bucket } of extras) {
     addWindows(metrics, bucket, group, httpFields);
   }
@@ -264,10 +264,12 @@ export function parseCodexHttpSnapshot(data: unknown): UsageSnapshot {
 }
 
 /**
- * The arguments ahead of the launch's own: a read-only sandbox and no approval prompts, so the
- * server UsageAI starts can never be asked to run or approve anything. Mirrors the desktop.
+ * The `app-server` command with a read-only sandbox and no approval prompts, so the server UsageAI
+ * starts can never be asked to run or approve anything. They are `-c` config overrides on the
+ * subcommand itself: `-s` and `-a` belong to the interactive CLI and are not passed on to
+ * `app-server`. Mirrors the desktop.
  */
-export const codexAppServerArguments: readonly string[] = ["-s", "read-only", "-a", "never", "app-server", "--listen", "stdio://"];
+export const codexAppServerArguments: readonly string[] = ["app-server", "-c", "sandbox_mode=\"read-only\"", "-c", "approval_policy=\"never\"", "--listen", "stdio://"];
 
 /** How long the optional account lookup may take after usage has already arrived. */
 const accountReadTimeoutMs = 5_000;
@@ -350,11 +352,11 @@ const maxExtraBuckets = 6;
 export function parseCodexSnapshot(result: unknown, account?: unknown): UsageSnapshot {
   const { key: mainKey, bucket: rateLimits } = selectCodexBucket(result);
   const extras = extraBuckets(result, mainKey);
-  // With model-specific buckets such as Spark, every bucket becomes a named group, so the dashboard
-  // shows Codex and Spark as separate groups. An account with only the main bucket keeps the plain
-  // "5-hour" / "Weekly" names.
+  // The main bucket always keeps the plain "5-hour" / "Weekly" names, so its history and alert keys
+  // never change when a model-specific bucket such as Spark appears or goes. Extra buckets read
+  // "<label> 5-hour". Mirrors the desktop.
   const metrics: UsageMetric[] = [];
-  addWindows(metrics, rateLimits, extras.length > 0 ? "Codex" : undefined, appServerFields);
+  addWindows(metrics, rateLimits, undefined, appServerFields);
   for (const { group, bucket } of extras) {
     addWindows(metrics, bucket, group, appServerFields);
   }
@@ -427,7 +429,7 @@ function addWindows(metrics: UsageMetric[], bucket: Record<string, unknown>, gro
   const { session, weekly } = classifyWindows(primary, secondary);
   for (const window of [session, weekly]) {
     if (window) {
-      metrics.push(group ? { ...window, name: `${group} (${window.name})` } : window);
+      metrics.push(group ? { ...window, name: `${group} ${window.name}` } : window);
     }
   }
 }

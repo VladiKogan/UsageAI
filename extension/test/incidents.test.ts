@@ -50,6 +50,14 @@ test("Statuspage parsing counts only the allowlisted components", () => {
   assert.equal(isOutage(componentOnly), true);
   assert.equal(componentOnly.title, "Claude API (api.anthropic.com): partial outage");
 
+  // An incident opened before components are attached may be about any product, so it is not pinned
+  // on Copilot ("Incident with Actions" usually starts like this).
+  assert.equal(parseStatuspage({
+    components: [{ name: "Copilot", status: "operational" }],
+    incidents: [{ id: "x1", name: "Incident with Actions", status: "investigating", impact: "minor", components: [] }],
+    scheduled_maintenances: [],
+  }, "copilot", "https://www.githubstatus.com/", ["Copilot"]), undefined);
+
   assert.equal(parseStatuspage({
     components: [],
     incidents: [],
@@ -112,6 +120,25 @@ test("the incident service polls rarely, keeps the last answer, and clears when 
     await service.refreshIfDue(false, now + 7 * 60_000);
     assert.equal(service.get("copilot"), undefined);
     assert.equal(changes, 2);
+  } finally {
+    mock.restoreAll();
+  }
+});
+
+test("turning incidents off while a check is in flight is not undone by its late answer", async () => {
+  let release: () => void = () => undefined;
+  const gate = new Promise<void>((resolve) => { release = resolve; });
+  mock.method(security, "requestJson", (async () => {
+    await gate;
+    return { status: 200, headers: {}, data: { components: [{ name: "Copilot", status: "degraded_performance" }], incidents: [], scheduled_maintenances: [] } };
+  }) as typeof security.requestJson);
+  try {
+    const service = new ProviderIncidentService(incidentSources.filter((source) => source.providerId === "copilot"));
+    const inFlight = service.refreshIfDue(true, Date.now());
+    await service.refreshIfDue(false, Date.now());
+    release();
+    await inFlight;
+    assert.equal(service.get("copilot"), undefined);
   } finally {
     mock.restoreAll();
   }

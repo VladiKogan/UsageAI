@@ -128,9 +128,11 @@ internal sealed class UsageApplicationContext : ApplicationContext
         };
         _tickTimer.Tick += async (_, _) =>
         {
+            // The status pages are checked alongside, not after, a provider refresh that can take seconds.
+            var incidentCheck = RefreshIncidentsIfDueAsync();
             await RefreshIfDueAsync();
             await CheckForUpdatesIfDueAsync();
-            await RefreshIncidentsIfDueAsync();
+            await incidentCheck;
         };
         _tickTimer.Start();
 
@@ -309,20 +311,39 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _trayIcon.Text = WithIncident(TrayTooltip(trayStatus, _settings.QuotaDisplay), trayIncident);
     }
 
+    /// <summary>The most of the shell's tooltip length an incident line may take.</summary>
+    private const int MaximumIncidentLineLength = 60;
+
     /// <summary>
     /// Adds a provider's ongoing incident to a tray tooltip as its own line, which also carries the
-    /// meaning of the icon's dot where colour cannot (High Contrast). The shell's length limit cuts
-    /// a long incident title rather than the usage reading before it.
+    /// meaning of the icon's dot where colour cannot (High Contrast). The line goes right after the
+    /// first one, capped in length, so the shell's limit trims usage lines from the end — the
+    /// all-providers tooltip already fills most of it — and never the incident.
     /// </summary>
-    internal static string WithIncident(string tooltip, ProviderIncident? incident) =>
-        incident is null
-            ? tooltip
-            : Trim($"{tooltip}\n{ShortProviderName(incident.ProviderId)} {incident.SeverityLabel.ToLowerInvariant()}: {incident.Title}", MaximumTooltipLength);
+    internal static string WithIncident(string tooltip, ProviderIncident? incident)
+    {
+        if (incident is null)
+        {
+            return tooltip;
+        }
 
-    /// <summary>Checks the providers' status pages when due, or clears incidents when the setting is off.</summary>
+        var line = Trim(
+            $"{ShortProviderName(incident.ProviderId)} {incident.SeverityLabel.ToLowerInvariant()}: {incident.Title}",
+            MaximumIncidentLineLength);
+        var firstBreak = tooltip.IndexOf('\n', StringComparison.Ordinal);
+        var combined = firstBreak < 0
+            ? $"{tooltip}\n{line}"
+            : $"{tooltip[..firstBreak]}\n{line}{tooltip[firstBreak..]}";
+        return Trim(combined, MaximumTooltipLength);
+    }
+
+    /// <summary>
+    /// Checks the providers' status pages when due, or clears incidents when the setting is off.
+    /// Like provider polling, it waits while the session is locked; unlocking checks again.
+    /// </summary>
     private async Task RefreshIncidentsIfDueAsync()
     {
-        if (_incidents is null || _isExiting)
+        if (_incidents is null || _isExiting || IsSessionLocked)
         {
             return;
         }
@@ -614,6 +635,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         {
             IsSessionLocked = false;
             _ = RefreshAsync(force: false);
+            _ = RefreshIncidentsIfDueAsync();
         }
     }
 

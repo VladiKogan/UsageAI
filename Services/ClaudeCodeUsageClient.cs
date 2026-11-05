@@ -835,9 +835,20 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             }
         }
 
-        Add(ParseNamedLimit(root, "weekly_opus", "Weekly Opus"));
-        Add(ParseWindow(root, "seven_day_opus", "sevenDayOpus", "Weekly Opus", UsageMetricKind.Rolling, 10_080));
-        Add(ParseWindow(root, "seven_day_sonnet", "sevenDaySonnet", "Weekly Sonnet", UsageMetricKind.Rolling, 10_080));
+        // The legacy fields describe the same limits as the scoped entries, so they fill in only a
+        // model family no scoped entry has named ("Weekly Opus 4.5" already covers "Weekly Opus").
+        bool Named(string family) => found.Any(metric => metric.Name.Contains(family, StringComparison.OrdinalIgnoreCase));
+        if (!Named("Opus"))
+        {
+            Add(ParseNamedLimit(root, "weekly_opus", "Weekly Opus"));
+            Add(ParseWindow(root, "seven_day_opus", "sevenDayOpus", "Weekly Opus", UsageMetricKind.Rolling, 10_080));
+        }
+
+        if (!Named("Sonnet"))
+        {
+            Add(ParseWindow(root, "seven_day_sonnet", "sevenDaySonnet", "Weekly Sonnet", UsageMetricKind.Rolling, 10_080));
+        }
+
         return found;
     }
 

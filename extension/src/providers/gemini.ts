@@ -1427,8 +1427,10 @@ export function parseCodeAssist(data: unknown, hostedDomain: string | undefined)
   const unsupportedClient = (getArray(data, "ineligibleTiers") ?? []).some(
     (entry) => getString(entry, "reasonCode")?.toUpperCase() === "UNSUPPORTED_CLIENT",
   );
-  // Standard, a named paid tier, and Workspace or education accounts keep Gemini CLI access.
-  const keepsCliAccess = Boolean(paidTier) || tier === "standard-tier" || Boolean(hostedDomain);
+  // Code Assist Standard or Enterprise and Workspace or education accounts keep Gemini CLI access. A
+  // named paid tier alone does not exempt an account: Google AI Pro and Ultra are paid plans too, and
+  // they are exactly the ones the shutdown covers.
+  const keepsCliAccess = tier === "standard-tier" || Boolean(tier?.toLowerCase().includes("enterprise")) || Boolean(hostedDomain);
   return {
     ...(plan ? { plan } : {}),
     ...(project ? { project } : {}),

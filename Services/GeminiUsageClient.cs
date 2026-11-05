@@ -1050,10 +1050,12 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
                 string.Equals(GetString(tier, "reasonCode"), "UNSUPPORTED_CLIENT", StringComparison.OrdinalIgnoreCase));
         }
 
-        // Standard, a named paid tier, and Workspace or education accounts keep Gemini CLI access, so
-        // an UNSUPPORTED_CLIENT tier there is not the shutdown and a 403 stays a sign-in problem.
-        var keepsCliAccess = !string.IsNullOrWhiteSpace(paidTierName) ||
-                             tierId == "standard-tier" ||
+        // Code Assist Standard or Enterprise and Workspace or education accounts keep Gemini CLI
+        // access, so an UNSUPPORTED_CLIENT tier there is not the shutdown and a 403 stays a sign-in
+        // problem. A named paid tier alone does not exempt an account: Google AI Pro and Ultra are
+        // paid plans too, and they are exactly the ones the shutdown covers.
+        var keepsCliAccess = tierId is "standard-tier" ||
+                             (tierId?.Contains("enterprise", StringComparison.OrdinalIgnoreCase) ?? false) ||
                              hostedDomain is not null;
         return new CodeAssistInfo(plan, project, unsupportedClient && !keepsCliAccess);
     }

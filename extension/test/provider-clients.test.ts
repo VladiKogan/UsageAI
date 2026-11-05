@@ -220,11 +220,11 @@ test("Claude reads model-scoped weekly limits, reset credits and plans without l
   };
   const snapshot = parseClaudeSnapshot(usage, "Pro", now);
   assert.deepEqual(snapshot.metrics.map((metric) => metric.name), [
-    "5-hour", "Weekly", "Weekly Opus 5", "Weekly claude-haiku-5", "Weekly Opus", "Weekly Sonnet", "Reset credits",
+    "5-hour", "Weekly", "Weekly Opus 5", "Weekly claude-haiku-5", "Weekly Sonnet", "Reset credits",
   ]);
   assert.equal(snapshot.metrics[2]?.usedPercent, 61);
   assert.equal(snapshot.metrics[2]?.kind, "rolling");
-  assert.equal(snapshot.metrics[6]?.remainingText, "3");
+  assert.equal(snapshot.metrics[5]?.remainingText, "3");
   assert.equal(countResetGrants({ cedar_ember: { grants: [{ resets_left: 40, paused: false }, { resets_left: 20, paused: false }] } }, now), 0);
   assert.equal(countResetGrants({ cedar_ember: null }, now), 0);
 
@@ -387,7 +387,7 @@ test("Codex client completes the app-server handshake through the configured CLI
   const fixtureSource = `
 const readline = require("node:readline");
 // UsageAI always starts the server sandboxed; anything else fails the handshake.
-if (process.argv.slice(2, 7).join(" ") !== "-s read-only -a never app-server") process.exit(4);
+if (process.argv.slice(2, 7).join(" ") !== 'app-server -c sandbox_mode="read-only" -c approval_policy="never"') process.exit(4);
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
   const message = JSON.parse(line);
@@ -551,7 +551,7 @@ test("Codex reads usage over HTTPS first and falls back to the app-server", asyn
   const parsed = parseCodexHttpSnapshot(usage);
   assert.equal(parsed.plan, "Pro");
   assert.equal(parsed.accountName, "dev@example.com");
-  assert.deepEqual(parsed.metrics.map((metric) => metric.name), ["Codex (5-hour)", "Codex (Weekly)", "GPT-5.3-Codex-Spark (5-hour)", "Credits", "Reset credits"]);
+  assert.deepEqual(parsed.metrics.map((metric) => metric.name), ["5-hour", "Weekly", "GPT-5.3-Codex-Spark 5-hour", "Credits", "Reset credits"]);
   assert.equal(parsed.metrics[0]?.usedPercent, 13);
   assert.equal(parsed.metrics[0]?.durationMinutes, 300);
   assert.equal(parsed.metrics[1]?.durationMinutes, 10_080);
@@ -717,7 +717,9 @@ test("Gemini reports Google's consumer-tier shutdown and sends the Code Assist p
   };
   assert.deepEqual(parseCodeAssist(shutDown, undefined), { plan: "Free", project: "proj-9", consumerTierShutDown: true });
   // Accounts that keep Gemini CLI access are never told it was shut down.
-  assert.equal(parseCodeAssist({ ...shutDown, paidTier: { name: "Gemini Code Assist Pro" } }, undefined).consumerTierShutDown, false);
+  // A paid personal plan (AI Pro, Ultra) is exactly what the shutdown covers; Enterprise is exempt.
+  assert.equal(parseCodeAssist({ ...shutDown, paidTier: { name: "Google AI Pro" } }, undefined).consumerTierShutDown, true);
+  assert.equal(parseCodeAssist({ ...shutDown, currentTier: { id: "enterprise-tier" } }, undefined).consumerTierShutDown, false);
   assert.equal(parseCodeAssist({ ...shutDown, currentTier: { id: "standard-tier" } }, undefined).consumerTierShutDown, false);
   assert.equal(parseCodeAssist(shutDown, "school.example").consumerTierShutDown, false);
   assert.equal(parseCodeAssist({ ineligibleTiers: [{ reasonCode: "RESTRICTED_AGE" }] }, undefined).consumerTierShutDown, false);

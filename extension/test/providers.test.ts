@@ -36,8 +36,8 @@ test("Codex keeps rolling windows and balances", () => {
   assert.equal(snapshot.metrics[1]?.usedPercent, 63);
   assert.equal(snapshot.accountName, undefined);
 
-  // Model-specific buckets such as Spark become their own named groups, and the main bucket is then
-  // named too. Mirrors the desktop check.
+  // Model-specific buckets such as Spark are shown too, named after the label Codex gives them, while
+  // the main limits keep their plain names. Mirrors the desktop check.
   const grouped = parseCodexSnapshot(
     {
       rateLimitsByLimitId: {
@@ -61,12 +61,12 @@ test("Codex keeps rolling windows and balances", () => {
     { account: { type: "chatgpt", email: "dev@example.com", planType: "plus" } },
   );
   assert.deepEqual(grouped.metrics.map((metric) => metric.name), [
-    "Codex (5-hour)",
-    "Codex (Weekly)",
-    "GPT-5.3-Codex-Spark (5-hour)",
-    "GPT-5.3-Codex-Spark (Weekly)",
-    "gpt-mini preview (Weekly)",
-    "Codex Unnamed (5-hour)",
+    "5-hour",
+    "Weekly",
+    "GPT-5.3-Codex-Spark 5-hour",
+    "GPT-5.3-Codex-Spark Weekly",
+    "gpt-mini preview Weekly",
+    "Codex Unnamed 5-hour",
   ]);
   assert.equal(grouped.metrics[2]?.usedPercent, 91);
   assert.equal(grouped.plan, "Pro");

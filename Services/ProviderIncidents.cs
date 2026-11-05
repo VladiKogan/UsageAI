@@ -55,6 +55,7 @@ internal sealed class ProviderIncidentService
     private Dictionary<string, ProviderIncident> _current = new(StringComparer.OrdinalIgnoreCase);
     private DateTimeOffset _nextCheck;
     private bool _running;
+    private int _generation;
 
     public ProviderIncidentService()
         : this(SharedClient, Sources)
@@ -84,6 +85,9 @@ internal sealed class ProviderIncidentService
     {
         if (!enabled)
         {
+            // A check still in flight sees the new generation and drops its result, so turning the
+            // setting off cannot be undone by an answer that arrives a moment later.
+            _generation++;
             _nextCheck = default;
             Publish(new Dictionary<string, ProviderIncident>(StringComparer.OrdinalIgnoreCase));
             return;
@@ -96,10 +100,16 @@ internal sealed class ProviderIncidentService
 
         _running = true;
         _nextCheck = now + CheckInterval;
+        var generation = _generation;
         try
         {
-            var next = new Dictionary<string, ProviderIncident>(_current, StringComparer.OrdinalIgnoreCase);
             var results = await Task.WhenAll(_sources.Select(source => CheckAsync(source, cancellationToken)));
+            if (generation != _generation)
+            {
+                return;
+            }
+
+            var next = new Dictionary<string, ProviderIncident>(_current, StringComparer.OrdinalIgnoreCase);
             foreach (var (source, answered, incident) in results)
             {
                 if (!answered)
@@ -227,8 +237,12 @@ internal sealed class ProviderIncidentService
                 var listed = entry.TryGetProperty("components", out var components) && components.ValueKind == JsonValueKind.Array
                     ? components.EnumerateArray().ToArray()
                     : [];
+                // Only an incident that names an allowlisted component counts. GitHub and Anthropic
+                // often open an incident before attaching components, and such an incident may be
+                // about any of their products; the component's own status still reports it once the
+                // page attributes it.
                 var affected = listed.Where(component => Counts(GetString(component, "name"))).ToArray();
-                if (listed.Length > 0 && affected.Length == 0)
+                if (affected.Length == 0)
                 {
                     continue;
                 }
