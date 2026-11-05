@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.Net;
 using System.Reflection;
 using System.Security.AccessControl;
@@ -52,6 +53,7 @@ internal static class Program
         ("burn-rate projection", TestForecastAsync),
         ("projection ignores a window reset", TestForecastResetAsync),
         ("alert thresholds and debouncing", TestNotificationsAsync),
+        ("alert memory survives a restart and re-arms on a new window", TestAlertMemorySurvivesRestartAsync),
         ("release version comparison", TestUpdateComparisonAsync),
         ("dashboard metric display selection", TestMetricDisplaySelectionAsync),
         ("bundled release notes and upgrade state", TestReleaseNotesAsync),
@@ -1676,6 +1678,78 @@ internal static class Program
         var reset = coordinator.Evaluate(SampleSnapshot(4, now), settings, now.AddMinutes(20));
         Equal(1, reset.Count);
         Equal(AlertLevel.Info, reset[0].Level);
+        return Task.CompletedTask;
+    }
+
+    private static Task TestAlertMemorySurvivesRestartAsync()
+    {
+        var settings = new AppSettings();
+        var now = DateTimeOffset.Parse("2026-11-05T10:00:00Z", CultureInfo.InvariantCulture);
+        var stateFile = Path.Combine(AppPaths.DataDirectory, $"alert-state-{Guid.NewGuid():N}.json");
+        UsageSnapshot Reading(int used, DateTimeOffset resetsAt) => new(
+            "Plus",
+            new[] { new UsageMetric("5-hour", UsageMetricKind.Session, used, resetsAt, 300) },
+            now,
+            "codex",
+            "Codex");
+        var window = now.AddHours(3);
+        try
+        {
+            // A clean install records silently, even well past a threshold.
+            var first = new NotificationCoordinator(stateFile);
+            Equal(0, first.Evaluate(Reading(70, window), settings, now).Count);
+            first.SaveIfChanged(now);
+            True(File.Exists(stateFile));
+
+            // Restarted: the limit crossed 95% (the default thresholds are 80 and 95) while UsageAI was closed, so it alerts once.
+            var restarted = new NotificationCoordinator(stateFile);
+            var crossed = restarted.Evaluate(Reading(96, window), settings, now.AddMinutes(30));
+            Equal(1, crossed.Count);
+            Equal(AlertLevel.Critical, crossed[0].Level);
+            restarted.SaveIfChanged(now.AddMinutes(30));
+
+            // Restarted again in the same window: that alert was already given.
+            var again = new NotificationCoordinator(stateFile);
+            Equal(0, again.Evaluate(Reading(97, window), settings, now.AddMinutes(40)).Count);
+
+            // A sliding reset that creeps forward by one poll is still the same window...
+            Equal(0, again.Evaluate(Reading(98, window.AddMinutes(5)), settings, now.AddMinutes(45)).Count);
+
+            // ...but a rollover that happened while closed re-arms the thresholds: the new window
+            // climbed past 95% before UsageAI saw it, so it alerts even though the reading fell.
+            again.SaveIfChanged(now.AddMinutes(45));
+            var nextWindow = new NotificationCoordinator(stateFile);
+            var rolled = nextWindow.Evaluate(Reading(96, window.AddHours(5)), settings, now.AddHours(6));
+            Equal(1, rolled.Count);
+            Equal(AlertLevel.Critical, rolled[0].Level);
+
+            // Hiding a provider forgets it on disk too, so re-showing it starts silently.
+            nextWindow.Forget("codex");
+            nextWindow.SaveIfChanged(now.AddHours(6));
+            var afterForget = new NotificationCoordinator(stateFile);
+            Equal(0, afterForget.Evaluate(Reading(99, window.AddHours(5)), settings, now.AddHours(7)).Count);
+
+            // A damaged file is ignored rather than trusted.
+            File.WriteAllText(stateFile, "{not json");
+            Equal(0, new NotificationCoordinator(stateFile).Evaluate(Reading(99, window), settings, now).Count);
+
+            // Windows whose reset passed long ago are dropped when saving.
+            var pruning = new NotificationCoordinator(stateFile);
+            pruning.Evaluate(Reading(10, now.AddDays(-5)), settings, now);
+            pruning.SaveIfChanged(now);
+            Equal("{}", File.ReadAllText(stateFile));
+            True(NotificationCoordinator.StartedNewWindow(
+                new NotificationCoordinator.MetricMemory(50, now),
+                new UsageMetric("Weekly", UsageMetricKind.Rolling, 1, now.AddHours(2))));
+            False(NotificationCoordinator.StartedNewWindow(
+                new NotificationCoordinator.MetricMemory(50, null),
+                new UsageMetric("Weekly", UsageMetricKind.Rolling, 1, now.AddDays(7))));
+        }
+        finally
+        {
+            File.Delete(stateFile);
+        }
+
         return Task.CompletedTask;
     }
 

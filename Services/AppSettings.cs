@@ -26,6 +26,9 @@ internal static class AppPaths
 
     public static string SnapshotCacheFile => Path.Combine(DataDirectory, "last-snapshot.json");
 
+    /// <summary>Each metric's last reading, so usage alerts survive a restart.</summary>
+    public static string AlertStateFile => Path.Combine(DataDirectory, "alert-state.json");
+
     public static string UpdateDirectory => Path.Combine(DataDirectory, "updates");
 
     public static void EnsureDirectory() => Directory.CreateDirectory(DataDirectory);
