@@ -29,6 +29,10 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
   in `config.toml`, or any rejection or unexpected answer leaves usage to the official
   `codex app-server`, started with a read-only sandbox and no approval prompts, which renews the
   login itself.
+- GitHub Copilot tokens are sent only to the GitHub service that issued them: `api.github.com` for
+  github.com and `api.<host>` for a GitHub Enterprise Cloud host (`*.ghe.com`), as named by the
+  credential file the token came from. A token for any other host, such as a self-hosted GitHub
+  Enterprise Server, is not used.
 - Browser storage is never scanned.
 - Claude web sessions are opt-in, memory-only, and never persisted by UsageAI.
 - Secrets are not forwarded to provider CLI child processes or included in diagnostic output.

@@ -1400,6 +1400,77 @@ internal static class CoverageExpansionTests
         return Task.CompletedTask;
     }
 
+    public static async Task TestCopilotHostsAndEndedSubscriptionAsync()
+    {
+        // A token goes only to the GitHub service that issued it.
+        Equal(new Uri("https://api.github.com/copilot_internal/user"), GitHubCopilotUsageClient.UserEndpointFor("github.com"));
+        Equal(new Uri("https://api.octocorp.ghe.com/copilot_internal/user"), GitHubCopilotUsageClient.UserEndpointFor("https://OctoCorp.ghe.com/login"));
+        Null(GitHubCopilotUsageClient.UserEndpointFor("github.mycorp.com"));
+        Null(GitHubCopilotUsageClient.UserEndpointFor("ghe.com"));
+        Null(GitHubCopilotUsageClient.UserEndpointFor("evil.ghe.com.attacker.example"));
+        Null(GitHubCopilotUsageClient.UserEndpointFor("api.ghe.com@attacker.example"));
+        Null(GitHubCopilotUsageClient.UserEndpointFor(null));
+
+        // Only keys that look like a host name one.
+        Equal("github.com", GitHubCopilotUsageClient.HostFromKey("github.com:Ov23liExample", holdsToken: true));
+        Equal("octocorp.ghe.com", GitHubCopilotUsageClient.HostFromKey("https://octocorp.ghe.com:dev", holdsToken: true));
+        Equal("github.mycorp.com", GitHubCopilotUsageClient.HostFromKey("github.mycorp.com", holdsToken: true));
+        Null(GitHubCopilotUsageClient.HostFromKey("settings.panel", holdsToken: false));
+        Null(GitHubCopilotUsageClient.HostFromKey("first", holdsToken: true));
+
+        var directory = Path.Combine(AppPaths.DataDirectory, $"copilot-hosts-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var appsJson = Path.Combine(directory, "apps.json");
+            File.WriteAllText(
+                appsJson,
+                """
+                {
+                  "github.com:Ov23liExample": {"user": "dev", "oauth_token": "gh-token", "githubAppId": "Ov23liExample"},
+                  "octocorp.ghe.com:Iv1Example": {"user": "dev", "oauth_token": "ghe-token"},
+                  "github.mycorp.com": {"user": "dev", "oauth_token": "ghes-token"},
+                  "nested": {"copilotTokens": {"https://second.ghe.com:dev": "ghe-cli-token", "plain": "plain-token"}}
+                }
+                """);
+            var tokens = new HashSet<string>(StringComparer.Ordinal);
+            InvokePrivateStatic<object?>(typeof(GitHubCopilotUsageClient), "AddTokensFromFile", tokens, appsJson);
+            // The self-hosted Enterprise Server token is left out rather than sent to github.com.
+            Equal("gh-token,ghe-token,ghe-cli-token,plain-token", string.Join(',', tokens));
+
+            var hosts = new Dictionary<string, string>(StringComparer.Ordinal);
+            using var http = new HttpClient(new StubHttpHandler((request, _, _) =>
+            {
+                hosts[request.Headers.Authorization!.Parameter!] = request.RequestUri!.Host;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized));
+            }));
+            await ThrowsAsync<GitHubCopilotUsageException>(() =>
+                new GitHubCopilotUsageClient(http, _ => Task.FromResult<IReadOnlyList<string>>(tokens.ToArray())).GetUsageAsync());
+            Equal("api.github.com", hosts["gh-token"]);
+            Equal("api.octocorp.ghe.com", hosts["ghe-token"]);
+            Equal("api.second.ghe.com", hosts["ghe-cli-token"]);
+            Equal("api.github.com", hosts["plain-token"]);
+            False(hosts.ContainsKey("ghes-token"));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+
+        // An ended subscription says so, instead of a generic "invalid data" error, and other tokens
+        // are not tried once GitHub has answered for the account.
+        var calls = 0;
+        using var ended = new HttpClient(new StubHttpHandler((_, _, _) =>
+        {
+            calls++;
+            return Task.FromResult(JsonResponse(HttpStatusCode.OK, """{"access_type_sku":"subscription_ended","copilot_plan":"individual"}"""));
+        }));
+        var endedException = await ThrowsAsync<GitHubCopilotUsageException>(() =>
+            new GitHubCopilotUsageClient(ended, _ => Task.FromResult<IReadOnlyList<string>>(["first-token", "second-token"])).GetUsageAsync());
+        Equal(GitHubCopilotUsageClient.SubscriptionEndedMessage, endedException.Message);
+        Equal(1, calls);
+    }
+
     public static async Task TestClaudeLimitsAndResetCreditsAsync()
     {
         var now = DateTimeOffset.Parse("2026-11-05T10:00:00Z", CultureInfo.InvariantCulture);
@@ -4122,14 +4193,16 @@ internal static class CoverageExpansionTests
                 typeof(GitHubCopilotUsageClient),
                 "AddToken",
                 cappedTokens,
-                "one-too-many");
+                "one-too-many",
+                null);
             Equal(32, cappedTokens.Count);
             var normalTokens = new HashSet<string>(StringComparer.Ordinal);
             InvokePrivateStatic<object?>(
                 typeof(GitHubCopilotUsageClient),
                 "AddToken",
                 normalTokens,
-                " invalid token ");
+                " invalid token ",
+                null);
             Equal(0, normalTokens.Count);
 
             var ghDirectory = Path.Combine(directory, "fake-gh");

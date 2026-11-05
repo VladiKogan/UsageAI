@@ -15,7 +15,7 @@ import {
   runClaudeAuthStatus,
 } from "../src/providers/claude";
 import { CodexUsageClient, jwtExpiryMs, parseCodexHttpSnapshot, readCodexHttpCredentials } from "../src/providers/codex";
-import { CopilotUsageClient } from "../src/providers/copilot";
+import { addTokensFromValue, CopilotUsageClient, hostFromKey, subscriptionEndedMessage, userEndpointFor } from "../src/providers/copilot";
 import {
   agyHubArguments,
   agyOwnedEnvironment,
@@ -275,6 +275,63 @@ test("Claude reads model-scoped weekly limits, reset credits and plans without l
   } finally {
     mock.restoreAll();
     for (const name of names) restoreEnvironment(name, previous.get(name));
+  }
+});
+
+test("Copilot sends each token only to its own GitHub and names an ended subscription", async () => {
+  assert.equal(userEndpointFor("github.com"), "https://api.github.com/copilot_internal/user");
+  assert.equal(userEndpointFor("https://OctoCorp.ghe.com/login"), "https://api.octocorp.ghe.com/copilot_internal/user");
+  for (const host of ["github.mycorp.com", "ghe.com", "evil.ghe.com.attacker.example", "api.ghe.com@attacker.example", undefined]) {
+    assert.equal(userEndpointFor(host), undefined);
+  }
+  assert.equal(hostFromKey("github.com:Ov23liExample", true), "github.com");
+  assert.equal(hostFromKey("https://octocorp.ghe.com:dev", true), "octocorp.ghe.com");
+  assert.equal(hostFromKey("settings.panel", false), undefined);
+  assert.equal(hostFromKey("first", true), undefined);
+
+  const tokens = new Set<string>();
+  addTokensFromValue(tokens, {
+    "github.com:Ov23liExample": { user: "dev", oauth_token: "gh-token" },
+    "octocorp.ghe.com:Iv1Example": { user: "dev", oauth_token: "ghe-token" },
+    "github.mycorp.com": { user: "dev", oauth_token: "ghes-token" },
+    nested: { copilotTokens: { "https://second.ghe.com:dev": "ghe-cli-token", plain: "plain-token" } },
+  }, 0);
+  // The self-hosted Enterprise Server token is left out rather than sent to github.com.
+  assert.deepEqual([...tokens], ["gh-token", "ghe-token", "ghe-cli-token", "plain-token"]);
+
+  const oldToken = process.env.COPILOT_GITHUB_TOKEN;
+  try {
+    // Each discovered token is routed to its own host.
+    const hosts = new Map<string, string>();
+    mock.method(security, "readBoundedText", (async () => JSON.stringify({
+      "octocorp.ghe.com:Iv1Example": { oauth_token: "ghe-token" },
+      "github.com:Ov23liExample": { oauth_token: "gh-token" },
+    })) as typeof security.readBoundedText);
+    mock.method(security, "requestJson", (async (url, options) => {
+      const address = new URL(String(url));
+      assert.deepEqual(options.allowedHosts, [address.host]);
+      hosts.set(options.headers?.Authorization?.replace("Bearer ", "") ?? "", address.host);
+      return { status: 401, headers: {}, data: {} };
+    }) as typeof security.requestJson);
+    delete process.env.COPILOT_GITHUB_TOKEN;
+    await assert.rejects(new CopilotUsageClient(() => false).getUsage());
+    assert.equal(hosts.get("ghe-token"), "api.octocorp.ghe.com");
+    assert.equal(hosts.get("gh-token"), "api.github.com");
+    mock.restoreAll();
+
+    // An ended subscription says so, and other tokens are not tried once GitHub has answered.
+    let calls = 0;
+    mock.method(security, "requestJson", (async () => {
+      calls += 1;
+      return { status: 200, headers: {}, data: { access_type_sku: "subscription_ended", copilot_plan: "individual" } };
+    }) as typeof security.requestJson);
+    process.env.COPILOT_GITHUB_TOKEN = "first-token";
+    await assert.rejects(new CopilotUsageClient(() => false).getUsage(), (error: unknown) =>
+      error instanceof UsageProviderError && error.message === subscriptionEndedMessage);
+    assert.equal(calls, 1);
+  } finally {
+    mock.restoreAll();
+    restoreEnvironment("COPILOT_GITHUB_TOKEN", oldToken);
   }
 });
 

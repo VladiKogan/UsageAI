@@ -21,6 +21,12 @@ The project follows [Semantic Versioning](https://semver.org/).
   Code OAuth, and leaves claude.ai alone for 15 minutes instead of asking again on every refresh.
 - One unexpected text value in a Claude usage answer no longer fails the whole reading; that field is
   skipped.
+- **GitHub Copilot says when a subscription has ended.** GitHub answers an ended subscription with
+  an ordinary reply, which read as invalid usage data; the card now says the subscription has ended.
+- **A GitHub Enterprise Copilot token is never sent to github.com.** UsageAI sent every Copilot
+  token it found to api.github.com, including one that belongs to a company's own GitHub Enterprise
+  Server. Each token now goes only to the GitHub service it came from, and a token for a host
+  UsageAI does not read from is not used at all.
 
 ### Added
 
@@ -35,6 +41,8 @@ The project follows [Semantic Versioning](https://semver.org/).
   not-yet-started grants are not counted.
 - **Claude shows every model's own weekly limit.** Claude now reports weekly limits per model, such as
   Opus or Sonnet, and UsageAI shows each of them by name instead of only Opus.
+- **GitHub Copilot works with GitHub Enterprise Cloud (`*.ghe.com`).** A Copilot sign-in to an
+  Enterprise Cloud host is now read from that host's own API.
 
 ### Changed
 

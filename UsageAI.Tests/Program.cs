@@ -96,6 +96,7 @@ internal static class Program
         ("Claude HTTP success and error handling", CoverageExpansionTests.TestClaudeHttpAsync),
         ("Claude delegates refresh ownership to its CLI", CoverageExpansionTests.TestClaudeCredentialsAreReadOnlyAsync),
         ("Copilot HTTP success and error handling", CoverageExpansionTests.TestCopilotHttpAsync),
+        ("Copilot sends each token only to its own GitHub and names an ended subscription", CoverageExpansionTests.TestCopilotHostsAndEndedSubscriptionAsync),
         ("Gemini OAuth HTTP success and error handling", CoverageExpansionTests.TestGeminiHttpAsync),
         ("Codex app-server protocol and errors", CoverageExpansionTests.TestCodexProtocolAsync),
         ("Codex reads usage over HTTPS first and falls back to the app-server", CoverageExpansionTests.TestCodexHttpUsageAsync),

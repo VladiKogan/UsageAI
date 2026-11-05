@@ -15,6 +15,53 @@ import { getBoolean, getNumber, getObject, getString, isObject, parseDate } from
 
 const userEndpoint = "https://api.github.com/copilot_internal/user";
 
+/** The message for an account whose Copilot subscription GitHub reports as ended. */
+export const subscriptionEndedMessage = "Your GitHub Copilot subscription has ended. Renew it on GitHub, then refresh.";
+
+/**
+ * The host each discovered token belongs to, for tokens of a GitHub Enterprise Cloud (`*.ghe.com`)
+ * login. Every other token is a github.com token. Mirrors the desktop `TokenHosts`.
+ */
+const tokenHosts = new Map<string, string>();
+
+/** A bare lower-case DNS host from a value such as `https://octocorp.ghe.com/`. */
+export function normalizeHost(value: string | undefined): string | undefined {
+  let host = value?.trim().toLowerCase();
+  if (!host) {
+    return undefined;
+  }
+  host = host.replace(/^https?:\/\//, "");
+  host = host.split(/[/:?#]/, 1)[0] ?? "";
+  return host.length > 3 && host.length <= 253 && host.includes(".") && /^[a-z0-9.-]+$/.test(host) &&
+    !host.startsWith(".") && !host.endsWith(".")
+    ? host
+    : undefined;
+}
+
+/**
+ * Where a token's usage is read: api.github.com for github.com, `api.<host>` for a GitHub Enterprise
+ * Cloud host, and nowhere for any other host, so a token only ever goes to the service that issued it.
+ */
+export function userEndpointFor(host: string | undefined): string | undefined {
+  const normalized = normalizeHost(host);
+  if (!normalized) {
+    return undefined;
+  }
+  if (normalized === "github.com") {
+    return userEndpoint;
+  }
+  return normalized.endsWith(".ghe.com") && normalized.length > ".ghe.com".length
+    ? `https://api.${normalized}/copilot_internal/user`
+    : undefined;
+}
+
+/**
+ * The host a credential key names, or undefined when the key is no host: a URL, `host:appId`
+ * (apps.json), or a bare host whose object holds the token itself (hosts.json).
+ */
+export function hostFromKey(key: string, holdsToken: boolean): string | undefined {
+  return /^https?:\/\//i.test(key) || key.includes(":") || holdsToken ? normalizeHost(key) : undefined;
+}
 export class CopilotUsageClient implements UsageClient {
   public readonly id = "copilot";
   public readonly displayName = "GitHub Copilot";
@@ -37,8 +84,9 @@ export class CopilotUsageClient implements UsageClient {
     let lastFailure: unknown;
     for (const token of this.prioritizeTokens(tokens)) {
       try {
-        const response = await requestJson(userEndpoint, {
-          allowedHosts: ["api.github.com"],
+        const endpoint = userEndpointFor(tokenHosts.get(token) ?? "github.com") ?? userEndpoint;
+        const response = await requestJson(endpoint, {
+          allowedHosts: [new URL(endpoint).host],
           headers: { Authorization: `Bearer ${token}` },
           ...(signal ? { signal } : {}),
         });
@@ -56,6 +104,10 @@ export class CopilotUsageClient implements UsageClient {
         this.workingToken = token;
         return parseCopilotSnapshot(response.data);
       } catch (error) {
+        // GitHub answered for this account; another token would not make the subscription active.
+        if (error instanceof UsageProviderError && error.message === subscriptionEndedMessage) {
+          throw error;
+        }
         lastFailure = error;
       }
     }
@@ -101,6 +153,10 @@ export class CopilotUsageClient implements UsageClient {
 }
 
 export function parseCopilotSnapshot(root: unknown): UsageSnapshot {
+  // GitHub answers an ended subscription with a normal reply and this SKU.
+  if (getString(root, "access_type_sku")?.toLowerCase() === "subscription_ended") {
+    throw new UsageProviderError(subscriptionEndedMessage);
+  }
   const fallbackReset = parseDate(
     getString(root, "quota_reset_date_utc")
       ?? getString(root, "quota_reset_date")
@@ -196,32 +252,46 @@ function credentialFileCandidates(): string[] {
   return candidates;
 }
 
-function addTokensFromValue(tokens: Set<string>, value: unknown, depth: number): void {
+/**
+ * Collects tokens, remembering the host each belongs to where the file says so. A token without a
+ * host is github.com's. Mirrors the desktop `AddTokensFromElement`.
+ */
+export function addTokensFromValue(tokens: Set<string>, value: unknown, depth: number, host?: string): void {
   if (!isObject(value) || depth > 8 || tokens.size >= 16) {
     return;
   }
   for (const [key, child] of Object.entries(value)) {
     if (key === "oauth_token" && typeof child === "string") {
-      addToken(tokens, child);
+      addToken(tokens, child, host);
     } else if (key === "copilotTokens" && isObject(child)) {
-      for (const token of Object.values(child)) {
+      for (const [tokenKey, token] of Object.entries(child)) {
         if (typeof token === "string") {
-          addToken(tokens, token);
+          addToken(tokens, token, hostFromKey(tokenKey, true) ?? host);
         }
       }
     } else if (isObject(child)) {
-      addTokensFromValue(tokens, child, depth + 1);
+      addTokensFromValue(tokens, child, depth + 1, hostFromKey(key, typeof child.oauth_token === "string") ?? host);
     }
   }
 }
 
-function addToken(tokens: Set<string>, value: string | undefined): void {
+function addToken(tokens: Set<string>, value: string | undefined, host?: string): void {
   if (tokens.size >= 16) {
     return;
   }
   const token = normalizeToken(value);
-  if (token) {
-    tokens.add(token);
+  if (!token) {
+    return;
+  }
+  // A token for a host UsageAI does not read from (such as a self-hosted GitHub Enterprise Server)
+  // is left out entirely rather than sent to github.com.
+  const tokenHost = normalizeHost(host) ?? "github.com";
+  if (!userEndpointFor(tokenHost)) {
+    return;
+  }
+  tokens.add(token);
+  if (tokenHost !== "github.com") {
+    tokenHosts.set(token, tokenHost);
   }
 }
 
