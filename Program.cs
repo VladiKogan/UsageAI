@@ -129,14 +129,46 @@ internal static class Program
                 throw new ArgumentException($"Unknown usage provider '{providerId}'. Use 'codex', 'claude', 'copilot', or 'gemini'.");
             }
 
-            var snapshot = await client.GetUsageAsync();
-            Console.WriteLine(snapshot.ToDiagnosticJson());
+            var attempts = ProviderAttempts.Begin();
+            try
+            {
+                var snapshot = await client.GetUsageAsync();
+                Console.WriteLine(DiagnosticJson(snapshot, attempts));
+            }
+            catch (Exception exception)
+            {
+                // The error stays on stderr as before; the attempts that led to it go to stdout.
+                Console.Error.WriteLine(GetSafeDiagnosticError(exception));
+                if (attempts.Count > 0)
+                {
+                    Console.WriteLine(DiagnosticJson(null, attempts));
+                }
+
+                Environment.ExitCode = 1;
+            }
+            finally
+            {
+                ProviderAttempts.End();
+            }
         }
         catch (Exception exception)
         {
             Console.Error.WriteLine(GetSafeDiagnosticError(exception));
             Environment.ExitCode = 1;
         }
+    }
+
+    /// <summary>
+    /// The snapshot's diagnostic JSON with an <c>Attempts</c> array added: every source the provider
+    /// tried, in order, with a fixed-vocabulary outcome and its duration.
+    /// </summary>
+    internal static string DiagnosticJson(UsageAI.Models.UsageSnapshot? snapshot, IReadOnlyList<ProviderAttempt> attempts)
+    {
+        var root = snapshot is null
+            ? new System.Text.Json.Nodes.JsonObject()
+            : System.Text.Json.Nodes.JsonNode.Parse(snapshot.ToDiagnosticJson())!.AsObject();
+        root["Attempts"] = System.Text.Json.JsonSerializer.SerializeToNode(attempts.ToArray());
+        return root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
     }
 
     private static string GetSafeDiagnosticError(Exception exception) => exception switch

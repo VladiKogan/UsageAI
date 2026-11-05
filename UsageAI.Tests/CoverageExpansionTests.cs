@@ -1400,6 +1400,101 @@ internal static class CoverageExpansionTests
         return Task.CompletedTask;
     }
 
+    public static async Task TestDiagnosticAttemptsAsync()
+    {
+        static string Describe(IReadOnlyList<ProviderAttempt> attempts) =>
+            string.Join(',', attempts.Select(attempt => $"{attempt.Source}:{attempt.Outcome}"));
+
+        // Nothing is recorded outside a diagnostic run.
+        False(ProviderAttempts.IsRecording);
+        ProviderAttempts.Record("agy", "answered");
+
+        var attempts = ProviderAttempts.Begin();
+        try
+        {
+            ProviderAttempts.Record("agy-hub", "no-answer");
+            // Anything outside the fixed vocabulary is replaced, so no text from a provider can leak.
+            ProviderAttempts.Record("Bearer ghp_secret", "answered at port 51234");
+            Equal("a", await ProviderAttempts.TrackAsync("tracked", () => Task.FromResult<string?>("a")));
+            Null(await ProviderAttempts.TrackAsync("tracked", () => Task.FromResult<string?>(null)));
+            await ThrowsAsync<InvalidOperationException>(() =>
+                ProviderAttempts.TrackAsync<string>("tracked", () => throw new InvalidOperationException("detail")));
+            Equal("agy-hub:no-answer,unknown:unknown,tracked:answered,tracked:no-answer,tracked:failed", Describe(attempts));
+            for (var index = 0; index < 40; index++)
+            {
+                ProviderAttempts.Record("filler", "answered");
+            }
+
+            Equal(32, attempts.Count);
+
+            var json = global::UsageAI.Program.DiagnosticJson(null, attempts.Take(2).ToArray());
+            True(json.Contains("\"Attempts\"", StringComparison.Ordinal));
+            False(json.Contains("ghp_secret", StringComparison.Ordinal));
+            var withSnapshot = global::UsageAI.Program.DiagnosticJson(Snapshot("codex", "Codex", 12, DateTimeOffset.Now), attempts.Take(1).ToArray());
+            True(withSnapshot.Contains("\"Plan\"", StringComparison.Ordinal));
+            True(withSnapshot.Contains("\"agy-hub\"", StringComparison.Ordinal));
+        }
+        finally
+        {
+            ProviderAttempts.End();
+        }
+
+        // Gemini reports every path it tried, in order, before its combined error.
+        var environment = SaveEnvironment("GEMINI_CONFIG_DIR");
+        var directory = Path.Combine(AppPaths.DataDirectory, $"gemini-attempts-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            Environment.SetEnvironmentVariable("GEMINI_CONFIG_DIR", directory);
+            using var http = new HttpClient(new StubHttpHandler((_, _, _) =>
+                throw new InvalidOperationException("HTTP should not be reached.")));
+            var gemini = ProviderAttempts.Begin();
+            try
+            {
+                await ThrowsAsync<GeminiUsageException>(() =>
+                    new GeminiUsageClient(http, NoLocalGeminiSnapshot, hasAgyCli: () => true).GetUsageAsync());
+                Equal("agy-hub-serving:not-running,antigravity-local:no-answer,agy:no-answer,gemini-cli:not-signed-in", Describe(gemini));
+            }
+            finally
+            {
+                ProviderAttempts.End();
+            }
+        }
+        finally
+        {
+            RestoreEnvironment(environment);
+            Directory.Delete(directory, recursive: true);
+        }
+
+        Equal("unsupported-client", GeminiUsageClient.GeminiCliOutcome(new GeminiUsageException(GeminiUsageClient.ConsumerTierShutdownMessage)));
+        Equal("rate-limited", GeminiUsageClient.GeminiCliOutcome(new GeminiUsageException("Google Cloud API rate-limited the quota request.")));
+        Equal("timeout", GeminiUsageClient.GeminiCliOutcome(new GeminiUsageException("Gemini usage request timed out after 15 seconds.")));
+        Equal("failed", GeminiUsageClient.GeminiCliOutcome(new GeminiUsageException("Something else.")));
+
+        // Codex says whether its HTTP path was usable before the app-server answered.
+        using (var unused = new HttpClient(new StubHttpHandler((_, _, _) =>
+                   throw new InvalidOperationException("HTTP should not be reached."))))
+        {
+            static Task<(JsonElement RateLimits, JsonElement? Account)> AppServer(CancellationToken _)
+            {
+                using var rateLimits = JsonDocument.Parse(
+                    """{"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":4,"windowDurationMins":300}}}}""");
+                return Task.FromResult<(JsonElement, JsonElement?)>((rateLimits.RootElement.Clone(), null));
+            }
+
+            var codex = ProviderAttempts.Begin();
+            try
+            {
+                await new CodexUsageClient(unused, () => null, AppServer).GetUsageAsync();
+                Equal("chatgpt-http:no-usable-login,codex-app-server:answered", Describe(codex));
+            }
+            finally
+            {
+                ProviderAttempts.End();
+            }
+        }
+    }
+
     public static async Task TestCopilotHostsAndEndedSubscriptionAsync()
     {
         // A token goes only to the GitHub service that issued it.

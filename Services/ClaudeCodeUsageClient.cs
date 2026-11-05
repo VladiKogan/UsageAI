@@ -57,20 +57,33 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
     {
         if (ClaudeWebUsageClient.IsConfigured && DateTimeOffset.UtcNow >= _webRetryAfterUtc)
         {
+            var webTimer = System.Diagnostics.Stopwatch.StartNew();
             try
             {
-                return await ClaudeWebUsageClient.GetUsageAsync(cancellationToken);
+                var viaWeb = await ClaudeWebUsageClient.GetUsageAsync(cancellationToken);
+                ProviderAttempts.Record("claude-web", "answered", webTimer);
+                return viaWeb;
             }
             catch (ClaudeWebUsageException exception)
             {
                 // An expired or unavailable opt-in web session falls back to Claude Code OAuth. After a
                 // Cloudflare browser check claude.ai is left alone for a while rather than challenged
                 // on every refresh; the session key itself is kept.
+                ProviderAttempts.Record(
+                    "claude-web",
+                    exception.RetryAfter > TimeSpan.Zero ? "browser-check"
+                        : exception.Message.Contains("no longer valid", StringComparison.Ordinal) ? "session-rejected"
+                        : "failed",
+                    webTimer);
                 if (exception.RetryAfter > TimeSpan.Zero)
                 {
                     _webRetryAfterUtc = DateTimeOffset.UtcNow + exception.RetryAfter;
                 }
             }
+        }
+        else if (ClaudeWebUsageClient.IsConfigured)
+        {
+            ProviderAttempts.Record("claude-web", "skipped-browser-check");
         }
 
         var credentials = await RefreshExpiredCredentialsThroughClaudeAsync(
@@ -78,23 +91,54 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             cancellationToken);
         ValidateCredentials(credentials);
 
+        var oauthTimer = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            return await RequestUsageAsync(credentials, cancellationToken);
+            var snapshot = await RequestUsageAsync(credentials, cancellationToken);
+            ProviderAttempts.Record("claude-oauth", "answered", oauthTimer);
+            return snapshot;
         }
         catch (ClaudeCodeUsageException exception) when (
             exception.CanRetryAfterAuthProbe && !credentials.IsEnvironmentOverride)
         {
+            ProviderAttempts.Record("claude-oauth", OAuthOutcome(exception), oauthTimer);
+            var recoveryTimer = System.Diagnostics.Stopwatch.StartNew();
             var recovered = await RecoverCredentialsThroughClaudeAsync(cancellationToken);
             if (recovered is null)
             {
+                ProviderAttempts.Record("claude-cli-recovery", "no-fresh-login", recoveryTimer);
                 throw;
             }
 
+            ProviderAttempts.Record("claude-cli-recovery", "refreshed", recoveryTimer);
             ValidateCredentials(recovered);
-            return await RequestUsageAsync(recovered, cancellationToken);
+            var retryTimer = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                var retried = await RequestUsageAsync(recovered, cancellationToken);
+                ProviderAttempts.Record("claude-oauth-retry", "answered", retryTimer);
+                return retried;
+            }
+            catch (ClaudeCodeUsageException retryException)
+            {
+                ProviderAttempts.Record("claude-oauth-retry", OAuthOutcome(retryException), retryTimer);
+                throw;
+            }
+        }
+        catch (ClaudeCodeUsageException exception)
+        {
+            ProviderAttempts.Record("claude-oauth", OAuthOutcome(exception), oauthTimer);
+            throw;
         }
     }
+
+    /// <summary>The fixed-vocabulary outcome <c>--diagnose</c> reports for a failed OAuth request.</summary>
+    private static string OAuthOutcome(ClaudeCodeUsageException exception) =>
+        exception.RetryAfter > TimeSpan.Zero || exception.Message.Contains("rate-limited", StringComparison.Ordinal) ? "rate-limited"
+        : exception.Message.Contains("has expired", StringComparison.Ordinal) ? "login-expired"
+        : exception.Message.Contains("cannot read", StringComparison.Ordinal) ? "forbidden"
+        : exception.Message.Contains("within", StringComparison.Ordinal) ? "timeout"
+        : "failed";
 
     private static void ValidateCredentials(ClaudeCredentials credentials)
     {

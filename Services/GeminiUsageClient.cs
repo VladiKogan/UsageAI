@@ -103,15 +103,19 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         // here, ahead of the backoff that exists to suppress exactly that child process.
         if (_hasAgyHub())
         {
-            var hubbedSnapshot = await _agyHubProbe(cancellationToken);
+            var hubbedSnapshot = await ProviderAttempts.TrackAsync("agy-hub-serving", () => _agyHubProbe(cancellationToken));
             if (hubbedSnapshot is not null)
             {
                 return hubbedSnapshot;
             }
         }
+        else
+        {
+            ProviderAttempts.Record("agy-hub-serving", "not-running");
+        }
 
         // 1. Try local Antigravity LanguageServer probe if running
-        var antigravitySnapshot = await _localProbe(cancellationToken);
+        var antigravitySnapshot = await ProviderAttempts.TrackAsync("antigravity-local", () => _localProbe(cancellationToken));
         if (antigravitySnapshot is not null)
         {
             return antigravitySnapshot;
@@ -122,7 +126,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         var agyWasSkipped = DateTimeOffset.UtcNow < _agyRetryAfterUtc;
         if (!agyWasSkipped)
         {
-            var agySnapshot = await _agyProbe(cancellationToken);
+            var agySnapshot = await ProviderAttempts.TrackAsync("agy", () => _agyProbe(cancellationToken));
             if (agySnapshot is not null)
             {
                 return agySnapshot;
@@ -130,20 +134,28 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
 
             _agyRetryAfterUtc = DateTimeOffset.UtcNow.AddMinutes(30);
         }
+        else
+        {
+            ProviderAttempts.Record("agy", "skipped-backoff");
+        }
 
         // 3. Compatibility fallback to Gemini CLI OAuth API. If that fallback is also stale,
         // retry agy immediately so a manual refresh can recover from sleep in one attempt.
+        var cliTimer = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            return (await GetGeminiCliUsageAsync(cancellationToken)) with { Source = "gemini-cli" };
+            var cliSnapshot = (await GetGeminiCliUsageAsync(cancellationToken)) with { Source = "gemini-cli" };
+            ProviderAttempts.Record("gemini-cli", "answered", cliTimer);
+            return cliSnapshot;
         }
         catch (GeminiUsageException exception)
         {
+            ProviderAttempts.Record("gemini-cli", GeminiCliOutcome(exception), cliTimer);
             _agyRetryAfterUtc = default;
             _resetAgyBackoff();
             if (agyWasSkipped)
             {
-                var recoveredSnapshot = await _agyProbe(cancellationToken);
+                var recoveredSnapshot = await ProviderAttempts.TrackAsync("agy-retry", () => _agyProbe(cancellationToken));
                 if (recoveredSnapshot is not null)
                 {
                     return recoveredSnapshot;
@@ -164,6 +176,18 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             };
         }
     }
+
+    /// <summary>The fixed-vocabulary outcome <c>--diagnose</c> reports for a failed Gemini CLI attempt.</summary>
+    internal static string GeminiCliOutcome(GeminiUsageException exception) => exception.Message switch
+    {
+        ConsumerTierShutdownMessage => "unsupported-client",
+        SignInAgainMessage => "sign-in-expired",
+        NotSignedInMessage => "not-signed-in",
+        _ when exception.RetryAfter > TimeSpan.Zero ||
+               exception.Message.Contains("rate-limited", StringComparison.OrdinalIgnoreCase) => "rate-limited",
+        _ when exception.Message.Contains("timed out", StringComparison.OrdinalIgnoreCase) => "timeout",
+        _ => "failed",
+    };
 
     /// <summary>
     /// The error shown once every Gemini path failed. The Gemini CLI fallback runs last, so its

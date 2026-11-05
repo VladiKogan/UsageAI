@@ -61,6 +61,11 @@ The project follows [Semantic Versioning](https://semver.org/).
   does not succeed, UsageAI asks the CLI as before, and the CLI renews the login itself; UsageAI never
   refreshes or writes `auth.json`. A rate limit from ChatGPT is reported with its retry window.
   `--diagnose codex` names the path that answered in `Source`.
+- **`--diagnose` lists every source a provider tried.** An `Attempts` array names each path in order —
+  for Gemini the serving `agy` server, the Antigravity IDE or editor extension, `agy` itself and the
+  Gemini CLI; for Claude the web session, OAuth and the CLI recovery; for Codex the HTTPS read and the
+  app-server — with a short outcome and how long it took. It is printed even when every source
+  fails. Outcomes come from a fixed list, so no token, port or provider text can appear in them.
 - **Usage alerts survive a restart.** UsageAI now remembers each limit's last reading and its
   window between runs, so a limit that crossed an alert threshold while UsageAI was closed alerts
   once when it starts, one you were already alerted about stays quiet, and a window that rolled over

@@ -72,14 +72,49 @@ internal sealed class CodexUsageClient : IUsageClient
     /// </summary>
     public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default)
     {
-        if (_loadCredentials() is { } credentials &&
-            await TryGetHttpUsageAsync(credentials, cancellationToken) is { } viaHttp)
+        if (_loadCredentials() is { } credentials)
         {
-            return viaHttp;
+            var httpTimer = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                if (await TryGetHttpUsageAsync(credentials, cancellationToken) is { } viaHttp)
+                {
+                    ProviderAttempts.Record("chatgpt-http", "answered", httpTimer);
+                    return viaHttp;
+                }
+
+                ProviderAttempts.Record("chatgpt-http", "no-answer", httpTimer);
+            }
+            catch (CodexUsageException exception) when (exception.RetryAfter > TimeSpan.Zero)
+            {
+                ProviderAttempts.Record("chatgpt-http", "rate-limited", httpTimer);
+                throw;
+            }
+        }
+        else
+        {
+            ProviderAttempts.Record("chatgpt-http", "no-usable-login");
         }
 
-        var (rateLimits, account) = await _appServer(cancellationToken);
-        return ParseSnapshot(rateLimits, account) with { Source = "codex-app-server" };
+        var appServerTimer = System.Diagnostics.Stopwatch.StartNew();
+        try
+        {
+            var (rateLimits, account) = await _appServer(cancellationToken);
+            var snapshot = ParseSnapshot(rateLimits, account) with { Source = "codex-app-server" };
+            ProviderAttempts.Record("codex-app-server", "answered", appServerTimer);
+            return snapshot;
+        }
+        catch (CodexUsageException exception)
+        {
+            ProviderAttempts.Record(
+                "codex-app-server",
+                exception.Message.Contains("not signed in", StringComparison.OrdinalIgnoreCase) ? "not-signed-in"
+                    : exception.Message.Contains("not found", StringComparison.OrdinalIgnoreCase) ? "cli-not-found"
+                    : exception.Message.Contains("within", StringComparison.OrdinalIgnoreCase) ? "timeout"
+                    : "failed",
+                appServerTimer);
+            throw;
+        }
     }
 
     private async Task<UsageSnapshot?> TryGetHttpUsageAsync(

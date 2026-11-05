@@ -285,7 +285,7 @@ dotnet run --project .\UsageAI.csproj -- --diagnose copilot
 dotnet run --project .\UsageAI.csproj -- --diagnose gemini
 ```
 
-`--help` lists every switch; `--version` prints the build version. Diagnostic output includes account identity and usage metadata — never provider tokens, but review it before sharing publicly.
+`--help` lists every switch; `--version` prints the build version. Diagnostic output includes account identity and usage metadata — never provider tokens, but review it before sharing publicly. Its `Attempts` list shows every source the provider tried, in order, with a short outcome (`answered`, `no-answer`, `not-running`, `sign-in-expired`, …) and how long it took; when every source fails, the error goes to stderr and the attempts still go to stdout, which is the most useful thing to paste into an issue.
 
 **Regenerate the screenshots:**
 
