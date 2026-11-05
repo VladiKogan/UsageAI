@@ -145,6 +145,11 @@ UsageAI reads the login your tools already made, and nothing else:
   `claude mcp list`, which makes Claude Code refresh its own login, after which UsageAI
   rereads the access token and retries usage once. Explicit environment-token overrides remain
   authoritative and are never replaced through this fallback.
+- 🔑 **Codex's login is only read.** UsageAI reads usage straight from ChatGPT with the access token
+  your Codex sign-in already holds, the same request the Codex CLI makes, and sends it nowhere else.
+  When that token has expired, or the request does not succeed, UsageAI asks the official
+  `codex app-server` instead (read-only sandbox, no approvals), which renews the login itself. UsageAI
+  never refreshes or rewrites `auth.json`.
 - 🏠 **No telemetry or tracking.** Network access is limited to provider usage requests and
   one automatic GitHub release check per day while UsageAI is running, and checks you start manually.
 - 🗑️ **Your history is yours to delete** — one button in Settings.

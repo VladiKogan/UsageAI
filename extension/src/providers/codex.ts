@@ -4,8 +4,25 @@ import * as readline from "node:readline";
 import { codexBundledPaths, findBundledExecutable, noExtensions, type ExtensionPathResolver } from "../bundled-cli";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
-import { findExecutable, spawnSecure } from "../security";
-import { getNumber, getObject, getString, isObject } from "./json";
+import { findExecutable, normalizeToken, parseRetryAfter, readBoundedText, requestJson, spawnSecure, userHome } from "../security";
+import { getArray, getNumber, getObject, getString, isObject } from "./json";
+
+/** The endpoint the Codex CLI itself reads usage from. */
+export const codexUsageEndpoint = "https://chatgpt.com/backend-api/wham/usage";
+
+/** The Codex login's access token, read from its `auth.json` for the usage request alone. */
+export interface CodexHttpCredentials {
+  /** Sent only to chatgpt.com, never logged or stored. */
+  readonly accessToken: string;
+  readonly accountId?: string;
+}
+
+export interface CodexDependencies {
+  readonly loadCredentials?: () => Promise<CodexHttpCredentials | undefined>;
+}
+
+/** A login is renewed by the CLI this long before it expires, so a token this close is left to it. */
+const expirySkewMs = 60_000;
 
 const requestTimeoutMs = 20_000;
 const maxProtocolLineCharacters = 131_072;
@@ -24,9 +41,30 @@ export class CodexUsageClient implements UsageClient {
   public readonly accountUrl = "https://chatgpt.com/codex/settings/usage";
 
   /** `resolveExtensionPath` lets the CLI bundled in OpenAI's Codex extension serve as a last resort. */
-  public constructor(private readonly resolveExtensionPath: ExtensionPathResolver = noExtensions) {}
+  public constructor(
+    private readonly resolveExtensionPath: ExtensionPathResolver = noExtensions,
+    private readonly dependencies: CodexDependencies = {},
+  ) {}
 
+  /**
+   * Reads usage over HTTPS with the Codex login's own token when that login is a ChatGPT login that
+   * has not expired, which spares starting the CLI on every refresh. Everything else — no login file,
+   * an API-key login, an expired token, a custom backend, a rejected token, an outage, an unexpected
+   * answer — goes to `codex app-server`, which refreshes the login itself. UsageAI never refreshes or
+   * writes the token. Mirrors the desktop `CodexUsageClient`.
+   */
   public async getUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
+    const credentials = await (this.dependencies.loadCredentials ?? loadCodexHttpCredentials)();
+    if (credentials) {
+      const viaHttp = await tryHttpUsage(credentials, signal);
+      if (viaHttp) {
+        return viaHttp;
+      }
+    }
+    return this.getAppServerUsage(signal);
+  }
+
+  private async getAppServerUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
     const launch = await findCodexLaunch(this.resolveExtensionPath);
     const child = spawnSecure(
       launch.executable,
@@ -83,6 +121,146 @@ export class CodexUsageClient implements UsageClient {
       child.kill();
     }
   }
+}
+
+async function tryHttpUsage(credentials: CodexHttpCredentials, signal?: AbortSignal): Promise<UsageSnapshot | undefined> {
+  let response;
+  try {
+    response = await requestJson(codexUsageEndpoint, {
+      method: "GET",
+      allowedHosts: ["chatgpt.com"],
+      headers: {
+        Authorization: `Bearer ${credentials.accessToken}`,
+        Accept: "application/json",
+        ...(credentials.accountId ? { "ChatGPT-Account-Id": credentials.accountId } : {}),
+      },
+      timeoutMs: 15_000,
+      ...(signal ? { signal } : {}),
+    });
+  } catch (error) {
+    if (signal?.aborted) {
+      throw signal.reason;
+    }
+    return undefined;
+  }
+  // The app-server would ask the same service, so a rate limit is reported, not retried.
+  if (response.status === 429) {
+    throw new UsageProviderError("ChatGPT rate-limited the Codex usage request.", parseRetryAfter(response.headers) || 300_000);
+  }
+  if (response.status < 200 || response.status >= 300) {
+    return undefined;
+  }
+  try {
+    return parseCodexHttpSnapshot(response.data);
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * The Codex login's token when the HTTP path may use it. Only a ChatGPT login in a `CODEX_HOME`
+ * given as an absolute path (or the default `~/.codex`) qualifies, and never one pointed at a custom
+ * `chatgpt_base_url`: the token goes to chatgpt.com alone.
+ */
+export async function loadCodexHttpCredentials(now = Date.now()): Promise<CodexHttpCredentials | undefined> {
+  const configured = process.env.CODEX_HOME?.trim().replace(/^"|"$/g, "");
+  if (configured && !path.isAbsolute(configured)) {
+    return undefined;
+  }
+  return readCodexHttpCredentials(configured ? path.resolve(configured) : path.join(userHome(), ".codex"), now);
+}
+
+export async function readCodexHttpCredentials(home: string, now = Date.now()): Promise<CodexHttpCredentials | undefined> {
+  try {
+    if (await hasCustomBackend(path.join(home, "config.toml"))) {
+      return undefined;
+    }
+    const auth = JSON.parse(await readBoundedText(path.join(home, "auth.json"))) as unknown;
+    // An API-key login has no ChatGPT tokens and no usage windows to read.
+    const tokens = getObject(auth, "tokens");
+    const accessToken = normalizeToken(getString(tokens, "access_token"));
+    if (!accessToken) {
+      return undefined;
+    }
+    const expiresAt = jwtExpiryMs(accessToken);
+    if (expiresAt !== undefined && expiresAt <= now + expirySkewMs) {
+      return undefined;
+    }
+    const rawAccountId = getString(tokens, "account_id");
+    const accountId = rawAccountId && rawAccountId.length <= 128 && /^[A-Za-z0-9_-]+$/.test(rawAccountId) ? rawAccountId : undefined;
+    return { accessToken, ...(accountId ? { accountId } : {}) };
+  } catch {
+    return undefined;
+  }
+}
+
+/** True when `config.toml` points Codex at another backend, which only the app-server honours. */
+async function hasCustomBackend(configPath: string): Promise<boolean> {
+  let text: string;
+  try {
+    text = await readBoundedText(configPath);
+  } catch (error) {
+    // A missing file sets nothing; an unreadable one cannot be ruled out, so HTTP steps aside.
+    return (error as NodeJS.ErrnoException).code !== "ENOENT";
+  }
+  return text.split("\n").some((line) => line.trim().startsWith("chatgpt_base_url"));
+}
+
+/** The `exp` claim of a JWT in milliseconds, or undefined when the token is not a readable JWT. */
+export function jwtExpiryMs(token: string): number | undefined {
+  const parts = token.split(".");
+  if (parts.length !== 3 || !parts[1] || parts[1].length > 8_192) {
+    return undefined;
+  }
+  try {
+    const payload = JSON.parse(Buffer.from(parts[1], "base64url").toString("utf8")) as unknown;
+    const exp = getNumber(payload, "exp");
+    return exp !== undefined && exp > 0 && exp < 253_402_300_800 ? exp * 1000 : undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+/**
+ * Reads a `wham/usage` answer, the same data the app-server relays in its own field names. Extra
+ * limits come from `additional_rate_limits`, named by `limit_name`.
+ */
+export function parseCodexHttpSnapshot(data: unknown): UsageSnapshot {
+  const rateLimit = getObject(data, "rate_limit");
+  if (!rateLimit || !hasWindow(rateLimit, httpFields)) {
+    throw new UsageProviderError("Codex returned no rate-limit windows. Sign in with `codex login`, then refresh.");
+  }
+  const extras: Array<{ readonly group: string; readonly bucket: Record<string, unknown> }> = [];
+  for (const entry of getArray(data, "additional_rate_limits") ?? []) {
+    if (extras.length >= maxExtraBuckets) {
+      break;
+    }
+    const bucket = getObject(entry, "rate_limit");
+    if (!bucket || !hasWindow(bucket, httpFields)) {
+      continue;
+    }
+    const group = cleanLabel(getString(entry, "limit_name") ?? getString(entry, "metered_feature"), "Other limit");
+    if (!extras.some((existing) => existing.group.toLowerCase() === group.toLowerCase())) {
+      extras.push({ group, bucket });
+    }
+  }
+
+  const metrics: UsageMetric[] = [];
+  addWindows(metrics, rateLimit, extras.length > 0 ? "Codex" : undefined, httpFields);
+  for (const { group, bucket } of extras) {
+    addWindows(metrics, bucket, group, httpFields);
+  }
+  addBalances(metrics, getString(getObject(data, "credits"), "balance"), getNumber(getObject(data, "rate_limit_reset_credits"), "available_count") ?? 0);
+
+  const email = getString(data, "email");
+  return {
+    plan: formatPlan(getString(data, "plan_type") ?? "Codex"),
+    metrics,
+    fetchedAt: new Date().toISOString(),
+    providerId: "codex",
+    providerName: "Codex",
+    ...(email && email.length <= 320 ? { accountName: email } : {}),
+  };
 }
 
 /**
@@ -176,33 +354,15 @@ export function parseCodexSnapshot(result: unknown, account?: unknown): UsageSna
   // shows Codex and Spark as separate groups. An account with only the main bucket keeps the plain
   // "5-hour" / "Weekly" names.
   const metrics: UsageMetric[] = [];
-  addWindows(metrics, rateLimits, extras.length > 0 ? "Codex" : undefined);
+  addWindows(metrics, rateLimits, extras.length > 0 ? "Codex" : undefined, appServerFields);
   for (const { group, bucket } of extras) {
-    addWindows(metrics, bucket, group);
+    addWindows(metrics, bucket, group, appServerFields);
   }
-
-  const credits = getObject(rateLimits, "credits");
-  const balance = getString(credits, "balance");
-  if (balance) {
-    metrics.push({
-      name: "Credits",
-      kind: "balance",
-      usedPercent: null,
-      remainingText: balance,
-      usageText: "Available account balance",
-    });
-  }
-
-  const resetCredits = getNumber(getObject(result, "rateLimitResetCredits"), "availableCount") ?? 0;
-  if (resetCredits > 0) {
-    metrics.push({
-      name: "Reset credits",
-      kind: "balance",
-      usedPercent: null,
-      remainingText: String(Math.trunc(resetCredits)),
-      usageText: `Full reset${resetCredits === 1 ? "" : "s"} available`,
-    });
-  }
+  addBalances(
+    metrics,
+    getString(getObject(rateLimits, "credits"), "balance"),
+    getNumber(getObject(result, "rateLimitResetCredits"), "availableCount") ?? 0,
+  );
 
   // The fresh rate-limit response knows the current plan best; the account only names who is signed in.
   const accountDetails = getObject(account, "account");
@@ -217,9 +377,53 @@ export function parseCodexSnapshot(result: unknown, account?: unknown): UsageSna
   };
 }
 
-function addWindows(metrics: UsageMetric[], bucket: Record<string, unknown>, group: string | undefined): void {
-  const primary = parseWindow(bucket, "primary", "Primary");
-  const secondary = parseWindow(bucket, "secondary", "Secondary");
+function addBalances(metrics: UsageMetric[], balance: string | undefined, resetCredits: number): void {
+  if (balance && balance.length <= 64) {
+    metrics.push({
+      name: "Credits",
+      kind: "balance",
+      usedPercent: null,
+      remainingText: balance,
+      usageText: "Available account balance",
+    });
+  }
+  const resets = Math.trunc(resetCredits);
+  if (resets > 0) {
+    metrics.push({
+      name: "Reset credits",
+      kind: "balance",
+      usedPercent: null,
+      remainingText: String(resets),
+      usageText: `Full reset${resets === 1 ? "" : "s"} available`,
+    });
+  }
+}
+
+/** Where a window's figures live: the app-server's names, or `wham/usage`'s. */
+interface WindowFields {
+  readonly primary: string;
+  readonly secondary: string;
+  readonly used: string;
+  readonly reset: string;
+  readonly duration: string;
+  readonly durationUnitsPerMinute: number;
+}
+
+const appServerFields: WindowFields = {
+  primary: "primary", secondary: "secondary", used: "usedPercent", reset: "resetsAt", duration: "windowDurationMins", durationUnitsPerMinute: 1,
+};
+
+const httpFields: WindowFields = {
+  primary: "primary_window", secondary: "secondary_window", used: "used_percent", reset: "reset_at", duration: "limit_window_seconds", durationUnitsPerMinute: 60,
+};
+
+function hasWindow(bucket: Record<string, unknown>, fields: WindowFields): boolean {
+  return Boolean(parseWindow(bucket, fields.primary, "Primary", fields) ?? parseWindow(bucket, fields.secondary, "Secondary", fields));
+}
+
+function addWindows(metrics: UsageMetric[], bucket: Record<string, unknown>, group: string | undefined, fields: WindowFields): void {
+  const primary = parseWindow(bucket, fields.primary, "Primary", fields);
+  const secondary = parseWindow(bucket, fields.secondary, "Secondary", fields);
   const { session, weekly } = classifyWindows(primary, secondary);
   for (const window of [session, weekly]) {
     if (window) {
@@ -245,7 +449,7 @@ function extraBuckets(
     if (extras.length >= maxExtraBuckets) {
       break;
     }
-    if (key === mainKey || !isObject(bucket) || (!parseWindow(bucket, "primary", "Primary") && !parseWindow(bucket, "secondary", "Secondary"))) {
+    if (key === mainKey || !isObject(bucket) || !hasWindow(bucket, appServerFields)) {
       continue;
     }
     const group = codexBucketLabel(bucket, key);
@@ -257,16 +461,20 @@ function extraBuckets(
 }
 
 export function codexBucketLabel(bucket: unknown, limitId: string): string {
-  let label = getString(bucket, "limitName") ?? getString(bucket, "normalModelSlug");
-  if (!label?.trim()) {
-    label = limitId.replace(/[_-]/g, " ").trim().replace(/\b\w/g, (value) => value.toUpperCase());
-  }
-  // A label ends up in a metric name, where a parenthesis would read as the window.
-  label =label.replace(/[\u0000-\u001f\u007f()]/g, "").trim();
-  if (!label) {
+  return cleanLabel(
+    getString(bucket, "limitName") ?? getString(bucket, "normalModelSlug"),
+    limitId.replace(/[_-]/g, " ").trim().replace(/\b\w/g, (value) => value.toUpperCase()),
+  );
+}
+
+/** A server-given label made safe for a metric name, where a parenthesis would read as the window. */
+function cleanLabel(label: string | undefined, fallback: string): string {
+  const clean = (value: string | undefined): string => (value ?? "").replace(/[\u0000-\u001f\u007f()]/g, "").trim();
+  const cleaned = clean(label) || clean(fallback);
+  if (!cleaned) {
     return "Other limit";
   }
-  return label.length > 60 ? label.slice(0, 60).trimEnd() : label;
+  return cleaned.length > 60 ? cleaned.slice(0, 60).trimEnd() : cleaned;
 }
 
 function selectCodexBucket(result: unknown): { readonly key: string | undefined; readonly bucket: Record<string, unknown> } {
@@ -292,19 +500,25 @@ function parseWindow(
   rateLimits: Record<string, unknown>,
   propertyName: string,
   name: string,
+  fields: WindowFields,
 ): UsageMetric | undefined {
   const window = getObject(rateLimits, propertyName);
-  const used = getNumber(window, "usedPercent");
-  if (!window || used === undefined) {
+  const used = getNumber(window, fields.used);
+  if (!window || used === undefined || !Number.isFinite(used)) {
     return undefined;
   }
-  const resetSeconds = getNumber(window, "resetsAt");
-  const durationMinutes = getNumber(window, "windowDurationMins");
+  const resetSeconds = getNumber(window, fields.reset);
+  const durationUnits = getNumber(window, fields.duration);
+  const durationMinutes = durationUnits !== undefined && durationUnits > 0
+    ? Math.trunc(durationUnits / fields.durationUnitsPerMinute)
+    : undefined;
   return {
     name,
     kind: "session",
     usedPercent: clampPercent(used),
-    ...(resetSeconds !== undefined ? { resetsAt: new Date(resetSeconds * 1000).toISOString() } : {}),
+    ...(resetSeconds !== undefined && resetSeconds > 0 && resetSeconds < 253_402_300_800
+      ? { resetsAt: new Date(resetSeconds * 1000).toISOString() }
+      : {}),
     ...(durationMinutes !== undefined ? { durationMinutes } : {}),
   };
 }

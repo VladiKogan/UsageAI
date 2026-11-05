@@ -98,6 +98,7 @@ internal static class Program
         ("Copilot HTTP success and error handling", CoverageExpansionTests.TestCopilotHttpAsync),
         ("Gemini OAuth HTTP success and error handling", CoverageExpansionTests.TestGeminiHttpAsync),
         ("Codex app-server protocol and errors", CoverageExpansionTests.TestCodexProtocolAsync),
+        ("Codex reads usage over HTTPS first and falls back to the app-server", CoverageExpansionTests.TestCodexHttpUsageAsync),
         ("Claude web fallback HTTP flows", CoverageExpansionTests.TestClaudeWebHttpAsync),
         ("release update HTTP handling", CoverageExpansionTests.TestUpdateCheckerHttpAsync),
         ("verified update installer download", CoverageExpansionTests.TestUpdateInstallerAsync),

@@ -44,6 +44,10 @@ You only need one of these sign-in methods:
 | GitHub Copilot | A supported local Copilot credential, `COPILOT_GITHUB_TOKEN`, or the optional GitHub CLI fallback |
 | Google Gemini | A sign-in through Google's Antigravity VS Code extension or `agy` (recommended), a Gemini CLI sign-in, or a running Antigravity language server |
 
+For Codex, UsageAI first reads usage directly from ChatGPT with the access token of the existing
+Codex sign-in, the same request the Codex CLI makes, and falls back to the CLI whenever that sign-in
+has expired or the request does not succeed. UsageAI never refreshes or writes that sign-in.
+
 For Codex and Claude Code, UsageAI runs the provider's CLI. It uses `CODEX_PATH` or `CLAUDE_PATH`
 when set, then a CLI on `PATH` or in its standard install folder, and finally the CLI that ships
 inside OpenAI's Codex extension or Anthropic's Claude Code extension. So having just the provider's

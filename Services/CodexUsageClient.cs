@@ -1,13 +1,50 @@
 using System.Diagnostics;
+using System.Net;
+using System.Net.Http.Headers;
 using System.Runtime.InteropServices;
 using System.Text.Json;
 using UsageAI.Models;
 
 namespace UsageAI.Services;
 
+/// <summary>The Codex login's access token, read from its <c>auth.json</c> for the usage request alone.</summary>
+/// <param name="AccessToken">Sent only to <c>chatgpt.com</c>, never logged or stored.</param>
+/// <param name="AccountId">The ChatGPT account the token belongs to, sent as <c>ChatGPT-Account-Id</c>.</param>
+internal sealed record CodexHttpCredentials(string AccessToken, string? AccountId)
+{
+    public override string ToString() => "CodexHttpCredentials { AccessToken = <redacted> }";
+}
+
 internal sealed class CodexUsageClient : IUsageClient
 {
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(20);
+
+    /// <summary>The endpoint the Codex CLI itself reads usage from.</summary>
+    internal static readonly Uri UsageEndpoint = new("https://chatgpt.com/backend-api/wham/usage");
+
+    private static readonly HttpClient SharedClient = SecureHttp.CreateClient(TimeSpan.FromSeconds(15));
+
+    /// <summary>A login is renewed by the CLI this long before it expires, so a token this close is left to it.</summary>
+    private static readonly TimeSpan ExpirySkew = TimeSpan.FromMinutes(1);
+
+    private readonly HttpClient _http;
+    private readonly Func<CodexHttpCredentials?> _loadCredentials;
+    private readonly Func<CancellationToken, Task<(JsonElement RateLimits, JsonElement? Account)>> _appServer;
+
+    public CodexUsageClient()
+        : this(SharedClient, LoadHttpCredentials, GetRawUsageAsync)
+    {
+    }
+
+    internal CodexUsageClient(
+        HttpClient http,
+        Func<CodexHttpCredentials?> loadCredentials,
+        Func<CancellationToken, Task<(JsonElement RateLimits, JsonElement? Account)>>? appServer = null)
+    {
+        _http = http;
+        _loadCredentials = loadCredentials;
+        _appServer = appServer ?? GetRawUsageAsync;
+    }
     private const int MaxProtocolLineCharacters = 131_072;
     private const int MaxProtocolMessagesPerResponse = 512;
     private const int MaxRetainedStandardErrorCharacters = 16_384;
@@ -26,10 +63,195 @@ internal sealed class CodexUsageClient : IUsageClient
     /// <summary>At most this many extra rate-limit buckets (model-specific limits such as Spark) are shown.</summary>
     private const int MaxExtraBuckets = 6;
 
+    /// <summary>
+    /// Reads usage over HTTPS with the Codex login's own token when that login is a ChatGPT login
+    /// that has not expired, which spares starting the Node-based CLI on every refresh. Everything
+    /// else — no login file, an API-key login, an expired token, a custom backend, a rejected
+    /// token, an outage, an unexpected answer — goes to <c>codex app-server</c>, which refreshes
+    /// the login itself. UsageAI never refreshes or writes the token.
+    /// </summary>
     public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default)
     {
-        var (rateLimits, account) = await GetRawUsageAsync(cancellationToken);
-        return ParseSnapshot(rateLimits, account);
+        if (_loadCredentials() is { } credentials &&
+            await TryGetHttpUsageAsync(credentials, cancellationToken) is { } viaHttp)
+        {
+            return viaHttp;
+        }
+
+        var (rateLimits, account) = await _appServer(cancellationToken);
+        return ParseSnapshot(rateLimits, account) with { Source = "codex-app-server" };
+    }
+
+    private async Task<UsageSnapshot?> TryGetHttpUsageAsync(
+        CodexHttpCredentials credentials,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, UsageEndpoint);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentials.AccessToken);
+        if (credentials.AccountId is not null)
+        {
+            request.Headers.TryAddWithoutValidation("ChatGPT-Account-Id", credentials.AccountId);
+        }
+
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.UserAgent.ParseAdd(AppIdentity.UserAgent);
+
+        HttpResponseMessage response;
+        try
+        {
+            response = await _http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+        }
+        catch (Exception exception) when (
+            exception is HttpRequestException or IOException ||
+            (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            return null;
+        }
+
+        using (response)
+        {
+            // The app-server would ask the same service, so a rate limit is reported, not retried.
+            if (response.StatusCode == HttpStatusCode.TooManyRequests)
+            {
+                throw new CodexUsageException("ChatGPT rate-limited the Codex usage request.")
+                {
+                    RetryAfter = response.Headers.RetryAfter?.Delta ?? TimeSpan.FromMinutes(5),
+                };
+            }
+
+            if (!response.IsSuccessStatusCode)
+            {
+                return null;
+            }
+
+            try
+            {
+                using var document = await SecureHttp.ReadJsonDocumentAsync(response, cancellationToken);
+                return ParseHttpSnapshot(document.RootElement) with { Source = "chatgpt-http" };
+            }
+            catch (Exception exception) when (
+                exception is JsonException or InvalidDataException or IOException or HttpRequestException ||
+                (exception is CodexUsageException { RetryAfter.Ticks: 0 }) ||
+                (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+            {
+                return null;
+            }
+        }
+    }
+
+    /// <summary>
+    /// The Codex login's token when the HTTP path may use it, else null. Only a ChatGPT login in a
+    /// <c>CODEX_HOME</c> given as an absolute path (or the default <c>~\.codex</c>) qualifies, and
+    /// never one pointed at a custom <c>chatgpt_base_url</c>: the token goes to chatgpt.com alone.
+    /// </summary>
+    internal static CodexHttpCredentials? LoadHttpCredentials()
+    {
+        var home = Environment.GetEnvironmentVariable("CODEX_HOME")?.Trim().Trim('"');
+        if (string.IsNullOrEmpty(home))
+        {
+            var profile = Environment.GetEnvironmentVariable("USERPROFILE");
+            if (string.IsNullOrWhiteSpace(profile))
+            {
+                profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+            }
+
+            home = Path.Combine(profile, ".codex");
+        }
+        else if (!Path.IsPathFullyQualified(home))
+        {
+            return null;
+        }
+
+        return ReadHttpCredentials(Path.GetFullPath(home), DateTimeOffset.UtcNow);
+    }
+
+    internal static CodexHttpCredentials? ReadHttpCredentials(string codexHome, DateTimeOffset now)
+    {
+        try
+        {
+            if (HasCustomBackend(Path.Combine(codexHome, "config.toml")))
+            {
+                return null;
+            }
+
+            var path = Path.Combine(codexHome, "auth.json");
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            using var document = JsonDocument.Parse(
+                SecureLocalFile.ReadAllText(path),
+                new JsonDocumentOptions { MaxDepth = 16 });
+            if (!document.RootElement.TryGetProperty("tokens", out var tokens) || tokens.ValueKind != JsonValueKind.Object)
+            {
+                // An API-key login has no ChatGPT tokens and no usage windows to read.
+                return null;
+            }
+
+            var accessToken = CredentialInput.NormalizeToken(GetString(tokens, "access_token"));
+            if (accessToken is null ||
+                (JwtExpiry(accessToken) is { } expiresAt && expiresAt <= now + ExpirySkew))
+            {
+                return null;
+            }
+
+            var accountId = GetString(tokens, "account_id");
+            accountId = accountId is { Length: > 0 and <= 128 } &&
+                        accountId.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_')
+                ? accountId
+                : null;
+            return new CodexHttpCredentials(accessToken, accountId);
+        }
+        catch (Exception exception) when (
+            exception is IOException or UnauthorizedAccessException or JsonException or InvalidDataException)
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// True when <c>config.toml</c> points Codex at another backend. The app-server honours that
+    /// setting; the HTTP path would not, so it steps aside rather than send the token elsewhere.
+    /// </summary>
+    private static bool HasCustomBackend(string configPath)
+    {
+        if (!File.Exists(configPath))
+        {
+            return false;
+        }
+
+        return SecureLocalFile.ReadAllText(configPath)
+            .Split('\n')
+            .Select(line => line.Trim())
+            .Any(line => line.StartsWith("chatgpt_base_url", StringComparison.Ordinal));
+    }
+
+    /// <summary>The <c>exp</c> claim of a JWT, or null when the token is not a readable JWT.</summary>
+    internal static DateTimeOffset? JwtExpiry(string token)
+    {
+        var parts = token.Split('.');
+        if (parts.Length != 3 || parts[1].Length > 8_192)
+        {
+            return null;
+        }
+
+        try
+        {
+            var segment = parts[1].Replace('-', '+').Replace('_', '/');
+            segment = segment.PadRight(segment.Length + ((4 - (segment.Length % 4)) % 4), '=');
+            using var payload = JsonDocument.Parse(Convert.FromBase64String(segment));
+            return payload.RootElement.ValueKind == JsonValueKind.Object &&
+                   payload.RootElement.TryGetProperty("exp", out var exp) &&
+                   exp.TryGetInt64(out var seconds) &&
+                   seconds is > 0 and < 253_402_300_800
+                ? DateTimeOffset.FromUnixTimeSeconds(seconds)
+                : null;
+        }
+        catch (Exception exception) when (exception is FormatException or JsonException or ArgumentException)
+        {
+            return null;
+        }
     }
 
     private static async Task<(JsonElement RateLimits, JsonElement? Account)> GetRawUsageAsync(CancellationToken cancellationToken = default)
@@ -237,41 +459,18 @@ internal sealed class CodexUsageClient : IUsageClient
         // offers Codex and Spark as separate ring groups the way it does Gemini's model groups. An
         // account with only the main bucket keeps the plain "5-hour" / "Weekly" names.
         var metrics = new List<UsageMetric>();
-        AddWindows(metrics, rateLimits, extraBuckets.Count > 0 ? "Codex" : null);
+        AddWindows(metrics, rateLimits, extraBuckets.Count > 0 ? "Codex" : null, AppServerFields);
         foreach (var (group, bucket) in extraBuckets)
         {
-            AddWindows(metrics, bucket, group);
+            AddWindows(metrics, bucket, group, AppServerFields);
         }
 
-        if (rateLimits.TryGetProperty("credits", out var credits) &&
-            credits.ValueKind == JsonValueKind.Object &&
-            GetString(credits, "balance") is { Length: > 0 } balance)
-        {
-            metrics.Add(new UsageMetric(
-                "Credits",
-                UsageMetricKind.Balance,
-                null,
-                RemainingText: balance,
-                UsageText: "Available account balance"));
-        }
-
-        var resetCredits = 0;
-        if (result.TryGetProperty("rateLimitResetCredits", out var resetSummary) &&
-            resetSummary.ValueKind == JsonValueKind.Object &&
-            resetSummary.TryGetProperty("availableCount", out var resetCount))
-        {
-            resetCount.TryGetInt32(out resetCredits);
-        }
-
-        if (resetCredits > 0)
-        {
-            metrics.Add(new UsageMetric(
-                "Reset credits",
-                UsageMetricKind.Balance,
-                null,
-                RemainingText: resetCredits.ToString(System.Globalization.CultureInfo.CurrentCulture),
-                UsageText: $"Full reset{(resetCredits == 1 ? string.Empty : "s")} available"));
-        }
+        AddBalances(
+            metrics,
+            rateLimits.TryGetProperty("credits", out var credits) && credits.ValueKind == JsonValueKind.Object
+                ? GetString(credits, "balance")
+                : null,
+            GetCount(result, "rateLimitResetCredits", "availableCount"));
 
         // The fresh rate-limit response knows the current plan best; the account lookup only names
         // who is signed in.
@@ -293,10 +492,124 @@ internal sealed class CodexUsageClient : IUsageClient
             AccountName: email is { Length: > 0 and <= 320 } ? email : null);
     }
 
-    private static void AddWindows(List<UsageMetric> metrics, JsonElement bucket, string? group)
+    /// <summary>
+    /// Reads a <c>wham/usage</c> answer, the same data the app-server relays in its own field names.
+    /// Extra limits come from <c>additional_rate_limits</c>, named by <c>limit_name</c>.
+    /// </summary>
+    internal static UsageSnapshot ParseHttpSnapshot(JsonElement root)
     {
-        var primary = ParseWindow(bucket, "primary", "Primary");
-        var secondary = ParseWindow(bucket, "secondary", "Secondary");
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("rate_limit", out var rateLimit) ||
+            rateLimit.ValueKind != JsonValueKind.Object ||
+            !HasWindow(rateLimit, HttpFields))
+        {
+            throw new CodexUsageException("Codex returned no rate-limit windows. Sign in with `codex login`, then refresh.");
+        }
+
+        var extras = new List<(string Group, JsonElement Bucket)>();
+        if (root.TryGetProperty("additional_rate_limits", out var additional) && additional.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var entry in additional.EnumerateArray())
+            {
+                if (extras.Count >= MaxExtraBuckets)
+                {
+                    break;
+                }
+
+                if (entry.ValueKind != JsonValueKind.Object ||
+                    !entry.TryGetProperty("rate_limit", out var bucket) ||
+                    bucket.ValueKind != JsonValueKind.Object ||
+                    !HasWindow(bucket, HttpFields))
+                {
+                    continue;
+                }
+
+                var group = CleanLabel(GetString(entry, "limit_name") ?? GetString(entry, "metered_feature"), "Other limit");
+                if (!extras.Any(existing => string.Equals(existing.Group, group, StringComparison.OrdinalIgnoreCase)))
+                {
+                    extras.Add((group, bucket));
+                }
+            }
+        }
+
+        var metrics = new List<UsageMetric>();
+        AddWindows(metrics, rateLimit, extras.Count > 0 ? "Codex" : null, HttpFields);
+        foreach (var (group, bucket) in extras)
+        {
+            AddWindows(metrics, bucket, group, HttpFields);
+        }
+
+        AddBalances(
+            metrics,
+            root.TryGetProperty("credits", out var credits) && credits.ValueKind == JsonValueKind.Object
+                ? GetString(credits, "balance")
+                : null,
+            GetCount(root, "rate_limit_reset_credits", "available_count"));
+
+        var email = GetString(root, "email");
+        return new UsageSnapshot(
+            FormatPlan(GetString(root, "plan_type") ?? "Codex"),
+            metrics,
+            DateTimeOffset.Now,
+            "codex",
+            "Codex",
+            AccountName: email is { Length: > 0 and <= 320 } ? email : null);
+    }
+
+    private static int GetCount(JsonElement root, string objectName, string countName) =>
+        root.TryGetProperty(objectName, out var summary) &&
+        summary.ValueKind == JsonValueKind.Object &&
+        summary.TryGetProperty(countName, out var count) &&
+        count.TryGetInt32(out var value)
+            ? value
+            : 0;
+
+    private static void AddBalances(List<UsageMetric> metrics, string? balance, int resetCredits)
+    {
+        if (balance is { Length: > 0 and <= 64 })
+        {
+            metrics.Add(new UsageMetric(
+                "Credits",
+                UsageMetricKind.Balance,
+                null,
+                RemainingText: balance,
+                UsageText: "Available account balance"));
+        }
+
+        if (resetCredits > 0)
+        {
+            metrics.Add(new UsageMetric(
+                "Reset credits",
+                UsageMetricKind.Balance,
+                null,
+                RemainingText: resetCredits.ToString(System.Globalization.CultureInfo.CurrentCulture),
+                UsageText: $"Full reset{(resetCredits == 1 ? string.Empty : "s")} available"));
+        }
+    }
+
+    /// <summary>Where a window's figures live: the app-server's names, or <c>wham/usage</c>'s.</summary>
+    private sealed record WindowFields(
+        string Primary,
+        string Secondary,
+        string Used,
+        string Reset,
+        string Duration,
+        int DurationUnitsPerMinute);
+
+    private static readonly WindowFields AppServerFields =
+        new("primary", "secondary", "usedPercent", "resetsAt", "windowDurationMins", 1);
+
+    private static readonly WindowFields HttpFields =
+        new("primary_window", "secondary_window", "used_percent", "reset_at", "limit_window_seconds", 60);
+
+    private static bool HasWindow(JsonElement bucket, WindowFields fields) =>
+        ParseWindow(bucket, fields.Primary, "Primary", fields) is not null ||
+        ParseWindow(bucket, fields.Secondary, "Secondary", fields) is not null;
+
+    private static void AddWindows(List<UsageMetric> metrics, JsonElement bucket, string? group, WindowFields fields)
+    {
+        var primary = ParseWindow(bucket, fields.Primary, "Primary", fields);
+        var secondary = ParseWindow(bucket, fields.Secondary, "Secondary", fields);
         var (session, weekly) = ClassifyWindows(primary, secondary);
         foreach (var window in new[] { session, weekly })
         {
@@ -330,7 +643,7 @@ internal sealed class CodexUsageClient : IUsageClient
 
             if (bucket.Name == mainKey ||
                 bucket.Value.ValueKind != JsonValueKind.Object ||
-                (ParseWindow(bucket.Value, "primary", "Primary") ?? ParseWindow(bucket.Value, "secondary", "Secondary")) is null)
+                !HasWindow(bucket.Value, AppServerFields))
             {
                 continue;
             }
@@ -345,22 +658,33 @@ internal sealed class CodexUsageClient : IUsageClient
         return extras;
     }
 
-    internal static string BucketLabel(JsonElement bucket, string limitId)
+    internal static string BucketLabel(JsonElement bucket, string limitId) =>
+        CleanLabel(
+            GetString(bucket, "limitName") ?? GetString(bucket, "normalModelSlug"),
+            System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(
+                limitId.Replace('_', ' ').Replace('-', ' ').Trim()));
+
+    /// <summary>
+    /// A server-given label made safe for a metric name, where a parenthesis would read as the
+    /// window and control characters have no place.
+    /// </summary>
+    private static string CleanLabel(string? label, string fallback)
     {
-        var label = GetString(bucket, "limitName") ?? GetString(bucket, "normalModelSlug");
-        if (string.IsNullOrWhiteSpace(label))
+        static string Clean(string? value) => value is null
+            ? string.Empty
+            : new string(value.Where(character => !char.IsControl(character) && character is not '(' and not ')').ToArray()).Trim();
+
+        var cleaned = Clean(label);
+        if (cleaned.Length == 0)
         {
-            label = System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(
-                limitId.Replace('_', ' ').Replace('-', ' ').Trim());
+            cleaned = Clean(fallback);
         }
 
-        // A label ends up in a metric name, where a parenthesis would read as the window.
-        label = new string(label.Where(character => !char.IsControl(character) && character is not '(' and not ')').ToArray()).Trim();
-        return label.Length switch
+        return cleaned.Length switch
         {
             0 => "Other limit",
-            > 60 => label[..60].TrimEnd(),
-            _ => label,
+            > 60 => cleaned[..60].TrimEnd(),
+            _ => cleaned,
         };
     }
 
@@ -453,35 +777,48 @@ internal sealed class CodexUsageClient : IUsageClient
         throw new CodexUsageException("Codex returned no rate-limit windows. Sign in with `codex login`, then refresh.");
     }
 
-    private static UsageMetric? ParseWindow(JsonElement rateLimits, string propertyName, string name)
+    private static UsageMetric? ParseWindow(JsonElement rateLimits, string propertyName, string name, WindowFields fields)
     {
-        if (!rateLimits.TryGetProperty(propertyName, out var window) || window.ValueKind != JsonValueKind.Object)
+        if (rateLimits.ValueKind != JsonValueKind.Object ||
+            !rateLimits.TryGetProperty(propertyName, out var window) ||
+            window.ValueKind != JsonValueKind.Object)
         {
             return null;
         }
 
-        if (!window.TryGetProperty("usedPercent", out var usedElement) || !usedElement.TryGetInt32(out var used))
+        // A percentage may arrive with a fraction; it is shown rounded.
+        if (!window.TryGetProperty(fields.Used, out var usedElement) ||
+            usedElement.ValueKind != JsonValueKind.Number ||
+            !usedElement.TryGetDouble(out var used) ||
+            !double.IsFinite(used))
         {
             return null;
         }
 
         DateTimeOffset? resetsAt = null;
-        if (window.TryGetProperty("resetsAt", out var resetElement) &&
+        if (window.TryGetProperty(fields.Reset, out var resetElement) &&
             resetElement.ValueKind == JsonValueKind.Number &&
-            resetElement.TryGetInt64(out var resetSeconds))
+            resetElement.TryGetInt64(out var resetSeconds) &&
+            resetSeconds is > 0 and < 253_402_300_800)
         {
             resetsAt = DateTimeOffset.FromUnixTimeSeconds(resetSeconds).ToLocalTime();
         }
 
         long? duration = null;
-        if (window.TryGetProperty("windowDurationMins", out var durationElement) &&
+        if (window.TryGetProperty(fields.Duration, out var durationElement) &&
             durationElement.ValueKind == JsonValueKind.Number &&
-            durationElement.TryGetInt64(out var durationMinutes))
+            durationElement.TryGetInt64(out var durationUnits) &&
+            durationUnits > 0)
         {
-            duration = durationMinutes;
+            duration = durationUnits / fields.DurationUnitsPerMinute;
         }
 
-        return new UsageMetric(name, UsageMetricKind.Session, Math.Clamp(used, 0, 100), resetsAt, duration);
+        return new UsageMetric(
+            name,
+            UsageMetricKind.Session,
+            (int)Math.Clamp(Math.Round(used, MidpointRounding.AwayFromZero), 0, 100),
+            resetsAt,
+            duration);
     }
 
     private static string? GetString(JsonElement element, string propertyName)
@@ -634,8 +971,11 @@ internal sealed class CodexUsageClient : IUsageClient
     }
 }
 
-internal sealed class CodexUsageException : Exception
+internal sealed class CodexUsageException : Exception, IThrottledUsageException
 {
+    /// <summary>How long ChatGPT asked to wait after a rate limit; zero for every other failure.</summary>
+    public TimeSpan RetryAfter { get; init; }
+
     public CodexUsageException(string message)
         : base(message)
     {

@@ -6,7 +6,7 @@ import * as path from "node:path";
 import test, { mock } from "node:test";
 import { UsageProviderError } from "../src/errors";
 import { ClaudeUsageClient, runClaudeAuthRecovery, runClaudeAuthStatus } from "../src/providers/claude";
-import { CodexUsageClient } from "../src/providers/codex";
+import { CodexUsageClient, jwtExpiryMs, parseCodexHttpSnapshot, readCodexHttpCredentials } from "../src/providers/codex";
 import { CopilotUsageClient } from "../src/providers/copilot";
 import {
   agyHubArguments,
@@ -228,6 +228,9 @@ test("Copilot client rejects bad credentials and prioritizes the working token",
 test("Codex client completes the app-server handshake through the configured CLI", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "usageai-codex-fixture-"));
   const oldCodexPath = process.env.CODEX_PATH;
+  // An empty CODEX_HOME holds no login, so the client goes straight to the app-server fixture.
+  const oldCodexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = directory;
   const oldPath = process.env.PATH;
   const fixtureSource = `
 const readline = require("node:readline");
@@ -281,6 +284,7 @@ input.on("line", (line) => {
     assert.equal(snapshot.accountName, "dev@example.com");
   } finally {
     restoreEnvironment("CODEX_PATH", oldCodexPath);
+    restoreEnvironment("CODEX_HOME", oldCodexHome);
     restoreEnvironment("PATH", oldPath);
     await rm(directory, { recursive: true, force: true });
   }
@@ -289,6 +293,9 @@ input.on("line", (line) => {
 test("Codex client translates protocol and authentication failures", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "usageai-codex-errors-"));
   const oldCodexPath = process.env.CODEX_PATH;
+  // An empty CODEX_HOME holds no login, so the client goes straight to the app-server fixture.
+  const oldCodexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = directory;
   const oldPath = process.env.PATH;
   const installFixture = async (fixtureSource: string): Promise<void> => {
     if (process.platform === "win32") {
@@ -329,8 +336,118 @@ input.on("line", (line) => {
     await assert.rejects(() => new CodexUsageClient().getUsage(), /not signed in/i);
   } finally {
     restoreEnvironment("CODEX_PATH", oldCodexPath);
+    restoreEnvironment("CODEX_HOME", oldCodexHome);
     restoreEnvironment("PATH", oldPath);
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Codex reads usage over HTTPS first and falls back to the app-server", async () => {
+  const segment = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const jwt = (payload: unknown): string => `${segment({ alg: "none" })}.${segment(payload)}.signature`;
+  const now = Date.now();
+  const live = jwt({ exp: Math.floor(now / 1000) + 3_600 });
+  assert.equal(jwtExpiryMs(live), (Math.floor(now / 1000) + 3_600) * 1000);
+  assert.equal(jwtExpiryMs("not-a-jwt"), undefined);
+  assert.equal(jwtExpiryMs("a.!!!.c"), undefined);
+
+  const home = await mkdtemp(path.join(os.tmpdir(), "usageai-codex-http-"));
+  try {
+    const writeAuth = (value: unknown): Promise<void> => writeFile(path.join(home, "auth.json"), typeof value === "string" ? value : JSON.stringify(value), "utf8");
+    const read = (): Promise<unknown> => readCodexHttpCredentials(home, now);
+    // No login file, or an API-key login, leaves usage to the app-server.
+    assert.equal(await read(), undefined);
+    await writeAuth({ auth_mode: "apikey", OPENAI_API_KEY: "sk-synthetic" });
+    assert.equal(await read(), undefined);
+    await writeAuth({ auth_mode: "chatgpt", tokens: { access_token: live, account_id: "acct-123_x", refresh_token: "never-read" } });
+    assert.deepEqual(await read(), { accessToken: live, accountId: "acct-123_x" });
+    // An expired or nearly expired token is the CLI's to renew.
+    await writeAuth({ tokens: { access_token: jwt({ exp: Math.floor(now / 1000) + 30 }) } });
+    assert.equal(await read(), undefined);
+    // A token that is no JWT is used as is; a malformed account id is left out.
+    await writeAuth({ tokens: { access_token: "opaque-token", account_id: "bad id\r\n" } });
+    assert.deepEqual(await read(), { accessToken: "opaque-token" });
+    await writeAuth({ tokens: { access_token: "bad token" } });
+    assert.equal(await read(), undefined);
+    await writeAuth("not json");
+    assert.equal(await read(), undefined);
+    // A custom backend is honoured by the app-server only, so the token never goes elsewhere.
+    await writeAuth({ tokens: { access_token: live } });
+    await writeFile(path.join(home, "config.toml"), '# chatgpt_base_url = "https://example.test"\nmodel = "x"\n', "utf8");
+    assert.notEqual(await read(), undefined);
+    await writeFile(path.join(home, "config.toml"), '[profile]\n  chatgpt_base_url = "https://example.test"\n', "utf8");
+    assert.equal(await read(), undefined);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+
+  const usage = {
+    email: "dev@example.com",
+    plan_type: "pro",
+    rate_limit: {
+      primary_window: { used_percent: 12.6, limit_window_seconds: 18_000, reset_at: 1_793_883_681 },
+      secondary_window: { used_percent: 71, limit_window_seconds: 604_800, reset_at: 1_794_140_279 },
+    },
+    additional_rate_limits: [
+      { limit_name: "GPT-5.3-Codex-Spark", rate_limit: { primary_window: { used_percent: 40, limit_window_seconds: 18_000 } } },
+      { limit_name: "No windows", rate_limit: {} },
+      "noise",
+    ],
+    credits: { has_credits: true, unlimited: false, balance: "4.50" },
+    rate_limit_reset_credits: { available_count: 2, applicable_available_count: 0 },
+  };
+  const parsed = parseCodexHttpSnapshot(usage);
+  assert.equal(parsed.plan, "Pro");
+  assert.equal(parsed.accountName, "dev@example.com");
+  assert.deepEqual(parsed.metrics.map((metric) => metric.name), ["Codex (5-hour)", "Codex (Weekly)", "GPT-5.3-Codex-Spark (5-hour)", "Credits", "Reset credits"]);
+  assert.equal(parsed.metrics[0]?.usedPercent, 13);
+  assert.equal(parsed.metrics[0]?.durationMinutes, 300);
+  assert.equal(parsed.metrics[1]?.durationMinutes, 10_080);
+  assert.equal(parsed.metrics[1]?.resetsAt, new Date(1_794_140_279_000).toISOString());
+  assert.throws(() => parseCodexHttpSnapshot({ rate_limit: { primary_window: null } }), /no rate-limit windows/);
+
+  // The app-server fallback is pointed at a missing CLI, so reaching it shows as "not found".
+  const oldCodexPath = process.env.CODEX_PATH;
+  process.env.CODEX_PATH = path.join(os.tmpdir(), `usageai-missing-codex-${Date.now()}.cmd`);
+  const client = new CodexUsageClient(undefined, { loadCredentials: async () => ({ accessToken: "access-token", accountId: "acct-1" }) });
+  try {
+    let requests = 0;
+    const respond = (response: { status: number; headers?: Record<string, string>; data?: unknown } | Error): void => {
+      mock.restoreAll();
+      mock.method(security, "requestJson", (async (url, options) => {
+        requests += 1;
+        assert.equal(String(url), "https://chatgpt.com/backend-api/wham/usage");
+        assert.deepEqual(options.allowedHosts, ["chatgpt.com"]);
+        assert.equal(options.headers?.Authorization, "Bearer access-token");
+        assert.equal(options.headers?.["ChatGPT-Account-Id"], "acct-1");
+        if (response instanceof Error) throw response;
+        return { status: response.status, headers: response.headers ?? {}, data: response.data };
+      }) as typeof security.requestJson);
+    };
+
+    // A live ChatGPT login is read over HTTPS, and the app-server is never started.
+    respond({ status: 200, data: usage });
+    assert.equal((await client.getUsage()).metrics[1]?.usedPercent, 71);
+
+    // A rejected token, an outage, or an unexpected answer falls back to the app-server.
+    for (const response of [{ status: 401 }, { status: 500 }, { status: 200, data: { unexpected: true } }, new Error("synthetic network failure")]) {
+      respond(response);
+      await assert.rejects(client.getUsage(), /not found|CODEX_PATH/i);
+    }
+
+    // A rate limit is reported with its retry window rather than retried through the app-server.
+    respond({ status: 429, headers: { "retry-after": "120" } });
+    await assert.rejects(client.getUsage(), (error: unknown) =>
+      error instanceof UsageProviderError && error.retryAfterMs === 120_000 && /rate-limited/.test(error.message));
+    assert.equal(requests, 6);
+
+    // Without usable credentials HTTP is never attempted.
+    const withoutLogin = new CodexUsageClient(undefined, { loadCredentials: async () => undefined });
+    await assert.rejects(withoutLogin.getUsage(), /not found|CODEX_PATH/i);
+    assert.equal(requests, 6);
+  } finally {
+    mock.restoreAll();
+    restoreEnvironment("CODEX_PATH", oldCodexPath);
   }
 });
 

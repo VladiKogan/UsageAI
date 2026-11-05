@@ -21,6 +21,14 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
   still expired, `claude mcp list`, which makes the CLI refresh the login. Claude Code remains the sole
   owner of any resulting token exchange and credential update; UsageAI waits briefly and rereads the
   access token afterward.
+- Codex credentials are read-only to UsageAI. When `auth.json` in `CODEX_HOME` (an absolute path) or
+  `~\.codex` holds a ChatGPT login whose access token has not expired, UsageAI sends that access
+  token, with the login's account id, to `https://chatgpt.com/backend-api/wham/usage` only, the
+  endpoint the Codex CLI itself uses. It never reads the refresh token for use, never refreshes the
+  login, and never writes the file. An API-key login, an expired token, a `chatgpt_base_url` override
+  in `config.toml`, or any rejection or unexpected answer leaves usage to the official
+  `codex app-server`, started with a read-only sandbox and no approval prompts, which renews the
+  login itself.
 - Browser storage is never scanned.
 - Claude web sessions are opt-in, memory-only, and never persisted by UsageAI.
 - Secrets are not forwarded to provider CLI child processes or included in diagnostic output.

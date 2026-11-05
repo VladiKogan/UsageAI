@@ -33,6 +33,13 @@ The project follows [Semantic Versioning](https://semver.org/).
   so it kept the CLI's background updater alive too; UsageAI now sets
   `AGY_CLI_DISABLE_AUTO_UPDATE` for every `agy` it starts, and `agy` sessions you run yourself
   still update it.
+- **Codex usage no longer starts the Codex CLI on every refresh.** UsageAI now reads it straight
+  from ChatGPT with the access token your Codex sign-in already holds, the same request the CLI
+  makes, which spares the `cmd`, `node` and `codex` processes a refresh used to start. When that
+  token has expired, the sign-in is an API key, `config.toml` names another backend, or the request
+  does not succeed, UsageAI asks the CLI as before, and the CLI renews the login itself; UsageAI never
+  refreshes or writes `auth.json`. A rate limit from ChatGPT is reported with its retry window.
+  `--diagnose codex` names the path that answered in `Source`.
 
 ## [0.14.1] - 2026-11-04
 

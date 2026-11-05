@@ -1398,6 +1398,166 @@ internal static class CoverageExpansionTests
         return Task.CompletedTask;
     }
 
+    public static async Task TestCodexHttpUsageAsync()
+    {
+        static string Jwt(object payload)
+        {
+            static string Segment(string json) => Convert.ToBase64String(Encoding.UTF8.GetBytes(json))
+                .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            return $"{Segment("""{"alg":"none"}""")}.{Segment(JsonSerializer.Serialize(payload))}.signature";
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var live = Jwt(new { exp = now.AddHours(1).ToUnixTimeSeconds() });
+        Equal(now.AddHours(1).ToUnixTimeSeconds(), CodexUsageClient.JwtExpiry(live)!.Value.ToUnixTimeSeconds());
+        Null(CodexUsageClient.JwtExpiry("not-a-jwt"));
+        Null(CodexUsageClient.JwtExpiry("a.!!!.c"));
+
+        var home = Path.Combine(AppPaths.DataDirectory, $"codex-http-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(home);
+        try
+        {
+            void WriteAuth(string json) => File.WriteAllText(Path.Combine(home, "auth.json"), json);
+            CodexHttpCredentials? Read() => CodexUsageClient.ReadHttpCredentials(home, now);
+
+            // No login file, or an API-key login, leaves usage to the app-server.
+            Null(Read());
+            WriteAuth("""{"auth_mode":"apikey","OPENAI_API_KEY":"sk-synthetic"}""");
+            Null(Read());
+
+            static string Auth(object tokens) => JsonSerializer.Serialize(new { auth_mode = "chatgpt", tokens });
+            WriteAuth(Auth(new { access_token = live, account_id = "acct-123_x", refresh_token = "never-read" }));
+            var credentials = Read();
+            Equal(live, credentials!.AccessToken);
+            Equal("acct-123_x", credentials.AccountId);
+            False(credentials.ToString().Contains(live, StringComparison.Ordinal));
+
+            // An expired or nearly expired token is the CLI's to renew.
+            WriteAuth(Auth(new { access_token = Jwt(new { exp = now.AddSeconds(30).ToUnixTimeSeconds() }) }));
+            Null(Read());
+
+            // A token that is no JWT is used as is; a malformed account id is left out.
+            WriteAuth("""{"tokens":{"access_token":"opaque-token","account_id":"bad id\r\n"}}""");
+            Equal("opaque-token", Read()!.AccessToken);
+            Null(Read()!.AccountId);
+            WriteAuth("""{"tokens":{"access_token":"bad token"}}""");
+            Null(Read());
+            WriteAuth("not json");
+            Null(Read());
+
+            // A custom backend is honoured by the app-server only, so the token never goes elsewhere.
+            WriteAuth(Auth(new { access_token = live }));
+            File.WriteAllText(Path.Combine(home, "config.toml"), "# chatgpt_base_url = \"https://example.test\"\nmodel = \"x\"\n");
+            NotNull(Read());
+            File.WriteAllText(Path.Combine(home, "config.toml"), "[profile]\n  chatgpt_base_url = \"https://example.test\"\n");
+            Null(Read());
+        }
+        finally
+        {
+            Directory.Delete(home, recursive: true);
+        }
+
+        const string usageJson = """
+            {
+              "email": "dev@example.com",
+              "plan_type": "pro",
+              "rate_limit": {
+                "primary_window": { "used_percent": 12.6, "limit_window_seconds": 18000, "reset_at": 1793883681 },
+                "secondary_window": { "used_percent": 71, "limit_window_seconds": 604800, "reset_at": 1794140279 }
+              },
+              "additional_rate_limits": [
+                { "limit_name": "GPT-5.3-Codex-Spark", "rate_limit": { "primary_window": { "used_percent": 40, "limit_window_seconds": 18000 } } },
+                { "limit_name": "No windows", "rate_limit": {} },
+                "noise"
+              ],
+              "credits": { "has_credits": true, "unlimited": false, "balance": "4.50" },
+              "rate_limit_reset_credits": { "available_count": 2, "applicable_available_count": 0 }
+            }
+            """;
+        using (var document = JsonDocument.Parse(usageJson))
+        {
+            var parsed = CodexUsageClient.ParseHttpSnapshot(document.RootElement);
+            Equal("Pro", parsed.Plan);
+            Equal("dev@example.com", parsed.AccountName);
+            Equal(
+                "Codex (5-hour)|Codex (Weekly)|GPT-5.3-Codex-Spark (5-hour)|Credits|Reset credits",
+                string.Join('|', parsed.Metrics.Select(metric => metric.Name)));
+            Equal(13, parsed.Metrics[0].UsedPercent);
+            Equal(300L, parsed.Metrics[0].DurationMinutes);
+            Equal(10_080L, parsed.Metrics[1].DurationMinutes);
+            Equal(DateTimeOffset.FromUnixTimeSeconds(1794140279), parsed.Metrics[1].ResetsAt);
+            Equal("4.50", parsed.Metrics[3].RemainingText);
+            Equal("2", parsed.Metrics[4].RemainingText);
+        }
+
+        using (var noWindows = JsonDocument.Parse("""{"rate_limit":{"primary_window":null}}"""))
+        {
+            await ThrowsAsync<CodexUsageException>(() => Task.FromResult(CodexUsageClient.ParseHttpSnapshot(noWindows.RootElement)));
+        }
+
+        var appServerCalls = 0;
+        Task<(JsonElement RateLimits, JsonElement? Account)> AppServer(CancellationToken _)
+        {
+            appServerCalls++;
+            using var rateLimits = JsonDocument.Parse(
+                """{"rateLimitsByLimitId":{"codex":{"planType":"plus","primary":{"usedPercent":44,"windowDurationMins":300}}}}""");
+            return Task.FromResult<(JsonElement, JsonElement?)>((rateLimits.RootElement.Clone(), null));
+        }
+
+        var credentialsForClient = new CodexHttpCredentials("access-token", "acct-1");
+        async Task<UsageSnapshot> Fetch(Func<HttpRequestMessage, HttpResponseMessage> respond, CodexHttpCredentials? withCredentials = null)
+        {
+            using var http = new HttpClient(new StubHttpHandler((request, _, _) => Task.FromResult(respond(request))));
+            return await new CodexUsageClient(http, () => withCredentials ?? credentialsForClient, AppServer).GetUsageAsync();
+        }
+
+        // A live ChatGPT login is read over HTTPS, and the app-server is never started.
+        var viaHttp = await Fetch(request =>
+        {
+            Equal(CodexUsageClient.UsageEndpoint, request.RequestUri);
+            Equal("Bearer access-token", request.Headers.Authorization!.ToString());
+            Equal("acct-1", request.Headers.GetValues("ChatGPT-Account-Id").Single());
+            return JsonResponse(HttpStatusCode.OK, usageJson);
+        });
+        Equal("chatgpt-http", viaHttp.Source);
+        Equal(0, appServerCalls);
+
+        // A rejected token, an outage, or an unexpected answer falls back to the app-server.
+        foreach (var respond in new Func<HttpRequestMessage, HttpResponseMessage>[]
+                 {
+                     _ => new HttpResponseMessage(HttpStatusCode.Unauthorized),
+                     _ => new HttpResponseMessage(HttpStatusCode.InternalServerError),
+                     _ => JsonResponse(HttpStatusCode.OK, """{"unexpected":true}"""),
+                     _ => JsonResponse(HttpStatusCode.OK, "not json"),
+                     _ => throw new HttpRequestException("synthetic network failure"),
+                 })
+        {
+            var fallback = await Fetch(respond);
+            Equal("codex-app-server", fallback.Source);
+            Equal(44, fallback.Metrics[0].UsedPercent);
+        }
+
+        Equal(5, appServerCalls);
+
+        // A rate limit is reported with its retry window rather than retried through the app-server.
+        var throttled = await ThrowsAsync<CodexUsageException>(() => Fetch(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(120));
+            return response;
+        }));
+        Equal(TimeSpan.FromSeconds(120), throttled.RetryAfter);
+        Equal(5, appServerCalls);
+
+        // Without usable credentials HTTP is never attempted.
+        using (var unused = new HttpClient(new StubHttpHandler((_, _, _) =>
+                   throw new InvalidOperationException("HTTP should not be reached."))))
+        {
+            var withoutLogin = await new CodexUsageClient(unused, () => null, AppServer).GetUsageAsync();
+            Equal("codex-app-server", withoutLogin.Source);
+        }
+    }
+
     public static async Task TestCodexProtocolAsync()
     {
         var environment = SaveEnvironment("CODEX_PATH", "CODEX_HOME");
