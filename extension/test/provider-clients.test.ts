@@ -5,7 +5,15 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test, { mock } from "node:test";
 import { UsageProviderError } from "../src/errors";
-import { ClaudeUsageClient, runClaudeAuthRecovery, runClaudeAuthStatus } from "../src/providers/claude";
+import {
+  ClaudeUsageClient,
+  countResetGrants,
+  isCloudflareChallenge,
+  noLimitsReportedText,
+  parseClaudeSnapshot,
+  runClaudeAuthRecovery,
+  runClaudeAuthStatus,
+} from "../src/providers/claude";
 import { CodexUsageClient, jwtExpiryMs, parseCodexHttpSnapshot, readCodexHttpCredentials } from "../src/providers/codex";
 import { CopilotUsageClient } from "../src/providers/copilot";
 import {
@@ -158,7 +166,8 @@ test("Claude client validates through the CLI and retries one unexpected usage f
       () => new ClaudeUsageClient(async () => false).getUsage(),
       /cannot read account usage/i,
     );
-    assert.equal(requests, 1);
+    // A 403 to the reset-credits request is asked once more without the parameter first.
+    assert.equal(requests, 2);
 
     mock.restoreAll();
     mock.method(security, "readBoundedText", (async () => credentialJson) as typeof security.readBoundedText);
@@ -180,6 +189,92 @@ test("Claude client validates through the CLI and retries one unexpected usage f
   } finally {
     mock.restoreAll();
     for (const name of environmentNames) restoreEnvironment(name, previous.get(name));
+  }
+});
+
+test("Claude reads model-scoped weekly limits, reset credits and plans without limits", async () => {
+  const now = Date.parse("2026-11-05T10:00:00Z");
+  const usage = {
+    five_hour: { utilization: 28.0, resets_at: "2026-11-05T12:29:59.539726+00:00" },
+    seven_day: { utilization: 46.0, resets_at: "2026-11-09T12:59:59.539741+00:00" },
+    seven_day_opus: { utilization: 99.0 },
+    seven_day_sonnet: { utilization: 15.0, resets_at: "2026-11-09T12:59:59Z" },
+    limits: [
+      { kind: "session", group: "session", percent: 28, scope: null },
+      { kind: "weekly_all", group: "weekly", percent: 46, scope: null },
+      { kind: "weekly_scoped", group: "weekly", percent: 61, scope: { model: { id: "claude-opus-5", display_name: "Claude Opus 5" } } },
+      { kind: "weekly_scoped", group: "weekly", percent: 12, scope: { model: { id: "claude-haiku-5" } } },
+      { kind: "weekly_scoped", group: "weekly", percent: "n/a", scope: { model: { display_name: "Broken" } } },
+    ],
+    cedar_ember: {
+      eligible: true,
+      grants: [
+        { id: "grant-handle-never-read", resets_left: 2, paused: false, starts_at: "2026-11-01T00:00:00Z", ends_at: "2026-12-01T00:00:00Z" },
+        { resets_left: 1, paused: true },
+        { resets_left: 1 },
+        { resets_left: 1, paused: false, starts_at: "2026-11-06T00:00:00Z" },
+        { resets_left: 1, paused: false, ends_at: "2026-11-05T09:00:00Z" },
+        { resets_left: 1, paused: false },
+      ],
+    },
+  };
+  const snapshot = parseClaudeSnapshot(usage, "Pro", now);
+  assert.deepEqual(snapshot.metrics.map((metric) => metric.name), [
+    "5-hour", "Weekly", "Weekly Opus 5", "Weekly claude-haiku-5", "Weekly Opus", "Weekly Sonnet", "Reset credits",
+  ]);
+  assert.equal(snapshot.metrics[2]?.usedPercent, 61);
+  assert.equal(snapshot.metrics[2]?.kind, "rolling");
+  assert.equal(snapshot.metrics[6]?.remainingText, "3");
+  assert.equal(countResetGrants({ cedar_ember: { grants: [{ resets_left: 40, paused: false }, { resets_left: 20, paused: false }] } }, now), 0);
+  assert.equal(countResetGrants({ cedar_ember: null }, now), 0);
+
+  // A plan Claude meters nothing for reads as such, never as 0% used or as a failure.
+  const free = parseClaudeSnapshot({ five_hour: null, seven_day: null, limits: [] }, "Free", now);
+  assert.deepEqual(free.metrics.map((metric) => [metric.name, metric.usedPercent, metric.usageText]), [["Usage limits", null, noLimitsReportedText]]);
+  assert.throws(() => parseClaudeSnapshot({ unexpected: true }, "Pro", now), /without five-hour or weekly/);
+
+  // Cloudflare's browser check is recognised from its header or its HTML page.
+  assert.equal(isCloudflareChallenge(403, { "cf-mitigated": "challenge" }), true);
+  assert.equal(isCloudflareChallenge(503, { "content-type": "text/html; charset=UTF-8", server: "cloudflare" }), true);
+  assert.equal(isCloudflareChallenge(403, { "content-type": "application/json" }), false);
+
+  const names = ["USAGEAI_CLAUDE_OAUTH_TOKEN", "USAGEAI_CLAUDE_OAUTH_SCOPES", "USAGEAI_CLAUDE_SESSION_KEY", "CLAUDE_AI_SESSION_KEY", "CLAUDE_WEB_SESSION_KEY"];
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  try {
+    process.env.USAGEAI_CLAUDE_OAUTH_TOKEN = "claude-access-token";
+    process.env.USAGEAI_CLAUDE_OAUTH_SCOPES = "user:profile";
+    for (const name of names.slice(2)) delete process.env[name];
+
+    // Reset credits are asked for; an API that rejects the parameter is asked again without it.
+    const urls: string[] = [];
+    mock.method(security, "requestJson", (async (url) => {
+      urls.push(String(url));
+      return String(url).includes("cedar_ember")
+        ? { status: 400, headers: {}, data: {} }
+        : { status: 200, headers: {}, data: { five_hour: { utilization: 7 } } };
+    }) as typeof security.requestJson);
+    assert.equal((await new ClaudeUsageClient(async () => false).getUsage()).metrics[0]?.usedPercent, 7);
+    assert.deepEqual(urls, ["https://api.anthropic.com/api/oauth/usage?cedar_ember=1", "https://api.anthropic.com/api/oauth/usage"]);
+    mock.restoreAll();
+
+    // A Cloudflare challenge on the opt-in web path pauses that path and falls back to OAuth, without
+    // asking claude.ai again on the next refresh.
+    process.env.USAGEAI_CLAUDE_SESSION_KEY = "sk-ant-sid01-synthetic";
+    let webRequests = 0;
+    mock.method(security, "requestJson", (async (url) => {
+      if (String(url).startsWith("https://claude.ai/")) {
+        webRequests += 1;
+        throw new security.NonJsonResponseError(403, { "cf-mitigated": "challenge", "content-type": "text/html" });
+      }
+      return { status: 200, headers: {}, data: { five_hour: { utilization: 9 } } };
+    }) as typeof security.requestJson);
+    const client = new ClaudeUsageClient(async () => false);
+    assert.equal((await client.getUsage()).metrics[0]?.usedPercent, 9);
+    assert.equal((await client.getUsage()).metrics[0]?.usedPercent, 9);
+    assert.equal(webRequests, 1);
+  } finally {
+    mock.restoreAll();
+    for (const name of names) restoreEnvironment(name, previous.get(name));
   }
 });
 

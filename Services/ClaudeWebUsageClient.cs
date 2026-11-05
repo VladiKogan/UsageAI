@@ -45,8 +45,12 @@ internal static class ClaudeWebUsageClient
             }
 
             var escapedOrganizationId = Uri.EscapeDataString(organizationId);
+            // Saved limit-reset credits are reported only when asked for; a rejection of the
+            // parameter is retried once without it, so usage never depends on it.
             var usageEndpoint = new Uri($"https://claude.ai/api/organizations/{escapedOrganizationId}/usage");
-            using var usage = await GetJsonAsync(client, usageEndpoint, sessionKey, cancellationToken);
+            using var usage =
+                await TryGetJsonAsync(client, new Uri($"{usageEndpoint}?cedar_ember=1"), sessionKey, cancellationToken, retryOnly: true) ??
+                await GetJsonAsync(client, usageEndpoint, sessionKey, cancellationToken);
 
             var plan = ClaudeCodeUsageClient.FormatPlan(
                 account is null ? null : GetString(account.RootElement, "rate_limit_tier"));
@@ -65,11 +69,12 @@ internal static class ClaudeWebUsageClient
             if (overage is not null &&
                 ClaudeCodeUsageClient.CreateExtraUsageMetric(overage.RootElement) is { } overageMetric)
             {
-                // The dedicated overage endpoint is more current than the usage payload's copy.
+                // The dedicated overage endpoint is more current than the usage payload's copy. Only
+                // that copy is replaced; reset credits and other balances stay.
                 snapshot = snapshot with
                 {
                     Metrics = snapshot.Metrics
-                        .Where(metric => metric.Kind != UsageMetricKind.Balance)
+                        .Where(metric => !string.Equals(metric.Name, overageMetric.Name, StringComparison.Ordinal))
                         .Append(overageMetric)
                         .ToArray(),
                 };
@@ -103,6 +108,17 @@ internal static class ClaudeWebUsageClient
             HttpCompletionOption.ResponseHeadersRead,
             cancellationToken);
 
+        // Cloudflare's browser check blocks the request before claude.ai sees the session, so it
+        // says nothing about the session key: the key is kept and the card is only marked stale.
+        if (IsCloudflareChallenge(response))
+        {
+            throw new ClaudeWebUsageException(
+                "claude.ai asked for a browser check (Cloudflare) instead of answering. The session key is kept; UsageAI will try again later.")
+            {
+                RetryAfter = CloudflareRetryAfter,
+            };
+        }
+
         if (response.StatusCode is HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden ||
             (int)response.StatusCode is >= 300 and < 400)
         {
@@ -119,17 +135,43 @@ internal static class ClaudeWebUsageClient
         return await SecureHttp.ReadJsonDocumentAsync(response, cancellationToken);
     }
 
+    /// <summary>How long to leave claude.ai alone after its Cloudflare browser check.</summary>
+    private static readonly TimeSpan CloudflareRetryAfter = TimeSpan.FromMinutes(15);
+
+    /// <summary>
+    /// True when Cloudflare answered with its challenge page: flagged by <c>cf-mitigated</c>, or a
+    /// 403/429/503 HTML page from Cloudflare instead of claude.ai's JSON.
+    /// </summary>
+    internal static bool IsCloudflareChallenge(HttpResponseMessage response)
+    {
+        if (response.Headers.TryGetValues("cf-mitigated", out var mitigated) &&
+            mitigated.Any(value => value.Contains("challenge", StringComparison.OrdinalIgnoreCase)))
+        {
+            return true;
+        }
+
+        return response.StatusCode is HttpStatusCode.Forbidden or HttpStatusCode.TooManyRequests or HttpStatusCode.ServiceUnavailable &&
+               string.Equals(response.Content.Headers.ContentType?.MediaType, "text/html", StringComparison.OrdinalIgnoreCase) &&
+               response.Headers.Server.Any(server => string.Equals(server.Product?.Name, "cloudflare", StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>
+    /// The JSON at <paramref name="endpoint"/>, or null when it fails. With
+    /// <paramref name="retryOnly"/> a Cloudflare challenge is not swallowed, because asking again
+    /// without the optional parameter would only meet the same challenge.
+    /// </summary>
     private static async Task<JsonDocument?> TryGetJsonAsync(
         HttpClient client,
         Uri endpoint,
         string sessionKey,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        bool retryOnly = false)
     {
         try
         {
             return await GetJsonAsync(client, endpoint, sessionKey, cancellationToken);
         }
-        catch (ClaudeWebUsageException)
+        catch (ClaudeWebUsageException exception) when (!retryOnly || exception.RetryAfter == TimeSpan.Zero)
         {
             return null;
         }
@@ -244,8 +286,11 @@ internal static class ClaudeWebUsageClient
             : null;
 }
 
-internal sealed class ClaudeWebUsageException : Exception
+internal sealed class ClaudeWebUsageException : Exception, IThrottledUsageException
 {
+    /// <summary>How long to wait before asking claude.ai again; zero unless it asked for a pause.</summary>
+    public TimeSpan RetryAfter { get; init; }
+
     public ClaudeWebUsageException(string message)
         : base(message)
     {

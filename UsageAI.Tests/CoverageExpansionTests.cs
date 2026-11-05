@@ -879,7 +879,9 @@ internal static class CoverageExpansionTests
                         () => Array.Empty<string>(),
                         _ => Task.FromResult(false)).GetUsageAsync());
                 True(failedException.Message.Contains("cannot read", StringComparison.OrdinalIgnoreCase));
-                Equal(1, failedRecoveryRequests);
+                // A 403 to the reset-credits request is asked once more without the parameter before
+                // it counts as a login that cannot read usage.
+                Equal(2, failedRecoveryRequests);
             }
 
             var boundedRetryRequests = 0;
@@ -1396,6 +1398,173 @@ internal static class CoverageExpansionTests
         }
 
         return Task.CompletedTask;
+    }
+
+    public static async Task TestClaudeLimitsAndResetCreditsAsync()
+    {
+        var now = DateTimeOffset.Parse("2026-11-05T10:00:00Z", CultureInfo.InvariantCulture);
+        static JsonElement Json(string json)
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.Clone();
+        }
+
+        // The shape api/oauth/usage?cedar_ember=1 returns, with model-scoped weekly limits and grants.
+        var usage = Json(
+            """
+            {
+              "five_hour": {"utilization": 28.0, "resets_at": "2026-11-05T12:29:59.539726+00:00"},
+              "seven_day": {"utilization": 46.0, "resets_at": "2026-11-09T12:59:59.539741+00:00"},
+              "seven_day_opus": {"utilization": 99.0},
+              "seven_day_sonnet": {"utilization": 15.0, "resets_at": "2026-11-09T12:59:59Z"},
+              "extra_usage": {"is_enabled": false},
+              "limits": [
+                {"kind": "session", "group": "session", "percent": 28, "resets_at": "2026-11-05T12:29:59Z", "scope": null},
+                {"kind": "weekly_all", "group": "weekly", "percent": 46, "resets_at": "2026-11-09T12:59:59Z", "scope": null},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 61, "resets_at": "2026-11-09T12:59:59Z",
+                 "scope": {"model": {"id": "claude-opus-5", "display_name": "Claude Opus 5"}}},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 12, "scope": {"model": {"id": "claude-haiku-5"}}},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": "n/a", "scope": {"model": {"display_name": "Broken"}}}
+              ],
+              "cedar_ember": {
+                "eligible": true,
+                "grants": [
+                  {"id": "grant-handle-never-read", "resets_left": 2, "paused": false, "starts_at": "2026-11-01T00:00:00Z", "ends_at": "2026-12-01T00:00:00Z"},
+                  {"resets_left": 1, "paused": true},
+                  {"resets_left": 1},
+                  {"resets_left": 1, "paused": false, "starts_at": "2026-11-06T00:00:00Z"},
+                  {"resets_left": 1, "paused": false, "ends_at": "2026-11-05T09:00:00Z"},
+                  {"resets_left": 1, "paused": false}
+                ]
+              }
+            }
+            """);
+        var snapshot = ClaudeCodeUsageClient.ParseSnapshot(usage, "Pro", now);
+        Equal(
+            "5-hour|Weekly|Weekly Opus 5|Weekly claude-haiku-5|Weekly Opus|Weekly Sonnet|Reset credits",
+            string.Join('|', snapshot.Metrics.Select(metric => metric.Name)));
+        Equal(46, snapshot.Metrics[1].UsedPercent);
+        Equal(61, snapshot.Metrics[2].UsedPercent);
+        Equal(UsageMetricKind.Rolling, snapshot.Metrics[2].Kind);
+        Equal(15, snapshot.Metrics[5].UsedPercent);
+        // Two resets from the live grant plus one from the open-ended one; paused, unflagged, not yet
+        // started and expired grants do not count.
+        Equal("3", snapshot.Metrics[6].RemainingText);
+        Equal(UsageMetricKind.Balance, snapshot.Metrics[6].Kind);
+
+        // An implausible total is treated as malformed rather than shown.
+        Equal(0, ClaudeCodeUsageClient.CountResetGrants(
+            Json("""{"cedar_ember":{"grants":[{"resets_left":40,"paused":false},{"resets_left":20,"paused":false}]}}"""), now));
+        Equal(0, ClaudeCodeUsageClient.CountResetGrants(Json("""{"cedar_ember":null}"""), now));
+
+        // A plan Claude meters nothing for reads as such, never as 0% used or as a failure.
+        var free = ClaudeCodeUsageClient.ParseSnapshot(
+            Json("""{"five_hour": null, "seven_day": null, "limits": []}"""), "Free", now);
+        Equal(1, free.Metrics.Count);
+        Equal(ClaudeCodeUsageClient.NoLimitsReportedText, free.Metrics[0].UsageText);
+        False(free.Metrics[0].HasQuota);
+        await ThrowsAsync<ClaudeCodeUsageException>(() =>
+            Task.FromResult(ClaudeCodeUsageClient.ParseSnapshot(Json("""{"unexpected": true}"""), "Pro", now)));
+
+        // Reset credits are asked for; an API that rejects the parameter is asked again without it.
+        var environment = SaveEnvironment(
+            "USAGEAI_CLAUDE_OAUTH_TOKEN",
+            "USAGEAI_CLAUDE_OAUTH_SCOPES",
+            "USAGEAI_CLAUDE_SESSION_KEY",
+            "CLAUDE_AI_SESSION_KEY",
+            "CLAUDE_WEB_SESSION_KEY");
+        try
+        {
+            Environment.SetEnvironmentVariable("USAGEAI_CLAUDE_OAUTH_TOKEN", "claude-access-token");
+            Environment.SetEnvironmentVariable("USAGEAI_CLAUDE_OAUTH_SCOPES", "user:profile");
+            Environment.SetEnvironmentVariable("USAGEAI_CLAUDE_SESSION_KEY", null);
+            Environment.SetEnvironmentVariable("CLAUDE_AI_SESSION_KEY", null);
+            Environment.SetEnvironmentVariable("CLAUDE_WEB_SESSION_KEY", null);
+            var urls = new List<string>();
+            using (var http = new HttpClient(new StubHttpHandler((request, _, _) =>
+                   {
+                       urls.Add(request.RequestUri!.AbsoluteUri);
+                       return Task.FromResult(request.RequestUri.Query.Contains("cedar_ember", StringComparison.Ordinal)
+                           ? new HttpResponseMessage(HttpStatusCode.BadRequest)
+                           : JsonResponse(HttpStatusCode.OK, """{"five_hour":{"utilization":7}}"""));
+                   })))
+            {
+                var retried = await new ClaudeCodeUsageClient(http, () => Array.Empty<string>()).GetUsageAsync();
+                Equal(7, retried.Primary!.UsedPercent);
+                Equal(
+                    "https://api.anthropic.com/api/oauth/usage?cedar_ember=1|https://api.anthropic.com/api/oauth/usage",
+                    string.Join('|', urls));
+            }
+
+            // The web path asks for reset credits too, and its overage refresh keeps them.
+            Environment.SetEnvironmentVariable("USAGEAI_CLAUDE_SESSION_KEY", "sk-ant-sid01-synthetic");
+            var webUrls = new List<string>();
+            using (var web = new HttpClient(new StubHttpHandler((request, _, _) =>
+                   {
+                       var address = request.RequestUri!.AbsoluteUri;
+                       webUrls.Add(address);
+                       return Task.FromResult(address switch
+                       {
+                           _ when address.EndsWith("/api/account", StringComparison.Ordinal) => JsonResponse(
+                               HttpStatusCode.OK,
+                               """{"email_address":"dev@example.com","memberships":[{"organization":{"uuid":"org-1"}}]}"""),
+                           _ when address.EndsWith("/usage?cedar_ember=1", StringComparison.Ordinal) => JsonResponse(
+                               HttpStatusCode.OK,
+                               """{"five_hour":{"utilization":5},"cedar_ember":{"grants":[{"resets_left":1,"paused":false}]}}"""),
+                           _ when address.EndsWith("/overage_spend_limit", StringComparison.Ordinal) => JsonResponse(
+                               HttpStatusCode.OK,
+                               """{"is_enabled":true,"used_credits":250,"monthly_credit_limit":1000,"currency":"USD"}"""),
+                           _ => new HttpResponseMessage(HttpStatusCode.NotFound),
+                       });
+                   })))
+            {
+                var viaWeb = await ClaudeWebUsageClient.GetUsageAsync(web, CancellationToken.None);
+                True(webUrls.Any(url => url.EndsWith("/organizations/org-1/usage?cedar_ember=1", StringComparison.Ordinal)));
+                True(viaWeb.Metrics.Any(metric => metric.Name == "Reset credits" && metric.RemainingText == "1"));
+                True(viaWeb.Metrics.Any(metric => metric.Name == "Extra usage"));
+            }
+
+            // A Cloudflare browser check is not a dead session: it pauses the web path, keeps the key,
+            // and is never retried without the parameter.
+            var challenged = 0;
+            using (var cloudflare = new HttpClient(new StubHttpHandler((request, _, _) =>
+                   {
+                       challenged++;
+                       var response = new HttpResponseMessage(HttpStatusCode.Forbidden)
+                       {
+                           Content = new StringContent("<html>Just a moment...</html>", Encoding.UTF8, "text/html"),
+                       };
+                       response.Headers.TryAddWithoutValidation("cf-mitigated", "challenge");
+                       return Task.FromResult(response);
+                   })))
+            {
+                var blocked = await ThrowsAsync<ClaudeWebUsageException>(() =>
+                    ClaudeWebUsageClient.GetUsageAsync(cloudflare, CancellationToken.None));
+                True(blocked.Message.Contains("browser check", StringComparison.Ordinal));
+                Equal(TimeSpan.FromMinutes(15), blocked.RetryAfter);
+            }
+
+            using (var html = new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                   {
+                       Content = new StringContent("<html></html>", Encoding.UTF8, "text/html"),
+                   })
+            {
+                html.Headers.Server.ParseAdd("cloudflare");
+                True(ClaudeWebUsageClient.IsCloudflareChallenge(html));
+            }
+
+            using (var plain = new HttpResponseMessage(HttpStatusCode.Forbidden)
+                   {
+                       Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+                   })
+            {
+                False(ClaudeWebUsageClient.IsCloudflareChallenge(plain));
+            }
+        }
+        finally
+        {
+            RestoreEnvironment(environment);
+        }
     }
 
     public static async Task TestCodexHttpUsageAsync()

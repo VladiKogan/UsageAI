@@ -9,6 +9,12 @@
   accounts, and UsageAI took the refusal for an expired sign-in. It now recognises Google's
   `UNSUPPORTED_CLIENT` answer and points to Antigravity or `agy` instead; Standard, paid Code Assist
   and Workspace accounts keep the sign-in message.
+- **A Claude plan without usage limits no longer shows as an error.** Free and some education plans
+  report no five-hour or weekly window, and the card showed a parsing error; it now says Claude
+  reports no usage limits for the plan.
+- **A Cloudflare browser check on claude.ai no longer reads as a dead web session.** When claude.ai
+  answers the opt-in web path with Cloudflare's challenge, UsageAI keeps the session key, uses Claude
+  Code OAuth, and leaves claude.ai alone for 15 minutes instead of asking again on every refresh.
 
 ### Added
 
@@ -17,6 +23,11 @@
   the way Codex names it. Accounts with only the main limit look exactly as before.
 - **The Codex card names the signed-in account.** UsageAI asks the Codex CLI which account is signed
   in, without refreshing the login; an older CLI that cannot answer still shows usage.
+- **Claude shows your saved limit resets.** Claude grants some accounts free limit resets, and UsageAI
+  now asks for them and shows how many you can use right now as "Reset credits"; paused, expired or
+  not-yet-started grants are not counted.
+- **Claude shows every model's own weekly limit.** Claude now reports weekly limits per model, such as
+  Opus or Sonnet, and UsageAI shows each of them by name instead of only Opus.
 
 ### Changed
 

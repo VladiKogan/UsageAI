@@ -84,7 +84,7 @@ Copilot 33%
 Gemini 60% | 30%
 ```
 
-**Every window each provider reports — not just one number.** Codex 5-hour, weekly, credits and reset credits. Claude 5-hour, weekly, weekly Opus and extra usage. Copilot AI credits or premium requests, chat and completions. Gemini model groups (Gemini Models, Claude and GPT models) or Cloud Code API quotas.
+**Every window each provider reports — not just one number.** Codex 5-hour, weekly, model-specific limits such as Spark, credits and reset credits. Claude 5-hour, weekly, each model's own weekly limit (Opus, Sonnet), extra usage and saved limit resets. Copilot AI credits or premium requests, chat and completions. Gemini model groups (Gemini Models, Claude and GPT models) or Cloud Code API quotas.
 
 **"At this pace, out by 15:20."** A burn-rate forecast for every limit, so you find out you're running hot *before* the wall, not after it.
 
