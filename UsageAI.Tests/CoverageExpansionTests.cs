@@ -2637,12 +2637,17 @@ internal static class CoverageExpansionTests
         try
         {
             using var http = new HttpClient(handler);
+            var reports = new List<double>();
             var installerPath = await UpdateInstaller.DownloadAndVerifyAsync(
                 release,
                 http,
                 directory,
-                CancellationToken.None);
+                CancellationToken.None,
+                new UpdateFlowTests.ImmediateProgress(reports.Add));
             True(File.Exists(installerPath));
+            // The progress window's bar follows the bytes, ending at the whole installer.
+            True(reports.Count > 0 && reports.Zip(reports.Skip(1)).All(pair => pair.First <= pair.Second));
+            Equal(1D, reports[^1]);
             True(File.ReadAllBytes(installerPath).SequenceEqual(installerBytes));
             Equal(4, handler.CallCount);
 

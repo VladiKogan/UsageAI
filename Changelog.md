@@ -6,6 +6,15 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **An in-app update shows its own progress and says when it is done.** The installer used to open
+  a window that sat on "Closing applications…" and then vanished without a word. Setup now runs
+  without a window. A small panel in the tray corner fills a bar while the installer downloads and
+  is verified. The copy Windows reopens finishes the bar and says "UsageAI updated", with a link to
+  What's New. If the installer fails or is cancelled, the panel says so, with the release page.
+  Setup also runs with `/NORESTART`, so a very silent install can never reboot Windows unasked.
+
 ### Fixed
 
 - **Google Gemini no longer shows a weekly limit twice as "5-hour" and "Weekly".** Google dropped
@@ -17,6 +26,22 @@ The project follows [Semantic Versioning](https://semver.org/).
   such as "Gemini 4 Argon", with an empty quota block, which UsageAI took for an exhausted limit. A
   missing fraction now means exhausted only when the block still has its reset time, as Google's
   format omits a zero; a block with neither is skipped.
+- **Updating no longer freezes for 30 seconds.** UsageAI ignored the request Windows' Restart
+  Manager sends to close an app before its files are replaced. Every update waited out Restart
+  Manager's 30-second timeout and then had the tray app killed: 30.2, 30.5 and 30.3 seconds in the
+  0.13.0, 0.14.0 and 0.15.0 setup logs, against about a second for the install itself. The app now
+  exits as soon as Windows asks, which measured 0.2 seconds, and also on sign-out and shutdown.
+  The clean exit also stops UsageAI's own `agy --hub`, which each forced close had left running.
+- **Downloaded installers no longer pile up.** Every in-app update left its Setup file of about
+  2.5 MB in `%LOCALAPPDATA%\UsageAI\updates`, and none was ever removed. They are now deleted when
+  the next version starts. Developer previews (`--preview-*`) likewise delete their throwaway data
+  folder when they end, and clear any a killed preview left behind for over a day.
+- **Uninstalling no longer leaves a broken startup entry.** With "Start with Windows" on, the
+  uninstaller left the startup entry behind, so Windows kept listing a startup app whose file was
+  gone. It is now removed with the copy it starts; a portable copy's own entry is left alone. The
+  uninstaller also asks whether to delete the settings and recorded history in
+  `%LOCALAPPDATA%\UsageAI`, keeping them unless the answer is yes, so a reinstall picks up where it
+  left off.
 
 ## [0.15.0] - 2026-11-05
 

@@ -795,11 +795,37 @@ internal static class RedesignTests
             var isolated = Environment.GetEnvironmentVariable("USAGEAI_DATA_DIR")!;
             True(isolated.StartsWith(Path.Combine(Path.GetTempPath(), "UsageAI.Preview"), StringComparison.OrdinalIgnoreCase));
             PreviewRenderer.IsolateDataDirectory();
-            False(string.Equals(isolated, Environment.GetEnvironmentVariable("USAGEAI_DATA_DIR"), StringComparison.Ordinal));
+            var second = Environment.GetEnvironmentVariable("USAGEAI_DATA_DIR")!;
+            False(string.Equals(isolated, second, StringComparison.Ordinal));
+
+            // The folder goes when the preview ends.
+            Directory.CreateDirectory(second);
+            File.WriteAllText(Path.Combine(second, "settings.json"), "{}");
+            PreviewRenderer.DeleteIsolatedDataDirectory();
+            False(Directory.Exists(second));
+            PreviewRenderer.DeleteIsolatedDataDirectory();
         }
         finally
         {
             Environment.SetEnvironmentVariable("USAGEAI_DATA_DIR", original);
+        }
+
+        // Folders a killed preview left behind go after a day; a running preview's younger one stays.
+        var previews = Path.Combine(Path.GetTempPath(), "UsageAI.PreviewSweepTests", Guid.NewGuid().ToString("N"));
+        try
+        {
+            var stale = Directory.CreateDirectory(Path.Combine(previews, "stale")).FullName;
+            File.WriteAllText(Path.Combine(stale, "history.jsonl"), "{}");
+            Directory.SetLastWriteTimeUtc(stale, DateTime.UtcNow - PreviewRenderer.StalePreviewAge - TimeSpan.FromHours(1));
+            var running = Directory.CreateDirectory(Path.Combine(previews, "running")).FullName;
+            True(PreviewRenderer.DeleteStalePreviewDirectories(previews, DateTime.UtcNow) == 1);
+            False(Directory.Exists(stale));
+            True(Directory.Exists(running));
+            True(PreviewRenderer.DeleteStalePreviewDirectories(Path.Combine(previews, "missing"), DateTime.UtcNow) == 0);
+        }
+        finally
+        {
+            Directory.Delete(Path.GetDirectoryName(previews)!, recursive: true);
         }
 
         // Toggle switches stay check boxes: Checked, Space and the accessible role are WinForms'.

@@ -29,6 +29,9 @@ internal static class UpdateChecker
     private static readonly Uri ReleasesPage =
         new("https://github.com/VladiKogan/UsageAI/releases/latest");
 
+    /// <summary>The newest release's page, for when no particular release is at hand.</summary>
+    internal static Uri LatestReleasePage => ReleasesPage;
+
     private static readonly HttpClient SharedClient = SecureHttp.CreateClient(RequestTimeout);
     private static readonly char[] PrereleaseSeparators = { '-', '+' };
 

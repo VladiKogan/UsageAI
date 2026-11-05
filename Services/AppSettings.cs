@@ -31,6 +31,9 @@ internal static class AppPaths
 
     public static string UpdateDirectory => Path.Combine(DataDirectory, "updates");
 
+    /// <summary>The note an in-app update leaves for the copy that starts after it.</summary>
+    public static string UpdateHandoffFile => Path.Combine(DataDirectory, "update-handoff.json");
+
     public static void EnsureDirectory() => Directory.CreateDirectory(DataDirectory);
 
     private static string ResolveDataDirectory()

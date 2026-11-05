@@ -138,6 +138,11 @@ internal static class Program
         ("update restart registration contract", WindowsIntegrationTests.TestUpdateRestartRegistrationAsync),
         ("Windows Credential Manager integration", WindowsIntegrationTests.TestCredentialManagerAsync),
         ("installer elevation launch contract", WindowsIntegrationTests.TestInstallerLaunchAsync),
+        ("an in-app update leaves a note for the copy that starts after it", UpdateFlowTests.TestUpdateHandoffAsync),
+        ("the update progress window steps through each stage", UpdateFlowTests.TestUpdateProgressWindowAsync),
+        ("Windows closing the app for an installer exits it at once", UpdateFlowTests.TestEndSessionExitsAsync),
+        ("Windows closing the app exits it even behind a modal dialog", UpdateFlowTests.TestEndSessionExitsFromModalAsync),
+        ("an in-app update shows its progress and the installer's outcome", UpdateFlowTests.TestInstallUpdateFlowAsync),
     };
 
     private static async Task<int> Main(string[] args)

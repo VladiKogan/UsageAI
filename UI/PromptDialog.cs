@@ -144,7 +144,7 @@ internal sealed class PromptDialog : Form
     /// The UsageAI mark — a ring holding a level — so a question is recognisably the app's. High
     /// Contrast draws it in the system text colour.
     /// </summary>
-    private static void PaintLogoMark(Graphics graphics, RectangleF bounds, LayoutScale scale)
+    internal static void PaintLogoMark(Graphics graphics, RectangleF bounds, LayoutScale scale)
     {
         var stroke = scale.Exact(4);
         var ringColor = Theme.IsHighContrast ? SystemColors.WindowText : Theme.Text;
@@ -165,7 +165,7 @@ internal sealed class PromptDialog : Form
     }
 
     /// <summary>A warning sign: a ring with an exclamation mark, a symbol rather than colour alone.</summary>
-    private static void PaintWarningMark(Graphics graphics, RectangleF bounds, LayoutScale scale)
+    internal static void PaintWarningMark(Graphics graphics, RectangleF bounds, LayoutScale scale)
     {
         var color = Theme.IsHighContrast ? SystemColors.WindowText : Theme.WarningText;
         var stroke = scale.Exact(3.5F);
@@ -250,7 +250,7 @@ internal sealed class PromptDialog : Form
         return button;
     }
 
-    private static void StyleButton(Button button, bool primary)
+    internal static void StyleButton(Button button, bool primary)
     {
         if (Theme.IsHighContrast)
         {

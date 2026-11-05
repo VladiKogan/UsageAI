@@ -73,6 +73,74 @@ internal static class PreviewRenderer
     }
 
     /// <summary>
+    /// Plays an in-app update in the real progress window: the download filling the bar, the
+    /// installer starting, then, as the reopened copy, the bar finishing and the confirmation.
+    /// With --states failed the installer reports an error instead. Closing a window ends it.
+    /// </summary>
+    private static void ShowUpdateProgress(bool failed)
+    {
+        const string Version = "9.9.9";
+        using var context = new ApplicationContext();
+        var handingOver = false;
+        void EndWhenClosed(object? sender, FormClosedEventArgs e)
+        {
+            if (!handingOver)
+            {
+                context.ExitThread();
+            }
+        }
+
+        var window = new UpdateProgressForm();
+        window.FormClosed += EndWhenClosed;
+        window.ShowDownloading(Version, 0);
+        window.ShowInTrayCorner();
+
+        var step = 0;
+        using var timer = new System.Windows.Forms.Timer { Interval = 120 };
+        timer.Tick += (_, _) =>
+        {
+            step++;
+            if (step <= 14)
+            {
+                window.ShowDownloading(Version, step / 14D);
+            }
+            else if (step == 16)
+            {
+                window.ShowStarting(Version);
+            }
+            else if (step == 22)
+            {
+                window.ShowInstalling(Version);
+            }
+            else if (step == 34)
+            {
+                timer.Stop();
+                if (failed)
+                {
+                    window.ShowFailed(Version, UsageApplicationContext.InstallerFailure(4));
+                    return;
+                }
+
+                // The closing copy's window goes, and the reopened copy's takes over.
+                handingOver = true;
+                var closing = window;
+                window = new UpdateProgressForm();
+                window.FormClosed += (_, _) => context.ExitThread();
+                window.PrimaryRequested += (_, _) => window.Close();
+                window.ShowInstalled(Version, offerWhatsNew: true);
+                closing.Close();
+                closing.Dispose();
+                handingOver = false;
+                window.ShowInTrayCorner();
+            }
+        };
+        window.PrimaryRequested += (_, _) => window.Close();
+        timer.Start();
+        Application.Run(context);
+        window.Dispose();
+    }
+
+    /// <summary>
     /// Opens the real popup or dashboard with the sample data at the monitor's own DPI, so a
     /// change can be tried by hand without a tray icon, provider credentials, or the
     /// single-instance lock of an installed copy. Closing or hiding the window ends the process.
@@ -109,6 +177,9 @@ internal static class PreviewRenderer
                 return;
             case "menu":
                 ShowMenu();
+                return;
+            case "update":
+                ShowUpdateProgress(failed: string.Equals(Program.ValueAfter(args, "--states"), "failed", StringComparison.OrdinalIgnoreCase));
                 return;
         }
 
@@ -261,14 +332,95 @@ internal static class PreviewRenderer
         Application.Run(dialog);
     }
 
+    /// <summary>The temp folder previews keep their throwaway data folders in.</summary>
+    internal static string PreviewRoot => Path.Combine(Path.GetTempPath(), "UsageAI.Preview");
+
+    /// <summary>A preview's data folder older than this was left by a preview that never ended cleanly.</summary>
+    internal static readonly TimeSpan StalePreviewAge = TimeSpan.FromDays(1);
+
+    private static string? _isolatedDataDirectory;
+
     /// <summary>
     /// Redirects <see cref="AppPaths"/> to a fresh folder under the temp directory. It must run
-    /// before anything reads <see cref="AppPaths.DataDirectory"/>, which resolves once.
+    /// before anything reads <see cref="AppPaths.DataDirectory"/>, which resolves once. Folders
+    /// that killed or crashed previews left behind are cleared first.
     /// </summary>
-    internal static void IsolateDataDirectory() =>
-        Environment.SetEnvironmentVariable(
-            "USAGEAI_DATA_DIR",
-            Path.Combine(Path.GetTempPath(), "UsageAI.Preview", Guid.NewGuid().ToString("N")));
+    internal static void IsolateDataDirectory()
+    {
+        DeleteStalePreviewDirectories(PreviewRoot, DateTime.UtcNow);
+        _isolatedDataDirectory = Path.Combine(PreviewRoot, Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("USAGEAI_DATA_DIR", _isolatedDataDirectory);
+    }
+
+    /// <summary>Deletes this preview's data folder, and the shared folder once nothing is left in it.</summary>
+    internal static void DeleteIsolatedDataDirectory()
+    {
+        if (_isolatedDataDirectory is null)
+        {
+            return;
+        }
+
+        DeleteDirectoryBestEffort(_isolatedDataDirectory);
+        _isolatedDataDirectory = null;
+        try
+        {
+            if (Directory.Exists(PreviewRoot) && !Directory.EnumerateFileSystemEntries(PreviewRoot).Any())
+            {
+                Directory.Delete(PreviewRoot);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Another preview started meanwhile.
+        }
+    }
+
+    /// <summary>
+    /// Deletes data folders older than <see cref="StalePreviewAge"/>. A preview still running
+    /// keeps a younger folder, so it is never pulled out from under it.
+    /// </summary>
+    internal static int DeleteStalePreviewDirectories(string root, DateTime nowUtc)
+    {
+        if (!Directory.Exists(root))
+        {
+            return 0;
+        }
+
+        var deleted = 0;
+        try
+        {
+            foreach (var directory in Directory.EnumerateDirectories(root))
+            {
+                if (nowUtc - Directory.GetLastWriteTimeUtc(directory) > StalePreviewAge &&
+                    DeleteDirectoryBestEffort(directory))
+                {
+                    deleted++;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+        }
+
+        return deleted;
+    }
+
+    private static bool DeleteDirectoryBestEffort(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
 
     private static AppSettings PreviewSettings(string[] args)
     {
