@@ -73,6 +73,74 @@ internal static class PreviewRenderer
     }
 
     /// <summary>
+    /// Plays an in-app update in the real progress window: the download filling the bar, the
+    /// installer starting, then, as the reopened copy, the bar finishing and the confirmation.
+    /// With --states failed the installer reports an error instead. Closing a window ends it.
+    /// </summary>
+    private static void ShowUpdateProgress(bool failed)
+    {
+        const string Version = "9.9.9";
+        using var context = new ApplicationContext();
+        var handingOver = false;
+        void EndWhenClosed(object? sender, FormClosedEventArgs e)
+        {
+            if (!handingOver)
+            {
+                context.ExitThread();
+            }
+        }
+
+        var window = new UpdateProgressForm();
+        window.FormClosed += EndWhenClosed;
+        window.ShowDownloading(Version, 0);
+        window.ShowInTrayCorner();
+
+        var step = 0;
+        using var timer = new System.Windows.Forms.Timer { Interval = 120 };
+        timer.Tick += (_, _) =>
+        {
+            step++;
+            if (step <= 14)
+            {
+                window.ShowDownloading(Version, step / 14D);
+            }
+            else if (step == 16)
+            {
+                window.ShowStarting(Version);
+            }
+            else if (step == 22)
+            {
+                window.ShowInstalling(Version);
+            }
+            else if (step == 34)
+            {
+                timer.Stop();
+                if (failed)
+                {
+                    window.ShowFailed(Version, UsageApplicationContext.InstallerFailure(4));
+                    return;
+                }
+
+                // The closing copy's window goes, and the reopened copy's takes over.
+                handingOver = true;
+                var closing = window;
+                window = new UpdateProgressForm();
+                window.FormClosed += (_, _) => context.ExitThread();
+                window.PrimaryRequested += (_, _) => window.Close();
+                window.ShowInstalled(Version, offerWhatsNew: true);
+                closing.Close();
+                closing.Dispose();
+                handingOver = false;
+                window.ShowInTrayCorner();
+            }
+        };
+        window.PrimaryRequested += (_, _) => window.Close();
+        timer.Start();
+        Application.Run(context);
+        window.Dispose();
+    }
+
+    /// <summary>
     /// Opens the real popup or dashboard with the sample data at the monitor's own DPI, so a
     /// change can be tried by hand without a tray icon, provider credentials, or the
     /// single-instance lock of an installed copy. Closing or hiding the window ends the process.
@@ -109,6 +177,9 @@ internal static class PreviewRenderer
                 return;
             case "menu":
                 ShowMenu();
+                return;
+            case "update":
+                ShowUpdateProgress(failed: string.Equals(Program.ValueAfter(args, "--states"), "failed", StringComparison.OrdinalIgnoreCase));
                 return;
         }
 

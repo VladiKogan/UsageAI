@@ -28,8 +28,17 @@ internal static class UpdateInstaller
         "release-assets.githubusercontent.com",
     };
 
+    /// <summary>
+    /// The installer's arguments. Setup runs without a window of its own, because the app shows
+    /// the update's progress itself; error messages still appear. Restart Manager closes the
+    /// running copy and reopens the new one, and /NORESTART keeps a very silent setup from
+    /// rebooting Windows unasked if a file ever had to wait for a restart.
+    /// </summary>
+    internal const string InstallerArguments = "/VERYSILENT /NORESTART /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS";
+
     public static async Task<string> DownloadAndVerifyAsync(
         UpdateRelease release,
+        IProgress<double>? progress,
         CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -38,14 +47,17 @@ internal static class UpdateInstaller
             release,
             SharedClient,
             AppPaths.UpdateDirectory,
-            timeout.Token);
+            timeout.Token,
+            progress);
     }
 
+    /// <param name="progress">Receives the share of the installer downloaded so far, 0 to 1.</param>
     internal static async Task<string> DownloadAndVerifyAsync(
         UpdateRelease release,
         HttpClient client,
         string updateDirectory,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        IProgress<double>? progress = null)
     {
         ArgumentNullException.ThrowIfNull(release);
         ArgumentNullException.ThrowIfNull(client);
@@ -78,7 +90,7 @@ internal static class UpdateInstaller
                 cancellationToken);
             var expectedHash = ParseChecksum(checksumBytes, installer.Name);
 
-            await DownloadFileAsync(client, installer, partialPath, cancellationToken);
+            await DownloadFileAsync(client, installer, partialPath, progress, cancellationToken);
             var actualHash = await ComputeSha256Async(partialPath, cancellationToken);
             if (!CryptographicOperations.FixedTimeEquals(expectedHash, actualHash))
             {
@@ -106,9 +118,10 @@ internal static class UpdateInstaller
         }
     }
 
-    public static void Launch(string installerPath) => Launch(installerPath, Process.Start);
+    /// <summary>Starts the verified installer elevated and returns it, so its exit can be watched.</summary>
+    public static Process Launch(string installerPath) => Launch(installerPath, Process.Start);
 
-    internal static void Launch(
+    internal static Process Launch(
         string installerPath,
         Func<ProcessStartInfo, Process?> startProcess)
     {
@@ -120,19 +133,16 @@ internal static class UpdateInstaller
             throw new UpdateInstallException("The verified update installer is no longer available.");
         }
 
+        Process? process;
         try
         {
-            using var process = startProcess(new ProcessStartInfo
+            process = startProcess(new ProcessStartInfo
             {
                 FileName = fullPath,
-                Arguments = "/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS",
+                Arguments = InstallerArguments,
                 UseShellExecute = true,
                 Verb = "runas",
             });
-            if (process is null)
-            {
-                throw new UpdateInstallException("Windows could not start the update installer.");
-            }
         }
         catch (System.ComponentModel.Win32Exception exception)
         {
@@ -141,6 +151,8 @@ internal static class UpdateInstaller
                     ? "The update installation was cancelled."
                     : "Windows could not start the update installer.");
         }
+
+        return process ?? throw new UpdateInstallException("Windows could not start the update installer.");
     }
 
     private static async Task<byte[]> DownloadBytesAsync(
@@ -182,6 +194,7 @@ internal static class UpdateInstaller
         HttpClient client,
         UpdateAsset asset,
         string destinationPath,
+        IProgress<double>? progress,
         CancellationToken cancellationToken)
     {
         using var response = await SendFollowingSafeRedirectsAsync(client, asset.DownloadUrl, cancellationToken);
@@ -212,6 +225,7 @@ internal static class UpdateInstaller
             }
 
             await destination.WriteAsync(buffer.AsMemory(0, read), cancellationToken);
+            progress?.Report(written / (double)asset.Size);
         }
 
         if (written != asset.Size)

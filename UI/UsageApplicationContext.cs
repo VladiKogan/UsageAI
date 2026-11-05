@@ -39,9 +39,24 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private bool _isExiting;
     private bool _disposed;
     private bool _updateCheckRunning;
+    private readonly Func<UpdateRelease, IProgress<double>?, CancellationToken, Task<string>> _downloadInstaller;
+    private readonly Func<string, Process> _launchInstaller;
+    private UpdateHandoffResult? _updateResult;
+    private UpdateProgressForm? _updateWindow;
 
-    public UsageApplicationContext(IEnumerable<IUsageClient> clients, AppSettings settings, bool profileExisted)
-        : this(clients, settings, showTrayIcon: true, enableAutomaticUpdateChecks: true, profileExisted, incidents: new ProviderIncidentService())
+    public UsageApplicationContext(
+        IEnumerable<IUsageClient> clients,
+        AppSettings settings,
+        bool profileExisted,
+        UpdateHandoffResult? updateResult)
+        : this(
+            clients,
+            settings,
+            showTrayIcon: true,
+            enableAutomaticUpdateChecks: true,
+            profileExisted,
+            incidents: new ProviderIncidentService(),
+            updateResult: updateResult)
     {
     }
 
@@ -61,9 +76,15 @@ internal sealed class UsageApplicationContext : ApplicationContext
         Func<StartupState>? readStartup = null,
         Action<bool>? writeStartup = null,
         bool answerRelaunch = true,
-        ProviderIncidentService? incidents = null)
+        ProviderIncidentService? incidents = null,
+        UpdateHandoffResult? updateResult = null,
+        Func<UpdateRelease, IProgress<double>?, CancellationToken, Task<string>>? downloadInstaller = null,
+        Func<string, Process>? launchInstaller = null)
     {
         _settings = settings;
+        _updateResult = updateResult;
+        _downloadInstaller = downloadInstaller ?? UpdateInstaller.DownloadAndVerifyAsync;
+        _launchInstaller = launchInstaller ?? UpdateInstaller.Launch;
         _incidents = incidents;
         if (_incidents is not null)
         {
@@ -120,6 +141,9 @@ internal sealed class UsageApplicationContext : ApplicationContext
         }
 
         _messageWindow.HotkeyPressed += (_, _) => ToggleCompactPopup();
+        // Windows closing the app (an installer's Restart Manager, a sign-out, a shutdown) exits
+        // as the tray menu's Exit does. Posted, so the teardown runs outside the window procedure.
+        _messageWindow.EndSessionRequested += (_, _) => _syncContext.Post(_ => Exit(), null);
         ApplyHotkeySetting();
 
         _tickTimer = new System.Windows.Forms.Timer
@@ -162,7 +186,73 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _ = RefreshAsync(force: true);
         _ = CheckForUpdatesIfDueAsync();
         _ = RefreshIncidentsIfDueAsync();
+        ShowUpdateResult();
     }
+
+    /// <summary>
+    /// Tells the user an in-app update arrived, or that it did not. The copy that started the
+    /// installer left a note, and this copy read it at startup.
+    /// </summary>
+    private void ShowUpdateResult()
+    {
+        if (_updateResult is not { } result || _isExiting)
+        {
+            return;
+        }
+
+        _updateResult = null;
+        var window = NewUpdateWindow(UpdateChecker.LatestReleasePage);
+        if (result.Outcome == UpdateOutcome.Installed)
+        {
+            window.ShowInstalled(result.Handoff.ToVersion, offerWhatsNew: _upgradeNotice.Pending is not null);
+        }
+        else
+        {
+            window.ShowFailed(
+                result.Handoff.ToVersion,
+                $"UsageAI {result.Handoff.FromVersion} is still installed. The release page has the installer to run by hand.");
+        }
+
+        window.ShowInTrayCorner();
+    }
+
+    /// <summary>
+    /// A fresh progress window. Its button opens What's New once an update is installed, or
+    /// <paramref name="releasePage"/> after a failure.
+    /// </summary>
+    private UpdateProgressForm NewUpdateWindow(Uri releasePage)
+    {
+        _updateWindow?.Close();
+        var window = new UpdateProgressForm();
+        window.PrimaryRequested += (_, _) =>
+        {
+            var failed = window.Stage == UpdateStage.Failed;
+            window.Close();
+            if (failed)
+            {
+                OpenReleasePage(releasePage);
+            }
+            else
+            {
+                ShowPendingWhatsNew();
+            }
+        };
+        window.FormClosed += (_, _) =>
+        {
+            if (ReferenceEquals(_updateWindow, window))
+            {
+                _updateWindow = null;
+            }
+
+            // The installer that just ran has exited by now, so its download can go.
+            _ = Task.Run(UpdateHandoffStore.CleanUpInstallers);
+        };
+        _updateWindow = window;
+        return window;
+    }
+
+    /// <summary>The update progress window while one is open, for tests.</summary>
+    internal UpdateProgressForm? UpdateWindow => _updateWindow;
 
     /// <summary>
     /// True while the Windows session is locked. Scheduled polls wait until it is unlocked, which
@@ -549,24 +639,71 @@ internal sealed class UsageApplicationContext : ApplicationContext
             return;
         }
 
-        _trayIcon.ShowBalloonTip(
-            5_000,
-            "Downloading UsageAI update",
-            $"Downloading and verifying UsageAI {release.Version}...",
-            ToolTipIcon.Info);
+        await InstallUpdateAsync(release);
+    }
+
+    /// <summary>
+    /// Downloads, verifies and starts the installer, showing each step in the progress window.
+    /// Windows then closes this copy and reopens the new one, which finishes the bar.
+    /// </summary>
+    internal async Task InstallUpdateAsync(UpdateRelease release)
+    {
+        var window = NewUpdateWindow(release.ReleasePageUrl);
+        window.ShowDownloading(release.Version, 0);
+        window.ShowInTrayCorner();
+        var progress = new Progress<double>(fraction =>
+        {
+            if (!window.IsDisposed)
+            {
+                window.ShowDownloading(release.Version, fraction);
+            }
+        });
 
         try
         {
-            var installerPath = await UpdateInstaller.DownloadAndVerifyAsync(release, _shutdown.Token);
-            if (!_isExiting)
+            var installerPath = await _downloadInstaller(release, progress, _shutdown.Token);
+            if (_isExiting)
             {
-                UpdateInstaller.Launch(installerPath);
+                return;
             }
+
+            if (!window.IsDisposed)
+            {
+                window.ShowStarting(release.Version);
+                // Painted now: the elevation prompt holds this thread until it is answered.
+                window.Update();
+            }
+
+            UpdateHandoffStore.Save(new UpdateHandoff(AppIdentity.Version, release.Version, DateTimeOffset.UtcNow));
+            Process installer;
+            try
+            {
+                installer = _launchInstaller(installerPath);
+            }
+            catch (UpdateInstallException)
+            {
+                UpdateHandoffStore.Delete();
+                throw;
+            }
+
+            if (!window.IsDisposed)
+            {
+                window.ShowInstalling(release.Version);
+            }
+
+            await WatchInstallerAsync(installer, window, release.Version);
         }
         catch (UpdateInstallException exception)
         {
             if (_isExiting)
             {
+                return;
+            }
+
+            if (!window.IsDisposed)
+            {
+                // Said in the panel already on screen, rather than a dialog over everything.
+                window.ShowFailed(release.Version, $"{exception.Message} The release page has the installer to download by hand.");
                 return;
             }
 
@@ -583,6 +720,62 @@ internal sealed class UsageApplicationContext : ApplicationContext
             }
         }
     }
+
+    /// <summary>
+    /// Waits for the installer. Normally Windows closes this copy first, which cancels the wait.
+    /// An installer that exits while this copy still runs either failed or installed into a
+    /// folder this copy does not run from, and the window says which instead of waiting forever.
+    /// </summary>
+    private async Task WatchInstallerAsync(Process installer, UpdateProgressForm window, string version)
+    {
+        int exitCode;
+        using (installer)
+        {
+            try
+            {
+                await installer.WaitForExitAsync(_shutdown.Token);
+                exitCode = installer.ExitCode;
+            }
+            catch (OperationCanceledException)
+            {
+                return;
+            }
+            catch (InvalidOperationException)
+            {
+                // Nothing to watch: the restarted copy reports the outcome instead.
+                return;
+            }
+        }
+
+        if (_isExiting)
+        {
+            return;
+        }
+
+        // This copy outlived the installer, so it already knows the outcome, and must not find
+        // the note again if it is the one started next.
+        UpdateHandoffStore.Delete();
+        if (window.IsDisposed)
+        {
+            return;
+        }
+
+        if (exitCode == 0)
+        {
+            window.ShowInstalledNotRunning(version);
+            return;
+        }
+
+        window.ShowFailed(version, InstallerFailure(exitCode));
+    }
+
+    /// <summary>An Inno Setup exit code in words; the numbers are Setup's documented codes.</summary>
+    internal static string InstallerFailure(int exitCode) => exitCode switch
+    {
+        2 or 5 => "The installer was cancelled. This version is still installed.",
+        7 or 8 => "The installer could not prepare the update. This version is still installed.",
+        _ => $"The installer stopped with error {exitCode}. This version is still installed.",
+    };
 
     private static void OpenReleasePage(Uri releasePageUrl)
     {
@@ -681,6 +874,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private void Exit()
     {
         _isExiting = true;
+        _updateWindow?.Close();
         Application.Idle -= RefreshOnFirstIdle;
         _shutdown.Cancel();
         _tickTimer.Stop();

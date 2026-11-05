@@ -198,14 +198,18 @@ internal static class WindowsIntegrationTests
             var installerPath = Path.Combine(directory, "UsageAI-Test-Setup.exe");
             File.WriteAllText(installerPath, "synthetic installer fixture");
             ProcessStartInfo? captured = null;
-            UpdateInstaller.Launch(installerPath, startInfo =>
+            using var started = new Process();
+            var returned = UpdateInstaller.Launch(installerPath, startInfo =>
             {
                 captured = startInfo;
-                return new Process();
+                return started;
             });
+            // The process comes back so the app can watch the installer's exit code.
+            True(ReferenceEquals(started, returned));
             NotNull(captured);
             Equal(Path.GetFullPath(installerPath), captured!.FileName);
-            Equal("/SILENT /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS", captured.Arguments);
+            // No installer window (the app shows progress itself), and never an unasked reboot.
+            Equal("/VERYSILENT /NORESTART /CLOSEAPPLICATIONS /RESTARTAPPLICATIONS", captured.Arguments);
             Equal("runas", captured.Verb);
             True(captured.UseShellExecute);
 

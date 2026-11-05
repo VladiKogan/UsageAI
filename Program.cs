@@ -81,9 +81,12 @@ internal static class Program
 
         var profileExisted = Directory.Exists(AppPaths.DataDirectory);
         var settings = AppSettings.Load();
+        // An in-app update leaves a note for the copy that starts after it, and its download.
+        var updateResult = UpdateHandoffStore.Take(AppIdentity.Version);
+        UpdateHandoffStore.CleanUpInstallers();
         try
         {
-            Application.Run(new UsageApplicationContext(CreateUsageClients(), settings, profileExisted));
+            Application.Run(new UsageApplicationContext(CreateUsageClients(), settings, profileExisted, updateResult));
         }
         finally
         {
@@ -101,10 +104,11 @@ internal static class Program
                                     [--quota-display used|remaining] [--theme light|dark]
                                              Render a preview image of the popup, or of
                                              the dashboard with --full.
-          UsageAI.exe --preview-window popup|dashboard|settings|whatsnew|prompt|warning|menu [--theme light|dark]
+          UsageAI.exe --preview-window popup|dashboard|settings|whatsnew|prompt|warning|menu|update [--theme light|dark]
                                              Open that window with sample data
                                              (--states mixed for loading, stale and
-                                             signed-out providers),
+                                             signed-out providers; update plays an
+                                             in-app update, --states failed fails it),
                                              without a tray icon or provider access.
           UsageAI.exe --preview-tray [--theme light|dark] [--quota-display used|remaining]
                                              Run the tray app on sample providers. Each

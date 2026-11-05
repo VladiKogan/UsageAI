@@ -223,8 +223,10 @@ installed version is current, a newer version is available, or the check could n
 When an update exists, UsageAI asks before downloading or installing anything; choosing **Later** leaves
 the current version untouched.
 Installed builds can download the matching Setup.exe, verify its published SHA-256, and ask Windows
-to install it. During an in-app upgrade, Windows closes the running tray process, replaces the
-executable, and reopens the updated build automatically. The first upgrade from a version released
+to install it. A small panel in the tray corner shows the download filling, Windows closes the
+running tray process, replaces the executable, and reopens the updated build, which finishes the bar
+and confirms the new version with a link to What's New. The whole install takes a few seconds; if it
+fails, the panel says so and links to the release page. The first upgrade from a version released
 before restart support may still require you to open UsageAI once from the Start menu; later updates
 restart it automatically.
 
@@ -305,7 +307,7 @@ Both render at 192 DPI from sample data, with no accounts needed. Add `--quota-d
 dotnet run --project .\UsageAI.csproj -- --preview-window popup --theme dark --states mixed
 ```
 
-`--preview-window` also takes `dashboard`, `settings`, `whatsnew`, `prompt`, `warning` and `menu`. In the popup and dashboard, **Refresh** alternates between two sets of readings, so the gauges have somewhere to move.
+`--preview-window` also takes `dashboard`, `settings`, `whatsnew`, `prompt`, `warning`, `menu` and `update` (an in-app update played from download to "UsageAI updated"; `--states failed` ends it in a failed install). In the popup and dashboard, **Refresh** alternates between two sets of readings, so the gauges have somewhere to move.
 
 **Film the tray** with the whole app running on sample providers — tray icon, tooltip, popup, dashboard, Settings and alerts, with no accounts, update checks or startup registration:
 

@@ -11,6 +11,7 @@ namespace UsageAI.UI;
 internal sealed class MessageWindow : NativeWindow, IDisposable
 {
     private const int WmHotkey = 0x0312;
+    private const int WmEndSession = 0x0016;
     private const int HotkeyId = 0x0A51;
     private const uint ModAlt = 0x0001;
     private const uint ModWin = 0x0008;
@@ -32,6 +33,13 @@ internal sealed class MessageWindow : NativeWindow, IDisposable
     public event EventHandler? ShowRequested;
 
     public event EventHandler? HotkeyPressed;
+
+    /// <summary>
+    /// Windows is closing this process: an installer's Restart Manager (ENDSESSION_CLOSEAPP), a
+    /// sign-out or a shutdown. Without an answer Restart Manager waits out its 30-second timeout
+    /// and then kills the process.
+    /// </summary>
+    public event EventHandler? EndSessionRequested;
 
     /// <summary>Registers Win+Alt+U. Returns false when another app already owns the chord.</summary>
     public bool TryRegisterHotkey()
@@ -71,6 +79,10 @@ internal sealed class MessageWindow : NativeWindow, IDisposable
         else if (m.Msg == WmHotkey && m.WParam.ToInt32() == HotkeyId)
         {
             HotkeyPressed?.Invoke(this, EventArgs.Empty);
+        }
+        else if (m.Msg == WmEndSession && m.WParam != IntPtr.Zero)
+        {
+            EndSessionRequested?.Invoke(this, EventArgs.Empty);
         }
 
         base.WndProc(ref m);
