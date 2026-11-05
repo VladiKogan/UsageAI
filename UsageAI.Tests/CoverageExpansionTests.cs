@@ -3789,12 +3789,27 @@ internal static class CoverageExpansionTests
             new Microsoft.Win32.PowerModeChangedEventArgs(Microsoft.Win32.PowerModes.Resume));
         await WaitForConditionAsync(() => client.CallCount >= 4);
         Equal(61, service.Statuses[0].Snapshot!.Primary!.UsedPercent);
+
+        // While the session is locked a due poll waits; unlocking refreshes at once.
+        InvokePrivate(
+            context,
+            "OnSessionSwitch",
+            context,
+            new Microsoft.Win32.SessionSwitchEventArgs(
+                Microsoft.Win32.SessionSwitchReason.SessionLock));
+        await WaitForConditionAsync(() => context.IsSessionLocked);
+        var callsBeforeLockedTick = client.CallCount;
+        SetPrivateField(service, "_nextRegularRefresh", DateTimeOffset.MinValue);
+        await InvokePrivateTaskAsync(context, "RefreshIfDueAsync");
+        Equal(callsBeforeLockedTick, client.CallCount);
+
         InvokePrivate(
             context,
             "OnSessionSwitch",
             context,
             new Microsoft.Win32.SessionSwitchEventArgs(
                 Microsoft.Win32.SessionSwitchReason.SessionUnlock));
+        await WaitForConditionAsync(() => !context.IsSessionLocked);
         await WaitForConditionAsync(() => client.CallCount >= 5);
         Equal(64, service.Statuses[0].Snapshot!.Primary!.UsedPercent);
         SetPrivateField(service, "_nextRegularRefresh", DateTimeOffset.MinValue);

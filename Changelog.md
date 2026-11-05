@@ -61,6 +61,9 @@ The project follows [Semantic Versioning](https://semver.org/).
   does not succeed, UsageAI asks the CLI as before, and the CLI renews the login itself; UsageAI never
   refreshes or writes `auth.json`. A rate limit from ChatGPT is reported with its retry window.
   `--diagnose codex` names the path that answered in `Source`.
+- **UsageAI no longer polls while your PC is locked.** Nobody can see the tray then, so scheduled
+  refreshes wait and unlocking refreshes at once, as before. That spares the provider requests and
+  processes a locked machine used to make overnight.
 
 ## [0.14.1] - 2026-11-04
 

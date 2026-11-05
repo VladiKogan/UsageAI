@@ -143,9 +143,16 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _ = CheckForUpdatesIfDueAsync();
     }
 
+    /// <summary>
+    /// True while the Windows session is locked. Scheduled polls wait until it is unlocked, which
+    /// refreshes at once; nobody can see the tray meanwhile, so polling would only start provider
+    /// processes and requests overnight. Alerts that fall due meanwhile arrive with that refresh.
+    /// </summary>
+    internal bool IsSessionLocked { get; private set; }
+
     private async Task RefreshIfDueAsync()
     {
-        if (_isExiting || !_service.IsDue(DateTimeOffset.Now))
+        if (_isExiting || IsSessionLocked || !_service.IsDue(DateTimeOffset.Now))
         {
             return;
         }
@@ -521,9 +528,24 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     private void OnSessionSwitch(object sender, SessionSwitchEventArgs eventArgs)
     {
-        if (eventArgs.Reason is SessionSwitchReason.SessionUnlock or SessionSwitchReason.SessionLogon)
+        var reason = eventArgs.Reason;
+        RunOnUi(() => HandleSessionSwitch(reason));
+    }
+
+    /// <summary>
+    /// Pauses scheduled polling when the session locks and resumes with a refresh when it unlocks.
+    /// Runs on the UI thread, where the tick that reads <see cref="IsSessionLocked"/> also runs.
+    /// </summary>
+    internal void HandleSessionSwitch(SessionSwitchReason reason)
+    {
+        if (reason == SessionSwitchReason.SessionLock)
         {
-            RunOnUi(() => _ = RefreshAsync(force: false));
+            IsSessionLocked = true;
+        }
+        else if (reason is SessionSwitchReason.SessionUnlock or SessionSwitchReason.SessionLogon)
+        {
+            IsSessionLocked = false;
+            _ = RefreshAsync(force: false);
         }
     }
 
