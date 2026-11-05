@@ -1087,6 +1087,85 @@ internal static class CoverageExpansionTests
         }
     }
 
+    public static async Task TestGeminiConsumerTierShutdownAsync()
+    {
+        static GeminiUsageClient.CodeAssistInfo Parse(string json, string? hostedDomain = null)
+        {
+            using var document = JsonDocument.Parse(json);
+            return GeminiUsageClient.ParseCodeAssist(document.RootElement, hostedDomain);
+        }
+
+        // The June 2026 shutdown marks the CLI unsupported for a consumer account.
+        const string shutDown = """{"currentTier":{"id":"free-tier"},"ineligibleTiers":[{"reasonCode":"UNSUPPORTED_CLIENT","reasonMessage":"Use Antigravity"}],"cloudaicompanionProject":"proj-9"}""";
+        var consumer = Parse(shutDown);
+        True(consumer.IsConsumerTierShutDown);
+        Equal("Free", consumer.Plan);
+        Equal("proj-9", consumer.Project);
+
+        // Accounts that keep Gemini CLI access are never told it was shut down.
+        False(Parse("""{"paidTier":{"name":"Gemini Code Assist Pro"},"ineligibleTiers":[{"reasonCode":"UNSUPPORTED_CLIENT"}]}""").IsConsumerTierShutDown);
+        False(Parse("""{"currentTier":{"id":"standard-tier"},"ineligibleTiers":[{"reasonCode":"UNSUPPORTED_CLIENT"}]}""").IsConsumerTierShutDown);
+        False(Parse(shutDown, hostedDomain: "school.example").IsConsumerTierShutDown);
+        False(Parse("""{"currentTier":{"id":"free-tier"},"ineligibleTiers":[{"reasonCode":"RESTRICTED_AGE"}]}""").IsConsumerTierShutDown);
+        Equal("Workspace", Parse("""{"currentTier":{"id":"free-tier"}}""", "school.example").Plan);
+        Equal("Legacy", Parse("""{"currentTier":{"id":"legacy-tier"}}""").Plan);
+        Null(Parse("[]").Plan);
+
+        // The project is a plain id or an object carrying one, and anything else is dropped.
+        Equal("proj-object", Parse("""{"cloudaicompanionProject":{"id":"proj-object","name":"x"}}""").Project);
+        Null(Parse("""{"cloudaicompanionProject":"bad project\"id"}""").Project);
+        Null(Parse("""{"cloudaicompanionProject":42}""").Project);
+        Equal("{}", GeminiUsageClient.QuotaRequestBody(null));
+        Equal("""{"project":"proj-9"}""", GeminiUsageClient.QuotaRequestBody("proj-9"));
+
+        var environment = SaveEnvironment("GEMINI_CONFIG_DIR");
+        var directory = Path.Combine(AppPaths.DataDirectory, $"gemini-shutdown-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            Environment.SetEnvironmentVariable("GEMINI_CONFIG_DIR", directory);
+            WriteGeminiCredentials(directory, "live-access", refreshToken: null, DateTimeOffset.UtcNow.AddHours(1));
+
+            string? quotaBody = null;
+            StubHttpHandler Handler(string codeAssistJson) => new(async (request, _, cancellationToken) =>
+            {
+                if (request.RequestUri!.AbsoluteUri.Contains("loadCodeAssist", StringComparison.Ordinal))
+                {
+                    return JsonResponse(HttpStatusCode.OK, codeAssistJson);
+                }
+
+                quotaBody = await request.Content!.ReadAsStringAsync(cancellationToken);
+                return JsonResponse(HttpStatusCode.Forbidden, """{"error":{"code":403,"status":"PERMISSION_DENIED","details":[{"reason":"SUBSCRIPTION_REQUIRED"}]}}""");
+            });
+
+            // The shutdown reads as such, never as an expired sign-in, and the project went along.
+            using (var http = new HttpClient(Handler(shutDown)))
+            {
+                var exception = await ThrowsAsync<GeminiUsageException>(
+                    () => new GeminiUsageClient(http, NoLocalGeminiSnapshot, hasAgyCli: () => true).GetUsageAsync());
+                Equal(
+                    "Google Gemini usage is unavailable. Check that `agy` is signed in, then refresh. Antigravity (IDE or editor extension) and `agy` returned no usage, and Google no longer serves Gemini CLI quota for this plan.",
+                    exception.Message);
+                Equal(GeminiUsageClient.ConsumerTierShutdownMessage, exception.InnerException!.Message);
+                Equal("""{"project":"proj-9"}""", quotaBody);
+            }
+
+            // The same 403 for an account Google did not flag stays a sign-in problem.
+            using (var http = new HttpClient(Handler("""{"currentTier":{"id":"free-tier"}}""")))
+            {
+                var exception = await ThrowsAsync<GeminiUsageException>(
+                    () => new GeminiUsageClient(http, NoLocalGeminiSnapshot, hasAgyCli: () => true).GetUsageAsync());
+                True(exception.Message.EndsWith("the Gemini CLI sign-in has expired.", StringComparison.Ordinal));
+                Equal("{}", quotaBody);
+            }
+        }
+        finally
+        {
+            RestoreEnvironment(environment);
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
     public static async Task TestAntigravityEditorHubDiscoveryAsync()
     {
         var listing = string.Join(
@@ -4122,23 +4201,25 @@ internal static class CoverageExpansionTests
                     Task.FromResult(JsonResponse(HttpStatusCode.OK, json))));
                 Equal(
                     expectedPlan,
-                    await InvokePrivateTaskResultAsync<string?>(
+                    (await InvokePrivateTaskResultAsync<GeminiUsageClient.CodeAssistInfo>(
                         new GeminiUsageClient(http, NoLocalGeminiSnapshot),
-                        "LoadCodeAssistPlanAsync",
+                        "LoadCodeAssistAsync",
                         "synthetic-access",
                         null,
-                        CancellationToken.None));
+                        CancellationToken.None)).Plan);
             }
 
             using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
                        throw new InvalidOperationException("synthetic plan failure"))))
             {
-                Null(await InvokePrivateTaskResultAsync<string?>(
-                    new GeminiUsageClient(http, NoLocalGeminiSnapshot),
-                    "LoadCodeAssistPlanAsync",
-                    "synthetic-access",
-                    null,
-                    CancellationToken.None));
+                Equal(
+                    GeminiUsageClient.CodeAssistInfo.Unknown,
+                    await InvokePrivateTaskResultAsync<GeminiUsageClient.CodeAssistInfo>(
+                        new GeminiUsageClient(http, NoLocalGeminiSnapshot),
+                        "LoadCodeAssistAsync",
+                        "synthetic-access",
+                        null,
+                        CancellationToken.None));
             }
 
             using (var document = JsonDocument.Parse(

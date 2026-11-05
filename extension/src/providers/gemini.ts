@@ -22,6 +22,12 @@ const codeAssistEndpoint = "https://cloudcode-pa.googleapis.com/v1internal:loadC
 const tokenRefreshEndpoint = "https://oauth2.googleapis.com/token";
 const notSignedInMessage = "Google Gemini is not signed in. Run `agy` to sign in, then refresh.";
 const signInAgainMessage = "Google Gemini sign-in has expired. Run `agy` to sign in again, then refresh.";
+/**
+ * Google stopped serving Gemini CLI OAuth quota to individual, AI Pro and Ultra accounts in June 2026.
+ * Signing in again cannot fix it, so it must never read like an expired sign-in.
+ */
+export const consumerTierShutdownMessage =
+  "Google no longer serves Gemini CLI quota for this plan. Use Antigravity or `agy` instead, then refresh.";
 
 interface GeminiCredentials {
   readonly accessToken?: string;
@@ -56,14 +62,19 @@ export function combinedGeminiError(agyInstalled: boolean, geminiCliMessage: str
     ? "Antigravity (IDE or editor extension) and `agy` returned no usage"
     : "Antigravity (IDE or editor extension) returned no usage and `agy` is not installed";
   const expired = geminiCliMessage === signInAgainMessage;
-  if (expired || geminiCliMessage === notSignedInMessage) {
+  const shutDown = geminiCliMessage === consumerTierShutdownMessage;
+  if (expired || shutDown || geminiCliMessage === notSignedInMessage) {
     // Only the Gemini CLI is known to be signed out: agy may be signed in but slow or backing off,
     // and the Antigravity IDE may be installed without the standalone CLI. So the headline blames no
     // sign-in and asks for a check rather than an install.
     const action = agyInstalled
       ? "Check that `agy` is signed in, then refresh."
       : "Sign in to Antigravity or install `agy`, then refresh.";
-    const cli = expired ? "the Gemini CLI sign-in has expired" : "the Gemini CLI is not signed in";
+    const cli = shutDown
+      ? "Google no longer serves Gemini CLI quota for this plan"
+      : expired
+        ? "the Gemini CLI sign-in has expired"
+        : "the Gemini CLI is not signed in";
     return `Google Gemini usage is unavailable. ${action} ${tried}, and ${cli}.`;
   }
   const cliMessage = /[.!?]$/.test(geminiCliMessage) ? geminiCliMessage : `${geminiCliMessage}.`;
@@ -206,7 +217,7 @@ export class GeminiUsageClient implements UsageClient {
     credentials: GeminiCredentials,
     signal?: AbortSignal,
   ): Promise<UsageSnapshot> {
-    const plan = await loadCodeAssistPlan(credentials, signal);
+    const codeAssist = await loadCodeAssist(credentials, signal);
     try {
       const response = await requestJson(quotaEndpoint, {
         method: "POST",
@@ -215,14 +226,17 @@ export class GeminiUsageClient implements UsageClient {
           Authorization: `Bearer ${credentials.accessToken ?? ""}`,
           "Content-Type": "application/json",
         },
-        body: "{}",
+        body: quotaRequestBody(codeAssist.project),
         ...(signal ? { signal } : {}),
       });
       if (response.status === 401) {
         throw new UsageProviderError(signInAgainMessage);
       }
       if (response.status === 403) {
-        throw new UsageProviderError(signInAgainMessage);
+        // Google's consumer-tier shutdown answers loadCodeAssist with an UNSUPPORTED_CLIENT
+        // ineligible tier and this request with 403 SUBSCRIPTION_REQUIRED. Any other 403 stays a
+        // sign-in problem.
+        throw new UsageProviderError(codeAssist.consumerTierShutDown ? consumerTierShutdownMessage : signInAgainMessage);
       }
       if (response.status === 429) {
         throw new UsageProviderError("Google Cloud API rate-limited the quota request.", parseRetryAfter(response.headers));
@@ -230,7 +244,7 @@ export class GeminiUsageClient implements UsageClient {
       if (response.status < 200 || response.status >= 300) {
         throw new UsageProviderError(`Google Gemini API returned HTTP ${response.status} while reading usage.`);
       }
-      return parseGeminiQuotaResponse(response.data, plan, extractJwtString(credentials.idToken, "email"));
+      return parseGeminiQuotaResponse(response.data, codeAssist.plan, extractJwtString(credentials.idToken, "email"));
     } catch (error) {
       if (error instanceof UsageProviderError) {
         throw error;
@@ -1362,9 +1376,59 @@ async function resolveOAuthClientCredentials(): Promise<{ readonly id: string; r
   };
 }
 
-async function loadCodeAssistPlan(credentials: GeminiCredentials, signal?: AbortSignal): Promise<string | undefined> {
+/** What `loadCodeAssist` says about the Gemini CLI account. Mirrors the desktop `CodeAssistInfo`. */
+export interface CodeAssistInfo {
+  readonly plan?: string;
+  /** The Code Assist project quota is reported for, when there is one. */
+  readonly project?: string;
+  /**
+   * True when Google marks this client unsupported for the account (the June 2026 consumer-tier
+   * shutdown) and the account has no paid, Standard, or Workspace tier that keeps CLI access.
+   */
+  readonly consumerTierShutDown: boolean;
+}
+
+const unknownCodeAssist: CodeAssistInfo = { consumerTierShutDown: false };
+
+/** The `retrieveUserQuota` body: the Code Assist project when known, otherwise `{}`. */
+export function quotaRequestBody(project: string | undefined): string {
+  return project ? JSON.stringify({ project }) : "{}";
+}
+
+export function parseCodeAssist(data: unknown, hostedDomain: string | undefined): CodeAssistInfo {
+  if (!isObject(data)) {
+    return unknownCodeAssist;
+  }
+  const paidTier = getString(getObject(data, "paidTier"), "name");
+  const tier = getString(getObject(data, "currentTier"), "id");
+  let plan: string | undefined = paidTier;
+  if (!plan) {
+    if (tier === "standard-tier") plan = "Paid";
+    else if (tier === "free-tier" && hostedDomain) plan = "Workspace";
+    else if (tier === "free-tier") plan = "Free";
+    else if (tier === "legacy-tier") plan = "Legacy";
+  }
+
+  // A project is either a plain id or an object carrying one.
+  const projectValue = data.cloudaicompanionProject;
+  const rawProject = typeof projectValue === "string" ? projectValue : getString(projectValue, "id");
+  const project = rawProject && rawProject.length <= 256 && /^[A-Za-z0-9._:-]+$/.test(rawProject) ? rawProject : undefined;
+
+  const unsupportedClient = (getArray(data, "ineligibleTiers") ?? []).some(
+    (entry) => getString(entry, "reasonCode")?.toUpperCase() === "UNSUPPORTED_CLIENT",
+  );
+  // Standard, a named paid tier, and Workspace or education accounts keep Gemini CLI access.
+  const keepsCliAccess = Boolean(paidTier) || tier === "standard-tier" || Boolean(hostedDomain);
+  return {
+    ...(plan ? { plan } : {}),
+    ...(project ? { project } : {}),
+    consumerTierShutDown: unsupportedClient && !keepsCliAccess,
+  };
+}
+
+async function loadCodeAssist(credentials: GeminiCredentials, signal?: AbortSignal): Promise<CodeAssistInfo> {
   if (!credentials.accessToken) {
-    return undefined;
+    return unknownCodeAssist;
   }
   try {
     const response = await requestJson(codeAssistEndpoint, {
@@ -1378,22 +1442,13 @@ async function loadCodeAssistPlan(credentials: GeminiCredentials, signal?: Abort
       ...(signal ? { signal } : {}),
     });
     if (response.status < 200 || response.status >= 300) {
-      return undefined;
+      return unknownCodeAssist;
     }
-    const paidTier = getString(getObject(response.data, "paidTier"), "name");
-    if (paidTier) {
-      return paidTier;
-    }
-    const tier = getString(getObject(response.data, "currentTier"), "id");
-    const hostedDomain = extractJwtString(credentials.idToken, "hd");
-    if (tier === "standard-tier") return "Paid";
-    if (tier === "free-tier" && hostedDomain) return "Workspace";
-    if (tier === "free-tier") return "Free";
-    if (tier === "legacy-tier") return "Legacy";
+    return parseCodeAssist(response.data, extractJwtString(credentials.idToken, "hd"));
   } catch {
     // Plan metadata is optional.
+    return unknownCodeAssist;
   }
-  return undefined;
 }
 
 function extractJwtString(token: string | undefined, claim: string): string | undefined {

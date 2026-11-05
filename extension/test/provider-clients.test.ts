@@ -13,15 +13,18 @@ import {
   antigravityProcessQuery,
   clearHubStartBackoff,
   combinedGeminiError,
+  consumerTierShutdownMessage,
   GeminiUsageClient,
   hubQuotaSummaryTimeoutMs,
   hubRetryIntervalMs,
   ownProcessLines,
   parseAntigravityProcessLines,
+  parseCodeAssist,
   parseNetstatListeningPorts,
   parseProcNetListeners,
   procListeningPorts,
   queryDiscoveredHub,
+  quotaRequestBody,
   recordHubStartFailure,
   shouldSkipHubStart,
   tryFetchAntigravitySnapshot,
@@ -427,6 +430,62 @@ test("Gemini refreshes expired OAuth once and reuses the in-memory token", async
   } finally {
     mock.restoreAll();
   }
+});
+
+test("Gemini reports Google's consumer-tier shutdown and sends the Code Assist project", async () => {
+  const shutDown = {
+    currentTier: { id: "free-tier" },
+    ineligibleTiers: [{ reasonCode: "UNSUPPORTED_CLIENT", reasonMessage: "Use Antigravity" }],
+    cloudaicompanionProject: "proj-9",
+  };
+  assert.deepEqual(parseCodeAssist(shutDown, undefined), { plan: "Free", project: "proj-9", consumerTierShutDown: true });
+  // Accounts that keep Gemini CLI access are never told it was shut down.
+  assert.equal(parseCodeAssist({ ...shutDown, paidTier: { name: "Gemini Code Assist Pro" } }, undefined).consumerTierShutDown, false);
+  assert.equal(parseCodeAssist({ ...shutDown, currentTier: { id: "standard-tier" } }, undefined).consumerTierShutDown, false);
+  assert.equal(parseCodeAssist(shutDown, "school.example").consumerTierShutDown, false);
+  assert.equal(parseCodeAssist({ ineligibleTiers: [{ reasonCode: "RESTRICTED_AGE" }] }, undefined).consumerTierShutDown, false);
+  // The project is a plain id or an object carrying one, and anything else is dropped.
+  assert.equal(parseCodeAssist({ cloudaicompanionProject: { id: "proj-object" } }, undefined).project, "proj-object");
+  assert.equal(parseCodeAssist({ cloudaicompanionProject: 'bad project"id' }, undefined).project, undefined);
+  assert.deepEqual(parseCodeAssist([], undefined), { consumerTierShutDown: false });
+  assert.equal(quotaRequestBody(undefined), "{}");
+  assert.equal(quotaRequestBody("proj-9"), '{"project":"proj-9"}');
+
+  const quotaBodies: string[] = [];
+  const clientFor = (codeAssist: unknown): GeminiUsageClient => {
+    mock.method(security, "requestJson", (async (url, options) => {
+      if (String(url).includes("loadCodeAssist")) {
+        return { status: 200, headers: {}, data: codeAssist };
+      }
+      quotaBodies.push(options.body ?? "");
+      return { status: 403, headers: {}, data: { error: { status: "PERMISSION_DENIED" } } };
+    }) as typeof security.requestJson);
+    return new GeminiUsageClient({
+      fetchAntigravity: async () => undefined,
+      fetchAgy: async () => undefined,
+      hasAgyCli: async () => true,
+      loadCredentials: async () => ({ accessToken: "gemini-access-token", expiresAt: Date.now() + 3_600_000, sourcePath: "fixture" }),
+    });
+  };
+  try {
+    // The shutdown reads as such, never as an expired sign-in, and the project went along.
+    await assert.rejects(clientFor(shutDown).getUsage(), (error: unknown) => {
+      assert.equal(
+        (error as Error).message,
+        "Google Gemini usage is unavailable. Check that `agy` is signed in, then refresh. Antigravity (IDE or editor extension) and `agy` returned no usage, and Google no longer serves Gemini CLI quota for this plan.",
+      );
+      return true;
+    });
+    assert.equal(quotaBodies.at(-1), '{"project":"proj-9"}');
+    mock.restoreAll();
+
+    // The same 403 for an account Google did not flag stays a sign-in problem.
+    await assert.rejects(clientFor({ currentTier: { id: "free-tier" } }).getUsage(), /the Gemini CLI sign-in has expired\.$/);
+    assert.equal(quotaBodies.at(-1), "{}");
+  } finally {
+    mock.restoreAll();
+  }
+  assert.match(combinedGeminiError(false, consumerTierShutdownMessage), /^Google Gemini usage is unavailable\. Sign in to Antigravity or install `agy`/);
 });
 
 test("Gemini retries agy when a cached cold-start failure and CLI fallback are both stale", async () => {

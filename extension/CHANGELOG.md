@@ -1,5 +1,20 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Google Gemini says when Google has stopped serving Gemini CLI quota for a plan.** Since June
+  2026 Google no longer answers Gemini CLI usage requests for personal, Google AI Pro and Ultra
+  accounts, and UsageAI took the refusal for an expired sign-in. It now recognises Google's
+  `UNSUPPORTED_CLIENT` answer and points to Antigravity or `agy` instead; Standard, paid Code Assist
+  and Workspace accounts keep the sign-in message.
+
+### Changed
+
+- The Gemini CLI fallback now asks for quota on the Code Assist project Google reports for the
+  account, rather than leaving Google to pick a default project.
+
 ## 0.1.18
 
 ### Changed
