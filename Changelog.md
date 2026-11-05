@@ -58,7 +58,7 @@ The project follows [Semantic Versioning](https://semver.org/).
   5-hour window so its forecast reads too, and the README previews are regenerated from it.
 - The Gemini CLI fallback now asks for quota on the Code Assist project Google reports for the
   account, rather than leaving Google to pick a default project.
-- The Codex server UsageAI starts now runs with a read-only sandbox and never asks for approval
+- **The Codex server UsageAI starts is sandboxed.** It runs read-only and never asks for approval
   (`-c sandbox_mode="read-only" -c approval_policy="never"` on `app-server` itself), so it can never
   be asked to run or approve anything, whatever sandbox your own Codex configuration uses.
 - **The `agy` server UsageAI starts no longer updates itself.** It runs for as long as UsageAI does,
