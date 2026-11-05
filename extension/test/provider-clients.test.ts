@@ -10,6 +10,7 @@ import { CodexUsageClient } from "../src/providers/codex";
 import { CopilotUsageClient } from "../src/providers/copilot";
 import {
   agyHubArguments,
+  agyOwnedEnvironment,
   antigravityProcessQuery,
   clearHubStartBackoff,
   combinedGeminiError,
@@ -1123,6 +1124,8 @@ test("the agy hub is started with the CSRF token on its command line", () => {
   assert.deepEqual([...args], ["--hub", "--hub-port=51234", "--csrf_token=TOKEN"]);
   // The sign-in lives in the CLI's default data directory, so the hub must not be redirected.
   assert.equal(args.some((argument) => argument.startsWith("--app_data_dir")), false);
+  // An agy the extension starts never runs its self-updater; only the lowercase value is honoured.
+  assert.deepEqual(agyOwnedEnvironment, { CI: "1", AGY_CLI_DISABLE_AUTO_UPDATE: "true" });
 });
 
 test("a refresh the user asked for clears both agy backoffs", async () => {

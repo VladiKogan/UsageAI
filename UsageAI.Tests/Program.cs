@@ -958,6 +958,8 @@ internal static class Program
         True(startInfo.RedirectStandardInput);
         Equal("1", startInfo.Environment["CI"]);
         True(startInfo.ArgumentList.Contains("--print-timeout=12s"));
+        // An agy UsageAI starts never runs its self-updater; only the lowercase value is honoured.
+        Equal("true", startInfo.Environment["AGY_CLI_DISABLE_AUTO_UPDATE"]);
 
         var hubStartInfo = AgyUsageProbe.CreateHubStartInfo(executablePaths[0], 51234, "TOKEN");
         True(hubStartInfo.CreateNoWindow);
@@ -966,6 +968,7 @@ internal static class Program
         // The sign-in lives in the CLI's default data directory, so the hub must not be redirected.
         False(hubStartInfo.ArgumentList.Any(argument => argument.StartsWith("--app_data_dir", StringComparison.Ordinal)));
         Equal("TOKEN", hubStartInfo.Environment["ANTIGRAVITY_CSRF_TOKEN"]);
+        Equal("true", hubStartInfo.Environment["AGY_CLI_DISABLE_AUTO_UPDATE"]);
         // CLI builds from 2026-09 onwards ignore the environment token and mint their own unless
         // `--csrf_token` supplies one, so the hub rejects every call and the probe falls back to the
         // per-refresh `agy -p /usage` read the hub exists to avoid.

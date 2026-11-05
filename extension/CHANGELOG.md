@@ -14,6 +14,10 @@
 
 - The Gemini CLI fallback now asks for quota on the Code Assist project Google reports for the
   account, rather than leaving Google to pick a default project.
+- **The `agy` server UsageAI starts no longer updates itself.** It runs for as long as the editor
+  does, so it kept the CLI's background updater alive too; UsageAI now sets
+  `AGY_CLI_DISABLE_AUTO_UPDATE` for every `agy` it starts, and `agy` sessions you run yourself
+  still update it.
 
 ## 0.1.18
 

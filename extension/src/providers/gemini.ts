@@ -574,7 +574,7 @@ async function startAgyHub(): Promise<AgyHub | undefined> {
     executable,
     [...agyHubArguments(port, token)],
     ["ANTIGRAVITY_CLI_PATH", "GOOGLE_CLOUD_PROJECT", "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR", "SSL_CERT_FILE"],
-    { CI: "1", ANTIGRAVITY_CSRF_TOKEN: token },
+    { ...agyOwnedEnvironment, ANTIGRAVITY_CSRF_TOKEN: token },
   );
   child.stdin.end();
   child.stdout.resume();
@@ -744,7 +744,7 @@ async function tryFetchAgyPrintSnapshot(signal?: AbortSignal): Promise<UsageSnap
     executable,
     ["-p", "/usage", "--output-format", "json", "--print-timeout=12s"],
     ["ANTIGRAVITY_CLI_PATH", "GOOGLE_CLOUD_PROJECT", "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR", "SSL_CERT_FILE"],
-    { CI: "1" },
+    { ...agyOwnedEnvironment },
   );
   child.stdin.end();
   let stdout = "";
@@ -1375,6 +1375,16 @@ async function resolveOAuthClientCredentials(): Promise<{ readonly id: string; r
     secret: Buffer.from([71,79,67,83,80,88,45,52,117,72,103,77,80,109,45,49,111,55,83,107,45,103,101,86,54,67,117,53,99,108,88,70,115,120,108]).toString("utf8"),
   };
 }
+
+/**
+ * Environment for every `agy` this extension starts. `AGY_CLI_DISABLE_AUTO_UPDATE` keeps the
+ * long-lived hub from running the CLI's self-updater; the user's own `agy` sessions still update it,
+ * and only the lowercase value is honoured. Mirrors the desktop `AgyUsageProbe`.
+ */
+export const agyOwnedEnvironment: Readonly<Record<string, string>> = {
+  CI: "1",
+  AGY_CLI_DISABLE_AUTO_UPDATE: "true",
+};
 
 /** What `loadCodeAssist` says about the Gemini CLI account. Mirrors the desktop `CodeAssistInfo`. */
 export interface CodeAssistInfo {
