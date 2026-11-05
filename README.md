@@ -84,7 +84,7 @@ Copilot 33%
 Gemini 60% | 30%
 ```
 
-**Every window each provider reports — not just one number.** Codex 5-hour, weekly, credits and reset credits. Claude 5-hour, weekly, weekly Opus and extra usage. Copilot AI credits or premium requests, chat and completions. Gemini model groups (Gemini Models, Claude and GPT models) or Cloud Code API quotas.
+**Every window each provider reports — not just one number.** Codex 5-hour, weekly, model-specific limits such as Spark, credits and reset credits. Claude 5-hour, weekly, each model's own weekly limit (Opus, Sonnet), extra usage and saved limit resets. Copilot AI credits or premium requests, chat and completions. Gemini model groups (Gemini Models, Claude and GPT models) or Cloud Code API quotas.
 
 **"At this pace, out by 15:20."** A burn-rate forecast for every limit, so you find out you're running hot *before* the wall, not after it.
 
@@ -145,8 +145,16 @@ UsageAI reads the login your tools already made, and nothing else:
   `claude mcp list`, which makes Claude Code refresh its own login, after which UsageAI
   rereads the access token and retries usage once. Explicit environment-token overrides remain
   authoritative and are never replaced through this fallback.
-- 🏠 **No telemetry or tracking.** Network access is limited to provider usage requests and
-  one automatic GitHub release check per day while UsageAI is running, and checks you start manually.
+- 🔑 **Codex's login is only read.** UsageAI reads usage straight from ChatGPT with the access token
+  your Codex sign-in already holds, the same request the Codex CLI makes, and sends it nowhere else.
+  When that token has expired, or the request does not succeed, UsageAI asks the official
+  `codex app-server` instead (read-only sandbox, no approvals), which renews the login itself. UsageAI
+  never refreshes or rewrites `auth.json`.
+- 🏠 **No telemetry or tracking.** Network access is limited to provider usage requests,
+  one automatic GitHub release check per day while UsageAI is running, checks you start manually,
+  and — unless you turn off "Show provider incidents" — the providers' public status pages
+  (`status.claude.com`, `www.githubstatus.com`, `status.openai.com`) at most every five minutes,
+  with no credential attached.
 - 🗑️ **Your history is yours to delete** — one button in Settings.
 
 For Gemini, UsageAI first reuses a running Antigravity language server, then the `agy --hub` server
@@ -280,7 +288,7 @@ dotnet run --project .\UsageAI.csproj -- --diagnose copilot
 dotnet run --project .\UsageAI.csproj -- --diagnose gemini
 ```
 
-`--help` lists every switch; `--version` prints the build version. Diagnostic output includes account identity and usage metadata — never provider tokens, but review it before sharing publicly.
+`--help` lists every switch; `--version` prints the build version. Diagnostic output includes account identity and usage metadata — never provider tokens, but review it before sharing publicly. Its `Attempts` list shows every source the provider tried, in order, with a short outcome (`answered`, `no-answer`, `not-running`, `sign-in-expired`, …) and how long it took; when every source fails, the error goes to stderr and the attempts still go to stdout, which is the most useful thing to paste into an issue.
 
 **Regenerate the screenshots:**
 

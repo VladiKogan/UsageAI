@@ -62,7 +62,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
         {
             try
             {
-                using var request = new HttpRequestMessage(HttpMethod.Get, UserEndpoint);
+                using var request = new HttpRequestMessage(HttpMethod.Get, EndpointForToken(token));
                 request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", token);
                 request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
                 request.Headers.UserAgent.ParseAdd(AppIdentity.UserAgent);
@@ -92,6 +92,12 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
             {
                 lastFailure = new GitHubCopilotUsageException("GitHub Copilot did not return usage data within 15 seconds.");
             }
+            catch (GitHubCopilotUsageException exception) when (exception.Message == SubscriptionEndedMessage)
+            {
+                // GitHub answered for this account; another token would not make the subscription active.
+                _workingToken = token;
+                throw;
+            }
             catch (GitHubCopilotUsageException exception)
             {
                 lastFailure = exception;
@@ -115,8 +121,19 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
             lastFailure);
     }
 
+    /// <summary>The message for an account whose Copilot subscription GitHub reports as ended.</summary>
+    internal const string SubscriptionEndedMessage =
+        "Your GitHub Copilot subscription has ended. Renew it on GitHub, then refresh.";
+
     internal static UsageSnapshot ParseSnapshot(JsonElement root)
     {
+        // GitHub answers an ended subscription with a normal reply and this SKU; without the check
+        // it read as "account details without any quota information".
+        if (string.Equals(GetString(root, "access_type_sku"), "subscription_ended", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new GitHubCopilotUsageException(SubscriptionEndedMessage);
+        }
+
         var resetAt = ParseReset(root);
         var windows = new List<(int Order, UsageMetric Window)>();
 
@@ -140,9 +157,8 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
                 "GitHub Copilot returned account details without any quota information.");
         }
 
-        var plan = GetString(root, "copilot_plan") ?? GetString(root, "access_type_sku") ?? "Copilot";
         return new UsageSnapshot(
-            FormatPlan(plan),
+            ResolvePlan(GetString(root, "copilot_plan"), GetString(root, "access_type_sku")),
             selected,
             DateTimeOffset.Now,
             "copilot",
@@ -342,7 +358,83 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
         }
     }
 
-    private static void AddTokensFromElement(ISet<string> tokens, JsonElement element)
+    /// <summary>
+    /// The host each discovered token belongs to, for tokens of a GitHub Enterprise Cloud
+    /// (<c>*.ghe.com</c>) login. Every other token is a github.com token.
+    /// </summary>
+    private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> TokenHosts =
+        new(StringComparer.Ordinal);
+
+    /// <summary>
+    /// Where a token's usage is read: <c>api.github.com</c> for github.com, <c>api.&lt;host&gt;</c>
+    /// for a GitHub Enterprise Cloud host (<c>*.ghe.com</c>), and nowhere for any other host, so a
+    /// token is only ever sent to the GitHub service that issued it.
+    /// </summary>
+    internal static Uri? UserEndpointFor(string? host)
+    {
+        var normalized = NormalizeHost(host);
+        if (normalized is null || normalized == "github.com")
+        {
+            return normalized is null ? null : UserEndpoint;
+        }
+
+        return normalized.EndsWith(".ghe.com", StringComparison.Ordinal) &&
+               normalized.Length > ".ghe.com".Length
+            ? new Uri($"https://api.{normalized}/copilot_internal/user")
+            : null;
+    }
+
+    private static Uri EndpointForToken(string token) =>
+        TokenHosts.TryGetValue(token, out var host) && UserEndpointFor(host) is { } endpoint
+            ? endpoint
+            : UserEndpoint;
+
+    /// <summary>
+    /// The host a credential key names, or null when the key is not a host at all. Only keys that
+    /// look like one count: a URL, <c>host:appId</c> (apps.json), or a bare host whose object holds
+    /// the token itself (hosts.json), so an ordinary dotted setting name never redirects a token.
+    /// </summary>
+    internal static string? HostFromKey(string key, bool holdsToken) =>
+        key.StartsWith("https://", StringComparison.OrdinalIgnoreCase) ||
+        key.StartsWith("http://", StringComparison.OrdinalIgnoreCase) ||
+        key.Contains(':', StringComparison.Ordinal) ||
+        holdsToken
+            ? NormalizeHost(key)
+            : null;
+
+    /// <summary>A bare lower-case DNS host from a value such as <c>https://octocorp.ghe.com/</c>.</summary>
+    internal static string? NormalizeHost(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var host = value.Trim().ToLowerInvariant();
+        foreach (var scheme in new[] { "https://", "http://" })
+        {
+            if (host.StartsWith(scheme, StringComparison.Ordinal))
+            {
+                host = host[scheme.Length..];
+            }
+        }
+
+        var end = host.IndexOfAny(['/', ':', '?', '#']);
+        host = end < 0 ? host : host[..end];
+        return host.Length is > 3 and <= 253 &&
+               host.Contains('.', StringComparison.Ordinal) &&
+               host.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '.') &&
+               !host.StartsWith('.') && !host.EndsWith('.')
+            ? host
+            : null;
+    }
+
+    /// <summary>
+    /// Collects tokens, remembering the host each belongs to where the file says so: an
+    /// <c>apps.json</c> key is <c>host:appId</c>, a <c>hosts.json</c> key is the host, and a Copilot
+    /// CLI <c>copilotTokens</c> key starts with the host URL. A token without a host is github.com's.
+    /// </summary>
+    private static void AddTokensFromElement(ISet<string> tokens, JsonElement element, string? host = null)
     {
         switch (element.ValueKind)
         {
@@ -351,7 +443,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
                 {
                     if (property.NameEquals("oauth_token") && property.Value.ValueKind == JsonValueKind.String)
                     {
-                        AddToken(tokens, property.Value.GetString());
+                        AddToken(tokens, property.Value.GetString(), host);
                     }
                     else if (property.NameEquals("copilotTokens") && property.Value.ValueKind == JsonValueKind.Object)
                     {
@@ -359,13 +451,14 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
                         {
                             if (savedToken.Value.ValueKind == JsonValueKind.String)
                             {
-                                AddToken(tokens, savedToken.Value.GetString());
+                                AddToken(tokens, savedToken.Value.GetString(), HostFromKey(savedToken.Name, holdsToken: true) ?? host);
                             }
                         }
                     }
                     else if (property.Value.ValueKind == JsonValueKind.Object)
                     {
-                        AddTokensFromElement(tokens, property.Value);
+                        var holdsToken = property.Value.TryGetProperty("oauth_token", out _);
+                        AddTokensFromElement(tokens, property.Value, HostFromKey(property.Name, holdsToken) ?? host);
                     }
                 }
 
@@ -435,7 +528,7 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
         }
     }
 
-    private static void AddToken(ISet<string> tokens, string? token)
+    private static void AddToken(ISet<string> tokens, string? token, string? host = null)
     {
         if (tokens.Count >= MaxTokenCandidates)
         {
@@ -443,9 +536,23 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
         }
 
         var normalized = CredentialInput.NormalizeToken(token);
-        if (normalized is not null)
+        if (normalized is null)
         {
-            tokens.Add(normalized);
+            return;
+        }
+
+        // A token for a host UsageAI does not read from (such as a self-hosted GitHub Enterprise
+        // Server) is left out entirely rather than sent to github.com.
+        var tokenHost = NormalizeHost(host) ?? "github.com";
+        if (UserEndpointFor(tokenHost) is null)
+        {
+            return;
+        }
+
+        tokens.Add(normalized);
+        if (tokenHost != "github.com")
+        {
+            TokenHosts[normalized] = tokenHost;
         }
     }
 
@@ -478,6 +585,46 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
 
     private static string FormatNumber(double value) =>
         value.ToString(Math.Abs(value % 1) < 0.001 ? "N0" : "N1", CultureInfo.CurrentCulture);
+
+    /// <summary>
+    /// GitHub reports <c>copilot_plan</c> as "individual" for Free, Pro and Pro+ alike, so a personal
+    /// plan is named from <c>access_type_sku</c> when that SKU is one we recognise. Every other plan,
+    /// and an unrecognised SKU, keeps the reported plan name.
+    /// </summary>
+    internal static string ResolvePlan(string? copilotPlan, string? accessTypeSku)
+    {
+        var individual = copilotPlan is null
+            || copilotPlan.Trim().Equals("individual", StringComparison.OrdinalIgnoreCase);
+        if (individual && IndividualPlanFromSku(accessTypeSku) is { } fromSku)
+        {
+            return fromSku;
+        }
+
+        return FormatPlan(copilotPlan ?? accessTypeSku ?? "Copilot");
+    }
+
+    private static string? IndividualPlanFromSku(string? accessTypeSku)
+    {
+        var sku = accessTypeSku?.Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(sku))
+        {
+            return null;
+        }
+
+        if (sku.StartsWith("plus_", StringComparison.Ordinal))
+        {
+            return "Pro+";
+        }
+
+        return sku switch
+        {
+            "free_limited_copilot" => "Free",
+            // Paid monthly or yearly, or granted free to verified teachers, students and maintainers.
+            "monthly_subscriber_quota" or "yearly_subscriber_quota" or "free_faculty_quota"
+                or "free_educational_quota" or "free_engaged_oss_quota" => "Pro",
+            _ => null,
+        };
+    }
 
     private static string FormatPlan(string plan)
     {

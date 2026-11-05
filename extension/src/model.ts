@@ -33,6 +33,9 @@ export interface ProviderState {
   readonly refreshing: boolean;
   readonly lastAttemptedAt?: string;
   readonly nextRefreshAt?: string;
+  /** The provider's own status-page incident, such as "Degraded: Elevated errors", when there is one. */
+  readonly incident?: string;
+  readonly incidentIsOutage?: boolean;
 }
 
 export interface UsageClient {
@@ -174,6 +177,29 @@ export function primaryMetric(snapshot: UsageSnapshot): UsageMetric | undefined 
 
 export function metricKey(metric: UsageMetric): string {
   return `${metric.kind}:${metric.name}`;
+}
+
+/**
+ * How a metered window's use compares with the time it has run: elapsed share minus used share,
+ * as "On pace" (within 3 points), "12% under pace" or "8% over pace". Empty when unknown — no reset
+ * or length, a full or unmetered limit, or before 5% of the window has passed. Mirrors the desktop
+ * `UsagePace`. It is inlined into the webview with `toString()`, so it must stay self-contained.
+ */
+export function paceText(
+  metric: { readonly usedPercent: number | null; readonly resetsAt?: string; readonly durationMinutes?: number; readonly isUnlimited?: boolean },
+  now = Date.now(),
+): string {
+  const used = metric.usedPercent;
+  if (used === null || metric.isUnlimited || used >= 100 || !metric.resetsAt || !metric.durationMinutes || metric.durationMinutes <= 0) {
+    return "";
+  }
+  const duration = metric.durationMinutes * 60_000;
+  const elapsed = duration - (Date.parse(metric.resetsAt) - now);
+  if (!(elapsed > 0) || elapsed > duration || elapsed / duration < 0.05) {
+    return "";
+  }
+  const reserve = Math.round(elapsed / duration * 100) - used;
+  return reserve > 3 ? `${reserve}% under pace` : reserve < -3 ? `${-reserve}% over pace` : "On pace";
 }
 
 export function formatResetCountdown(iso: string | undefined, now = Date.now()): string {

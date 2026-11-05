@@ -41,9 +41,15 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private bool _updateCheckRunning;
 
     public UsageApplicationContext(IEnumerable<IUsageClient> clients, AppSettings settings, bool profileExisted)
-        : this(clients, settings, showTrayIcon: true, enableAutomaticUpdateChecks: true, profileExisted)
+        : this(clients, settings, showTrayIcon: true, enableAutomaticUpdateChecks: true, profileExisted, incidents: new ProviderIncidentService())
     {
     }
+
+    /// <summary>
+    /// Reads the providers' status pages. Only the installed app gets one; tests and previews leave
+    /// it null, so they never reach the network for it.
+    /// </summary>
+    private readonly ProviderIncidentService? _incidents;
 
     internal UsageApplicationContext(
         IEnumerable<IUsageClient> clients,
@@ -54,9 +60,20 @@ internal sealed class UsageApplicationContext : ApplicationContext
         Func<CancellationToken, Task<UpdateCheckResult>>? checkForUpdates = null,
         Func<StartupState>? readStartup = null,
         Action<bool>? writeStartup = null,
-        bool answerRelaunch = true)
+        bool answerRelaunch = true,
+        ProviderIncidentService? incidents = null)
     {
         _settings = settings;
+        _incidents = incidents;
+        if (_incidents is not null)
+        {
+            _incidents.Changed += (_, _) => RunOnUi(() =>
+            {
+                UpdateTray();
+                PushStateToPopup();
+            });
+        }
+
         _automaticUpdateChecksEnabled = enableAutomaticUpdateChecks;
         _checkForUpdates = checkForUpdates ?? UpdateChecker.CheckForUpdateAsync;
         _readStartup = readStartup;
@@ -111,8 +128,11 @@ internal sealed class UsageApplicationContext : ApplicationContext
         };
         _tickTimer.Tick += async (_, _) =>
         {
+            // The status pages are checked alongside, not after, a provider refresh that can take seconds.
+            var incidentCheck = RefreshIncidentsIfDueAsync();
             await RefreshIfDueAsync();
             await CheckForUpdatesIfDueAsync();
+            await incidentCheck;
         };
         _tickTimer.Start();
 
@@ -141,11 +161,19 @@ internal sealed class UsageApplicationContext : ApplicationContext
         Application.Idle -= RefreshOnFirstIdle;
         _ = RefreshAsync(force: true);
         _ = CheckForUpdatesIfDueAsync();
+        _ = RefreshIncidentsIfDueAsync();
     }
+
+    /// <summary>
+    /// True while the Windows session is locked. Scheduled polls wait until it is unlocked, which
+    /// refreshes at once; nobody can see the tray meanwhile, so polling would only start provider
+    /// processes and requests overnight. Alerts that fall due meanwhile arrive with that refresh.
+    /// </summary>
+    internal bool IsSessionLocked { get; private set; }
 
     private async Task RefreshIfDueAsync()
     {
-        if (_isExiting || !_service.IsDue(DateTimeOffset.Now))
+        if (_isExiting || IsSessionLocked || !_service.IsDue(DateTimeOffset.Now))
         {
             return;
         }
@@ -220,7 +248,21 @@ internal sealed class UsageApplicationContext : ApplicationContext
     });
 
     private void PushStateToPopup() =>
-        _popup.SetStates(_service.Statuses, _service.IsRefreshing, _service.LastRefreshed, _service.History);
+        _popup.SetStates(WithIncidents(_service.Statuses), _service.IsRefreshing, _service.LastRefreshed, _service.History);
+
+    /// <summary>Attaches each provider's ongoing status-page incident, if any, for the dashboard.</summary>
+    private IReadOnlyList<ProviderStatus> WithIncidents(IReadOnlyList<ProviderStatus> statuses) =>
+        _incidents is null || _incidents.Current.Count == 0
+            ? statuses
+            : statuses
+                .Select(status => _incidents.For(status.ProviderId) is { } incident
+                    ? status with
+                    {
+                        IncidentSummary = $"{incident.SeverityLabel}: {incident.Title}",
+                        IncidentIsOutage = incident.IsOutage,
+                    }
+                    : status)
+                .ToArray();
 
     private void UpdateTray()
     {
@@ -249,18 +291,71 @@ internal sealed class UsageApplicationContext : ApplicationContext
         if (ShowsAllProviders(_settings))
         {
             var tank = TankLevel(connected, _settings);
-            ReplaceIcon(TrayIconFactory.CreateTank(tank.UsedPercent, tank.FillPercent));
-            _trayIcon.Text = TrayTooltipAll(connected, _settings);
+            var worst = connected
+                .Select(status => _incidents?.For(status.ProviderId))
+                .OfType<ProviderIncident>()
+                .MaxBy(incident => incident.Severity);
+            ReplaceIcon(TrayIconFactory.CreateTank(tank.UsedPercent, tank.FillPercent, incident: worst?.Severity));
+            _trayIcon.Text = WithIncident(TrayTooltipAll(connected, _settings), worst);
             return;
         }
 
         var trayStatus = SelectTrayStatus(connected, _settings.TrayProviderId)!;
         var usedPercent = TrayUsedPercent(trayStatus);
+        var trayIncident = _incidents?.For(trayStatus.ProviderId);
         ReplaceIcon(TrayIconFactory.Create(
             usedPercent,
             identityColor: Theme.ForProvider(trayStatus.ProviderId),
-            fillPercent: TrayDisplayedPercent(trayStatus, _settings.QuotaDisplay) ?? 0));
-        _trayIcon.Text = TrayTooltip(trayStatus, _settings.QuotaDisplay);
+            fillPercent: TrayDisplayedPercent(trayStatus, _settings.QuotaDisplay) ?? 0,
+            incident: trayIncident?.Severity));
+        _trayIcon.Text = WithIncident(TrayTooltip(trayStatus, _settings.QuotaDisplay), trayIncident);
+    }
+
+    /// <summary>The most of the shell's tooltip length an incident line may take.</summary>
+    private const int MaximumIncidentLineLength = 60;
+
+    /// <summary>
+    /// Adds a provider's ongoing incident to a tray tooltip as its own line, which also carries the
+    /// meaning of the icon's dot where colour cannot (High Contrast). The line goes right after the
+    /// first one, capped in length, so the shell's limit trims usage lines from the end — the
+    /// all-providers tooltip already fills most of it — and never the incident.
+    /// </summary>
+    internal static string WithIncident(string tooltip, ProviderIncident? incident)
+    {
+        if (incident is null)
+        {
+            return tooltip;
+        }
+
+        var line = Trim(
+            $"{ShortProviderName(incident.ProviderId)} {incident.SeverityLabel.ToLowerInvariant()}: {incident.Title}",
+            MaximumIncidentLineLength);
+        var firstBreak = tooltip.IndexOf('\n', StringComparison.Ordinal);
+        var combined = firstBreak < 0
+            ? $"{tooltip}\n{line}"
+            : $"{tooltip[..firstBreak]}\n{line}{tooltip[firstBreak..]}";
+        return Trim(combined, MaximumTooltipLength);
+    }
+
+    /// <summary>
+    /// Checks the providers' status pages when due, or clears incidents when the setting is off.
+    /// Like provider polling, it waits while the session is locked; unlocking checks again.
+    /// </summary>
+    private async Task RefreshIncidentsIfDueAsync()
+    {
+        if (_incidents is null || _isExiting || IsSessionLocked)
+        {
+            return;
+        }
+
+        try
+        {
+            await _incidents.RefreshIfDueAsync(_settings.ShowProviderIncidents, DateTimeOffset.UtcNow, _shutdown.Token);
+        }
+        catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
+        {
+            // The app is exiting.
+        }
     }
 
     private void UpdateRefreshingTrayIcon()
@@ -349,6 +444,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         }
 
         _ = CheckForUpdatesIfDueAsync();
+        _ = RefreshIncidentsIfDueAsync();
     }
 
     /// <summary>The model groups each provider reported last, for Settings' popup-ring pickers.</summary>
@@ -521,9 +617,25 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     private void OnSessionSwitch(object sender, SessionSwitchEventArgs eventArgs)
     {
-        if (eventArgs.Reason is SessionSwitchReason.SessionUnlock or SessionSwitchReason.SessionLogon)
+        var reason = eventArgs.Reason;
+        RunOnUi(() => HandleSessionSwitch(reason));
+    }
+
+    /// <summary>
+    /// Pauses scheduled polling when the session locks and resumes with a refresh when it unlocks.
+    /// Runs on the UI thread, where the tick that reads <see cref="IsSessionLocked"/> also runs.
+    /// </summary>
+    internal void HandleSessionSwitch(SessionSwitchReason reason)
+    {
+        if (reason == SessionSwitchReason.SessionLock)
         {
-            RunOnUi(() => _ = RefreshAsync(force: false));
+            IsSessionLocked = true;
+        }
+        else if (reason is SessionSwitchReason.SessionUnlock or SessionSwitchReason.SessionLogon)
+        {
+            IsSessionLocked = false;
+            _ = RefreshAsync(force: false);
+            _ = RefreshIncidentsIfDueAsync();
         }
     }
 
@@ -744,13 +856,16 @@ internal sealed class UsageApplicationContext : ApplicationContext
     }
 
     /// <summary>The editor Status Bar's labels, so "Claude Code" reads as Claude in both.</summary>
-    private static string ShortProviderName(ProviderStatus status) => status.ProviderId.ToLowerInvariant() switch
+    private static string ShortProviderName(ProviderStatus status) =>
+        ShortProviderName(status.ProviderId, status.ProviderName);
+
+    private static string ShortProviderName(string providerId, string? fallback = null) => providerId.ToLowerInvariant() switch
     {
         "codex" => "Codex",
         "claude" => "Claude",
         "copilot" => "Copilot",
         "gemini" => "Gemini",
-        _ => status.ProviderName,
+        _ => fallback ?? providerId,
     };
 
     private static string Trim(string value, int maximumLength) =>

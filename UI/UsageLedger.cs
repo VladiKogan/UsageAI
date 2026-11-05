@@ -366,7 +366,9 @@ internal sealed class UsageLedger : Control
                     status,
                     metric,
                     Label: grouped && group is not null ? window : metric.Name,
-                    Projection: UsageForecast.Project(history, status.ProviderId, metric, now),
+                    // A stale reading's window may have moved on, so it gets no estimate or pace.
+                    Projection: status.IsStale ? null : UsageForecast.Estimate(history, status.ProviderId, metric, now),
+                    Pace: status.IsStale ? null : UsageForecast.Pace(history, metric, now),
                     Nested: grouped && group is not null));
             }
         }
@@ -557,6 +559,12 @@ internal sealed class UsageLedger : Control
                 pace,
                 middle);
         }
+        else if (data.Pace is { } usagePace)
+        {
+            // Not running out before the reset, so the column says how use compares with the clock:
+            // over pace in the warning colour, on or under pace quietly.
+            Cell(graphics, usagePace.Text, _fonts.Small, usagePace.IsOverPace ? Theme.WarningText : Theme.Faint, pace, middle);
+        }
         else if (data.Projection is not null)
         {
             Cell(graphics, "Resets first", _fonts.Small, Theme.Faint, pace, middle);
@@ -702,6 +710,13 @@ internal sealed class UsageLedger : Control
             return ("Refreshing…", Theme.Muted);
         }
 
+        // The provider's own status page explains a stale card better than a retry countdown, so an
+        // incident leads; the text names it, so the colour is never the only cue.
+        if (status.IncidentSummary is { } incident && status.IsConnected)
+        {
+            return (status.IsStale ? $"{incident} · stale" : incident, status.IncidentIsOutage ? Theme.CriticalText : Theme.WarningText);
+        }
+
         if (status.IsStale)
         {
             var age = status.LastUpdated is { } updated ? $"Last good {UsageFormatting.Age(updated, now)}" : "Stale";
@@ -710,7 +725,7 @@ internal sealed class UsageLedger : Control
 
         if (!status.IsConnected)
         {
-            return ("Not connected", Theme.CriticalText);
+            return (status.IncidentSummary is { } down ? $"Not connected · {down}" : "Not connected", Theme.CriticalText);
         }
 
         return (status.LastUpdated is { } last ? $"Connected · {UsageFormatting.Age(last, now)}" : "Connected", Theme.Faint);
@@ -825,7 +840,8 @@ internal sealed class UsageLedger : Control
         Tone Tone = Tone.Quiet,
         bool HasAction = false,
         UsageProjection? Projection = null,
-        bool Nested = false);
+        bool Nested = false,
+        UsagePace? Pace = null);
 
     internal sealed record ActionTarget(Rectangle Bounds, ProviderCardAction Action, ProviderStatus? Status);
 

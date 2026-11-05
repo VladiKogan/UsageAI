@@ -1,3 +1,4 @@
+using UsageAI.Services;
 using System.Drawing.Drawing2D;
 using System.Drawing.Imaging;
 using System.Runtime.InteropServices;
@@ -32,7 +33,8 @@ internal static class TrayIconFactory
         bool hasError = false,
         int size = 0,
         Color? identityColor = null,
-        int? fillPercent = null)
+        int? fillPercent = null,
+        IncidentSeverity? incident = null)
     {
         var pixels = Math.Clamp(size <= 0 ? PreferredSize : size, 16, 64);
         using var bitmap = new Bitmap(pixels, pixels, PixelFormat.Format32bppArgb);
@@ -112,9 +114,35 @@ internal static class TrayIconFactory
                     new RectangleF(0, 0, pixels, pixels),
                     format);
             }
+
+            DrawIncidentDot(graphics, pixels, incident);
         }
 
         return ToIcon(bitmap);
+    }
+
+    /// <summary>
+    /// Marks an ongoing provider incident with a dot in the icon's top-right corner: the warning
+    /// colour for degraded service or maintenance, the critical colour for an outage. The tooltip
+    /// names the incident too, so in High Contrast, where the dot takes the system text colour,
+    /// the meaning never rests on colour alone.
+    /// </summary>
+    internal static void DrawIncidentDot(Graphics graphics, int pixels, IncidentSeverity? incident)
+    {
+        if (incident is not { } severity)
+        {
+            return;
+        }
+
+        var diameter = Math.Max(5F, pixels * 0.36F);
+        var bounds = new RectangleF(pixels - diameter, 0, diameter, diameter);
+        var fill = Theme.IsHighContrast
+            ? SystemColors.WindowText
+            : severity >= IncidentSeverity.PartialOutage ? Theme.Critical : Theme.Warning;
+        using var outline = new SolidBrush(Theme.IsHighContrast ? SystemColors.Window : Color.FromArgb(235, 24, 30, 40));
+        using var dot = new SolidBrush(fill);
+        graphics.FillEllipse(outline, RectangleF.Inflate(bounds, pixels * 0.04F, pixels * 0.04F));
+        graphics.FillEllipse(dot, bounds);
     }
 
     /// <summary>
@@ -126,7 +154,7 @@ internal static class TrayIconFactory
     /// palette's. Geometry matches scripts\render-logo.ps1 in its 48-unit tile, with a flat
     /// waterline at every size, since a wave would read as a second level.
     /// </summary>
-    public static Icon CreateTank(int usedPercent, int fillPercent, int size = 0)
+    public static Icon CreateTank(int usedPercent, int fillPercent, int size = 0, IncidentSeverity? incident = null)
     {
         var pixels = Math.Clamp(size <= 0 ? PreferredSize : size, 16, 64);
         var small = pixels <= 24;
@@ -182,6 +210,8 @@ internal static class TrayIconFactory
                 using var waterBrush = new SolidBrush(water);
                 graphics.FillPath(waterBrush, tank);
             }
+
+            DrawIncidentDot(graphics, pixels, incident);
         }
 
         return ToIcon(bitmap);

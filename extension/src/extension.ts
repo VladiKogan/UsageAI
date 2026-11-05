@@ -1,6 +1,7 @@
 import * as vscode from "vscode";
 import { localExtensionPath, type ExtensionPathResolver } from "./bundled-cli";
 import { dashboardExpandedProvidersKey, UsageDashboardViewProvider } from "./dashboard-view";
+import { incidentSummary, isOutage, ProviderIncidentService } from "./incidents";
 import {
   normalizeQuotaDisplay,
   statusBarProvidersFromCheckboxes,
@@ -43,13 +44,24 @@ export function activate(context: vscode.ExtensionContext): void {
     configuration().get<readonly string[]>("providers", clients.map((client) => client.id)),
   );
   const cached = sanitizeCachedSnapshots(context.globalState.get<unknown>(cacheKey, {}));
+  const incidents = new ProviderIncidentService();
+  const showIncidents = () => configuration().get("showProviderIncidents", true) === true;
   const refreshService = new UsageRefreshService({
     clients,
     enabledProviderIds,
     visibleIntervalMs: () => clampMinutes(configuration().get("refreshIntervalMinutes", 5), 1, 120) * 60_000,
     backgroundIntervalMs: () => clampMinutes(configuration().get("backgroundRefreshIntervalMinutes", 15), 5, 240) * 60_000,
     initialSnapshots: cached,
+    incidentFor: (providerId) => {
+      const incident = showIncidents() ? incidents.get(providerId) : undefined;
+      return incident ? { summary: incidentSummary(incident), isOutage: isOutage(incident) } : undefined;
+    },
   });
+  // The status pages are checked at most every five minutes; this only asks whether a check is due.
+  const checkIncidents = () => void incidents.refreshIfDue(showIncidents());
+  const incidentTimer = setInterval(checkIncidents, 60_000);
+  incidentTimer.unref();
+  const removeIncidentListener = incidents.onDidChange(() => refreshService.incidentsChanged());
   const dashboard = new UsageDashboardViewProvider(
     refreshService,
     () => clampMinutes(configuration().get("warningPercent", 72), 1, 100),
@@ -97,6 +109,8 @@ export function activate(context: vscode.ExtensionContext): void {
     dashboard,
     statusBars,
     { dispose: removeListener },
+    { dispose: removeIncidentListener },
+    { dispose: () => clearInterval(incidentTimer) },
     { dispose: () => refreshService.dispose() },
     vscode.window.registerWebviewViewProvider(UsageDashboardViewProvider.viewType, dashboard),
     vscode.commands.registerCommand("usageai.show", async () => {
@@ -111,10 +125,12 @@ export function activate(context: vscode.ExtensionContext): void {
         refreshService.configurationChanged();
         updateUi(refreshService.getStates());
         dashboard.configurationChanged();
+        checkIncidents();
       }
     }),
   );
   refreshService.start();
+  checkIncidents();
 }
 
 export function deactivate(): void {

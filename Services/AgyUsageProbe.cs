@@ -19,6 +19,15 @@ namespace UsageAI.Services;
 /// </summary>
 internal static class AgyUsageProbe
 {
+    /// <summary>
+    /// Keeps an `agy` UsageAI starts from updating itself: the long-lived hub would otherwise run the
+    /// CLI's background updater for as long as UsageAI runs. The user's own `agy` sessions still
+    /// update it. The CLI accepts only the lowercase value.
+    /// </summary>
+    internal const string DisableAutoUpdateVariable = "AGY_CLI_DISABLE_AUTO_UPDATE";
+
+    internal const string DisableAutoUpdateValue = "true";
+
     private static readonly TimeSpan ProbeTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan HubReadyTimeout = TimeSpan.FromSeconds(20);
     private const int MaxOutputCharacters = 262_144;
@@ -327,6 +336,7 @@ internal static class AgyUsageProbe
             "SSL_CERT_DIR",
             "SSL_CERT_FILE");
         startInfo.Environment["CI"] = "1";
+        startInfo.Environment[DisableAutoUpdateVariable] = DisableAutoUpdateValue;
         // Older CLI builds read the token from their own environment; builds from 2026-09 onwards mint
         // their own unless `--csrf_token` supplies one, which is how the Antigravity IDE provisions the
         // language server it starts. Both forms are sent so either build authenticates this process.
@@ -486,6 +496,7 @@ internal static class AgyUsageProbe
             "SSL_CERT_DIR",
             "SSL_CERT_FILE");
         startInfo.Environment["CI"] = "1";
+        startInfo.Environment[DisableAutoUpdateVariable] = DisableAutoUpdateValue;
         startInfo.Environment["AGY_CLI_HIDE_ACCOUNT_INFO"] = "1";
         startInfo.ArgumentList.Add("-p");
         startInfo.ArgumentList.Add("/usage");

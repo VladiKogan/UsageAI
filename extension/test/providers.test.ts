@@ -10,7 +10,7 @@ import {
   refreshExpiredClaudeCredentials,
 } from "../src/providers/claude";
 import { parseCodexSnapshot } from "../src/providers/codex";
-import { parseCopilotSnapshot } from "../src/providers/copilot";
+import { parseCopilotSnapshot, resolveCopilotPlan } from "../src/providers/copilot";
 import {
   agyExecutableCandidates,
   parseAntigravityQuotaSummary,
@@ -34,6 +34,43 @@ test("Codex keeps rolling windows and balances", () => {
   assert.equal(snapshot.plan, "Plus");
   assert.deepEqual(snapshot.metrics.map((metric) => metric.name), ["5-hour", "Weekly", "Credits", "Reset credits"]);
   assert.equal(snapshot.metrics[1]?.usedPercent, 63);
+  assert.equal(snapshot.accountName, undefined);
+
+  // Model-specific buckets such as Spark are shown too, named after the label Codex gives them, while
+  // the main limits keep their plain names. Mirrors the desktop check.
+  const grouped = parseCodexSnapshot(
+    {
+      rateLimitsByLimitId: {
+        codex_bengalfox: {
+          limitId: "codex_bengalfox",
+          limitName: "GPT-5.3-Codex-Spark",
+          primary: { usedPercent: 91, windowDurationMins: 300 },
+          secondary: { usedPercent: 12, windowDurationMins: 10_080 },
+        },
+        codex: {
+          limitId: "codex",
+          planType: "pro",
+          primary: { usedPercent: 5, windowDurationMins: 300 },
+          secondary: { usedPercent: 40, windowDurationMins: 10_080 },
+        },
+        codex_other: { normalModelSlug: "gpt-mini (preview)", secondary: { usedPercent: 3, windowDurationMins: 10_080 } },
+        codex_unnamed: { primary: { usedPercent: 1, windowDurationMins: 300 } },
+        codex_empty: { limitName: "No windows" },
+      },
+    },
+    { account: { type: "chatgpt", email: "dev@example.com", planType: "plus" } },
+  );
+  assert.deepEqual(grouped.metrics.map((metric) => metric.name), [
+    "5-hour",
+    "Weekly",
+    "GPT-5.3-Codex-Spark 5-hour",
+    "GPT-5.3-Codex-Spark Weekly",
+    "gpt-mini preview Weekly",
+    "Codex Unnamed 5-hour",
+  ]);
+  assert.equal(grouped.metrics[2]?.usedPercent, 91);
+  assert.equal(grouped.plan, "Pro");
+  assert.equal(grouped.accountName, "dev@example.com");
 });
 
 test("Claude parses OAuth credentials and every reported limit", () => {
@@ -135,6 +172,37 @@ test("Copilot retains metered and unlimited quotas", () => {
   assert.equal(snapshot.metrics[0]?.name, "AI credits");
   assert.equal(snapshot.metrics[0]?.usedPercent, 76);
   assert.equal(snapshot.metrics[1]?.isUnlimited, true);
+});
+
+test("Copilot names an individual plan from its SKU", () => {
+  // copilot_plan is "individual" for every personal plan; the SKU says which one it is.
+  const faculty = parseCopilotSnapshot({
+    copilot_plan: "individual",
+    access_type_sku: "free_faculty_quota",
+    quota_snapshots: { chat: { unlimited: true } },
+  });
+  assert.equal(faculty.plan, "Pro");
+
+  const cases: Array<[string | undefined, string | undefined, string]> = [
+    ["individual", "monthly_subscriber_quota", "Pro"],
+    ["individual", "yearly_subscriber_quota", "Pro"],
+    ["individual", "free_educational_quota", "Pro"],
+    ["individual", "free_engaged_oss_quota", "Pro"],
+    ["individual", "plus_monthly_subscriber_quota", "Pro+"],
+    ["Individual", " PLUS_YEARLY_SUBSCRIBER_QUOTA ", "Pro+"],
+    ["individual", "free_limited_copilot", "Free"],
+    [undefined, "free_faculty_quota", "Pro"],
+    // An unknown SKU keeps the reported plan, and only a personal plan is ever renamed.
+    ["individual", "some_future_quota", "Individual"],
+    ["individual", undefined, "Individual"],
+    ["business", "monthly_subscriber_quota", "Business"],
+    ["individual_pro", "free_limited_copilot", "Pro"],
+    [undefined, "some_future_quota", "Some Future Quota"],
+    [undefined, undefined, "Copilot"],
+  ];
+  for (const [plan, sku, expected] of cases) {
+    assert.equal(resolveCopilotPlan(plan, sku), expected, `${plan} / ${sku}`);
+  }
 });
 
 test("Gemini parses CLI and Antigravity quota shapes", () => {

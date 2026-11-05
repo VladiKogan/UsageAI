@@ -7,13 +7,13 @@ UsageAI gives you a clear dashboard in the Activity Bar and optional Status Bar 
 ## Preview
 
 <p align="center">
-  <img src="media/dashboard-preview.png" alt="UsageAI quota dashboard in Visual Studio Code, showing Codex, Claude Code, GitHub Copilot, and Google Gemini usage" width="460" />
+  <img src="media/dashboard-preview.png" alt="UsageAI dashboard in Visual Studio Code: Codex at 92% in red, Claude Code at 78% in amber, a collapsed GitHub Copilot card with its one-line summary, and Google Gemini's two model groups" width="400" />
 </p>
 
 Open UsageAI from the Activity Bar to see each provider's usage, remaining allowance, and reset time in one place. You can also move the view to the Secondary Sidebar or Panel to match your editor layout.
 
 <p align="center">
-  <img src="media/status-bar-preview.png" alt="UsageAI provider readings in the Visual Studio Code Status Bar with the Claude Code usage details open" width="568" />
+  <img src="media/status-bar-preview.png" alt="UsageAI readings for Codex, Claude, Copilot, and Gemini in the Visual Studio Code Status Bar, with the Claude hover showing its 5-hour and weekly meters" width="520" />
 </p>
 
 Choose one or more providers for compact Status Bar readings. Hover over a reading to see its usage windows, segmented meters, last update time, and quick links to open or refresh UsageAI.
@@ -43,6 +43,10 @@ You only need one of these sign-in methods:
 | Claude Code | A Claude Code sign-in created by running `claude` or Anthropic's Claude Code extension, or the optional `USAGEAI_CLAUDE_SESSION_KEY` environment variable |
 | GitHub Copilot | A supported local Copilot credential, `COPILOT_GITHUB_TOKEN`, or the optional GitHub CLI fallback |
 | Google Gemini | A sign-in through Google's Antigravity VS Code extension or `agy` (recommended), a Gemini CLI sign-in, or a running Antigravity language server |
+
+For Codex, UsageAI first reads usage directly from ChatGPT with the access token of the existing
+Codex sign-in, the same request the Codex CLI makes, and falls back to the CLI whenever that sign-in
+has expired or the request does not succeed. UsageAI never refreshes or writes that sign-in.
 
 For Codex and Claude Code, UsageAI runs the provider's CLI. It uses `CODEX_PATH` or `CLAUDE_PATH`
 when set, then a CLI on `PATH` or in its standard install folder, and finally the CLI that ships
@@ -106,6 +110,8 @@ If a provider says it is not connected, sign in with that provider's CLI or IDE 
 
 Your provider credentials stay in the extension host. UsageAI does not scan browser storage, send credentials to the dashboard webview, or include credentials in its cached usage snapshots.
 
+Unless you turn off `usageai.showProviderIncidents`, UsageAI also reads the providers' public status pages (`status.claude.com`, `www.githubstatus.com`, `status.openai.com`) at most every five minutes, with no credential, cookie or account identifier attached, and shows an ongoing incident as a marker on the Status Bar item, a line in its tooltip, and a line on the provider's card.
+
 Additional protections include allowlisted provider endpoints, blocked redirects, size-limited responses, read-only Claude OAuth credentials, in-memory-only refresh caching for other providers, and a local Antigravity connection reachable only over loopback. When Claude's short-lived access token expires—or the first usage request indicates that a seemingly current login is stale—the extension invokes the official `claude auth status --json` command once with bounded runtime and output—plus `claude mcp list` while the stored token is still expired, which makes Claude Code refresh its own login—rereads the credentials, and retries usage once. Claude Code remains the only process that can exchange the shared refresh token or update its credential store; explicit environment-token overrides are never replaced by this fallback. The optional Claude web session key remains an environment variable and is never saved by UsageAI.
 
 For Gemini, the extension first reuses a running Antigravity language server, then the `agy --hub`
@@ -138,6 +144,14 @@ npm.cmd run test:coverage
 ```
 
 Open the `extension` folder in VS Code and press `F5` to launch an Extension Development Host.
+
+Regenerate the README previews after a dashboard or Status Bar change:
+
+```powershell
+npm.cmd run previews
+```
+
+It compiles the extension, renders the real dashboard webview and Status Bar items with sample providers in VS Code's Dark Modern colours, and captures them with headless Edge or Chrome into `media/`. Set `EDGE_PATH` or `CHROME_PATH` if the browser is not in its standard folder, and `VSCODE_CODICON_PATH` if `code` is not on `PATH`, since the view title's icons come from VS Code's own codicon font.
 
 Package an installable artifact:
 

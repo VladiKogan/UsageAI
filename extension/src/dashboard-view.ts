@@ -4,6 +4,7 @@ import {
   formatResetCountdown,
   hasQuota,
   normalizeMetricDisplayMode,
+  paceText,
   normalizeQuotaDisplay,
   selectDashboardMetrics,
   type MetricDisplayMode,
@@ -239,6 +240,8 @@ function dashboardHtml(webview: vscode.Webview): string {
     .provider-name { display: block; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .plan, .collapsed-summary { display: block; color: var(--vscode-descriptionForeground); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .collapsed-summary { margin-top: 3px; }
+    .incident { display: block; margin-top: 3px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--vscode-editorWarning-foreground); }
+    .incident[data-outage="true"] { color: var(--vscode-errorForeground); }
     .headline { display: inline-flex; min-height: 25px; align-items: center; gap: 6px; font-family: var(--vscode-editor-font-family); font-size: 18px; font-weight: 650; letter-spacing: -.04em; white-space: nowrap; }
     .headline-unit { color: var(--vscode-descriptionForeground); font-size: 11px; font-weight: 600; letter-spacing: 0; }
     .spinner { display: inline-block; width: 13px; height: 13px; flex: 0 0 auto; border: 2px solid color-mix(in srgb, var(--vscode-progressBar-background) 26%, transparent); border-top-color: var(--vscode-progressBar-background); border-radius: 50%; animation: refresh-spin .8s linear infinite; }
@@ -295,13 +298,14 @@ function dashboardHtml(webview: vscode.Webview): string {
     const effectiveDashboardExpansion = ${effectiveDashboardExpansion.toString()};
     const collapsedDashboardMetric = ${collapsedDashboardMetric.toString()};
     const displayed = ${displayedPercent.toString()};
+    const pace = ${paceText.toString()};
     const renderMetric = (metric, warning, critical, quota) => {
       if (!hasQuota(metric)) { const row = el('div', 'balance'); row.append(el('span', '', metric.name), el('strong', '', metric.remainingText || (metric.isUnlimited ? 'UNLIMITED' : metric.usageText || 'Not reported'))); return row; }
       const metricLevel = level(metric.usedPercent, warning, critical); const root = el('section', 'metric'); root.dataset.level = metricLevel;
       const remaining = quota === 'remaining'; const used = displayed(metric.usedPercent, 'used'); const left = displayed(metric.usedPercent, 'remaining');
       const head = el('div', 'metric-head'); head.append(el('span', 'metric-name', metric.name), el('span', 'metric-value', remaining ? left + '% left' : used + '% used'));
       const rail = el('progress', 'rail'); rail.setAttribute('aria-label', metric.name + (remaining ? ' remaining' : ' usage')); rail.max = 100; rail.value = remaining ? left : used;
-      const foot = el('div', 'metric-foot'); foot.append(el('span', '', metric.usageText || (remaining ? used + '% used' : left + '% left')), el('span', '', countdown(metric.resetsAt))); root.append(head, rail, foot); return root;
+      const foot = el('div', 'metric-foot'); foot.append(el('span', '', metric.usageText || (remaining ? used + '% used' : left + '% left')), el('span', '', [countdown(metric.resetsAt), pace(metric)].filter(Boolean).join(' · '))); root.append(head, rail, foot); return root;
     };
     const render = (payload) => {
       latestPayload = payload;
@@ -320,6 +324,7 @@ function dashboardHtml(webview: vscode.Webview): string {
         head.addEventListener('click', () => vscode.postMessage({ type: 'setProviderExpanded', providerId: state.id, expanded: !expanded }));
         const chevron = el('span', 'chevron', '⌄'); chevron.setAttribute('aria-hidden', 'true'); const provider = el('div', 'provider');
         const planParts = state.snapshot ? [state.snapshot.plan, state.snapshot.accountName] : ['Not connected']; if (state.stale) planParts.push('Stale'); provider.append(el('span', 'provider-name', state.displayName), el('span', 'plan', planParts.filter(Boolean).join(' · ')));
+        if (state.incident) { const incident = el('span', 'incident', 'Status page: ' + state.incident); incident.dataset.outage = String(Boolean(state.incidentIsOutage)); provider.append(incident); }
         if (!expanded) provider.append(el('span', 'collapsed-summary', highestMetric ? highestMetric.name + ' · ' + displayed(highest, quota) + (quota === 'remaining' ? '% left · ' : '% · ') + countdown(highestMetric.resetsAt) : 'No metered limit'));
         const headline = el('div', 'headline'); if (state.refreshing) { const spinner = el('span', 'spinner'); spinner.setAttribute('aria-hidden', 'true'); headline.append(spinner); }
         // Remaining mode never shows a provider without a metered limit as "100% left".

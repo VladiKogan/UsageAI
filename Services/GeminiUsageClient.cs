@@ -18,6 +18,14 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         "Google Gemini is not signed in. Run `agy` to sign in, then refresh.";
     private const string SignInAgainMessage =
         "Google Gemini sign-in has expired. Run `agy` to sign in again, then refresh.";
+
+    /// <summary>
+    /// Google stopped serving Gemini CLI OAuth quota to individual, AI Pro and Ultra accounts in June
+    /// 2026; those quotas are only readable through Antigravity now. Signing in again cannot fix it,
+    /// so it must never read like an expired sign-in.
+    /// </summary>
+    internal const string ConsumerTierShutdownMessage =
+        "Google no longer serves Gemini CLI quota for this plan. Use Antigravity or `agy` instead, then refresh.";
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
     private static readonly HttpClient SharedClient = SecureHttp.CreateClient(RequestTimeout);
     private static readonly JsonSerializerOptions IndentedJsonOptions = new() { WriteIndented = true };
@@ -95,15 +103,19 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         // here, ahead of the backoff that exists to suppress exactly that child process.
         if (_hasAgyHub())
         {
-            var hubbedSnapshot = await _agyHubProbe(cancellationToken);
+            var hubbedSnapshot = await ProviderAttempts.TrackAsync("agy-hub-serving", () => _agyHubProbe(cancellationToken));
             if (hubbedSnapshot is not null)
             {
                 return hubbedSnapshot;
             }
         }
+        else
+        {
+            ProviderAttempts.Record("agy-hub-serving", "not-running");
+        }
 
         // 1. Try local Antigravity LanguageServer probe if running
-        var antigravitySnapshot = await _localProbe(cancellationToken);
+        var antigravitySnapshot = await ProviderAttempts.TrackAsync("antigravity-local", () => _localProbe(cancellationToken));
         if (antigravitySnapshot is not null)
         {
             return antigravitySnapshot;
@@ -114,7 +126,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         var agyWasSkipped = DateTimeOffset.UtcNow < _agyRetryAfterUtc;
         if (!agyWasSkipped)
         {
-            var agySnapshot = await _agyProbe(cancellationToken);
+            var agySnapshot = await ProviderAttempts.TrackAsync("agy", () => _agyProbe(cancellationToken));
             if (agySnapshot is not null)
             {
                 return agySnapshot;
@@ -122,20 +134,28 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
 
             _agyRetryAfterUtc = DateTimeOffset.UtcNow.AddMinutes(30);
         }
+        else
+        {
+            ProviderAttempts.Record("agy", "skipped-backoff");
+        }
 
         // 3. Compatibility fallback to Gemini CLI OAuth API. If that fallback is also stale,
         // retry agy immediately so a manual refresh can recover from sleep in one attempt.
+        var cliTimer = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            return (await GetGeminiCliUsageAsync(cancellationToken)) with { Source = "gemini-cli" };
+            var cliSnapshot = (await GetGeminiCliUsageAsync(cancellationToken)) with { Source = "gemini-cli" };
+            ProviderAttempts.Record("gemini-cli", "answered", cliTimer);
+            return cliSnapshot;
         }
         catch (GeminiUsageException exception)
         {
+            ProviderAttempts.Record("gemini-cli", GeminiCliOutcome(exception), cliTimer);
             _agyRetryAfterUtc = default;
             _resetAgyBackoff();
             if (agyWasSkipped)
             {
-                var recoveredSnapshot = await _agyProbe(cancellationToken);
+                var recoveredSnapshot = await ProviderAttempts.TrackAsync("agy-retry", () => _agyProbe(cancellationToken));
                 if (recoveredSnapshot is not null)
                 {
                     return recoveredSnapshot;
@@ -157,6 +177,18 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         }
     }
 
+    /// <summary>The fixed-vocabulary outcome <c>--diagnose</c> reports for a failed Gemini CLI attempt.</summary>
+    internal static string GeminiCliOutcome(GeminiUsageException exception) => exception.Message switch
+    {
+        ConsumerTierShutdownMessage => "unsupported-client",
+        SignInAgainMessage => "sign-in-expired",
+        NotSignedInMessage => "not-signed-in",
+        _ when exception.RetryAfter > TimeSpan.Zero ||
+               exception.Message.Contains("rate-limited", StringComparison.OrdinalIgnoreCase) => "rate-limited",
+        _ when exception.Message.Contains("timed out", StringComparison.OrdinalIgnoreCase) => "timeout",
+        _ => "failed",
+    };
+
     /// <summary>
     /// The error shown once every Gemini path failed. The Gemini CLI fallback runs last, so its
     /// message alone would hide that the Antigravity paths returned nothing too. The first sentence
@@ -172,7 +204,8 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             ? "Antigravity (IDE or editor extension) and `agy` returned no usage"
             : "Antigravity (IDE or editor extension) returned no usage and `agy` is not installed";
         var expired = geminiCliMessage == SignInAgainMessage;
-        if (expired || geminiCliMessage == NotSignedInMessage)
+        var shutDown = geminiCliMessage == ConsumerTierShutdownMessage;
+        if (expired || shutDown || geminiCliMessage == NotSignedInMessage)
         {
             // Only the Gemini CLI is known to be signed out: agy may be signed in but slow or backing
             // off, and the Antigravity IDE may be installed without the standalone CLI. So the
@@ -180,7 +213,9 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
             var action = agyInstalled
                 ? "Check that `agy` is signed in, then refresh."
                 : "Sign in to Antigravity or install `agy`, then refresh.";
-            var cli = expired ? "the Gemini CLI sign-in has expired" : "the Gemini CLI is not signed in";
+            var cli = shutDown
+                ? "Google no longer serves Gemini CLI quota for this plan"
+                : expired ? "the Gemini CLI sign-in has expired" : "the Gemini CLI is not signed in";
             return $"Google Gemini usage is unavailable. {action} {tried}, and {cli}.";
         }
 
@@ -542,7 +577,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         GeminiCredentials credentials,
         CancellationToken cancellationToken)
     {
-        var codeAssistPlan = await LoadCodeAssistPlanAsync(
+        var codeAssist = await LoadCodeAssistAsync(
             credentials.AccessToken!,
             credentials.IdToken,
             cancellationToken);
@@ -551,7 +586,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentials.AccessToken);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.UserAgent.ParseAdd(AppIdentity.UserAgent);
-        request.Content = new StringContent("{}", Encoding.UTF8, "application/json");
+        request.Content = new StringContent(QuotaRequestBody(codeAssist.Project), Encoding.UTF8, "application/json");
 
         try
         {
@@ -568,8 +603,11 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
 
             if (response.StatusCode == HttpStatusCode.Forbidden)
             {
+                // Google's consumer-tier shutdown answers loadCodeAssist with an UNSUPPORTED_CLIENT
+                // ineligible tier and this request with 403 SUBSCRIPTION_REQUIRED. A 403 without that
+                // flag, or for an account that still has CLI access, stays a sign-in problem.
                 throw new GeminiUsageException(
-                    SignInAgainMessage);
+                    codeAssist.IsConsumerTierShutDown ? ConsumerTierShutdownMessage : SignInAgainMessage);
             }
 
             if (response.StatusCode == HttpStatusCode.TooManyRequests)
@@ -589,7 +627,7 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
 
             using var document = await SecureHttp.ReadJsonDocumentAsync(response, cancellationToken);
             var accountEmail = ExtractEmailFromJwt(credentials.IdToken);
-            return ParseQuotaResponse(document.RootElement, codeAssistPlan, accountEmail);
+            return ParseQuotaResponse(document.RootElement, codeAssist.Plan, accountEmail);
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -937,7 +975,92 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
         return CultureInfo.CurrentCulture.TextInfo.ToTitleCase(modelId.Replace('-', ' ').Replace('_', ' '));
     }
 
-    private async Task<string?> LoadCodeAssistPlanAsync(
+    /// <summary>What <c>loadCodeAssist</c> says about the Gemini CLI account.</summary>
+    /// <param name="Plan">The plan label, or null when the tier is unknown.</param>
+    /// <param name="Project">The Code Assist project quota is reported for, when there is one.</param>
+    /// <param name="IsConsumerTierShutDown">
+    /// True when Google marks this client unsupported for the account (the June 2026 consumer-tier
+    /// shutdown) and the account has no paid, Standard, or Workspace tier that keeps CLI access.
+    /// </param>
+    internal sealed record CodeAssistInfo(string? Plan, string? Project, bool IsConsumerTierShutDown)
+    {
+        public static CodeAssistInfo Unknown { get; } = new(null, null, false);
+    }
+
+    /// <summary>
+    /// The <c>retrieveUserQuota</c> body: the Code Assist project when known, otherwise <c>{}</c>,
+    /// which lets Google pick the default project as before.
+    /// </summary>
+    internal static string QuotaRequestBody(string? project) =>
+        string.IsNullOrWhiteSpace(project)
+            ? "{}"
+            : JsonSerializer.Serialize(new Dictionary<string, string> { ["project"] = project });
+
+    internal static CodeAssistInfo ParseCodeAssist(JsonElement root, string? hostedDomain)
+    {
+        if (root.ValueKind != JsonValueKind.Object)
+        {
+            return CodeAssistInfo.Unknown;
+        }
+
+        string? paidTierName = null;
+        if (root.TryGetProperty("paidTier", out var paidTier) && paidTier.ValueKind == JsonValueKind.Object)
+        {
+            paidTierName = GetString(paidTier, "name");
+        }
+
+        string? tierId = null;
+        if (root.TryGetProperty("currentTier", out var currentTier) && currentTier.ValueKind == JsonValueKind.Object)
+        {
+            tierId = GetString(currentTier, "id");
+        }
+
+        var plan = !string.IsNullOrWhiteSpace(paidTierName)
+            ? paidTierName
+            : tierId switch
+            {
+                "standard-tier" => "Paid",
+                "free-tier" when hostedDomain is not null => "Workspace",
+                "free-tier" => "Free",
+                "legacy-tier" => "Legacy",
+                _ => null,
+            };
+
+        // A project is either a plain id or an object carrying one.
+        string? project = null;
+        if (root.TryGetProperty("cloudaicompanionProject", out var projectElement))
+        {
+            project = projectElement.ValueKind switch
+            {
+                JsonValueKind.String => projectElement.GetString(),
+                JsonValueKind.Object => GetString(projectElement, "id"),
+                _ => null,
+            };
+        }
+
+        project = project is { Length: > 0 and <= 256 } && project.All(character => char.IsAsciiLetterOrDigit(character) || character is '-' or '_' or '.' or ':')
+            ? project
+            : null;
+
+        var unsupportedClient = false;
+        if (root.TryGetProperty("ineligibleTiers", out var ineligibleTiers) && ineligibleTiers.ValueKind == JsonValueKind.Array)
+        {
+            unsupportedClient = ineligibleTiers.EnumerateArray().Any(tier =>
+                tier.ValueKind == JsonValueKind.Object &&
+                string.Equals(GetString(tier, "reasonCode"), "UNSUPPORTED_CLIENT", StringComparison.OrdinalIgnoreCase));
+        }
+
+        // Code Assist Standard or Enterprise and Workspace or education accounts keep Gemini CLI
+        // access, so an UNSUPPORTED_CLIENT tier there is not the shutdown and a 403 stays a sign-in
+        // problem. A named paid tier alone does not exempt an account: Google AI Pro and Ultra are
+        // paid plans too, and they are exactly the ones the shutdown covers.
+        var keepsCliAccess = tierId is "standard-tier" ||
+                             (tierId?.Contains("enterprise", StringComparison.OrdinalIgnoreCase) ?? false) ||
+                             hostedDomain is not null;
+        return new CodeAssistInfo(plan, project, unsupportedClient && !keepsCliAccess);
+    }
+
+    private async Task<CodeAssistInfo> LoadCodeAssistAsync(
         string accessToken,
         string? idToken,
         CancellationToken cancellationToken)
@@ -960,42 +1083,15 @@ internal sealed class GeminiUsageClient : IUsageClient, IForcedRefreshAware
 
             if (!response.IsSuccessStatusCode)
             {
-                return null;
+                return CodeAssistInfo.Unknown;
             }
 
             using var document = await SecureHttp.ReadJsonDocumentAsync(response, cancellationToken);
-            var root = document.RootElement;
-
-            string? paidTierName = null;
-            if (root.TryGetProperty("paidTier", out var paidTier) && paidTier.ValueKind == JsonValueKind.Object)
-            {
-                paidTierName = GetString(paidTier, "name");
-            }
-
-            if (!string.IsNullOrWhiteSpace(paidTierName))
-            {
-                return paidTierName;
-            }
-
-            string? tierId = null;
-            if (root.TryGetProperty("currentTier", out var currentTier) && currentTier.ValueKind == JsonValueKind.Object)
-            {
-                tierId = GetString(currentTier, "id");
-            }
-
-            var hostedDomain = ExtractHostedDomainFromJwt(idToken);
-            return tierId switch
-            {
-                "standard-tier" => "Paid",
-                "free-tier" when hostedDomain is not null => "Workspace",
-                "free-tier" => "Free",
-                "legacy-tier" => "Legacy",
-                _ => null,
-            };
+            return ParseCodeAssist(document.RootElement, ExtractHostedDomainFromJwt(idToken));
         }
         catch
         {
-            return null;
+            return CodeAssistInfo.Unknown;
         }
     }
 

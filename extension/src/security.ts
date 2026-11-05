@@ -38,6 +38,20 @@ export interface JsonRequestOptions {
   readonly allowLoopbackPlaintext?: boolean;
 }
 
+/**
+ * A provider answered with something other than JSON, such as a Cloudflare challenge page. The
+ * status and headers let a client tell a browser check from a real failure; the body is never kept.
+ */
+export class NonJsonResponseError extends Error {
+  public constructor(
+    public readonly status: number,
+    public readonly headers: http.IncomingHttpHeaders,
+  ) {
+    super("The provider returned a non-JSON response.");
+    this.name = "NonJsonResponseError";
+  }
+}
+
 export async function requestJson<T = unknown>(
   rawUrl: string | URL,
   options: JsonRequestOptions,
@@ -91,7 +105,7 @@ export async function requestJson<T = unknown>(
           !contentType.toLowerCase().includes("application/json") &&
           !contentType.toLowerCase().includes("+json")) {
         response.resume();
-        reject(new Error("The provider returned a non-JSON response."));
+        reject(new NonJsonResponseError(status, response.headers));
         return;
       }
 

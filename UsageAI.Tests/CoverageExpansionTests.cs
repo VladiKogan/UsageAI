@@ -879,7 +879,9 @@ internal static class CoverageExpansionTests
                         () => Array.Empty<string>(),
                         _ => Task.FromResult(false)).GetUsageAsync());
                 True(failedException.Message.Contains("cannot read", StringComparison.OrdinalIgnoreCase));
-                Equal(1, failedRecoveryRequests);
+                // A 403 to the reset-credits request is asked once more without the parameter before
+                // it counts as a login that cannot read usage.
+                Equal(2, failedRecoveryRequests);
             }
 
             var boundedRetryRequests = 0;
@@ -1078,6 +1080,87 @@ internal static class CoverageExpansionTests
             {
                 var client = new GeminiUsageClient(http, _ => Task.FromResult<UsageSnapshot?>(local));
                 Equal(local, await client.GetUsageAsync());
+            }
+        }
+        finally
+        {
+            RestoreEnvironment(environment);
+            Directory.Delete(directory, recursive: true);
+        }
+    }
+
+    public static async Task TestGeminiConsumerTierShutdownAsync()
+    {
+        static GeminiUsageClient.CodeAssistInfo Parse(string json, string? hostedDomain = null)
+        {
+            using var document = JsonDocument.Parse(json);
+            return GeminiUsageClient.ParseCodeAssist(document.RootElement, hostedDomain);
+        }
+
+        // The June 2026 shutdown marks the CLI unsupported for a consumer account.
+        const string shutDown = """{"currentTier":{"id":"free-tier"},"ineligibleTiers":[{"reasonCode":"UNSUPPORTED_CLIENT","reasonMessage":"Use Antigravity"}],"cloudaicompanionProject":"proj-9"}""";
+        var consumer = Parse(shutDown);
+        True(consumer.IsConsumerTierShutDown);
+        Equal("Free", consumer.Plan);
+        Equal("proj-9", consumer.Project);
+
+        // Accounts that keep Gemini CLI access are never told it was shut down.
+        // A paid personal plan (AI Pro, Ultra) is exactly what the shutdown covers; Enterprise is exempt.
+        True(Parse("""{"paidTier":{"name":"Google AI Pro"},"currentTier":{"id":"free-tier"},"ineligibleTiers":[{"reasonCode":"UNSUPPORTED_CLIENT"}]}""").IsConsumerTierShutDown);
+        False(Parse("""{"currentTier":{"id":"enterprise-tier"},"ineligibleTiers":[{"reasonCode":"UNSUPPORTED_CLIENT"}]}""").IsConsumerTierShutDown);
+        False(Parse("""{"currentTier":{"id":"standard-tier"},"ineligibleTiers":[{"reasonCode":"UNSUPPORTED_CLIENT"}]}""").IsConsumerTierShutDown);
+        False(Parse(shutDown, hostedDomain: "school.example").IsConsumerTierShutDown);
+        False(Parse("""{"currentTier":{"id":"free-tier"},"ineligibleTiers":[{"reasonCode":"RESTRICTED_AGE"}]}""").IsConsumerTierShutDown);
+        Equal("Workspace", Parse("""{"currentTier":{"id":"free-tier"}}""", "school.example").Plan);
+        Equal("Legacy", Parse("""{"currentTier":{"id":"legacy-tier"}}""").Plan);
+        Null(Parse("[]").Plan);
+
+        // The project is a plain id or an object carrying one, and anything else is dropped.
+        Equal("proj-object", Parse("""{"cloudaicompanionProject":{"id":"proj-object","name":"x"}}""").Project);
+        Null(Parse("""{"cloudaicompanionProject":"bad project\"id"}""").Project);
+        Null(Parse("""{"cloudaicompanionProject":42}""").Project);
+        Equal("{}", GeminiUsageClient.QuotaRequestBody(null));
+        Equal("""{"project":"proj-9"}""", GeminiUsageClient.QuotaRequestBody("proj-9"));
+
+        var environment = SaveEnvironment("GEMINI_CONFIG_DIR");
+        var directory = Path.Combine(AppPaths.DataDirectory, $"gemini-shutdown-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            Environment.SetEnvironmentVariable("GEMINI_CONFIG_DIR", directory);
+            WriteGeminiCredentials(directory, "live-access", refreshToken: null, DateTimeOffset.UtcNow.AddHours(1));
+
+            string? quotaBody = null;
+            StubHttpHandler Handler(string codeAssistJson) => new(async (request, _, cancellationToken) =>
+            {
+                if (request.RequestUri!.AbsoluteUri.Contains("loadCodeAssist", StringComparison.Ordinal))
+                {
+                    return JsonResponse(HttpStatusCode.OK, codeAssistJson);
+                }
+
+                quotaBody = await request.Content!.ReadAsStringAsync(cancellationToken);
+                return JsonResponse(HttpStatusCode.Forbidden, """{"error":{"code":403,"status":"PERMISSION_DENIED","details":[{"reason":"SUBSCRIPTION_REQUIRED"}]}}""");
+            });
+
+            // The shutdown reads as such, never as an expired sign-in, and the project went along.
+            using (var http = new HttpClient(Handler(shutDown)))
+            {
+                var exception = await ThrowsAsync<GeminiUsageException>(
+                    () => new GeminiUsageClient(http, NoLocalGeminiSnapshot, hasAgyCli: () => true).GetUsageAsync());
+                Equal(
+                    "Google Gemini usage is unavailable. Check that `agy` is signed in, then refresh. Antigravity (IDE or editor extension) and `agy` returned no usage, and Google no longer serves Gemini CLI quota for this plan.",
+                    exception.Message);
+                Equal(GeminiUsageClient.ConsumerTierShutdownMessage, exception.InnerException!.Message);
+                Equal("""{"project":"proj-9"}""", quotaBody);
+            }
+
+            // The same 403 for an account Google did not flag stays a sign-in problem.
+            using (var http = new HttpClient(Handler("""{"currentTier":{"id":"free-tier"}}""")))
+            {
+                var exception = await ThrowsAsync<GeminiUsageException>(
+                    () => new GeminiUsageClient(http, NoLocalGeminiSnapshot, hasAgyCli: () => true).GetUsageAsync());
+                True(exception.Message.EndsWith("the Gemini CLI sign-in has expired.", StringComparison.Ordinal));
+                Equal("{}", quotaBody);
             }
         }
         finally
@@ -1319,6 +1402,658 @@ internal static class CoverageExpansionTests
         return Task.CompletedTask;
     }
 
+    public static async Task TestProviderIncidentsAsync()
+    {
+        var claudePage = new Uri("https://status.claude.com/");
+        static JsonElement Json(string json)
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.Clone();
+        }
+
+        string[] claudeComponents = ["claude.ai", "Claude API", "Claude Code"];
+
+        // All operational: no incident.
+        Null(ProviderIncidentService.ParseStatuspage(Json(
+            """{"components":[{"name":"claude.ai","status":"operational"},{"name":"Claude Code","status":"operational"}],"incidents":[],"scheduled_maintenances":[]}"""),
+            "claude", claudePage, claudeComponents));
+
+        // An incident on an allowlisted component counts, titled and linked; another product's does not.
+        var incident = ProviderIncidentService.ParseStatuspage(Json(
+            """
+            {"components":[{"name":"Claude Code","status":"degraded_performance"},{"name":"Claude Cowork","status":"major_outage"}],
+             "incidents":[
+               {"id":"abc123","name":"Cowork is down","status":"investigating","impact":"critical","components":[{"name":"Claude Cowork","status":"major_outage"}]},
+               {"id":"def456","name":"Elevated errors on Claude Code","status":"identified","impact":"minor","components":[{"name":"Claude Code","status":"degraded_performance"}]},
+               {"id":"old","name":"Resolved yesterday","status":"resolved","impact":"critical","components":[]}],
+             "scheduled_maintenances":[]}
+            """), "claude", claudePage, claudeComponents)!;
+        Equal(IncidentSeverity.Degraded, incident.Severity);
+        Equal("Elevated errors on Claude Code", incident.Title);
+        Equal(new Uri("https://status.claude.com/incidents/def456"), incident.Page);
+        False(incident.IsOutage);
+        Equal("Degraded", incident.SeverityLabel);
+
+        // A component outage with no incident written yet still counts, named after the component.
+        var componentOnly = ProviderIncidentService.ParseStatuspage(Json(
+            """{"components":[{"name":"Claude API (api.anthropic.com)","status":"partial_outage"}],"incidents":[],"scheduled_maintenances":[]}"""),
+            "claude", claudePage, claudeComponents)!;
+        True(componentOnly.IsOutage);
+        Equal("Claude API (api.anthropic.com): partial outage", componentOnly.Title);
+
+        // An incident opened before components are attached may be about any product, so it is not
+        // pinned on Copilot ("Incident with Actions" usually starts like this).
+        Null(ProviderIncidentService.ParseStatuspage(Json(
+            """{"components":[{"name":"Copilot","status":"operational"}],"incidents":[{"id":"x1","name":"Incident with Actions","status":"investigating","impact":"minor","components":[]}],"scheduled_maintenances":[]}"""),
+            "copilot", new Uri("https://www.githubstatus.com/"), ["Copilot"]));
+
+        // Maintenance in progress counts; scheduled maintenance does not yet.
+        Equal(IncidentSeverity.Maintenance, ProviderIncidentService.ParseStatuspage(Json(
+            """{"components":[],"incidents":[],"scheduled_maintenances":[{"id":"m1","name":"Copilot maintenance","status":"in_progress","components":[{"name":"Copilot","status":"under_maintenance"}]}]}"""),
+            "copilot", new Uri("https://www.githubstatus.com/"), ["Copilot"])!.Severity);
+        Null(ProviderIncidentService.ParseStatuspage(Json(
+            """{"components":[],"incidents":[],"scheduled_maintenances":[{"name":"Later","status":"scheduled","components":[{"name":"Copilot","status":"operational"}]}]}"""),
+            "copilot", new Uri("https://www.githubstatus.com/"), ["Copilot"]));
+
+        // incident.io (OpenAI): only components in the "Codex" group count.
+        const string openAi = """
+            {"summary":{
+              "structure":{"items":[
+                {"group":{"name":"APIs","components":[{"component_id":"api-1"}]}},
+                {"group":{"name":"Codex","components":[{"component_id":"codex-1"},{"component_id":"codex-2"}]}}]},
+              "affected_components":[{"component_id":"api-1","status":"full_outage"},{"component_id":"codex-2","status":"degraded_performance"}],
+              "ongoing_incidents":[{"name":"Responses API outage"},{"name":"Codex tasks are slow"}]}}
+            """;
+        var codex = ProviderIncidentService.ParseIncidentIo(Json(openAi), "codex", new Uri("https://status.openai.com/"), "Codex")!;
+        Equal(IncidentSeverity.Degraded, codex.Severity);
+        Equal("Codex tasks are slow", codex.Title);
+        Null(ProviderIncidentService.ParseIncidentIo(Json(
+            """{"summary":{"structure":{"items":[{"group":{"name":"Codex","components":[{"component_id":"codex-1"}]}}]},"affected_components":[]}}"""),
+            "codex", new Uri("https://status.openai.com/"), "Codex"));
+
+        // The service polls at most every five minutes, keeps the last answer when a check fails,
+        // and clears everything when the setting is off.
+        var degraded = """{"components":[{"name":"Copilot","status":"degraded_performance"}],"incidents":[],"scheduled_maintenances":[]}""";
+        var respond = (HttpStatusCode.OK, degraded);
+        var requests = 0;
+        using var http = new HttpClient(new StubHttpHandler((request, _, _) =>
+        {
+            requests++;
+            Equal("www.githubstatus.com", request.RequestUri!.Host);
+            return Task.FromResult(respond.Item1 == HttpStatusCode.OK
+                ? JsonResponse(HttpStatusCode.OK, respond.Item2)
+                : new HttpResponseMessage(respond.Item1));
+        }));
+        var service = new ProviderIncidentService(http, [ProviderIncidentService.Sources.Single(source => source.ProviderId == "copilot")]);
+        var changes = 0;
+        service.Changed += (_, _) => changes++;
+        var now = DateTimeOffset.UtcNow;
+        await service.RefreshIfDueAsync(enabled: true, now);
+        Equal(IncidentSeverity.Degraded, service.For("copilot")!.Severity);
+        Equal(1, changes);
+        await service.RefreshIfDueAsync(enabled: true, now.AddMinutes(1));
+        Equal(1, requests);
+        respond = (HttpStatusCode.ServiceUnavailable, string.Empty);
+        await service.RefreshIfDueAsync(enabled: true, now.AddMinutes(6));
+        Equal(2, requests);
+        NotNull(service.For("copilot"));
+        Equal(1, changes);
+        await service.RefreshIfDueAsync(enabled: false, now.AddMinutes(7));
+        Null(service.For("copilot"));
+        Equal(2, changes);
+
+        // The tray tooltip names the incident on its own line; the icon draws the dot.
+        var tooltip = UsageApplicationContext.WithIncident("UsageAI - Copilot: 40% used", service.For("copilot") ?? incident with { ProviderId = "copilot" });
+        True(tooltip.Contains("\nCopilot degraded: ", StringComparison.Ordinal));
+
+        // In the all-providers tooltip, which already fills most of the shell's 127 characters, the
+        // incident line goes right after the first line and survives; usage lines are trimmed instead.
+        var full = "UsageAI\nCodex 10% | 22%\nClaude 34% | 78%\nCopilot 64%\nGemini 14% | 48%\nOne more provider line to fill it up";
+        var withLongIncident = UsageApplicationContext.WithIncident(full, new ProviderIncident("claude", IncidentSeverity.MajorOutage, new string('x', 200), new Uri("https://status.claude.com/")));
+        True(withLongIncident.Length <= 127);
+        True(withLongIncident.StartsWith("UsageAI\nClaude outage: xxx", StringComparison.Ordinal));
+        Equal("UsageAI - Copilot: 40% used", UsageApplicationContext.WithIncident("UsageAI - Copilot: 40% used", null));
+        using var plain = TrayIconFactory.Create(40, size: 32);
+        using var marked = TrayIconFactory.Create(40, size: 32, incident: IncidentSeverity.MajorOutage);
+        using var plainBitmap = plain.ToBitmap();
+        using var markedBitmap = marked.ToBitmap();
+        True(plainBitmap.GetPixel(29, 2).A < markedBitmap.GetPixel(29, 2).A);
+        using var tank = TrayIconFactory.CreateTank(40, 40, size: 32, incident: IncidentSeverity.Degraded);
+
+        // Turning incidents off while a check is still in flight is not undone by its late answer.
+        var release = new TaskCompletionSource();
+        using var slow = new HttpClient(new StubHttpHandler(async (_, _, _) =>
+        {
+            await release.Task;
+            return JsonResponse(HttpStatusCode.OK, degraded);
+        }));
+        var racing = new ProviderIncidentService(slow, [ProviderIncidentService.Sources.Single(source => source.ProviderId == "copilot")]);
+        var inFlight = racing.RefreshIfDueAsync(enabled: true, now);
+        await racing.RefreshIfDueAsync(enabled: false, now);
+        release.SetResult();
+        await inFlight;
+        Null(racing.For("copilot"));
+
+        // Like provider polling, status pages are not read while the session is locked; unlocking
+        // checks them at once.
+        var lockedRequests = 0;
+        using var lockedHttp = new HttpClient(new StubHttpHandler((_, _, _) =>
+        {
+            lockedRequests++;
+            return Task.FromResult(JsonResponse(HttpStatusCode.OK, degraded));
+        }));
+        var lockedClient = new QueueUsageClient("copilot", "GitHub Copilot");
+        for (var index = 0; index < 4; index++)
+        {
+            lockedClient.Enqueue(Snapshot("copilot", "GitHub Copilot", 40, DateTimeOffset.Now));
+        }
+
+        using var context = new UsageApplicationContext(
+            new IUsageClient[] { lockedClient },
+            new AppSettings { GlobalHotkeyEnabled = false, HistoryEnabled = false, NotificationsEnabled = false },
+            showTrayIcon: false,
+            incidents: new ProviderIncidentService(lockedHttp, [ProviderIncidentService.Sources.Single(source => source.ProviderId == "copilot")]));
+        context.HandleSessionSwitch(Microsoft.Win32.SessionSwitchReason.SessionLock);
+        await InvokePrivateTaskAsync(context, "RefreshIncidentsIfDueAsync");
+        Equal(0, lockedRequests);
+        context.HandleSessionSwitch(Microsoft.Win32.SessionSwitchReason.SessionUnlock);
+        await WaitForConditionAsync(() => lockedRequests == 1);
+    }
+
+    public static async Task TestDiagnosticAttemptsAsync()
+    {
+        static string Describe(IReadOnlyList<ProviderAttempt> attempts) =>
+            string.Join(',', attempts.Select(attempt => $"{attempt.Source}:{attempt.Outcome}"));
+
+        // Nothing is recorded outside a diagnostic run.
+        False(ProviderAttempts.IsRecording);
+        ProviderAttempts.Record("agy", "answered");
+
+        var attempts = ProviderAttempts.Begin();
+        try
+        {
+            ProviderAttempts.Record("agy-hub", "no-answer");
+            // Anything outside the fixed vocabulary is replaced, so no text from a provider can leak.
+            ProviderAttempts.Record("Bearer ghp_secret", "answered at port 51234");
+            Equal("a", await ProviderAttempts.TrackAsync("tracked", () => Task.FromResult<string?>("a")));
+            Null(await ProviderAttempts.TrackAsync("tracked", () => Task.FromResult<string?>(null)));
+            await ThrowsAsync<InvalidOperationException>(() =>
+                ProviderAttempts.TrackAsync<string>("tracked", () => throw new InvalidOperationException("detail")));
+            Equal("agy-hub:no-answer,unknown:unknown,tracked:answered,tracked:no-answer,tracked:failed", Describe(attempts));
+            for (var index = 0; index < 40; index++)
+            {
+                ProviderAttempts.Record("filler", "answered");
+            }
+
+            Equal(32, attempts.Count);
+
+            var json = global::UsageAI.Program.DiagnosticJson(null, attempts.Take(2).ToArray());
+            True(json.Contains("\"Attempts\"", StringComparison.Ordinal));
+            False(json.Contains("ghp_secret", StringComparison.Ordinal));
+            var withSnapshot = global::UsageAI.Program.DiagnosticJson(Snapshot("codex", "Codex", 12, DateTimeOffset.Now), attempts.Take(1).ToArray());
+            True(withSnapshot.Contains("\"Plan\"", StringComparison.Ordinal));
+            True(withSnapshot.Contains("\"agy-hub\"", StringComparison.Ordinal));
+        }
+        finally
+        {
+            ProviderAttempts.End();
+        }
+
+        // Gemini reports every path it tried, in order, before its combined error.
+        var environment = SaveEnvironment("GEMINI_CONFIG_DIR");
+        var directory = Path.Combine(AppPaths.DataDirectory, $"gemini-attempts-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            Environment.SetEnvironmentVariable("GEMINI_CONFIG_DIR", directory);
+            using var http = new HttpClient(new StubHttpHandler((_, _, _) =>
+                throw new InvalidOperationException("HTTP should not be reached.")));
+            var gemini = ProviderAttempts.Begin();
+            try
+            {
+                await ThrowsAsync<GeminiUsageException>(() =>
+                    new GeminiUsageClient(http, NoLocalGeminiSnapshot, hasAgyCli: () => true).GetUsageAsync());
+                Equal("agy-hub-serving:not-running,antigravity-local:no-answer,agy:no-answer,gemini-cli:not-signed-in", Describe(gemini));
+            }
+            finally
+            {
+                ProviderAttempts.End();
+            }
+        }
+        finally
+        {
+            RestoreEnvironment(environment);
+            Directory.Delete(directory, recursive: true);
+        }
+
+        Equal("unsupported-client", GeminiUsageClient.GeminiCliOutcome(new GeminiUsageException(GeminiUsageClient.ConsumerTierShutdownMessage)));
+        Equal("rate-limited", GeminiUsageClient.GeminiCliOutcome(new GeminiUsageException("Google Cloud API rate-limited the quota request.")));
+        Equal("timeout", GeminiUsageClient.GeminiCliOutcome(new GeminiUsageException("Gemini usage request timed out after 15 seconds.")));
+        Equal("failed", GeminiUsageClient.GeminiCliOutcome(new GeminiUsageException("Something else.")));
+
+        // Codex says whether its HTTP path was usable before the app-server answered.
+        using (var unused = new HttpClient(new StubHttpHandler((_, _, _) =>
+                   throw new InvalidOperationException("HTTP should not be reached."))))
+        {
+            static Task<(JsonElement RateLimits, JsonElement? Account)> AppServer(CancellationToken _)
+            {
+                using var rateLimits = JsonDocument.Parse(
+                    """{"rateLimitsByLimitId":{"codex":{"primary":{"usedPercent":4,"windowDurationMins":300}}}}""");
+                return Task.FromResult<(JsonElement, JsonElement?)>((rateLimits.RootElement.Clone(), null));
+            }
+
+            var codex = ProviderAttempts.Begin();
+            try
+            {
+                await new CodexUsageClient(unused, () => null, AppServer).GetUsageAsync();
+                Equal("chatgpt-http:no-usable-login,codex-app-server:answered", Describe(codex));
+            }
+            finally
+            {
+                ProviderAttempts.End();
+            }
+        }
+    }
+
+    public static async Task TestCopilotHostsAndEndedSubscriptionAsync()
+    {
+        // A token goes only to the GitHub service that issued it.
+        Equal(new Uri("https://api.github.com/copilot_internal/user"), GitHubCopilotUsageClient.UserEndpointFor("github.com"));
+        Equal(new Uri("https://api.octocorp.ghe.com/copilot_internal/user"), GitHubCopilotUsageClient.UserEndpointFor("https://OctoCorp.ghe.com/login"));
+        Null(GitHubCopilotUsageClient.UserEndpointFor("github.mycorp.com"));
+        Null(GitHubCopilotUsageClient.UserEndpointFor("ghe.com"));
+        Null(GitHubCopilotUsageClient.UserEndpointFor("evil.ghe.com.attacker.example"));
+        Null(GitHubCopilotUsageClient.UserEndpointFor("api.ghe.com@attacker.example"));
+        Null(GitHubCopilotUsageClient.UserEndpointFor(null));
+
+        // Only keys that look like a host name one.
+        Equal("github.com", GitHubCopilotUsageClient.HostFromKey("github.com:Ov23liExample", holdsToken: true));
+        Equal("octocorp.ghe.com", GitHubCopilotUsageClient.HostFromKey("https://octocorp.ghe.com:dev", holdsToken: true));
+        Equal("github.mycorp.com", GitHubCopilotUsageClient.HostFromKey("github.mycorp.com", holdsToken: true));
+        Null(GitHubCopilotUsageClient.HostFromKey("settings.panel", holdsToken: false));
+        Null(GitHubCopilotUsageClient.HostFromKey("first", holdsToken: true));
+
+        var directory = Path.Combine(AppPaths.DataDirectory, $"copilot-hosts-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(directory);
+        try
+        {
+            var appsJson = Path.Combine(directory, "apps.json");
+            File.WriteAllText(
+                appsJson,
+                """
+                {
+                  "github.com:Ov23liExample": {"user": "dev", "oauth_token": "gh-token", "githubAppId": "Ov23liExample"},
+                  "octocorp.ghe.com:Iv1Example": {"user": "dev", "oauth_token": "ghe-token"},
+                  "github.mycorp.com": {"user": "dev", "oauth_token": "ghes-token"},
+                  "nested": {"copilotTokens": {"https://second.ghe.com:dev": "ghe-cli-token", "plain": "plain-token"}}
+                }
+                """);
+            var tokens = new HashSet<string>(StringComparer.Ordinal);
+            InvokePrivateStatic<object?>(typeof(GitHubCopilotUsageClient), "AddTokensFromFile", tokens, appsJson);
+            // The self-hosted Enterprise Server token is left out rather than sent to github.com.
+            Equal("gh-token,ghe-token,ghe-cli-token,plain-token", string.Join(',', tokens));
+
+            var hosts = new Dictionary<string, string>(StringComparer.Ordinal);
+            using var http = new HttpClient(new StubHttpHandler((request, _, _) =>
+            {
+                hosts[request.Headers.Authorization!.Parameter!] = request.RequestUri!.Host;
+                return Task.FromResult(new HttpResponseMessage(HttpStatusCode.Unauthorized));
+            }));
+            await ThrowsAsync<GitHubCopilotUsageException>(() =>
+                new GitHubCopilotUsageClient(http, _ => Task.FromResult<IReadOnlyList<string>>(tokens.ToArray())).GetUsageAsync());
+            Equal("api.github.com", hosts["gh-token"]);
+            Equal("api.octocorp.ghe.com", hosts["ghe-token"]);
+            Equal("api.second.ghe.com", hosts["ghe-cli-token"]);
+            Equal("api.github.com", hosts["plain-token"]);
+            False(hosts.ContainsKey("ghes-token"));
+        }
+        finally
+        {
+            Directory.Delete(directory, recursive: true);
+        }
+
+        // An ended subscription says so, instead of a generic "invalid data" error, and other tokens
+        // are not tried once GitHub has answered for the account.
+        var calls = 0;
+        using var ended = new HttpClient(new StubHttpHandler((_, _, _) =>
+        {
+            calls++;
+            return Task.FromResult(JsonResponse(HttpStatusCode.OK, """{"access_type_sku":"subscription_ended","copilot_plan":"individual"}"""));
+        }));
+        var endedException = await ThrowsAsync<GitHubCopilotUsageException>(() =>
+            new GitHubCopilotUsageClient(ended, _ => Task.FromResult<IReadOnlyList<string>>(["first-token", "second-token"])).GetUsageAsync());
+        Equal(GitHubCopilotUsageClient.SubscriptionEndedMessage, endedException.Message);
+        Equal(1, calls);
+    }
+
+    public static async Task TestClaudeLimitsAndResetCreditsAsync()
+    {
+        var now = DateTimeOffset.Parse("2026-11-05T10:00:00Z", CultureInfo.InvariantCulture);
+        static JsonElement Json(string json)
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.Clone();
+        }
+
+        // The shape api/oauth/usage?cedar_ember=1 returns, with model-scoped weekly limits and grants.
+        var usage = Json(
+            """
+            {
+              "five_hour": {"utilization": 28.0, "resets_at": "2026-11-05T12:29:59.539726+00:00"},
+              "seven_day": {"utilization": 46.0, "resets_at": "2026-11-09T12:59:59.539741+00:00"},
+              "seven_day_opus": {"utilization": 99.0},
+              "seven_day_sonnet": {"utilization": 15.0, "resets_at": "2026-11-09T12:59:59Z"},
+              "extra_usage": {"is_enabled": false},
+              "limits": [
+                {"kind": "session", "group": "session", "percent": 28, "resets_at": "2026-11-05T12:29:59Z", "scope": null},
+                {"kind": "weekly_all", "group": "weekly", "percent": 46, "resets_at": "2026-11-09T12:59:59Z", "scope": null},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 61, "resets_at": "2026-11-09T12:59:59Z",
+                 "scope": {"model": {"id": "claude-opus-5", "display_name": "Claude Opus 5"}}},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": 12, "scope": {"model": {"id": "claude-haiku-5"}}},
+                {"kind": "weekly_scoped", "group": "weekly", "percent": "n/a", "scope": {"model": {"display_name": "Broken"}}}
+              ],
+              "cedar_ember": {
+                "eligible": true,
+                "grants": [
+                  {"id": "grant-handle-never-read", "resets_left": 2, "paused": false, "starts_at": "2026-11-01T00:00:00Z", "ends_at": "2026-12-01T00:00:00Z"},
+                  {"resets_left": 1, "paused": true},
+                  {"resets_left": 1},
+                  {"resets_left": 1, "paused": false, "starts_at": "2026-11-06T00:00:00Z"},
+                  {"resets_left": 1, "paused": false, "ends_at": "2026-11-05T09:00:00Z"},
+                  {"resets_left": 1, "paused": false}
+                ]
+              }
+            }
+            """);
+        var snapshot = ClaudeCodeUsageClient.ParseSnapshot(usage, "Pro", now);
+        Equal(
+            "5-hour|Weekly|Weekly Opus 5|Weekly claude-haiku-5|Weekly Sonnet|Reset credits",
+            string.Join('|', snapshot.Metrics.Select(metric => metric.Name)));
+        Equal(46, snapshot.Metrics[1].UsedPercent);
+        // The scoped "Weekly Opus 5" already covers the legacy seven_day_opus reading, so it is not shown twice.
+        Equal(61, snapshot.Metrics[2].UsedPercent);
+        Equal(UsageMetricKind.Rolling, snapshot.Metrics[2].Kind);
+        Equal(15, snapshot.Metrics[4].UsedPercent);
+        // Two resets from the live grant plus one from the open-ended one; paused, unflagged, not yet
+        // started and expired grants do not count.
+        Equal("3", snapshot.Metrics[5].RemainingText);
+        Equal(UsageMetricKind.Balance, snapshot.Metrics[5].Kind);
+
+        // An implausible total is treated as malformed rather than shown.
+        Equal(0, ClaudeCodeUsageClient.CountResetGrants(
+            Json("""{"cedar_ember":{"grants":[{"resets_left":40,"paused":false},{"resets_left":20,"paused":false}]}}"""), now));
+        Equal(0, ClaudeCodeUsageClient.CountResetGrants(Json("""{"cedar_ember":null}"""), now));
+
+        // A plan Claude meters nothing for reads as such, never as 0% used or as a failure.
+        var free = ClaudeCodeUsageClient.ParseSnapshot(
+            Json("""{"five_hour": null, "seven_day": null, "limits": []}"""), "Free", now);
+        Equal(1, free.Metrics.Count);
+        Equal(ClaudeCodeUsageClient.NoLimitsReportedText, free.Metrics[0].UsageText);
+        False(free.Metrics[0].HasQuota);
+        await ThrowsAsync<ClaudeCodeUsageException>(() =>
+            Task.FromResult(ClaudeCodeUsageClient.ParseSnapshot(Json("""{"unexpected": true}"""), "Pro", now)));
+
+        // Reset credits are asked for; an API that rejects the parameter is asked again without it.
+        var environment = SaveEnvironment(
+            "USAGEAI_CLAUDE_OAUTH_TOKEN",
+            "USAGEAI_CLAUDE_OAUTH_SCOPES",
+            "USAGEAI_CLAUDE_SESSION_KEY",
+            "CLAUDE_AI_SESSION_KEY",
+            "CLAUDE_WEB_SESSION_KEY");
+        try
+        {
+            Environment.SetEnvironmentVariable("USAGEAI_CLAUDE_OAUTH_TOKEN", "claude-access-token");
+            Environment.SetEnvironmentVariable("USAGEAI_CLAUDE_OAUTH_SCOPES", "user:profile");
+            Environment.SetEnvironmentVariable("USAGEAI_CLAUDE_SESSION_KEY", null);
+            Environment.SetEnvironmentVariable("CLAUDE_AI_SESSION_KEY", null);
+            Environment.SetEnvironmentVariable("CLAUDE_WEB_SESSION_KEY", null);
+            var urls = new List<string>();
+            using (var http = new HttpClient(new StubHttpHandler((request, _, _) =>
+                   {
+                       urls.Add(request.RequestUri!.AbsoluteUri);
+                       return Task.FromResult(request.RequestUri.Query.Contains("cedar_ember", StringComparison.Ordinal)
+                           ? new HttpResponseMessage(HttpStatusCode.BadRequest)
+                           : JsonResponse(HttpStatusCode.OK, """{"five_hour":{"utilization":7}}"""));
+                   })))
+            {
+                var retried = await new ClaudeCodeUsageClient(http, () => Array.Empty<string>()).GetUsageAsync();
+                Equal(7, retried.Primary!.UsedPercent);
+                Equal(
+                    "https://api.anthropic.com/api/oauth/usage?cedar_ember=1|https://api.anthropic.com/api/oauth/usage",
+                    string.Join('|', urls));
+            }
+
+            // The web path asks for reset credits too, and its overage refresh keeps them.
+            Environment.SetEnvironmentVariable("USAGEAI_CLAUDE_SESSION_KEY", "sk-ant-sid01-synthetic");
+            var webUrls = new List<string>();
+            using (var web = new HttpClient(new StubHttpHandler((request, _, _) =>
+                   {
+                       var address = request.RequestUri!.AbsoluteUri;
+                       webUrls.Add(address);
+                       return Task.FromResult(address switch
+                       {
+                           _ when address.EndsWith("/api/account", StringComparison.Ordinal) => JsonResponse(
+                               HttpStatusCode.OK,
+                               """{"email_address":"dev@example.com","memberships":[{"organization":{"uuid":"org-1"}}]}"""),
+                           _ when address.EndsWith("/usage?cedar_ember=1", StringComparison.Ordinal) => JsonResponse(
+                               HttpStatusCode.OK,
+                               """{"five_hour":{"utilization":5},"cedar_ember":{"grants":[{"resets_left":1,"paused":false}]}}"""),
+                           _ when address.EndsWith("/overage_spend_limit", StringComparison.Ordinal) => JsonResponse(
+                               HttpStatusCode.OK,
+                               """{"is_enabled":true,"used_credits":250,"monthly_credit_limit":1000,"currency":"USD"}"""),
+                           _ => new HttpResponseMessage(HttpStatusCode.NotFound),
+                       });
+                   })))
+            {
+                var viaWeb = await ClaudeWebUsageClient.GetUsageAsync(web, CancellationToken.None);
+                True(webUrls.Any(url => url.EndsWith("/organizations/org-1/usage?cedar_ember=1", StringComparison.Ordinal)));
+                True(viaWeb.Metrics.Any(metric => metric.Name == "Reset credits" && metric.RemainingText == "1"));
+                True(viaWeb.Metrics.Any(metric => metric.Name == "Extra usage"));
+            }
+
+            // A Cloudflare browser check is not a dead session: it pauses the web path, keeps the key,
+            // and is never retried without the parameter.
+            var challenged = 0;
+            using (var cloudflare = new HttpClient(new StubHttpHandler((request, _, _) =>
+                   {
+                       challenged++;
+                       var response = new HttpResponseMessage(HttpStatusCode.Forbidden)
+                       {
+                           Content = new StringContent("<html>Just a moment...</html>", Encoding.UTF8, "text/html"),
+                       };
+                       response.Headers.TryAddWithoutValidation("cf-mitigated", "challenge");
+                       return Task.FromResult(response);
+                   })))
+            {
+                var blocked = await ThrowsAsync<ClaudeWebUsageException>(() =>
+                    ClaudeWebUsageClient.GetUsageAsync(cloudflare, CancellationToken.None));
+                True(blocked.Message.Contains("browser check", StringComparison.Ordinal));
+                Equal(TimeSpan.FromMinutes(15), blocked.RetryAfter);
+            }
+
+            using (var html = new HttpResponseMessage(HttpStatusCode.ServiceUnavailable)
+                   {
+                       Content = new StringContent("<html></html>", Encoding.UTF8, "text/html"),
+                   })
+            {
+                html.Headers.Server.ParseAdd("cloudflare");
+                True(ClaudeWebUsageClient.IsCloudflareChallenge(html));
+            }
+
+            using (var plain = new HttpResponseMessage(HttpStatusCode.Forbidden)
+                   {
+                       Content = new StringContent("{}", Encoding.UTF8, "application/json"),
+                   })
+            {
+                False(ClaudeWebUsageClient.IsCloudflareChallenge(plain));
+            }
+        }
+        finally
+        {
+            RestoreEnvironment(environment);
+        }
+    }
+
+    public static async Task TestCodexHttpUsageAsync()
+    {
+        static string Jwt(object payload)
+        {
+            static string Segment(string json) => Convert.ToBase64String(Encoding.UTF8.GetBytes(json))
+                .TrimEnd('=').Replace('+', '-').Replace('/', '_');
+            return $"{Segment("""{"alg":"none"}""")}.{Segment(JsonSerializer.Serialize(payload))}.signature";
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var live = Jwt(new { exp = now.AddHours(1).ToUnixTimeSeconds() });
+        Equal(now.AddHours(1).ToUnixTimeSeconds(), CodexUsageClient.JwtExpiry(live)!.Value.ToUnixTimeSeconds());
+        Null(CodexUsageClient.JwtExpiry("not-a-jwt"));
+        Null(CodexUsageClient.JwtExpiry("a.!!!.c"));
+
+        var home = Path.Combine(AppPaths.DataDirectory, $"codex-http-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(home);
+        try
+        {
+            void WriteAuth(string json) => File.WriteAllText(Path.Combine(home, "auth.json"), json);
+            CodexHttpCredentials? Read() => CodexUsageClient.ReadHttpCredentials(home, now);
+
+            // No login file, or an API-key login, leaves usage to the app-server.
+            Null(Read());
+            WriteAuth("""{"auth_mode":"apikey","OPENAI_API_KEY":"sk-synthetic"}""");
+            Null(Read());
+
+            static string Auth(object tokens) => JsonSerializer.Serialize(new { auth_mode = "chatgpt", tokens });
+            WriteAuth(Auth(new { access_token = live, account_id = "acct-123_x", refresh_token = "never-read" }));
+            var credentials = Read();
+            Equal(live, credentials!.AccessToken);
+            Equal("acct-123_x", credentials.AccountId);
+            False(credentials.ToString().Contains(live, StringComparison.Ordinal));
+
+            // An expired or nearly expired token is the CLI's to renew.
+            WriteAuth(Auth(new { access_token = Jwt(new { exp = now.AddSeconds(30).ToUnixTimeSeconds() }) }));
+            Null(Read());
+
+            // A token that is no JWT is used as is; a malformed account id is left out.
+            WriteAuth("""{"tokens":{"access_token":"opaque-token","account_id":"bad id\r\n"}}""");
+            Equal("opaque-token", Read()!.AccessToken);
+            Null(Read()!.AccountId);
+            WriteAuth("""{"tokens":{"access_token":"bad token"}}""");
+            Null(Read());
+            WriteAuth("not json");
+            Null(Read());
+
+            // A custom backend is honoured by the app-server only, so the token never goes elsewhere.
+            WriteAuth(Auth(new { access_token = live }));
+            File.WriteAllText(Path.Combine(home, "config.toml"), "# chatgpt_base_url = \"https://example.test\"\nmodel = \"x\"\n");
+            NotNull(Read());
+            File.WriteAllText(Path.Combine(home, "config.toml"), "[profile]\n  chatgpt_base_url = \"https://example.test\"\n");
+            Null(Read());
+        }
+        finally
+        {
+            Directory.Delete(home, recursive: true);
+        }
+
+        const string usageJson = """
+            {
+              "email": "dev@example.com",
+              "plan_type": "pro",
+              "rate_limit": {
+                "primary_window": { "used_percent": 12.6, "limit_window_seconds": 18000, "reset_at": 1793883681 },
+                "secondary_window": { "used_percent": 71, "limit_window_seconds": 604800, "reset_at": 1794140279 }
+              },
+              "additional_rate_limits": [
+                { "limit_name": "GPT-5.3-Codex-Spark", "rate_limit": { "primary_window": { "used_percent": 40, "limit_window_seconds": 18000 } } },
+                { "limit_name": "No windows", "rate_limit": {} },
+                "noise"
+              ],
+              "credits": { "has_credits": true, "unlimited": false, "balance": "4.50" },
+              "rate_limit_reset_credits": { "available_count": 2, "applicable_available_count": 0 }
+            }
+            """;
+        using (var document = JsonDocument.Parse(usageJson))
+        {
+            var parsed = CodexUsageClient.ParseHttpSnapshot(document.RootElement);
+            Equal("Pro", parsed.Plan);
+            Equal("dev@example.com", parsed.AccountName);
+            Equal(
+                "5-hour|Weekly|GPT-5.3-Codex-Spark 5-hour|Credits|Reset credits",
+                string.Join('|', parsed.Metrics.Select(metric => metric.Name)));
+            Equal(13, parsed.Metrics[0].UsedPercent);
+            Equal(300L, parsed.Metrics[0].DurationMinutes);
+            Equal(10_080L, parsed.Metrics[1].DurationMinutes);
+            Equal(DateTimeOffset.FromUnixTimeSeconds(1794140279), parsed.Metrics[1].ResetsAt);
+            Equal("4.50", parsed.Metrics[3].RemainingText);
+            Equal("2", parsed.Metrics[4].RemainingText);
+        }
+
+        using (var noWindows = JsonDocument.Parse("""{"rate_limit":{"primary_window":null}}"""))
+        {
+            await ThrowsAsync<CodexUsageException>(() => Task.FromResult(CodexUsageClient.ParseHttpSnapshot(noWindows.RootElement)));
+        }
+
+        var appServerCalls = 0;
+        Task<(JsonElement RateLimits, JsonElement? Account)> AppServer(CancellationToken _)
+        {
+            appServerCalls++;
+            using var rateLimits = JsonDocument.Parse(
+                """{"rateLimitsByLimitId":{"codex":{"planType":"plus","primary":{"usedPercent":44,"windowDurationMins":300}}}}""");
+            return Task.FromResult<(JsonElement, JsonElement?)>((rateLimits.RootElement.Clone(), null));
+        }
+
+        var credentialsForClient = new CodexHttpCredentials("access-token", "acct-1");
+        async Task<UsageSnapshot> Fetch(Func<HttpRequestMessage, HttpResponseMessage> respond, CodexHttpCredentials? withCredentials = null)
+        {
+            using var http = new HttpClient(new StubHttpHandler((request, _, _) => Task.FromResult(respond(request))));
+            return await new CodexUsageClient(http, () => withCredentials ?? credentialsForClient, AppServer).GetUsageAsync();
+        }
+
+        // A live ChatGPT login is read over HTTPS, and the app-server is never started.
+        var viaHttp = await Fetch(request =>
+        {
+            Equal(CodexUsageClient.UsageEndpoint, request.RequestUri);
+            Equal("Bearer access-token", request.Headers.Authorization!.ToString());
+            Equal("acct-1", request.Headers.GetValues("ChatGPT-Account-Id").Single());
+            return JsonResponse(HttpStatusCode.OK, usageJson);
+        });
+        Equal("chatgpt-http", viaHttp.Source);
+        Equal(0, appServerCalls);
+
+        // A rejected token, an outage, or an unexpected answer falls back to the app-server.
+        foreach (var respond in new Func<HttpRequestMessage, HttpResponseMessage>[]
+                 {
+                     _ => new HttpResponseMessage(HttpStatusCode.Unauthorized),
+                     _ => new HttpResponseMessage(HttpStatusCode.InternalServerError),
+                     _ => JsonResponse(HttpStatusCode.OK, """{"unexpected":true}"""),
+                     _ => JsonResponse(HttpStatusCode.OK, "not json"),
+                     _ => throw new HttpRequestException("synthetic network failure"),
+                 })
+        {
+            var fallback = await Fetch(respond);
+            Equal("codex-app-server", fallback.Source);
+            Equal(44, fallback.Metrics[0].UsedPercent);
+        }
+
+        Equal(5, appServerCalls);
+
+        // A rate limit is reported with its retry window rather than retried through the app-server.
+        var throttled = await ThrowsAsync<CodexUsageException>(() => Fetch(_ =>
+        {
+            var response = new HttpResponseMessage(HttpStatusCode.TooManyRequests);
+            response.Headers.RetryAfter = new RetryConditionHeaderValue(TimeSpan.FromSeconds(120));
+            return response;
+        }));
+        Equal(TimeSpan.FromSeconds(120), throttled.RetryAfter);
+        Equal(5, appServerCalls);
+
+        // Without usable credentials HTTP is never attempted.
+        using (var unused = new HttpClient(new StubHttpHandler((_, _, _) =>
+                   throw new InvalidOperationException("HTTP should not be reached."))))
+        {
+            var withoutLogin = await new CodexUsageClient(unused, () => null, AppServer).GetUsageAsync();
+            Equal("codex-app-server", withoutLogin.Source);
+        }
+    }
+
     public static async Task TestCodexProtocolAsync()
     {
         var environment = SaveEnvironment("CODEX_PATH", "CODEX_HOME");
@@ -1335,6 +2070,15 @@ internal static class CoverageExpansionTests
             Equal("Pro", snapshot.Plan);
             Equal(44, snapshot.Metrics[0].UsedPercent);
             Equal(61, snapshot.Metrics[1].UsedPercent);
+            // The sandboxed server (the fixture refuses a bare `app-server`) names the account.
+            Equal("dev@example.com", snapshot.AccountName);
+            Equal("app-server -c sandbox_mode=\"read-only\" -c approval_policy=\"never\" --listen stdio://", string.Join(' ', CodexUsageClient.AppServerArguments));
+
+            // An older CLI without account/read still returns usage, just without the account.
+            Environment.SetEnvironmentVariable("CODEX_HOME", "usageai-test-account-error");
+            var unnamed = await new CodexUsageClient().GetUsageAsync();
+            Equal(44, unnamed.Metrics[0].UsedPercent);
+            Null(unnamed.AccountName);
             Equal("Codex", new CodexUsageClient().DisplayName);
             Equal("codex login", new CodexUsageClient().SignInCommand);
 
@@ -3301,12 +4045,27 @@ internal static class CoverageExpansionTests
             new Microsoft.Win32.PowerModeChangedEventArgs(Microsoft.Win32.PowerModes.Resume));
         await WaitForConditionAsync(() => client.CallCount >= 4);
         Equal(61, service.Statuses[0].Snapshot!.Primary!.UsedPercent);
+
+        // While the session is locked a due poll waits; unlocking refreshes at once.
+        InvokePrivate(
+            context,
+            "OnSessionSwitch",
+            context,
+            new Microsoft.Win32.SessionSwitchEventArgs(
+                Microsoft.Win32.SessionSwitchReason.SessionLock));
+        await WaitForConditionAsync(() => context.IsSessionLocked);
+        var callsBeforeLockedTick = client.CallCount;
+        SetPrivateField(service, "_nextRegularRefresh", DateTimeOffset.MinValue);
+        await InvokePrivateTaskAsync(context, "RefreshIfDueAsync");
+        Equal(callsBeforeLockedTick, client.CallCount);
+
         InvokePrivate(
             context,
             "OnSessionSwitch",
             context,
             new Microsoft.Win32.SessionSwitchEventArgs(
                 Microsoft.Win32.SessionSwitchReason.SessionUnlock));
+        await WaitForConditionAsync(() => !context.IsSessionLocked);
         await WaitForConditionAsync(() => client.CallCount >= 5);
         Equal(64, service.Statuses[0].Snapshot!.Primary!.UsedPercent);
         SetPrivateField(service, "_nextRegularRefresh", DateTimeOffset.MinValue);
@@ -3705,14 +4464,16 @@ internal static class CoverageExpansionTests
                 typeof(GitHubCopilotUsageClient),
                 "AddToken",
                 cappedTokens,
-                "one-too-many");
+                "one-too-many",
+                null);
             Equal(32, cappedTokens.Count);
             var normalTokens = new HashSet<string>(StringComparer.Ordinal);
             InvokePrivateStatic<object?>(
                 typeof(GitHubCopilotUsageClient),
                 "AddToken",
                 normalTokens,
-                " invalid token ");
+                " invalid token ",
+                null);
             Equal(0, normalTokens.Count);
 
             var ghDirectory = Path.Combine(directory, "fake-gh");
@@ -4122,23 +4883,25 @@ internal static class CoverageExpansionTests
                     Task.FromResult(JsonResponse(HttpStatusCode.OK, json))));
                 Equal(
                     expectedPlan,
-                    await InvokePrivateTaskResultAsync<string?>(
+                    (await InvokePrivateTaskResultAsync<GeminiUsageClient.CodeAssistInfo>(
                         new GeminiUsageClient(http, NoLocalGeminiSnapshot),
-                        "LoadCodeAssistPlanAsync",
+                        "LoadCodeAssistAsync",
                         "synthetic-access",
                         null,
-                        CancellationToken.None));
+                        CancellationToken.None)).Plan);
             }
 
             using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
                        throw new InvalidOperationException("synthetic plan failure"))))
             {
-                Null(await InvokePrivateTaskResultAsync<string?>(
-                    new GeminiUsageClient(http, NoLocalGeminiSnapshot),
-                    "LoadCodeAssistPlanAsync",
-                    "synthetic-access",
-                    null,
-                    CancellationToken.None));
+                Equal(
+                    GeminiUsageClient.CodeAssistInfo.Unknown,
+                    await InvokePrivateTaskResultAsync<GeminiUsageClient.CodeAssistInfo>(
+                        new GeminiUsageClient(http, NoLocalGeminiSnapshot),
+                        "LoadCodeAssistAsync",
+                        "synthetic-access",
+                        null,
+                        CancellationToken.None));
             }
 
             using (var document = JsonDocument.Parse(
@@ -4780,6 +5543,22 @@ internal static class CoverageExpansionTests
         True(table.AccessibleDescription?.Contains("retry in ", StringComparison.Ordinal) == true);
         using var tile = new ProviderTile(staleOne);
         True(tile.IndicatorText?.Contains("Next try: retry in ", StringComparison.Ordinal) == true);
+
+        // A status-page incident leads the tile's indicator text (and so its accessible description),
+        // with the stale explanation after it, and names it in the dashboard header.
+        var reported = staleOne with { IncidentSummary = "Partial outage: Elevated errors", IncidentIsOutage = true };
+        using var incidentTile = new ProviderTile(reported);
+        True(incidentTile.IndicatorText!.StartsWith("Status page: Partial outage: Elevated errors\n", StringComparison.Ordinal));
+        True(incidentTile.IndicatorText.Contains("Next try: retry in ", StringComparison.Ordinal));
+        True(incidentTile.AccessibleDescription?.Contains("Status page: Partial outage", StringComparison.Ordinal) == true);
+        var healthy = Snapshot("codex", "Codex", 30, now);
+        using var healthyTile = new ProviderTile(new ProviderStatus("codex", "Codex", healthy, null, false, now)
+        {
+            IncidentSummary = "Degraded: Codex tasks are slow",
+        });
+        Equal("Status page: Degraded: Codex tasks are slow", healthyTile.IndicatorText);
+        using var incidentTable = new UsageLedger(new[] { reported }, MetricDisplayMode.All, QuotaDisplay.Used, Array.Empty<UsageSample>());
+        True(incidentTable.AccessibleDescription?.Contains("Partial outage: Elevated errors · stale", StringComparison.Ordinal) == true);
         return Task.CompletedTask;
     }
 

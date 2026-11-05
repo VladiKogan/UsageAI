@@ -26,6 +26,9 @@ internal static class AppPaths
 
     public static string SnapshotCacheFile => Path.Combine(DataDirectory, "last-snapshot.json");
 
+    /// <summary>Each metric's last reading, so usage alerts survive a restart.</summary>
+    public static string AlertStateFile => Path.Combine(DataDirectory, "alert-state.json");
+
     public static string UpdateDirectory => Path.Combine(DataDirectory, "updates");
 
     public static void EnsureDirectory() => Directory.CreateDirectory(DataDirectory);
@@ -109,6 +112,12 @@ internal sealed class AppSettings
     public bool HistoryEnabled { get; set; } = true;
 
     public bool ForecastEnabled { get; set; } = true;
+
+    /// <summary>
+    /// Reads the providers' public status pages and marks an ongoing incident on the tray icon,
+    /// its tooltip and the dashboard. Only the published status JSON is fetched; no credential.
+    /// </summary>
+    public bool ShowProviderIncidents { get; set; } = true;
 
     public bool GlobalHotkeyEnabled { get; set; } = true;
 

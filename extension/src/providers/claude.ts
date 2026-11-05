@@ -3,9 +3,11 @@ import * as path from "node:path";
 import { claudeBundledPaths, findBundledExecutable, noExtensions, type ExtensionPathResolver } from "../bundled-cli";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
+import type * as http from "node:http";
 import {
   collectProcessOutput,
   findExecutable,
+  NonJsonResponseError,
   normalizeToken,
   parseRetryAfter,
   readBoundedText,
@@ -16,6 +18,14 @@ import {
 import { getArray, getBoolean, getNumber, getObject, getString, isObject, parseDate } from "./json";
 
 const usageEndpoint = "https://api.anthropic.com/api/oauth/usage";
+/** The usage endpoint asked to include saved limit-reset credits, as claude.ai asks. */
+export const usageWithResetCreditsEndpoint = `${usageEndpoint}?cedar_ember=1`;
+/** The headline shown when Claude reports no metered limit for the account's plan. */
+export const noLimitsReportedText = "Claude reports no usage limits for this plan";
+/** How long to leave claude.ai alone after its Cloudflare browser check. */
+const cloudflareRetryAfterMs = 15 * 60_000;
+const maxModelWeeklyLimits = 6;
+const maxResetGrants = 50;
 const oauthBeta = "oauth-2025-04-20";
 const authProbeTimeoutMs = 12_000;
 const credentialObservationMs = 5_000;
@@ -43,14 +53,21 @@ export class ClaudeUsageClient implements UsageClient {
   public readonly signInCommand = "claude";
   public readonly accountUrl = "https://claude.ai/settings/usage";
 
+  /** Until when the opt-in web path is skipped after claude.ai asked for a browser check. */
+  private webRetryAfter = 0;
+
   public constructor(private readonly claudeAuthProbe: ClaudeAuthProbe = runClaudeAuthRecovery) {}
 
   public async getUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
-    if (getClaudeSessionKey()) {
+    if (getClaudeSessionKey() && Date.now() >= this.webRetryAfter) {
       try {
         return await getClaudeWebUsage(signal);
-      } catch {
-        // The explicit web session is a fallback source; continue with Claude Code OAuth.
+      } catch (error) {
+        // The explicit web session is a fallback source; continue with Claude Code OAuth. After a
+        // Cloudflare browser check claude.ai is left alone for a while; the session key is kept.
+        if (error instanceof UsageProviderError && error.retryAfterMs > 0) {
+          this.webRetryAfter = Date.now() + error.retryAfterMs;
+        }
       }
     }
 
@@ -182,7 +199,7 @@ async function requestClaudeUsage(
   signal?: AbortSignal,
 ): Promise<UsageSnapshot> {
   try {
-    const response = await requestJson(usageEndpoint, {
+    const request = (url: string) => requestJson(url, {
       allowedHosts: ["api.anthropic.com"],
       headers: {
         Authorization: `Bearer ${credentials.accessToken}`,
@@ -190,6 +207,12 @@ async function requestClaudeUsage(
       },
       ...(signal ? { signal } : {}),
     });
+    // Saved limit-reset credits are reported only when asked for. An account or API that rejects
+    // the parameter is asked once more without it, so usage never depends on it.
+    let response = await request(usageWithResetCreditsEndpoint);
+    if (response.status === 400 || response.status === 403) {
+      response = await request(usageEndpoint);
+    }
     if (response.status === 401) {
       throw new RecoverableClaudeUsageError(
         "Claude Code's login has expired. Run `claude` or use the Claude Code extension to sign in again, then refresh.",
@@ -457,28 +480,40 @@ export function parseClaudeCredentials(rawJson: string): ClaudeCredentials {
   };
 }
 
-export function parseClaudeSnapshot(root: unknown, plan = "Claude"): UsageSnapshot {
+export function parseClaudeSnapshot(root: unknown, plan = "Claude", now = Date.now()): UsageSnapshot {
   const session = parseWindow(root, "five_hour", "fiveHour", "5-hour", "session", 300);
   const weekly = findLimit(root, ["weekly_all", "all_models", "weekly_models"], "Weekly", true)
     ?? parseWindow(root, "seven_day", "sevenDay", "Weekly", "rolling", 10_080);
-  if (!session && !weekly) {
-    throw new UsageProviderError("Claude Code returned account details without five-hour or weekly usage data.");
-  }
   const metrics: UsageMetric[] = [];
+  if (!session && !weekly) {
+    // Free and some education plans answer with both windows set to null: there is no limit to
+    // meter, which is not a failure and must not read as 0% used.
+    if (!isObject(root) || root.five_hour !== null || root.seven_day !== null) {
+      throw new UsageProviderError("Claude Code returned account details without five-hour or weekly usage data.");
+    }
+    metrics.push({ name: "Usage limits", kind: "balance", usedPercent: null, remainingText: "Not reported", usageText: noLimitsReportedText });
+  }
   if (session) {
     metrics.push(session);
   }
   if (weekly) {
     metrics.push(weekly);
   }
-  const opus = findLimit(root, ["weekly_opus"], "Weekly Opus", false);
-  if (opus) {
-    metrics.push(opus);
-  }
+  metrics.push(...parseModelWeeklyLimits(root));
   const extraUsage = getObject(root, "extra_usage") ?? getObject(root, "extraUsage");
   const extra = extraUsage ? createExtraUsageMetric(extraUsage) : undefined;
   if (extra) {
     metrics.push(extra);
+  }
+  const resetGrants = countResetGrants(root, now);
+  if (resetGrants > 0) {
+    metrics.push({
+      name: "Reset credits",
+      kind: "balance",
+      usedPercent: null,
+      remainingText: String(resetGrants),
+      usageText: `Free limit reset${resetGrants === 1 ? "" : "s"} available`,
+    });
   }
   return {
     plan,
@@ -541,6 +576,99 @@ function findLimit(
     };
   }
   return undefined;
+}
+
+/**
+ * Weekly limits that apply to one model, named "Weekly Opus 5" and so on. The newer `limits` entries
+ * carry the model in `scope.model`; older answers report `seven_day_opus` / `seven_day_sonnet` and a
+ * `weekly_opus` limit kind, which are read only when no scoped entry has that name. The all-models
+ * limit stays the main weekly row. Mirrors the desktop `ParseModelWeeklyLimits`.
+ */
+export function parseModelWeeklyLimits(root: unknown): UsageMetric[] {
+  const found: UsageMetric[] = [];
+  const add = (metric: UsageMetric | undefined): void => {
+    if (metric && found.length < maxModelWeeklyLimits &&
+        !found.some((existing) => existing.name.toLowerCase() === metric.name.toLowerCase())) {
+      found.push(metric);
+    }
+  };
+  for (const limit of getArray(root, "limits") ?? []) {
+    const kind = getString(limit, "kind");
+    if (!isObject(limit) || ["weekly_all", "all_models", "weekly_models", "session"].includes(kind ?? "") ||
+        (getString(limit, "group") ?? "weekly").toLowerCase() !== "weekly") {
+      continue;
+    }
+    const model = getObject(getObject(limit, "scope"), "model");
+    const label = modelLabel(getString(model, "display_name") ?? getString(model, "displayName") ?? getString(model, "id"));
+    const percent = getNumber(limit, "percent");
+    if (!label || percent === undefined || !Number.isFinite(percent)) {
+      continue;
+    }
+    const resetsAt = parseDate(getString(limit, "resets_at") ?? getString(limit, "resetsAt"));
+    add({ name: `Weekly ${label}`, kind: "rolling", usedPercent: clampPercent(percent), ...(resetsAt ? { resetsAt } : {}), durationMinutes: 10_080 });
+  }
+  // The legacy fields describe the same limits as the scoped entries, so they fill in only a model
+  // family no scoped entry has named ("Weekly Opus 4.5" already covers "Weekly Opus").
+  const named = (family: string): boolean => found.some((metric) => metric.name.toLowerCase().includes(family));
+  if (!named("opus")) {
+    add(findLimit(root, ["weekly_opus"], "Weekly Opus", false));
+    add(parseWindow(root, "seven_day_opus", "sevenDayOpus", "Weekly Opus", "rolling", 10_080));
+  }
+  if (!named("sonnet")) {
+    add(parseWindow(root, "seven_day_sonnet", "sevenDaySonnet", "Weekly Sonnet", "rolling", 10_080));
+  }
+  return found;
+}
+
+/** A model name made short and safe for a metric name: "Claude Opus 5" reads "Opus 5". */
+function modelLabel(name: string | undefined): string | undefined {
+  let cleaned = (name ?? "").replace(/[\u0000-\u001f\u007f()]/g, "").trim();
+  if (cleaned.toLowerCase().startsWith("claude ")) {
+    cleaned = cleaned.slice("claude ".length).trim();
+  }
+  if (!cleaned) {
+    return undefined;
+  }
+  return cleaned.length > 40 ? cleaned.slice(0, 40).trimEnd() : cleaned;
+}
+
+/**
+ * Saved "reset for free" grants usable now: each counts once per reset it has left; a paused, not yet
+ * started, expired, or unflagged grant not at all. Grant ids are redemption handles and are never
+ * read; an implausible total is treated as malformed. Mirrors the desktop `CountResetGrants`.
+ */
+export function countResetGrants(root: unknown, now = Date.now()): number {
+  let total = 0;
+  for (const grant of getArray(getObject(root, "cedar_ember"), "grants") ?? []) {
+    const left = getNumber(grant, "resets_left");
+    if (!isObject(grant) || grant.paused !== false || left === undefined || left < 1 || left > maxResetGrants) {
+      continue;
+    }
+    const startsAt = Date.parse(getString(grant, "starts_at") ?? "");
+    const endsAt = Date.parse(getString(grant, "ends_at") ?? "");
+    if ((Number.isFinite(startsAt) && startsAt > now) || (Number.isFinite(endsAt) && endsAt <= now)) {
+      continue;
+    }
+    total += Math.trunc(left);
+    if (total > maxResetGrants) {
+      return 0;
+    }
+  }
+  return total;
+}
+
+/**
+ * True when Cloudflare answered with its browser check: flagged by `cf-mitigated`, or a 403/429/503
+ * HTML page served by Cloudflare instead of claude.ai's JSON. Mirrors the desktop check.
+ */
+export function isCloudflareChallenge(status: number, headers: http.IncomingHttpHeaders): boolean {
+  const mitigated = headers["cf-mitigated"];
+  if ((Array.isArray(mitigated) ? mitigated.join(",") : mitigated ?? "").toLowerCase().includes("challenge")) {
+    return true;
+  }
+  return [403, 429, 503].includes(status) &&
+    String(headers["content-type"] ?? "").toLowerCase().includes("text/html") &&
+    String(headers.server ?? "").toLowerCase() === "cloudflare";
 }
 
 function createExtraUsageMetric(extraUsage: Record<string, unknown>): UsageMetric | undefined {
@@ -625,14 +753,37 @@ async function getClaudeWebUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
     headers,
     ...(signal ? { signal } : {}),
   };
-  const accountResponse = await requestJson("https://claude.ai/api/account", common);
+  // Cloudflare's browser check blocks the request before claude.ai sees the session, so it says
+  // nothing about the session key: it pauses the web path instead of reading as a dead session.
+  const request = async (url: string) => {
+    let response;
+    try {
+      response = await requestJson(url, common);
+    } catch (error) {
+      if (error instanceof NonJsonResponseError && isCloudflareChallenge(error.status, error.headers)) {
+        throw new UsageProviderError(
+          "claude.ai asked for a browser check (Cloudflare) instead of answering. The session key is kept; UsageAI will try again later.",
+          cloudflareRetryAfterMs,
+        );
+      }
+      throw error;
+    }
+    if (isCloudflareChallenge(response.status, response.headers)) {
+      throw new UsageProviderError(
+        "claude.ai asked for a browser check (Cloudflare) instead of answering. The session key is kept; UsageAI will try again later.",
+        cloudflareRetryAfterMs,
+      );
+    }
+    return response;
+  };
+  const accountResponse = await request("https://claude.ai/api/account");
   if (accountResponse.status < 200 || accountResponse.status >= 300) {
     throw new UsageProviderError("Claude's saved web session is no longer valid.");
   }
   const account = accountResponse.data;
   let organizationId = findOrganizationId(account);
   if (!organizationId) {
-    const organizations = await requestJson("https://claude.ai/api/organizations", common);
+    const organizations = await request("https://claude.ai/api/organizations");
     organizationId = Array.isArray(organizations.data)
       ? organizations.data.map((entry) => getString(entry, "uuid")).find(Boolean)
       : undefined;
@@ -641,7 +792,11 @@ async function getClaudeWebUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
     throw new UsageProviderError("Claude did not return an account organization.");
   }
   const escapedId = encodeURIComponent(organizationId);
-  const usage = await requestJson(`https://claude.ai/api/organizations/${escapedId}/usage`, common);
+  // Saved limit-reset credits are reported only when asked for; a rejection is retried without it.
+  let usage = await request(`https://claude.ai/api/organizations/${escapedId}/usage?cedar_ember=1`);
+  if (usage.status < 200 || usage.status >= 300) {
+    usage = await request(`https://claude.ai/api/organizations/${escapedId}/usage`);
+  }
   if (usage.status < 200 || usage.status >= 300) {
     throw new UsageProviderError(`Claude web usage returned HTTP ${usage.status}.`);
   }

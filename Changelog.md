@@ -4,6 +4,105 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **GitHub Copilot names a personal plan as Pro, Pro+ or Free instead of "Individual".** GitHub
+  reports `copilot_plan` as `individual` for every personal plan, so a Copilot Pro account,
+  including one granted free to a verified teacher, student or open-source maintainer, read as
+  "Individual". The plan is now named from the account's `access_type_sku` when it is one UsageAI
+  recognises; an unrecognised SKU and every Business or Enterprise plan keep the name GitHub reports.
+- **Google Gemini says when Google has stopped serving Gemini CLI quota for a plan.** Since June
+  2026 Google no longer answers Gemini CLI usage requests for personal, Google AI Pro and Ultra
+  accounts, and UsageAI took the refusal for an expired sign-in, asking for a sign-in that could
+  never help. It now recognises Google's `UNSUPPORTED_CLIENT` answer and points to Antigravity or
+  `agy` instead. Code Assist Standard or Enterprise and Workspace accounts keep the sign-in message.
+- **A Claude plan without usage limits no longer shows as an error.** Free and some education plans
+  report no five-hour or weekly window, and the card went stale with a parsing error; it now says
+  Claude reports no usage limits for the plan.
+- **A Cloudflare browser check on claude.ai no longer reads as a dead web session.** When claude.ai
+  answers the opt-in web path with Cloudflare's challenge, UsageAI keeps the session key, uses Claude
+  Code OAuth, and leaves claude.ai alone for 15 minutes instead of asking again on every refresh.
+- One unexpected text value in a Claude usage answer no longer fails the whole reading; that field is
+  skipped.
+- **GitHub Copilot says when a subscription has ended.** GitHub answers an ended subscription with
+  an ordinary reply, which read as invalid usage data; the card now says the subscription has ended.
+- **A GitHub Enterprise Copilot token is never sent to github.com.** UsageAI sent every Copilot
+  token it found to api.github.com, including one that belongs to a company's own GitHub Enterprise
+  Server. Each token now goes only to the GitHub service it came from, and a token for a host
+  UsageAI does not read from is not used at all.
+
+### Added
+
+- **Codex shows model-specific limits such as Spark.** Codex reports a separate rate-limit bucket for
+  some models, and UsageAI read only the main one. Each extra bucket now shows its own limits, named
+  the way Codex names it ("GPT-5.3-Codex-Spark 5-hour"). The main 5-hour and weekly limits keep
+  their names, so their history and alerts carry on unchanged.
+- **The Codex card names the signed-in account.** UsageAI asks the Codex CLI which account is signed
+  in, without refreshing the login; an older CLI that cannot answer still shows usage.
+- **Claude shows your saved limit resets.** Claude grants some accounts free limit resets, and UsageAI
+  now asks for them and shows how many you can use right now as "Reset credits"; paused, expired or
+  not-yet-started grants are not counted.
+- **Claude shows every model's own weekly limit.** Claude now reports weekly limits per model, such as
+  Opus or Sonnet, and UsageAI shows each of them by name instead of only Opus.
+- **GitHub Copilot works with GitHub Enterprise Cloud (`*.ghe.com`).** A Copilot sign-in to an
+  Enterprise Cloud host is now read from that host's own API.
+
+### Changed
+
+- **The sample Codex account in the previews now has its 5-hour window.** A Codex Plus plan
+  reports a 5-hour limit as well as the weekly one, but the sample data behind `--render-preview`,
+  `--preview-window` and `--preview-tray` gave it only the weekly limit, so the README screenshots
+  showed a plan that does not exist. The sample now reports both, with history inside the current
+  5-hour window so its forecast reads too, and the README previews are regenerated from it.
+- The Gemini CLI fallback now asks for quota on the Code Assist project Google reports for the
+  account, rather than leaving Google to pick a default project.
+- The Codex server UsageAI starts now runs with a read-only sandbox and never asks for approval
+  (`-c sandbox_mode="read-only" -c approval_policy="never"` on `app-server` itself), so it can never
+  be asked to run or approve anything, whatever sandbox your own Codex configuration uses.
+- **The `agy` server UsageAI starts no longer updates itself.** It runs for as long as UsageAI does,
+  so it kept the CLI's background updater alive too; UsageAI now sets
+  `AGY_CLI_DISABLE_AUTO_UPDATE` for every `agy` it starts, and `agy` sessions you run yourself
+  still update it.
+- **Codex usage no longer starts the Codex CLI on every refresh.** UsageAI now reads it straight
+  from ChatGPT with the access token your Codex sign-in already holds, the same request the CLI
+  makes, which spares the `cmd`, `node` and `codex` processes a refresh used to start. When that
+  token has expired, the sign-in is an API key, `config.toml` names another backend, or the request
+  does not succeed, UsageAI asks the CLI as before, and the CLI renews the login itself; UsageAI never
+  refreshes or writes `auth.json`. A rate limit from ChatGPT is reported with its retry window.
+  `--diagnose codex` names the path that answered in `Source`.
+- **UsageAI shows when a provider reports an incident.** When Claude, GitHub Copilot or Codex reports
+  degraded service or an outage on its public status page, the tray icon gets a dot (orange for
+  degraded or maintenance, red for an outage), the tooltip names the incident, and the dashboard's
+  provider header shows it, so a card that went stale can be told apart from a provider that is
+  down. Only the components that serve the usage UsageAI shows count. The pages are read at most
+  every five minutes without any credential, and "Show provider incidents" in Settings turns it off.
+  On a popup tile the incident turns the header indicator into a "!" whose hover text names it.
+  The editor extension shows the same incidents on its Status Bar item and dashboard cards.
+  Gemini has no status page that covers its quota.
+- **The dashboard says whether you are on pace.** For a limit that is not forecast to run out
+  before it resets, the "At this pace" column now compares use with the time the window has run:
+  "On pace", "12% under pace", or "8% over pace" in the warning colour. A limit forecast to run out
+  still shows when.
+- **Forecasts work from the first reading.** Without enough recorded history — just after starting,
+  or with History turned off — the run-out forecast now comes from the window's own average since it
+  began, once 5% of it has passed. Recorded history still wins when there is enough of it, and
+  turning Forecasts off hides both the forecast and the pace.
+- **`--diagnose` lists every source a provider tried.** An `Attempts` array names each path in order —
+  for Gemini the serving `agy` server, the Antigravity IDE or editor extension, `agy` itself and the
+  Gemini CLI; for Claude the web session, OAuth and the CLI recovery; for Codex the HTTPS read and the
+  app-server — with a short outcome and how long it took. It is printed even when every source
+  fails. Outcomes come from a fixed list, so no token, port or provider text can appear in them.
+- **Usage alerts survive a restart.** UsageAI now remembers each limit's last reading and its
+  window between runs, so a limit that crossed an alert threshold while UsageAI was closed alerts
+  once when it starts, one you were already alerted about stays quiet, and a window that rolled over
+  meanwhile starts its thresholds afresh. A clean install still stays quiet, and hiding a provider
+  forgets it. The readings live in `alert-state.json` next to the other local state.
+- **UsageAI no longer polls while your PC is locked.** Nobody can see the tray then, so scheduled
+  refreshes wait and unlocking refreshes at once, as before. That spares the provider requests and
+  processes a locked machine used to make overnight.
+
 ## [0.14.1] - 2026-11-04
 
 ### Changed

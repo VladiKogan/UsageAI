@@ -14,6 +14,9 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
     private const string OAuthBeta = "oauth-2025-04-20";
     private const int MaxAuthProbeOutputCharacters = 16_384;
     private static readonly Uri UsageEndpoint = new("https://api.anthropic.com/api/oauth/usage");
+
+    /// <summary>The usage endpoint asked to include saved limit-reset credits, as claude.ai asks.</summary>
+    internal static readonly Uri UsageWithResetCreditsEndpoint = new("https://api.anthropic.com/api/oauth/usage?cedar_ember=1");
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(15);
     private static readonly TimeSpan AuthProbeTimeout = TimeSpan.FromSeconds(12);
     private static readonly TimeSpan CredentialObservationWindow = TimeSpan.FromSeconds(5);
@@ -22,6 +25,9 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
     private readonly HttpClient _client;
     private readonly Func<IReadOnlyList<string>> _keyringPasswords;
     private readonly Func<CancellationToken, Task<bool>> _claudeAuthProbe;
+
+    /// <summary>Until when the opt-in web path is skipped after claude.ai asked for a browser check.</summary>
+    private DateTimeOffset _webRetryAfterUtc;
 
     public ClaudeCodeUsageClient()
         : this(SharedClient, null, RunClaudeAuthRecoveryAsync)
@@ -49,16 +55,35 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 
     public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default)
     {
-        if (ClaudeWebUsageClient.IsConfigured)
+        if (ClaudeWebUsageClient.IsConfigured && DateTimeOffset.UtcNow >= _webRetryAfterUtc)
         {
+            var webTimer = System.Diagnostics.Stopwatch.StartNew();
             try
             {
-                return await ClaudeWebUsageClient.GetUsageAsync(cancellationToken);
+                var viaWeb = await ClaudeWebUsageClient.GetUsageAsync(cancellationToken);
+                ProviderAttempts.Record("claude-web", "answered", webTimer);
+                return viaWeb;
             }
-            catch (ClaudeWebUsageException)
+            catch (ClaudeWebUsageException exception)
             {
-                // An expired or unavailable opt-in web session falls back to Claude Code OAuth.
+                // An expired or unavailable opt-in web session falls back to Claude Code OAuth. After a
+                // Cloudflare browser check claude.ai is left alone for a while rather than challenged
+                // on every refresh; the session key itself is kept.
+                ProviderAttempts.Record(
+                    "claude-web",
+                    exception.RetryAfter > TimeSpan.Zero ? "browser-check"
+                        : exception.Message.Contains("no longer valid", StringComparison.Ordinal) ? "session-rejected"
+                        : "failed",
+                    webTimer);
+                if (exception.RetryAfter > TimeSpan.Zero)
+                {
+                    _webRetryAfterUtc = DateTimeOffset.UtcNow + exception.RetryAfter;
+                }
             }
+        }
+        else if (ClaudeWebUsageClient.IsConfigured)
+        {
+            ProviderAttempts.Record("claude-web", "skipped-browser-check");
         }
 
         var credentials = await RefreshExpiredCredentialsThroughClaudeAsync(
@@ -66,23 +91,54 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             cancellationToken);
         ValidateCredentials(credentials);
 
+        var oauthTimer = System.Diagnostics.Stopwatch.StartNew();
         try
         {
-            return await RequestUsageAsync(credentials, cancellationToken);
+            var snapshot = await RequestUsageAsync(credentials, cancellationToken);
+            ProviderAttempts.Record("claude-oauth", "answered", oauthTimer);
+            return snapshot;
         }
         catch (ClaudeCodeUsageException exception) when (
             exception.CanRetryAfterAuthProbe && !credentials.IsEnvironmentOverride)
         {
+            ProviderAttempts.Record("claude-oauth", OAuthOutcome(exception), oauthTimer);
+            var recoveryTimer = System.Diagnostics.Stopwatch.StartNew();
             var recovered = await RecoverCredentialsThroughClaudeAsync(cancellationToken);
             if (recovered is null)
             {
+                ProviderAttempts.Record("claude-cli-recovery", "no-fresh-login", recoveryTimer);
                 throw;
             }
 
+            ProviderAttempts.Record("claude-cli-recovery", "refreshed", recoveryTimer);
             ValidateCredentials(recovered);
-            return await RequestUsageAsync(recovered, cancellationToken);
+            var retryTimer = System.Diagnostics.Stopwatch.StartNew();
+            try
+            {
+                var retried = await RequestUsageAsync(recovered, cancellationToken);
+                ProviderAttempts.Record("claude-oauth-retry", "answered", retryTimer);
+                return retried;
+            }
+            catch (ClaudeCodeUsageException retryException)
+            {
+                ProviderAttempts.Record("claude-oauth-retry", OAuthOutcome(retryException), retryTimer);
+                throw;
+            }
+        }
+        catch (ClaudeCodeUsageException exception)
+        {
+            ProviderAttempts.Record("claude-oauth", OAuthOutcome(exception), oauthTimer);
+            throw;
         }
     }
+
+    /// <summary>The fixed-vocabulary outcome <c>--diagnose</c> reports for a failed OAuth request.</summary>
+    private static string OAuthOutcome(ClaudeCodeUsageException exception) =>
+        exception.RetryAfter > TimeSpan.Zero || exception.Message.Contains("rate-limited", StringComparison.Ordinal) ? "rate-limited"
+        : exception.Message.Contains("has expired", StringComparison.Ordinal) ? "login-expired"
+        : exception.Message.Contains("cannot read", StringComparison.Ordinal) ? "forbidden"
+        : exception.Message.Contains("within", StringComparison.Ordinal) ? "timeout"
+        : "failed";
 
     private static void ValidateCredentials(ClaudeCredentials credentials)
     {
@@ -104,18 +160,18 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         ClaudeCredentials credentials,
         CancellationToken cancellationToken)
     {
-        using var request = new HttpRequestMessage(HttpMethod.Get, UsageEndpoint);
-        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentials.AccessToken);
-        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
-        request.Headers.Add("anthropic-beta", OAuthBeta);
-        request.Headers.UserAgent.ParseAdd(AppIdentity.UserAgent);
-
         try
         {
-            using var response = await _client.SendAsync(
-                request,
-                HttpCompletionOption.ResponseHeadersRead,
-                cancellationToken);
+            // Saved limit-reset credits are reported only when asked for. An account or API that
+            // rejects the parameter is asked once more without it, so usage never depends on it.
+            var response = await SendUsageRequestAsync(UsageWithResetCreditsEndpoint, credentials, cancellationToken);
+            if (response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Forbidden)
+            {
+                response.Dispose();
+                response = await SendUsageRequestAsync(UsageEndpoint, credentials, cancellationToken);
+            }
+
+            using var _ = response;
 
             if (response.StatusCode == HttpStatusCode.Unauthorized)
             {
@@ -175,19 +231,56 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         }
     }
 
-    internal static UsageSnapshot ParseSnapshot(JsonElement root, string plan = "Claude")
+    private async Task<HttpResponseMessage> SendUsageRequestAsync(
+        Uri endpoint,
+        ClaudeCredentials credentials,
+        CancellationToken cancellationToken)
+    {
+        using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
+        request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentials.AccessToken);
+        request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
+        request.Headers.Add("anthropic-beta", OAuthBeta);
+        request.Headers.UserAgent.ParseAdd(AppIdentity.UserAgent);
+        return await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+    }
+
+    /// <summary>The headline shown when Claude reports no metered limit for the account's plan.</summary>
+    internal const string NoLimitsReportedText = "Claude reports no usage limits for this plan";
+
+    /// <summary>At most this many model-specific weekly limits are shown.</summary>
+    private const int MaxModelWeeklyLimits = 6;
+
+    /// <summary>A grant total above this is treated as malformed rather than shown.</summary>
+    private const int MaxResetGrants = 50;
+
+    internal static UsageSnapshot ParseSnapshot(JsonElement root, string plan = "Claude") =>
+        ParseSnapshot(root, plan, DateTimeOffset.UtcNow);
+
+    internal static UsageSnapshot ParseSnapshot(JsonElement root, string plan, DateTimeOffset now)
     {
         var session = ParseWindow(root, "five_hour", "fiveHour", "5-hour", UsageMetricKind.Session, 300);
         var weekly = ParseWeeklyAllLimit(root) ??
                      ParseWindow(root, "seven_day", "sevenDay", "Weekly", UsageMetricKind.Rolling, 10_080);
 
+        var metrics = new List<UsageMetric>();
         if (session is null && weekly is null)
         {
-            throw new ClaudeCodeUsageException(
-                "Claude Code returned account details without five-hour or weekly usage data.");
+            // Free and some education plans answer with both windows set to null: there is no limit
+            // to meter, which is not a failure and must not read as 0% used.
+            if (!IsExplicitNull(root, "five_hour") || !IsExplicitNull(root, "seven_day"))
+            {
+                throw new ClaudeCodeUsageException(
+                    "Claude Code returned account details without five-hour or weekly usage data.");
+            }
+
+            metrics.Add(new UsageMetric(
+                "Usage limits",
+                UsageMetricKind.Balance,
+                null,
+                RemainingText: "Not reported",
+                UsageText: NoLimitsReportedText));
         }
 
-        var metrics = new List<UsageMetric>();
         if (session is not null)
         {
             metrics.Add(session);
@@ -198,16 +291,23 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             metrics.Add(weekly);
         }
 
-        var opusWeekly = ParseNamedLimit(root, "weekly_opus", "Weekly Opus");
-        if (opusWeekly is not null)
-        {
-            metrics.Add(opusWeekly);
-        }
+        metrics.AddRange(ParseModelWeeklyLimits(root));
 
         var extraUsage = ParseExtraUsage(root);
         if (extraUsage is not null)
         {
             metrics.Add(extraUsage);
+        }
+
+        var resetGrants = CountResetGrants(root, now);
+        if (resetGrants > 0)
+        {
+            metrics.Add(new UsageMetric(
+                "Reset credits",
+                UsageMetricKind.Balance,
+                null,
+                RemainingText: resetGrants.ToString(CultureInfo.CurrentCulture),
+                UsageText: $"Free limit reset{(resetGrants == 1 ? string.Empty : "s")} available"));
         }
 
         return new UsageSnapshot(
@@ -683,6 +783,142 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             displayName,
             requireWeeklyGroup: false);
 
+    private static bool IsExplicitNull(JsonElement root, string propertyName) =>
+        root.ValueKind == JsonValueKind.Object &&
+        root.TryGetProperty(propertyName, out var value) &&
+        value.ValueKind == JsonValueKind.Null;
+
+    /// <summary>
+    /// Weekly limits that apply to one model, named "Weekly Opus", "Weekly Sonnet" and so on. The
+    /// newer <c>limits</c> entries carry the model in <c>scope.model</c>; older answers report
+    /// <c>seven_day_opus</c> / <c>seven_day_sonnet</c> and a <c>weekly_opus</c> limit kind, which
+    /// are read only when no scoped entry names that model. The all-models limit stays the main
+    /// weekly row.
+    /// </summary>
+    internal static IReadOnlyList<UsageMetric> ParseModelWeeklyLimits(JsonElement root)
+    {
+        var found = new List<UsageMetric>();
+        void Add(UsageMetric? metric)
+        {
+            if (metric is not null &&
+                found.Count < MaxModelWeeklyLimits &&
+                !found.Any(existing => string.Equals(existing.Name, metric.Name, StringComparison.OrdinalIgnoreCase)))
+            {
+                found.Add(metric);
+            }
+        }
+
+        if (root.ValueKind == JsonValueKind.Object &&
+            root.TryGetProperty("limits", out var limits) &&
+            limits.ValueKind == JsonValueKind.Array)
+        {
+            foreach (var limit in limits.EnumerateArray())
+            {
+                if (limit.ValueKind != JsonValueKind.Object ||
+                    GetString(limit, "kind") is "weekly_all" or "all_models" or "weekly_models" or "session" ||
+                    !string.Equals(GetString(limit, "group") ?? "weekly", "weekly", StringComparison.OrdinalIgnoreCase) ||
+                    !TryGetObject(limit, "scope", out var scope) ||
+                    !TryGetObject(scope, "model", out var model) ||
+                    ModelLabel(GetString(model, "display_name") ?? GetString(model, "displayName") ?? GetString(model, "id")) is not { } label ||
+                    GetDouble(limit, "percent") is not { } percent ||
+                    !double.IsFinite(percent))
+                {
+                    continue;
+                }
+
+                Add(new UsageMetric(
+                    $"Weekly {label}",
+                    UsageMetricKind.Rolling,
+                    NormalizeUtilization(percent),
+                    ParseTimestamp(GetString(limit, "resets_at") ?? GetString(limit, "resetsAt")),
+                    10_080));
+            }
+        }
+
+        // The legacy fields describe the same limits as the scoped entries, so they fill in only a
+        // model family no scoped entry has named ("Weekly Opus 4.5" already covers "Weekly Opus").
+        bool Named(string family) => found.Any(metric => metric.Name.Contains(family, StringComparison.OrdinalIgnoreCase));
+        if (!Named("Opus"))
+        {
+            Add(ParseNamedLimit(root, "weekly_opus", "Weekly Opus"));
+            Add(ParseWindow(root, "seven_day_opus", "sevenDayOpus", "Weekly Opus", UsageMetricKind.Rolling, 10_080));
+        }
+
+        if (!Named("Sonnet"))
+        {
+            Add(ParseWindow(root, "seven_day_sonnet", "sevenDaySonnet", "Weekly Sonnet", UsageMetricKind.Rolling, 10_080));
+        }
+
+        return found;
+    }
+
+    /// <summary>A model name made short and safe for a metric name: "Claude Opus 4.5" reads "Opus 4.5".</summary>
+    private static string? ModelLabel(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            return null;
+        }
+
+        var cleaned = new string(name.Where(character => !char.IsControl(character) && character is not '(' and not ')').ToArray()).Trim();
+        if (cleaned.StartsWith("Claude ", StringComparison.OrdinalIgnoreCase))
+        {
+            cleaned = cleaned["Claude ".Length..].Trim();
+        }
+
+        return cleaned.Length switch
+        {
+            0 => null,
+            > 40 => cleaned[..40].TrimEnd(),
+            _ => cleaned,
+        };
+    }
+
+    /// <summary>
+    /// Saved "reset for free" grants that can be used now: each grant counts once per reset it has
+    /// left, a paused or not-yet-started or expired grant not at all. Grant ids are redemption handles
+    /// and are never read. A grant without its <c>paused</c> flag is skipped, and an implausible total
+    /// is treated as malformed.
+    /// </summary>
+    internal static int CountResetGrants(JsonElement root, DateTimeOffset now)
+    {
+        if (root.ValueKind != JsonValueKind.Object ||
+            !TryGetObject(root, "cedar_ember", out var resets) ||
+            !resets.TryGetProperty("grants", out var grants) ||
+            grants.ValueKind != JsonValueKind.Array)
+        {
+            return 0;
+        }
+
+        var total = 0;
+        foreach (var grant in grants.EnumerateArray())
+        {
+            if (grant.ValueKind != JsonValueKind.Object ||
+                !grant.TryGetProperty("paused", out var paused) ||
+                paused.ValueKind != JsonValueKind.False ||
+                GetDouble(grant, "resets_left") is not { } left ||
+                left < 1 ||
+                left > MaxResetGrants)
+            {
+                continue;
+            }
+
+            if ((ParseTimestamp(GetString(grant, "starts_at")) is { } startsAt && startsAt > now) ||
+                (ParseTimestamp(GetString(grant, "ends_at")) is { } endsAt && endsAt <= now))
+            {
+                continue;
+            }
+
+            total += (int)left;
+            if (total > MaxResetGrants)
+            {
+                return 0;
+            }
+        }
+
+        return total;
+    }
+
     private static UsageMetric? FindLimit(
         JsonElement root,
         Func<string, bool> matchesKind,
@@ -871,8 +1107,13 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         return property.ValueKind == JsonValueKind.String ? property.GetString() : property.ToString();
     }
 
+    // TryGetDouble throws on anything but a number, so the kind is checked first: one unexpected
+    // string must skip that field, not fail the whole reading.
     private static double? GetDouble(JsonElement element, string propertyName) =>
-        element.TryGetProperty(propertyName, out var property) && property.TryGetDouble(out var value)
+        element.ValueKind == JsonValueKind.Object &&
+        element.TryGetProperty(propertyName, out var property) &&
+        property.ValueKind == JsonValueKind.Number &&
+        property.TryGetDouble(out var value)
             ? value
             : null;
 

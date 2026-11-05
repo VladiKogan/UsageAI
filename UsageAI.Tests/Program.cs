@@ -1,5 +1,6 @@
 using System.Diagnostics;
 using System.Drawing;
+using System.Globalization;
 using System.Net;
 using System.Reflection;
 using System.Security.AccessControl;
@@ -38,6 +39,7 @@ internal static class Program
         ("Codex snapshot parsing", TestCodexSnapshotParsingAsync),
         ("Claude snapshot parsing", TestClaudeSnapshotParsingAsync),
         ("Copilot keeps every reported quota", TestCopilotSnapshotParsingAsync),
+        ("Copilot names an individual plan from its SKU", TestCopilotPlanFromSkuAsync),
         ("Gemini snapshot parsing", TestGeminiSnapshotParsingAsync),
         ("official agy output and fallback order", TestAgyFallbackAsync),
         ("Gemini JWT claims extraction", TestGeminiJwtExtractionAsync),
@@ -52,6 +54,8 @@ internal static class Program
         ("burn-rate projection", TestForecastAsync),
         ("projection ignores a window reset", TestForecastResetAsync),
         ("alert thresholds and debouncing", TestNotificationsAsync),
+        ("alert memory survives a restart and re-arms on a new window", TestAlertMemorySurvivesRestartAsync),
+        ("pace and a forecast from the window itself", TestPaceAndWindowForecastAsync),
         ("release version comparison", TestUpdateComparisonAsync),
         ("dashboard metric display selection", TestMetricDisplaySelectionAsync),
         ("bundled release notes and upgrade state", TestReleaseNotesAsync),
@@ -96,8 +100,13 @@ internal static class Program
         ("Claude HTTP success and error handling", CoverageExpansionTests.TestClaudeHttpAsync),
         ("Claude delegates refresh ownership to its CLI", CoverageExpansionTests.TestClaudeCredentialsAreReadOnlyAsync),
         ("Copilot HTTP success and error handling", CoverageExpansionTests.TestCopilotHttpAsync),
+        ("Copilot sends each token only to its own GitHub and names an ended subscription", CoverageExpansionTests.TestCopilotHostsAndEndedSubscriptionAsync),
+        ("--diagnose lists every attempt in a fixed vocabulary", CoverageExpansionTests.TestDiagnosticAttemptsAsync),
+        ("provider incidents from public status pages", CoverageExpansionTests.TestProviderIncidentsAsync),
         ("Gemini OAuth HTTP success and error handling", CoverageExpansionTests.TestGeminiHttpAsync),
         ("Codex app-server protocol and errors", CoverageExpansionTests.TestCodexProtocolAsync),
+        ("Codex reads usage over HTTPS first and falls back to the app-server", CoverageExpansionTests.TestCodexHttpUsageAsync),
+        ("Claude model-scoped weekly limits, reset credits and plans without limits", CoverageExpansionTests.TestClaudeLimitsAndResetCreditsAsync),
         ("Claude web fallback HTTP flows", CoverageExpansionTests.TestClaudeWebHttpAsync),
         ("release update HTTP handling", CoverageExpansionTests.TestUpdateCheckerHttpAsync),
         ("verified update installer download", CoverageExpansionTests.TestUpdateInstallerAsync),
@@ -115,6 +124,7 @@ internal static class Program
         ("provider credential refresh and discovery branches", CoverageExpansionTests.TestProviderCredentialBranchesAsync),
         ("Gemini local probe and fallback branches", CoverageExpansionTests.TestGeminiDeepBranchesAsync),
         ("Gemini names every failed path", CoverageExpansionTests.TestGeminiCombinedErrorAsync),
+        ("Gemini consumer-tier shutdown and Code Assist project", CoverageExpansionTests.TestGeminiConsumerTierShutdownAsync),
         ("Antigravity editor hub discovery and query", CoverageExpansionTests.TestAntigravityEditorHubDiscoveryAsync),
         ("Codex and Claude CLIs bundled in an editor extension", CoverageExpansionTests.TestEditorBundledClisAsync),
         ("remaining UI interaction branches", CoverageExpansionTests.TestRemainingUiBranchesAsync),
@@ -133,7 +143,11 @@ internal static class Program
     {
         if (args.FirstOrDefault() == "app-server")
         {
-            return await RunFakeCodexAppServerAsync();
+            // UsageAI always starts the server with a read-only sandbox and no approvals, as config
+            // overrides on the subcommand; an `app-server` without them means it no longer does.
+            return args.Length >= 5 && args.AsSpan(1, 4).SequenceEqual(["-c", "sandbox_mode=\"read-only\"", "-c", "approval_policy=\"never\""])
+                ? await RunFakeCodexAppServerAsync()
+                : 4;
         }
 
         // Mirrors the real Claude CLI: `auth status` only reports the login and never refreshes an
@@ -315,6 +329,20 @@ internal static class Program
                 """
                 {"id":2,"result":{"rateLimitsByLimitId":{"codex":{"planType":"pro","primary":{"usedPercent":44,"windowDurationMins":300},"secondary":{"usedPercent":61,"windowDurationMins":10080}}}}}
                 """);
+            await Console.Out.FlushAsync();
+
+            // The optional account lookup follows; it must never refresh the login.
+            var accountRequest = await Console.In.ReadLineAsync();
+            if (accountRequest is null ||
+                !accountRequest.Contains("\"method\":\"account/read\"", StringComparison.Ordinal) ||
+                !accountRequest.Contains("\"refreshToken\":false", StringComparison.Ordinal))
+            {
+                return 5;
+            }
+
+            await Console.Out.WriteLineAsync(scenario.EndsWith("account-error", StringComparison.Ordinal)
+                ? """{"id":3,"error":{"message":"method not found"}}"""
+                : """{"id":3,"result":{"account":{"type":"chatgpt","email":"dev@example.com","planType":"pro"},"requiresOpenaiAuth":true}}""");
         }
 
         await Console.Out.FlushAsync();
@@ -571,6 +599,43 @@ internal static class Program
         False(snapshot.Metrics[2].HasQuota);
         Equal("Reset credits", snapshot.Metrics[3].Name);
         Equal(63, snapshot.HighestUsedPercent);
+        Null(snapshot.AccountName);
+
+        // Model-specific buckets such as Spark are shown too, named after the label Codex gives them.
+        using var multiBucket = JsonDocument.Parse(
+            """
+            {
+              "rateLimitsByLimitId": {
+                "codex_bengalfox": {
+                  "limitId": "codex_bengalfox", "limitName": "GPT-5.3-Codex-Spark",
+                  "primary": { "usedPercent": 91, "windowDurationMins": 300 },
+                  "secondary": { "usedPercent": 12, "windowDurationMins": 10080 }
+                },
+                "codex": {
+                  "limitId": "codex", "planType": "pro",
+                  "primary": { "usedPercent": 5, "windowDurationMins": 300 },
+                  "secondary": { "usedPercent": 40, "windowDurationMins": 10080 }
+                },
+                "codex_other": { "limitId": "codex_other", "normalModelSlug": "gpt-mini (preview)",
+                  "secondary": { "usedPercent": 3, "windowDurationMins": 10080 } },
+                "codex_unnamed": { "primary": { "usedPercent": 1, "windowDurationMins": 300 } },
+                "codex_empty": { "limitName": "No windows" }
+              }
+            }
+            """);
+        using var account = JsonDocument.Parse(
+            """{"account":{"type":"chatgpt","email":"dev@example.com","planType":"plus"}}""");
+        var grouped = CodexUsageClient.ParseSnapshot(multiBucket.RootElement, account.RootElement);
+        Equal(
+            "5-hour|Weekly|GPT-5.3-Codex-Spark 5-hour|GPT-5.3-Codex-Spark Weekly|gpt-mini preview Weekly|Codex Unnamed 5-hour",
+            string.Join('|', grouped.Metrics.Select(metric => metric.Name)));
+        Equal(91, grouped.Metrics[2].UsedPercent);
+        // The rate-limit response's plan wins over the account's; the account only names who is signed in.
+        Equal("Pro", grouped.Plan);
+        Equal("dev@example.com", grouped.AccountName);
+        // The main limits keep their names, so nothing keyed on them moves when Spark appears, and the
+        // extra ones carry no parenthesised group, so the popup is not split into groups.
+        Equal(0, PopupMetricSelection.Groups(grouped.Metrics).Count);
         return Task.CompletedTask;
     }
 
@@ -643,6 +708,40 @@ internal static class Program
         True(snapshot.Metrics[1].IsUnlimited);
         False(snapshot.Metrics[1].HasQuota);
         Equal(76, snapshot.HighestUsedPercent);
+        return Task.CompletedTask;
+    }
+
+    private static Task TestCopilotPlanFromSkuAsync()
+    {
+        // copilot_plan is "individual" for every personal plan; the SKU says which one it is.
+        using (var document = JsonDocument.Parse(
+                   """
+                   {
+                     "copilot_plan": "individual",
+                     "access_type_sku": "free_faculty_quota",
+                     "quota_snapshots": { "chat": { "unlimited": true } }
+                   }
+                   """))
+        {
+            Equal("Pro", GitHubCopilotUsageClient.ParseSnapshot(document.RootElement).Plan);
+        }
+
+        Equal("Pro", GitHubCopilotUsageClient.ResolvePlan("individual", "monthly_subscriber_quota"));
+        Equal("Pro", GitHubCopilotUsageClient.ResolvePlan("individual", "yearly_subscriber_quota"));
+        Equal("Pro", GitHubCopilotUsageClient.ResolvePlan("individual", "free_educational_quota"));
+        Equal("Pro", GitHubCopilotUsageClient.ResolvePlan("individual", "free_engaged_oss_quota"));
+        Equal("Pro+", GitHubCopilotUsageClient.ResolvePlan("individual", "plus_monthly_subscriber_quota"));
+        Equal("Pro+", GitHubCopilotUsageClient.ResolvePlan("Individual", " PLUS_YEARLY_SUBSCRIBER_QUOTA "));
+        Equal("Free", GitHubCopilotUsageClient.ResolvePlan("individual", "free_limited_copilot"));
+        Equal("Pro", GitHubCopilotUsageClient.ResolvePlan(null, "free_faculty_quota"));
+
+        // An unknown SKU keeps the reported plan, and only a personal plan is ever renamed.
+        Equal("Individual", GitHubCopilotUsageClient.ResolvePlan("individual", "some_future_quota"));
+        Equal("Individual", GitHubCopilotUsageClient.ResolvePlan("individual", null));
+        Equal("Business", GitHubCopilotUsageClient.ResolvePlan("business", "monthly_subscriber_quota"));
+        Equal("Pro", GitHubCopilotUsageClient.ResolvePlan("individual_pro", "free_limited_copilot"));
+        Equal("Some Future Quota", GitHubCopilotUsageClient.ResolvePlan(null, "some_future_quota"));
+        Equal("Copilot", GitHubCopilotUsageClient.ResolvePlan(null, null));
         return Task.CompletedTask;
     }
 
@@ -957,6 +1056,8 @@ internal static class Program
         True(startInfo.RedirectStandardInput);
         Equal("1", startInfo.Environment["CI"]);
         True(startInfo.ArgumentList.Contains("--print-timeout=12s"));
+        // An agy UsageAI starts never runs its self-updater; only the lowercase value is honoured.
+        Equal("true", startInfo.Environment["AGY_CLI_DISABLE_AUTO_UPDATE"]);
 
         var hubStartInfo = AgyUsageProbe.CreateHubStartInfo(executablePaths[0], 51234, "TOKEN");
         True(hubStartInfo.CreateNoWindow);
@@ -965,6 +1066,7 @@ internal static class Program
         // The sign-in lives in the CLI's default data directory, so the hub must not be redirected.
         False(hubStartInfo.ArgumentList.Any(argument => argument.StartsWith("--app_data_dir", StringComparison.Ordinal)));
         Equal("TOKEN", hubStartInfo.Environment["ANTIGRAVITY_CSRF_TOKEN"]);
+        Equal("true", hubStartInfo.Environment["AGY_CLI_DISABLE_AUTO_UPDATE"]);
         // CLI builds from 2026-09 onwards ignore the environment token and mint their own unless
         // `--csrf_token` supplies one, so the hub rejects every call and the probe falls back to the
         // per-refresh `agy -p /usage` read the hub exists to avoid.
@@ -1611,6 +1713,138 @@ internal static class Program
         var reset = coordinator.Evaluate(SampleSnapshot(4, now), settings, now.AddMinutes(20));
         Equal(1, reset.Count);
         Equal(AlertLevel.Info, reset[0].Level);
+        return Task.CompletedTask;
+    }
+
+    private static Task TestPaceAndWindowForecastAsync()
+    {
+        var now = DateTimeOffset.Parse("2026-11-05T10:00:00Z", CultureInfo.InvariantCulture);
+        // A weekly window half over (resets in 3.5 days of 7).
+        UsageMetric Weekly(int used, double daysLeft = 3.5) =>
+            new("Weekly", UsageMetricKind.Rolling, used, now.AddDays(daysLeft), 10_080);
+        var none = Array.Empty<UsageSample>();
+
+        Equal("On pace", UsageForecast.Pace(none, Weekly(48), now)!.Text);
+        Equal("20% under pace", UsageForecast.Pace(none, Weekly(30), now)!.Text);
+        var over = UsageForecast.Pace(none, Weekly(70), now)!;
+        Equal("20% over pace", over.Text);
+        True(over.IsOverPace);
+        Equal(50, over.ElapsedPercent);
+
+        // No pace without a reset and length, before 5% of the window, at 100%, or with the forecast off.
+        Null(UsageForecast.Pace(none, new UsageMetric("Weekly", UsageMetricKind.Rolling, 30, now.AddDays(3)), now));
+        Null(UsageForecast.Pace(none, Weekly(1, daysLeft: 6.9), now));
+        Null(UsageForecast.Pace(none, Weekly(100), now));
+        Null(UsageForecast.Pace(UsageForecast.Disabled, Weekly(30), now));
+
+        // The window's own average projects a run-out without any history: 70% in half a week
+        // runs out after about 1.5 more days, before the reset.
+        var projection = UsageForecast.ProjectFromWindow(Weekly(70), now)!;
+        True(projection.BeforeReset);
+        True(Math.Abs((projection.ExhaustedAt - now).TotalDays - 1.5) < 0.01);
+        False(UsageForecast.ProjectFromWindow(Weekly(30), now)!.BeforeReset);
+        Null(UsageForecast.ProjectFromWindow(Weekly(0), now));
+
+        // Estimate prefers recorded history, falls back to the window, and is silent when disabled.
+        NotNull(UsageForecast.Estimate(none, "codex", Weekly(70), now));
+        Null(UsageForecast.Estimate(UsageForecast.Disabled, "codex", Weekly(70), now));
+        var samples = new[]
+        {
+            new UsageSample(now.AddHours(-2), "codex", "Rolling:Weekly", 10),
+            new UsageSample(now.AddHours(-1), "codex", "Rolling:Weekly", 15),
+            new UsageSample(now, "codex", "Rolling:Weekly", 20),
+        };
+        Equal(5.0, Math.Round(UsageForecast.Estimate(samples, "codex", Weekly(20), now)!.PercentPerHour, 3));
+
+        // History that shows use has stopped is an answer: the window average must not override it
+        // with a run-out (70% used early in the window, then flat for hours).
+        var flat = new[]
+        {
+            new UsageSample(now.AddHours(-2), "codex", "Rolling:Weekly", 70),
+            new UsageSample(now.AddHours(-1), "codex", "Rolling:Weekly", 70),
+            new UsageSample(now, "codex", "Rolling:Weekly", 70),
+        };
+        NotNull(UsageForecast.ProjectFromWindow(Weekly(70), now));
+        Null(UsageForecast.Estimate(flat, "codex", Weekly(70), now));
+
+        // The popup hands the forecast the right source for each setting.
+        IReadOnlyList<UsageSample> history = samples;
+        True(UsageForecast.IsDisabled(UsagePopupForm.ForecastHistory(new AppSettings { ForecastEnabled = false }, history)));
+        Equal(0, UsagePopupForm.ForecastHistory(new AppSettings { HistoryEnabled = false }, history).Count);
+        False(UsageForecast.IsDisabled(UsagePopupForm.ForecastHistory(new AppSettings { HistoryEnabled = false }, history)));
+        Equal(3, UsagePopupForm.ForecastHistory(new AppSettings(), history).Count);
+        return Task.CompletedTask;
+    }
+
+    private static Task TestAlertMemorySurvivesRestartAsync()
+    {
+        var settings = new AppSettings();
+        var now = DateTimeOffset.Parse("2026-11-05T10:00:00Z", CultureInfo.InvariantCulture);
+        var stateFile = Path.Combine(AppPaths.DataDirectory, $"alert-state-{Guid.NewGuid():N}.json");
+        UsageSnapshot Reading(int used, DateTimeOffset resetsAt) => new(
+            "Plus",
+            new[] { new UsageMetric("5-hour", UsageMetricKind.Session, used, resetsAt, 300) },
+            now,
+            "codex",
+            "Codex");
+        var window = now.AddHours(3);
+        try
+        {
+            // A clean install records silently, even well past a threshold.
+            var first = new NotificationCoordinator(stateFile);
+            Equal(0, first.Evaluate(Reading(70, window), settings, now).Count);
+            first.SaveIfChanged(now);
+            True(File.Exists(stateFile));
+
+            // Restarted: the limit crossed 95% (the default thresholds are 80 and 95) while UsageAI was closed, so it alerts once.
+            var restarted = new NotificationCoordinator(stateFile);
+            var crossed = restarted.Evaluate(Reading(96, window), settings, now.AddMinutes(30));
+            Equal(1, crossed.Count);
+            Equal(AlertLevel.Critical, crossed[0].Level);
+            restarted.SaveIfChanged(now.AddMinutes(30));
+
+            // Restarted again in the same window: that alert was already given.
+            var again = new NotificationCoordinator(stateFile);
+            Equal(0, again.Evaluate(Reading(97, window), settings, now.AddMinutes(40)).Count);
+
+            // A sliding reset that creeps forward by one poll is still the same window...
+            Equal(0, again.Evaluate(Reading(98, window.AddMinutes(5)), settings, now.AddMinutes(45)).Count);
+
+            // ...but a rollover that happened while closed re-arms the thresholds: the new window
+            // climbed past 95% before UsageAI saw it, so it alerts even though the reading fell.
+            again.SaveIfChanged(now.AddMinutes(45));
+            var nextWindow = new NotificationCoordinator(stateFile);
+            var rolled = nextWindow.Evaluate(Reading(96, window.AddHours(5)), settings, now.AddHours(6));
+            Equal(1, rolled.Count);
+            Equal(AlertLevel.Critical, rolled[0].Level);
+
+            // Hiding a provider forgets it on disk too, so re-showing it starts silently.
+            nextWindow.Forget("codex");
+            nextWindow.SaveIfChanged(now.AddHours(6));
+            var afterForget = new NotificationCoordinator(stateFile);
+            Equal(0, afterForget.Evaluate(Reading(99, window.AddHours(5)), settings, now.AddHours(7)).Count);
+
+            // A damaged file is ignored rather than trusted.
+            File.WriteAllText(stateFile, "{not json");
+            Equal(0, new NotificationCoordinator(stateFile).Evaluate(Reading(99, window), settings, now).Count);
+
+            // Windows whose reset passed long ago are dropped when saving.
+            var pruning = new NotificationCoordinator(stateFile);
+            pruning.Evaluate(Reading(10, now.AddDays(-5)), settings, now);
+            pruning.SaveIfChanged(now);
+            Equal("{}", File.ReadAllText(stateFile));
+            True(NotificationCoordinator.StartedNewWindow(
+                new NotificationCoordinator.MetricMemory(50, now),
+                new UsageMetric("Weekly", UsageMetricKind.Rolling, 1, now.AddHours(2))));
+            False(NotificationCoordinator.StartedNewWindow(
+                new NotificationCoordinator.MetricMemory(50, null),
+                new UsageMetric("Weekly", UsageMetricKind.Rolling, 1, now.AddDays(7))));
+        }
+        finally
+        {
+            File.Delete(stateFile);
+        }
+
         return Task.CompletedTask;
     }
 

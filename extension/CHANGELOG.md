@@ -1,5 +1,78 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **GitHub Copilot names a personal plan as Pro, Pro+ or Free instead of "Individual".** GitHub
+  reports `copilot_plan` as `individual` for every personal plan, so a Copilot Pro account,
+  including one granted free to a verified teacher, student or open-source maintainer, read as
+  "Individual". The plan is now named from the account's `access_type_sku` when it is one UsageAI
+  recognises; an unrecognised SKU and every Business or Enterprise plan keep the name GitHub reports.
+- **Google Gemini says when Google has stopped serving Gemini CLI quota for a plan.** Since June
+  2026 Google no longer answers Gemini CLI usage requests for personal, Google AI Pro and Ultra
+  accounts, and UsageAI took the refusal for an expired sign-in. It now recognises Google's
+  `UNSUPPORTED_CLIENT` answer and points to Antigravity or `agy` instead. Code Assist Standard or Enterprise
+  and Workspace accounts keep the sign-in message.
+- **A Claude plan without usage limits no longer shows as an error.** Free and some education plans
+  report no five-hour or weekly window, and the card showed a parsing error; it now says Claude
+  reports no usage limits for the plan.
+- **A Cloudflare browser check on claude.ai no longer reads as a dead web session.** When claude.ai
+  answers the opt-in web path with Cloudflare's challenge, UsageAI keeps the session key, uses Claude
+  Code OAuth, and leaves claude.ai alone for 15 minutes instead of asking again on every refresh.
+- **GitHub Copilot says when a subscription has ended.** GitHub answers an ended subscription with
+  an ordinary reply, which read as invalid usage data; the card now says the subscription has ended.
+- **A GitHub Enterprise Copilot token is never sent to github.com.** UsageAI sent every Copilot
+  token it found to api.github.com, including one that belongs to a company's own GitHub Enterprise
+  Server. Each token now goes only to the GitHub service it came from, and a token for a host
+  UsageAI does not read from is not used at all.
+
+### Added
+
+- **UsageAI shows when a provider reports an incident.** When Claude, GitHub Copilot or Codex reports
+  degraded service or an outage on its public status page, the provider's Status Bar item gets a
+  warning or error marker, its tooltip names the incident, and its dashboard card shows it, so a card
+  that went stale can be told apart from a provider that is down. Only the components that serve the
+  usage UsageAI shows count. The pages are read at most every five minutes without any credential;
+  `usageai.showProviderIncidents` turns it off. Gemini has no status page that covers its quota.
+- **The dashboard says whether you are on pace.** Each metered limit's footer now adds, after the
+  reset countdown, how use compares with the time its window has run: "On pace", "12% under pace" or
+  "8% over pace", once 5% of the window has passed.
+- **Codex shows model-specific limits such as Spark.** Codex reports a separate rate-limit bucket for
+  some models, and UsageAI read only the main one. Each extra bucket now shows its own limits, named
+  the way Codex names it ("GPT-5.3-Codex-Spark 5-hour"); the main limits keep their names.
+- **The Codex card names the signed-in account.** UsageAI asks the Codex CLI which account is signed
+  in, without refreshing the login; an older CLI that cannot answer still shows usage.
+- **Claude shows your saved limit resets.** Claude grants some accounts free limit resets, and UsageAI
+  now asks for them and shows how many you can use right now as "Reset credits"; paused, expired or
+  not-yet-started grants are not counted.
+- **Claude shows every model's own weekly limit.** Claude now reports weekly limits per model, such as
+  Opus or Sonnet, and UsageAI shows each of them by name instead of only Opus.
+- **GitHub Copilot works with GitHub Enterprise Cloud (`*.ghe.com`).** A Copilot sign-in to an
+  Enterprise Cloud host is now read from that host's own API.
+
+### Changed
+
+- **The README previews show the current dashboard and Status Bar.** The August screenshots
+  predated collapsible cards, the metric filter and the new provider icons. `npm.cmd run previews`
+  now renders both from the compiled extension and sample providers in Dark Modern colours, so they
+  can be regenerated after any UI change instead of retaken by hand.
+- The Gemini CLI fallback now asks for quota on the Code Assist project Google reports for the
+  account, rather than leaving Google to pick a default project.
+- The Codex server UsageAI starts now runs with a read-only sandbox and never asks for approval
+  (`-c sandbox_mode="read-only" -c approval_policy="never"` on `app-server` itself), so it can never
+  be asked to run or approve anything, whatever sandbox your own Codex configuration uses.
+- **The `agy` server UsageAI starts no longer updates itself.** It runs for as long as the editor
+  does, so it kept the CLI's background updater alive too; UsageAI now sets
+  `AGY_CLI_DISABLE_AUTO_UPDATE` for every `agy` it starts, and `agy` sessions you run yourself
+  still update it.
+- **Codex usage no longer starts the Codex CLI on every refresh.** UsageAI now reads it straight
+  from ChatGPT with the access token your Codex sign-in already holds, the same request the CLI
+  makes. When that token has expired, the sign-in is an API key, `config.toml` names another backend,
+  or the request does not succeed, UsageAI asks the CLI as before, and the CLI renews the login
+  itself; UsageAI never refreshes or writes `auth.json`. A rate limit from ChatGPT is reported with
+  its retry window.
+
 ## 0.1.18
 
 ### Changed

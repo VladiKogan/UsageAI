@@ -123,7 +123,10 @@ function renderSnapshot(
 ): void {
   const metrics = statusBarMetrics(state.snapshot);
   const icon = refreshing ? "$(sync~spin)" : providerIcon(state.id);
-  item.text = `${icon} ${label} ${statusBarReadings(state.snapshot, metrics, quotaDisplay)}`;
+  // An incident on the provider's status page adds a marker, the Status Bar's counterpart of the
+  // desktop tray dot; the tooltip names it.
+  const incident = state.incident ? ` ${state.incidentIsOutage ? "$(error)" : "$(warning)"}` : "";
+  item.text = `${icon} ${label} ${statusBarReadings(state.snapshot, metrics, quotaDisplay)}${incident}`;
   item.tooltip = snapshotTooltip(state, metrics, quotaDisplay, refreshing);
 }
 
@@ -155,6 +158,11 @@ function snapshotTooltip(
   tooltip.appendText(state.displayName);
   tooltip.appendMarkdown("**");
   tooltip.appendText(` · ${state.snapshot.plan}${state.stale ? " (stale)" : ""}`);
+  if (state.incident) {
+    // The provider's own status page explains a stale or slow card better than anything else.
+    tooltip.appendMarkdown(`\n\n${state.incidentIsOutage ? "$(error)" : "$(warning)"} *Status page:* `);
+    tooltip.appendText(state.incident);
+  }
 
   if (refreshing) {
     tooltip.appendMarkdown("\n\n$(sync~spin) *Refreshing usage…*");

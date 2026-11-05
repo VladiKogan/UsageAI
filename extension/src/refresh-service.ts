@@ -13,6 +13,8 @@ interface RefreshServiceOptions {
   readonly visibleIntervalMs: () => number;
   readonly backgroundIntervalMs: () => number;
   readonly initialSnapshots?: Readonly<Record<string, UsageSnapshot>>;
+  /** The provider's ongoing status-page incident, attached to each published state. */
+  readonly incidentFor?: (providerId: string) => { readonly summary: string; readonly isOutage: boolean } | undefined;
 }
 
 export class UsageRefreshService {
@@ -48,7 +50,16 @@ export class UsageRefreshService {
     const order = this.options.enabledProviderIds();
     return order
       .map((id) => this.states.get(id))
-      .filter((state): state is ProviderState => Boolean(state));
+      .filter((state): state is ProviderState => Boolean(state))
+      .map((state) => {
+        const incident = this.options.incidentFor?.(state.id);
+        return incident ? { ...state, incident: incident.summary, incidentIsOutage: incident.isOutage } : state;
+      });
+  }
+
+  /** Republishes the current states, for example after the providers' status pages changed. */
+  public incidentsChanged(): void {
+    this.emit();
   }
 
   public start(): void {

@@ -5,23 +5,35 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test, { mock } from "node:test";
 import { UsageProviderError } from "../src/errors";
-import { ClaudeUsageClient, runClaudeAuthRecovery, runClaudeAuthStatus } from "../src/providers/claude";
-import { CodexUsageClient } from "../src/providers/codex";
-import { CopilotUsageClient } from "../src/providers/copilot";
+import {
+  ClaudeUsageClient,
+  countResetGrants,
+  isCloudflareChallenge,
+  noLimitsReportedText,
+  parseClaudeSnapshot,
+  runClaudeAuthRecovery,
+  runClaudeAuthStatus,
+} from "../src/providers/claude";
+import { CodexUsageClient, jwtExpiryMs, parseCodexHttpSnapshot, readCodexHttpCredentials } from "../src/providers/codex";
+import { addTokensFromValue, CopilotUsageClient, hostFromKey, subscriptionEndedMessage, userEndpointFor } from "../src/providers/copilot";
 import {
   agyHubArguments,
+  agyOwnedEnvironment,
   antigravityProcessQuery,
   clearHubStartBackoff,
   combinedGeminiError,
+  consumerTierShutdownMessage,
   GeminiUsageClient,
   hubQuotaSummaryTimeoutMs,
   hubRetryIntervalMs,
   ownProcessLines,
   parseAntigravityProcessLines,
+  parseCodeAssist,
   parseNetstatListeningPorts,
   parseProcNetListeners,
   procListeningPorts,
   queryDiscoveredHub,
+  quotaRequestBody,
   recordHubStartFailure,
   shouldSkipHubStart,
   tryFetchAntigravitySnapshot,
@@ -154,7 +166,8 @@ test("Claude client validates through the CLI and retries one unexpected usage f
       () => new ClaudeUsageClient(async () => false).getUsage(),
       /cannot read account usage/i,
     );
-    assert.equal(requests, 1);
+    // A 403 to the reset-credits request is asked once more without the parameter first.
+    assert.equal(requests, 2);
 
     mock.restoreAll();
     mock.method(security, "readBoundedText", (async () => credentialJson) as typeof security.readBoundedText);
@@ -176,6 +189,149 @@ test("Claude client validates through the CLI and retries one unexpected usage f
   } finally {
     mock.restoreAll();
     for (const name of environmentNames) restoreEnvironment(name, previous.get(name));
+  }
+});
+
+test("Claude reads model-scoped weekly limits, reset credits and plans without limits", async () => {
+  const now = Date.parse("2026-11-05T10:00:00Z");
+  const usage = {
+    five_hour: { utilization: 28.0, resets_at: "2026-11-05T12:29:59.539726+00:00" },
+    seven_day: { utilization: 46.0, resets_at: "2026-11-09T12:59:59.539741+00:00" },
+    seven_day_opus: { utilization: 99.0 },
+    seven_day_sonnet: { utilization: 15.0, resets_at: "2026-11-09T12:59:59Z" },
+    limits: [
+      { kind: "session", group: "session", percent: 28, scope: null },
+      { kind: "weekly_all", group: "weekly", percent: 46, scope: null },
+      { kind: "weekly_scoped", group: "weekly", percent: 61, scope: { model: { id: "claude-opus-5", display_name: "Claude Opus 5" } } },
+      { kind: "weekly_scoped", group: "weekly", percent: 12, scope: { model: { id: "claude-haiku-5" } } },
+      { kind: "weekly_scoped", group: "weekly", percent: "n/a", scope: { model: { display_name: "Broken" } } },
+    ],
+    cedar_ember: {
+      eligible: true,
+      grants: [
+        { id: "grant-handle-never-read", resets_left: 2, paused: false, starts_at: "2026-11-01T00:00:00Z", ends_at: "2026-12-01T00:00:00Z" },
+        { resets_left: 1, paused: true },
+        { resets_left: 1 },
+        { resets_left: 1, paused: false, starts_at: "2026-11-06T00:00:00Z" },
+        { resets_left: 1, paused: false, ends_at: "2026-11-05T09:00:00Z" },
+        { resets_left: 1, paused: false },
+      ],
+    },
+  };
+  const snapshot = parseClaudeSnapshot(usage, "Pro", now);
+  assert.deepEqual(snapshot.metrics.map((metric) => metric.name), [
+    "5-hour", "Weekly", "Weekly Opus 5", "Weekly claude-haiku-5", "Weekly Sonnet", "Reset credits",
+  ]);
+  assert.equal(snapshot.metrics[2]?.usedPercent, 61);
+  assert.equal(snapshot.metrics[2]?.kind, "rolling");
+  assert.equal(snapshot.metrics[5]?.remainingText, "3");
+  assert.equal(countResetGrants({ cedar_ember: { grants: [{ resets_left: 40, paused: false }, { resets_left: 20, paused: false }] } }, now), 0);
+  assert.equal(countResetGrants({ cedar_ember: null }, now), 0);
+
+  // A plan Claude meters nothing for reads as such, never as 0% used or as a failure.
+  const free = parseClaudeSnapshot({ five_hour: null, seven_day: null, limits: [] }, "Free", now);
+  assert.deepEqual(free.metrics.map((metric) => [metric.name, metric.usedPercent, metric.usageText]), [["Usage limits", null, noLimitsReportedText]]);
+  assert.throws(() => parseClaudeSnapshot({ unexpected: true }, "Pro", now), /without five-hour or weekly/);
+
+  // Cloudflare's browser check is recognised from its header or its HTML page.
+  assert.equal(isCloudflareChallenge(403, { "cf-mitigated": "challenge" }), true);
+  assert.equal(isCloudflareChallenge(503, { "content-type": "text/html; charset=UTF-8", server: "cloudflare" }), true);
+  assert.equal(isCloudflareChallenge(403, { "content-type": "application/json" }), false);
+
+  const names = ["USAGEAI_CLAUDE_OAUTH_TOKEN", "USAGEAI_CLAUDE_OAUTH_SCOPES", "USAGEAI_CLAUDE_SESSION_KEY", "CLAUDE_AI_SESSION_KEY", "CLAUDE_WEB_SESSION_KEY"];
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  try {
+    process.env.USAGEAI_CLAUDE_OAUTH_TOKEN = "claude-access-token";
+    process.env.USAGEAI_CLAUDE_OAUTH_SCOPES = "user:profile";
+    for (const name of names.slice(2)) delete process.env[name];
+
+    // Reset credits are asked for; an API that rejects the parameter is asked again without it.
+    const urls: string[] = [];
+    mock.method(security, "requestJson", (async (url) => {
+      urls.push(String(url));
+      return String(url).includes("cedar_ember")
+        ? { status: 400, headers: {}, data: {} }
+        : { status: 200, headers: {}, data: { five_hour: { utilization: 7 } } };
+    }) as typeof security.requestJson);
+    assert.equal((await new ClaudeUsageClient(async () => false).getUsage()).metrics[0]?.usedPercent, 7);
+    assert.deepEqual(urls, ["https://api.anthropic.com/api/oauth/usage?cedar_ember=1", "https://api.anthropic.com/api/oauth/usage"]);
+    mock.restoreAll();
+
+    // A Cloudflare challenge on the opt-in web path pauses that path and falls back to OAuth, without
+    // asking claude.ai again on the next refresh.
+    process.env.USAGEAI_CLAUDE_SESSION_KEY = "sk-ant-sid01-synthetic";
+    let webRequests = 0;
+    mock.method(security, "requestJson", (async (url) => {
+      if (String(url).startsWith("https://claude.ai/")) {
+        webRequests += 1;
+        throw new security.NonJsonResponseError(403, { "cf-mitigated": "challenge", "content-type": "text/html" });
+      }
+      return { status: 200, headers: {}, data: { five_hour: { utilization: 9 } } };
+    }) as typeof security.requestJson);
+    const client = new ClaudeUsageClient(async () => false);
+    assert.equal((await client.getUsage()).metrics[0]?.usedPercent, 9);
+    assert.equal((await client.getUsage()).metrics[0]?.usedPercent, 9);
+    assert.equal(webRequests, 1);
+  } finally {
+    mock.restoreAll();
+    for (const name of names) restoreEnvironment(name, previous.get(name));
+  }
+});
+
+test("Copilot sends each token only to its own GitHub and names an ended subscription", async () => {
+  assert.equal(userEndpointFor("github.com"), "https://api.github.com/copilot_internal/user");
+  assert.equal(userEndpointFor("https://OctoCorp.ghe.com/login"), "https://api.octocorp.ghe.com/copilot_internal/user");
+  for (const host of ["github.mycorp.com", "ghe.com", "evil.ghe.com.attacker.example", "api.ghe.com@attacker.example", undefined]) {
+    assert.equal(userEndpointFor(host), undefined);
+  }
+  assert.equal(hostFromKey("github.com:Ov23liExample", true), "github.com");
+  assert.equal(hostFromKey("https://octocorp.ghe.com:dev", true), "octocorp.ghe.com");
+  assert.equal(hostFromKey("settings.panel", false), undefined);
+  assert.equal(hostFromKey("first", true), undefined);
+
+  const tokens = new Set<string>();
+  addTokensFromValue(tokens, {
+    "github.com:Ov23liExample": { user: "dev", oauth_token: "gh-token" },
+    "octocorp.ghe.com:Iv1Example": { user: "dev", oauth_token: "ghe-token" },
+    "github.mycorp.com": { user: "dev", oauth_token: "ghes-token" },
+    nested: { copilotTokens: { "https://second.ghe.com:dev": "ghe-cli-token", plain: "plain-token" } },
+  }, 0);
+  // The self-hosted Enterprise Server token is left out rather than sent to github.com.
+  assert.deepEqual([...tokens], ["gh-token", "ghe-token", "ghe-cli-token", "plain-token"]);
+
+  const oldToken = process.env.COPILOT_GITHUB_TOKEN;
+  try {
+    // Each discovered token is routed to its own host.
+    const hosts = new Map<string, string>();
+    mock.method(security, "readBoundedText", (async () => JSON.stringify({
+      "octocorp.ghe.com:Iv1Example": { oauth_token: "ghe-token" },
+      "github.com:Ov23liExample": { oauth_token: "gh-token" },
+    })) as typeof security.readBoundedText);
+    mock.method(security, "requestJson", (async (url, options) => {
+      const address = new URL(String(url));
+      assert.deepEqual(options.allowedHosts, [address.host]);
+      hosts.set(options.headers?.Authorization?.replace("Bearer ", "") ?? "", address.host);
+      return { status: 401, headers: {}, data: {} };
+    }) as typeof security.requestJson);
+    delete process.env.COPILOT_GITHUB_TOKEN;
+    await assert.rejects(new CopilotUsageClient(() => false).getUsage());
+    assert.equal(hosts.get("ghe-token"), "api.octocorp.ghe.com");
+    assert.equal(hosts.get("gh-token"), "api.github.com");
+    mock.restoreAll();
+
+    // An ended subscription says so, and other tokens are not tried once GitHub has answered.
+    let calls = 0;
+    mock.method(security, "requestJson", (async () => {
+      calls += 1;
+      return { status: 200, headers: {}, data: { access_type_sku: "subscription_ended", copilot_plan: "individual" } };
+    }) as typeof security.requestJson);
+    process.env.COPILOT_GITHUB_TOKEN = "first-token";
+    await assert.rejects(new CopilotUsageClient(() => false).getUsage(), (error: unknown) =>
+      error instanceof UsageProviderError && error.message === subscriptionEndedMessage);
+    assert.equal(calls, 1);
+  } finally {
+    mock.restoreAll();
+    restoreEnvironment("COPILOT_GITHUB_TOKEN", oldToken);
   }
 });
 
@@ -224,14 +380,23 @@ test("Copilot client rejects bad credentials and prioritizes the working token",
 test("Codex client completes the app-server handshake through the configured CLI", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "usageai-codex-fixture-"));
   const oldCodexPath = process.env.CODEX_PATH;
+  // An empty CODEX_HOME holds no login, so the client goes straight to the app-server fixture.
+  const oldCodexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = directory;
   const oldPath = process.env.PATH;
   const fixtureSource = `
 const readline = require("node:readline");
+// UsageAI always starts the server sandboxed; anything else fails the handshake.
+if (process.argv.slice(2, 7).join(" ") !== 'app-server -c sandbox_mode="read-only" -c approval_policy="never"') process.exit(4);
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
   const message = JSON.parse(line);
   if (message.id === 1) {
     process.stdout.write(JSON.stringify({ id: 1, result: {} }) + "\\n");
+  } else if (message.id === 3) {
+    // The optional account lookup must never refresh the login.
+    if (message.method !== "account/read" || message.params?.refreshToken !== false) process.exit(5);
+    process.stdout.write(JSON.stringify({ id: 3, result: { account: { type: "chatgpt", email: "dev@example.com", planType: "plus" } } }) + "\\n");
   } else if (message.id === 2) {
     process.stdout.write(JSON.stringify({
       id: 2,
@@ -268,8 +433,10 @@ input.on("line", (line) => {
     const snapshot = await new CodexUsageClient().getUsage();
     assert.equal(snapshot.plan, "Plus");
     assert.deepEqual(snapshot.metrics.map((metric) => metric.usedPercent), [31, 52]);
+    assert.equal(snapshot.accountName, "dev@example.com");
   } finally {
     restoreEnvironment("CODEX_PATH", oldCodexPath);
+    restoreEnvironment("CODEX_HOME", oldCodexHome);
     restoreEnvironment("PATH", oldPath);
     await rm(directory, { recursive: true, force: true });
   }
@@ -278,6 +445,9 @@ input.on("line", (line) => {
 test("Codex client translates protocol and authentication failures", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "usageai-codex-errors-"));
   const oldCodexPath = process.env.CODEX_PATH;
+  // An empty CODEX_HOME holds no login, so the client goes straight to the app-server fixture.
+  const oldCodexHome = process.env.CODEX_HOME;
+  process.env.CODEX_HOME = directory;
   const oldPath = process.env.PATH;
   const installFixture = async (fixtureSource: string): Promise<void> => {
     if (process.platform === "win32") {
@@ -318,8 +488,118 @@ input.on("line", (line) => {
     await assert.rejects(() => new CodexUsageClient().getUsage(), /not signed in/i);
   } finally {
     restoreEnvironment("CODEX_PATH", oldCodexPath);
+    restoreEnvironment("CODEX_HOME", oldCodexHome);
     restoreEnvironment("PATH", oldPath);
     await rm(directory, { recursive: true, force: true });
+  }
+});
+
+test("Codex reads usage over HTTPS first and falls back to the app-server", async () => {
+  const segment = (value: unknown): string => Buffer.from(JSON.stringify(value)).toString("base64url");
+  const jwt = (payload: unknown): string => `${segment({ alg: "none" })}.${segment(payload)}.signature`;
+  const now = Date.now();
+  const live = jwt({ exp: Math.floor(now / 1000) + 3_600 });
+  assert.equal(jwtExpiryMs(live), (Math.floor(now / 1000) + 3_600) * 1000);
+  assert.equal(jwtExpiryMs("not-a-jwt"), undefined);
+  assert.equal(jwtExpiryMs("a.!!!.c"), undefined);
+
+  const home = await mkdtemp(path.join(os.tmpdir(), "usageai-codex-http-"));
+  try {
+    const writeAuth = (value: unknown): Promise<void> => writeFile(path.join(home, "auth.json"), typeof value === "string" ? value : JSON.stringify(value), "utf8");
+    const read = (): Promise<unknown> => readCodexHttpCredentials(home, now);
+    // No login file, or an API-key login, leaves usage to the app-server.
+    assert.equal(await read(), undefined);
+    await writeAuth({ auth_mode: "apikey", OPENAI_API_KEY: "sk-synthetic" });
+    assert.equal(await read(), undefined);
+    await writeAuth({ auth_mode: "chatgpt", tokens: { access_token: live, account_id: "acct-123_x", refresh_token: "never-read" } });
+    assert.deepEqual(await read(), { accessToken: live, accountId: "acct-123_x" });
+    // An expired or nearly expired token is the CLI's to renew.
+    await writeAuth({ tokens: { access_token: jwt({ exp: Math.floor(now / 1000) + 30 }) } });
+    assert.equal(await read(), undefined);
+    // A token that is no JWT is used as is; a malformed account id is left out.
+    await writeAuth({ tokens: { access_token: "opaque-token", account_id: "bad id\r\n" } });
+    assert.deepEqual(await read(), { accessToken: "opaque-token" });
+    await writeAuth({ tokens: { access_token: "bad token" } });
+    assert.equal(await read(), undefined);
+    await writeAuth("not json");
+    assert.equal(await read(), undefined);
+    // A custom backend is honoured by the app-server only, so the token never goes elsewhere.
+    await writeAuth({ tokens: { access_token: live } });
+    await writeFile(path.join(home, "config.toml"), '# chatgpt_base_url = "https://example.test"\nmodel = "x"\n', "utf8");
+    assert.notEqual(await read(), undefined);
+    await writeFile(path.join(home, "config.toml"), '[profile]\n  chatgpt_base_url = "https://example.test"\n', "utf8");
+    assert.equal(await read(), undefined);
+  } finally {
+    await rm(home, { recursive: true, force: true });
+  }
+
+  const usage = {
+    email: "dev@example.com",
+    plan_type: "pro",
+    rate_limit: {
+      primary_window: { used_percent: 12.6, limit_window_seconds: 18_000, reset_at: 1_793_883_681 },
+      secondary_window: { used_percent: 71, limit_window_seconds: 604_800, reset_at: 1_794_140_279 },
+    },
+    additional_rate_limits: [
+      { limit_name: "GPT-5.3-Codex-Spark", rate_limit: { primary_window: { used_percent: 40, limit_window_seconds: 18_000 } } },
+      { limit_name: "No windows", rate_limit: {} },
+      "noise",
+    ],
+    credits: { has_credits: true, unlimited: false, balance: "4.50" },
+    rate_limit_reset_credits: { available_count: 2, applicable_available_count: 0 },
+  };
+  const parsed = parseCodexHttpSnapshot(usage);
+  assert.equal(parsed.plan, "Pro");
+  assert.equal(parsed.accountName, "dev@example.com");
+  assert.deepEqual(parsed.metrics.map((metric) => metric.name), ["5-hour", "Weekly", "GPT-5.3-Codex-Spark 5-hour", "Credits", "Reset credits"]);
+  assert.equal(parsed.metrics[0]?.usedPercent, 13);
+  assert.equal(parsed.metrics[0]?.durationMinutes, 300);
+  assert.equal(parsed.metrics[1]?.durationMinutes, 10_080);
+  assert.equal(parsed.metrics[1]?.resetsAt, new Date(1_794_140_279_000).toISOString());
+  assert.throws(() => parseCodexHttpSnapshot({ rate_limit: { primary_window: null } }), /no rate-limit windows/);
+
+  // The app-server fallback is pointed at a missing CLI, so reaching it shows as "not found".
+  const oldCodexPath = process.env.CODEX_PATH;
+  process.env.CODEX_PATH = path.join(os.tmpdir(), `usageai-missing-codex-${Date.now()}.cmd`);
+  const client = new CodexUsageClient(undefined, { loadCredentials: async () => ({ accessToken: "access-token", accountId: "acct-1" }) });
+  try {
+    let requests = 0;
+    const respond = (response: { status: number; headers?: Record<string, string>; data?: unknown } | Error): void => {
+      mock.restoreAll();
+      mock.method(security, "requestJson", (async (url, options) => {
+        requests += 1;
+        assert.equal(String(url), "https://chatgpt.com/backend-api/wham/usage");
+        assert.deepEqual(options.allowedHosts, ["chatgpt.com"]);
+        assert.equal(options.headers?.Authorization, "Bearer access-token");
+        assert.equal(options.headers?.["ChatGPT-Account-Id"], "acct-1");
+        if (response instanceof Error) throw response;
+        return { status: response.status, headers: response.headers ?? {}, data: response.data };
+      }) as typeof security.requestJson);
+    };
+
+    // A live ChatGPT login is read over HTTPS, and the app-server is never started.
+    respond({ status: 200, data: usage });
+    assert.equal((await client.getUsage()).metrics[1]?.usedPercent, 71);
+
+    // A rejected token, an outage, or an unexpected answer falls back to the app-server.
+    for (const response of [{ status: 401 }, { status: 500 }, { status: 200, data: { unexpected: true } }, new Error("synthetic network failure")]) {
+      respond(response);
+      await assert.rejects(client.getUsage(), /not found|CODEX_PATH/i);
+    }
+
+    // A rate limit is reported with its retry window rather than retried through the app-server.
+    respond({ status: 429, headers: { "retry-after": "120" } });
+    await assert.rejects(client.getUsage(), (error: unknown) =>
+      error instanceof UsageProviderError && error.retryAfterMs === 120_000 && /rate-limited/.test(error.message));
+    assert.equal(requests, 6);
+
+    // Without usable credentials HTTP is never attempted.
+    const withoutLogin = new CodexUsageClient(undefined, { loadCredentials: async () => undefined });
+    await assert.rejects(withoutLogin.getUsage(), /not found|CODEX_PATH/i);
+    assert.equal(requests, 6);
+  } finally {
+    mock.restoreAll();
+    restoreEnvironment("CODEX_PATH", oldCodexPath);
   }
 });
 
@@ -427,6 +707,64 @@ test("Gemini refreshes expired OAuth once and reuses the in-memory token", async
   } finally {
     mock.restoreAll();
   }
+});
+
+test("Gemini reports Google's consumer-tier shutdown and sends the Code Assist project", async () => {
+  const shutDown = {
+    currentTier: { id: "free-tier" },
+    ineligibleTiers: [{ reasonCode: "UNSUPPORTED_CLIENT", reasonMessage: "Use Antigravity" }],
+    cloudaicompanionProject: "proj-9",
+  };
+  assert.deepEqual(parseCodeAssist(shutDown, undefined), { plan: "Free", project: "proj-9", consumerTierShutDown: true });
+  // Accounts that keep Gemini CLI access are never told it was shut down.
+  // A paid personal plan (AI Pro, Ultra) is exactly what the shutdown covers; Enterprise is exempt.
+  assert.equal(parseCodeAssist({ ...shutDown, paidTier: { name: "Google AI Pro" } }, undefined).consumerTierShutDown, true);
+  assert.equal(parseCodeAssist({ ...shutDown, currentTier: { id: "enterprise-tier" } }, undefined).consumerTierShutDown, false);
+  assert.equal(parseCodeAssist({ ...shutDown, currentTier: { id: "standard-tier" } }, undefined).consumerTierShutDown, false);
+  assert.equal(parseCodeAssist(shutDown, "school.example").consumerTierShutDown, false);
+  assert.equal(parseCodeAssist({ ineligibleTiers: [{ reasonCode: "RESTRICTED_AGE" }] }, undefined).consumerTierShutDown, false);
+  // The project is a plain id or an object carrying one, and anything else is dropped.
+  assert.equal(parseCodeAssist({ cloudaicompanionProject: { id: "proj-object" } }, undefined).project, "proj-object");
+  assert.equal(parseCodeAssist({ cloudaicompanionProject: 'bad project"id' }, undefined).project, undefined);
+  assert.deepEqual(parseCodeAssist([], undefined), { consumerTierShutDown: false });
+  assert.equal(quotaRequestBody(undefined), "{}");
+  assert.equal(quotaRequestBody("proj-9"), '{"project":"proj-9"}');
+
+  const quotaBodies: string[] = [];
+  const clientFor = (codeAssist: unknown): GeminiUsageClient => {
+    mock.method(security, "requestJson", (async (url, options) => {
+      if (String(url).includes("loadCodeAssist")) {
+        return { status: 200, headers: {}, data: codeAssist };
+      }
+      quotaBodies.push(options.body ?? "");
+      return { status: 403, headers: {}, data: { error: { status: "PERMISSION_DENIED" } } };
+    }) as typeof security.requestJson);
+    return new GeminiUsageClient({
+      fetchAntigravity: async () => undefined,
+      fetchAgy: async () => undefined,
+      hasAgyCli: async () => true,
+      loadCredentials: async () => ({ accessToken: "gemini-access-token", expiresAt: Date.now() + 3_600_000, sourcePath: "fixture" }),
+    });
+  };
+  try {
+    // The shutdown reads as such, never as an expired sign-in, and the project went along.
+    await assert.rejects(clientFor(shutDown).getUsage(), (error: unknown) => {
+      assert.equal(
+        (error as Error).message,
+        "Google Gemini usage is unavailable. Check that `agy` is signed in, then refresh. Antigravity (IDE or editor extension) and `agy` returned no usage, and Google no longer serves Gemini CLI quota for this plan.",
+      );
+      return true;
+    });
+    assert.equal(quotaBodies.at(-1), '{"project":"proj-9"}');
+    mock.restoreAll();
+
+    // The same 403 for an account Google did not flag stays a sign-in problem.
+    await assert.rejects(clientFor({ currentTier: { id: "free-tier" } }).getUsage(), /the Gemini CLI sign-in has expired\.$/);
+    assert.equal(quotaBodies.at(-1), "{}");
+  } finally {
+    mock.restoreAll();
+  }
+  assert.match(combinedGeminiError(false, consumerTierShutdownMessage), /^Google Gemini usage is unavailable\. Sign in to Antigravity or install `agy`/);
 });
 
 test("Gemini retries agy when a cached cold-start failure and CLI fallback are both stale", async () => {
@@ -1064,6 +1402,8 @@ test("the agy hub is started with the CSRF token on its command line", () => {
   assert.deepEqual([...args], ["--hub", "--hub-port=51234", "--csrf_token=TOKEN"]);
   // The sign-in lives in the CLI's default data directory, so the hub must not be redirected.
   assert.equal(args.some((argument) => argument.startsWith("--app_data_dir")), false);
+  // An agy the extension starts never runs its self-updater; only the lowercase value is honoured.
+  assert.deepEqual(agyOwnedEnvironment, { CI: "1", AGY_CLI_DISABLE_AUTO_UPDATE: "true" });
 });
 
 test("a refresh the user asked for clears both agy backoffs", async () => {

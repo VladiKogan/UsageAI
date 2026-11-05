@@ -17,6 +17,15 @@ internal sealed record ProviderStatus(
     DateTimeOffset? LastAttemptedAt = null,
     DateTimeOffset? NextRetryAt = null)
 {
+    /// <summary>
+    /// The incident the provider's own status page reports, such as "Degraded: Elevated errors on
+    /// Claude Code", or null when there is none (or incidents are not shown).
+    /// </summary>
+    public string? IncidentSummary { get; init; }
+
+    /// <summary>True when <see cref="IncidentSummary"/> describes an outage rather than degraded service.</summary>
+    public bool IncidentIsOutage { get; init; }
+
     public bool IsConnected => Snapshot is not null;
 
     /// <summary>Connected, but the most recent refresh failed and the values are old.</summary>

@@ -227,6 +227,37 @@ test("status bar renders hottest, stale, error, and selection lifecycle states",
   assert.equal(statusItems[2]?.disposed, true);
 });
 
+test("status bar marks a provider's status-page incident and names it in the tooltip", () => {
+  statusItems.length = 0;
+  const controller = new StatusBarController();
+  controller.update([{
+    id: "claude",
+    displayName: "Claude Code",
+    signInCommand: "claude",
+    accountUrl: "https://example.com/claude",
+    snapshot: snapshot("claude", 40),
+    stale: false,
+    refreshing: false,
+    incident: "Partial outage: Elevated errors",
+    incidentIsOutage: true,
+  }], ["claude"]);
+  assert.match(statusItems[0]?.text ?? "", /\$\(error\)$/);
+  const tooltip = statusItems[0]?.tooltip;
+  assert.ok(tooltip instanceof FakeMarkdownString);
+  assert.match(tooltip.value, /Status page:.*Partial outage: Elevated errors/s);
+  controller.update([{
+    id: "claude",
+    displayName: "Claude Code",
+    signInCommand: "claude",
+    accountUrl: "https://example.com/claude",
+    snapshot: snapshot("claude", 40),
+    stale: false,
+    refreshing: false,
+  }], ["claude"]);
+  assert.doesNotMatch(statusItems.at(-1)?.text ?? "", /\$\((error|warning)\)/);
+  controller.dispose();
+});
+
 test("status bar shows remaining quota with one trailing unit when asked", () => {
   statusItems.length = 0;
   const provider = (id: string, displayName: string, metrics: UsageSnapshot["metrics"]): ProviderState => ({

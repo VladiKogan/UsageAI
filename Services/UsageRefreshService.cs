@@ -37,7 +37,7 @@ internal sealed class UsageRefreshService : IDisposable
 
     private readonly IUsageClient[] _clients;
     private readonly AppSettings _settings;
-    private readonly NotificationCoordinator _notifications = new();
+    private readonly NotificationCoordinator _notifications = NotificationCoordinator.CreatePersistent();
     private readonly Dictionary<string, ProviderStatus> _statuses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, int> _failures = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, DateTimeOffset> _nextAttempt = new(StringComparer.OrdinalIgnoreCase);
@@ -304,6 +304,8 @@ internal sealed class UsageRefreshService : IDisposable
             {
                 SnapshotCache.Save(snapshots);
             }
+
+            _notifications.SaveIfChanged(now);
 
             if (regularRefresh)
             {
