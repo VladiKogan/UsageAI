@@ -347,9 +347,7 @@ internal sealed class UsagePopupForm : Form
 
         // The forecast behind the headline changes only with new readings, so it is worked out
         // here once; the five-second tick only re-words the countdown.
-        var forecastHistory = _settings.ForecastEnabled && _settings.HistoryEnabled
-            ? history
-            : Array.Empty<UsageSample>();
+        var forecastHistory = ForecastHistory(_settings, history);
         _headline = SelectHeadline(states, forecastHistory, DateTimeOffset.Now);
         UpdateStatus();
         RebuildCards();
@@ -687,9 +685,7 @@ internal sealed class UsagePopupForm : Form
         _content.SuspendLayout();
         try
         {
-            var forecastHistory = _settings.ForecastEnabled && _settings.HistoryEnabled
-                ? _history
-                : Array.Empty<UsageSample>();
+            var forecastHistory = ForecastHistory(_settings, _history);
 
             // The dashboard's table is updated in place: it is rebuilt several times a refresh as
             // providers publish, and a new control would drop the user's focus and scroll position.
@@ -907,6 +903,16 @@ internal sealed class UsagePopupForm : Form
     /// one that is merely busy, and among those the one that runs out earliest wins; without a
     /// forecast it is the busiest limit of all.
     /// </summary>
+    /// <summary>
+    /// What the forecasts work from: <see cref="UsageForecast.Disabled"/> when the forecast is off,
+    /// no samples when history is off (the window's own average then still gives an estimate and
+    /// a pace), and the recorded history otherwise.
+    /// </summary>
+    internal static IReadOnlyList<UsageSample> ForecastHistory(AppSettings settings, IReadOnlyList<UsageSample> history) =>
+        !settings.ForecastEnabled ? UsageForecast.Disabled
+        : settings.HistoryEnabled ? history
+        : Array.Empty<UsageSample>();
+
     internal static PopupHeadline? SelectHeadline(
         IReadOnlyList<ProviderStatus> states,
         IReadOnlyList<UsageSample> history,
@@ -919,7 +925,7 @@ internal sealed class UsagePopupForm : Form
                 .Select(metric => new PopupHeadline(
                     state,
                     metric,
-                    UsageForecast.Project(history, state.ProviderId, metric, now))))
+                    UsageForecast.Estimate(history, state.ProviderId, metric, now))))
             .Where(candidate => candidate.Projection is { BeforeReset: true })
             .OrderBy(candidate => candidate.Projection!.ExhaustedAt)
             .FirstOrDefault();

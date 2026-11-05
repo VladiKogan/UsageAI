@@ -10,6 +10,7 @@ import {
   normalizeStatusBarProviders,
   normalizeMetricDisplayMode,
   normalizeQuotaDisplay,
+  paceText,
   primaryMetric,
   segmentedUsageBar,
   statusBarMetrics,
@@ -423,4 +424,25 @@ test("concurrent refresh calls coalesce and disposal prevents later work", async
   service.dispose();
   await service.refresh(true);
   assert.equal(attempts, 1);
+});
+
+test("pace compares a window's use with the time it has run, and survives being inlined", () => {
+  const now = Date.parse("2026-11-05T10:00:00Z");
+  // A weekly window half over.
+  const weekly = (usedPercent: number | null, daysLeft = 3.5) => ({
+    usedPercent,
+    resetsAt: new Date(now + daysLeft * 86_400_000).toISOString(),
+    durationMinutes: 10_080,
+  });
+  assert.equal(paceText(weekly(48), now), "On pace");
+  assert.equal(paceText(weekly(30), now), "20% under pace");
+  assert.equal(paceText(weekly(70), now), "20% over pace");
+  assert.equal(paceText(weekly(1, 6.9), now), "");
+  assert.equal(paceText(weekly(100), now), "");
+  assert.equal(paceText(weekly(null), now), "");
+  assert.equal(paceText({ usedPercent: 30, resetsAt: weekly(30).resetsAt }, now), "");
+  assert.equal(paceText({ ...weekly(30), isUnlimited: true }, now), "");
+  // The dashboard webview gets this function through toString(), so it must need nothing outside itself.
+  const inlined = new Function(`return (${paceText.toString()});`)() as typeof paceText;
+  assert.equal(inlined(weekly(70), now), "20% over pace");
 });

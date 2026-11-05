@@ -61,6 +61,14 @@ The project follows [Semantic Versioning](https://semver.org/).
   does not succeed, UsageAI asks the CLI as before, and the CLI renews the login itself; UsageAI never
   refreshes or writes `auth.json`. A rate limit from ChatGPT is reported with its retry window.
   `--diagnose codex` names the path that answered in `Source`.
+- **The dashboard says whether you are on pace.** For a limit that is not forecast to run out
+  before it resets, the "At this pace" column now compares use with the time the window has run:
+  "On pace", "12% under pace", or "8% over pace" in the warning colour. A limit forecast to run out
+  still shows when.
+- **Forecasts work from the first reading.** Without enough recorded history — just after starting,
+  or with History turned off — the run-out forecast now comes from the window's own average since it
+  began, once 5% of it has passed. Recorded history still wins when there is enough of it, and
+  turning Forecasts off hides both the forecast and the pace.
 - **`--diagnose` lists every source a provider tried.** An `Attempts` array names each path in order —
   for Gemini the serving `agy` server, the Antigravity IDE or editor extension, `agy` itself and the
   Gemini CLI; for Claude the web session, OAuth and the CLI recovery; for Codex the HTTPS read and the

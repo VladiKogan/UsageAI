@@ -54,6 +54,7 @@ internal static class Program
         ("projection ignores a window reset", TestForecastResetAsync),
         ("alert thresholds and debouncing", TestNotificationsAsync),
         ("alert memory survives a restart and re-arms on a new window", TestAlertMemorySurvivesRestartAsync),
+        ("pace and a forecast from the window itself", TestPaceAndWindowForecastAsync),
         ("release version comparison", TestUpdateComparisonAsync),
         ("dashboard metric display selection", TestMetricDisplaySelectionAsync),
         ("bundled release notes and upgrade state", TestReleaseNotesAsync),
@@ -1679,6 +1680,55 @@ internal static class Program
         var reset = coordinator.Evaluate(SampleSnapshot(4, now), settings, now.AddMinutes(20));
         Equal(1, reset.Count);
         Equal(AlertLevel.Info, reset[0].Level);
+        return Task.CompletedTask;
+    }
+
+    private static Task TestPaceAndWindowForecastAsync()
+    {
+        var now = DateTimeOffset.Parse("2026-11-05T10:00:00Z", CultureInfo.InvariantCulture);
+        // A weekly window half over (resets in 3.5 days of 7).
+        UsageMetric Weekly(int used, double daysLeft = 3.5) =>
+            new("Weekly", UsageMetricKind.Rolling, used, now.AddDays(daysLeft), 10_080);
+        var none = Array.Empty<UsageSample>();
+
+        Equal("On pace", UsageForecast.Pace(none, Weekly(48), now)!.Text);
+        Equal("20% under pace", UsageForecast.Pace(none, Weekly(30), now)!.Text);
+        var over = UsageForecast.Pace(none, Weekly(70), now)!;
+        Equal("20% over pace", over.Text);
+        True(over.IsOverPace);
+        Equal(50, over.ElapsedPercent);
+
+        // No pace without a reset and length, before 5% of the window, at 100%, or with the forecast off.
+        Null(UsageForecast.Pace(none, new UsageMetric("Weekly", UsageMetricKind.Rolling, 30, now.AddDays(3)), now));
+        Null(UsageForecast.Pace(none, Weekly(1, daysLeft: 6.9), now));
+        Null(UsageForecast.Pace(none, Weekly(100), now));
+        Null(UsageForecast.Pace(UsageForecast.Disabled, Weekly(30), now));
+
+        // The window's own average projects a run-out without any history: 70% in half a week
+        // runs out after about 1.5 more days, before the reset.
+        var projection = UsageForecast.ProjectFromWindow(Weekly(70), now)!;
+        True(projection.BeforeReset);
+        True(Math.Abs((projection.ExhaustedAt - now).TotalDays - 1.5) < 0.01);
+        False(UsageForecast.ProjectFromWindow(Weekly(30), now)!.BeforeReset);
+        Null(UsageForecast.ProjectFromWindow(Weekly(0), now));
+
+        // Estimate prefers recorded history, falls back to the window, and is silent when disabled.
+        NotNull(UsageForecast.Estimate(none, "codex", Weekly(70), now));
+        Null(UsageForecast.Estimate(UsageForecast.Disabled, "codex", Weekly(70), now));
+        var samples = new[]
+        {
+            new UsageSample(now.AddHours(-2), "codex", "Rolling:Weekly", 10),
+            new UsageSample(now.AddHours(-1), "codex", "Rolling:Weekly", 15),
+            new UsageSample(now, "codex", "Rolling:Weekly", 20),
+        };
+        Equal(5.0, Math.Round(UsageForecast.Estimate(samples, "codex", Weekly(20), now)!.PercentPerHour, 3));
+
+        // The popup hands the forecast the right source for each setting.
+        IReadOnlyList<UsageSample> history = samples;
+        True(UsageForecast.IsDisabled(UsagePopupForm.ForecastHistory(new AppSettings { ForecastEnabled = false }, history)));
+        Equal(0, UsagePopupForm.ForecastHistory(new AppSettings { HistoryEnabled = false }, history).Count);
+        False(UsageForecast.IsDisabled(UsagePopupForm.ForecastHistory(new AppSettings { HistoryEnabled = false }, history)));
+        Equal(3, UsagePopupForm.ForecastHistory(new AppSettings(), history).Count);
         return Task.CompletedTask;
     }
 

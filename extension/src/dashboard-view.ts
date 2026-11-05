@@ -4,6 +4,7 @@ import {
   formatResetCountdown,
   hasQuota,
   normalizeMetricDisplayMode,
+  paceText,
   normalizeQuotaDisplay,
   selectDashboardMetrics,
   type MetricDisplayMode,
@@ -295,13 +296,14 @@ function dashboardHtml(webview: vscode.Webview): string {
     const effectiveDashboardExpansion = ${effectiveDashboardExpansion.toString()};
     const collapsedDashboardMetric = ${collapsedDashboardMetric.toString()};
     const displayed = ${displayedPercent.toString()};
+    const pace = ${paceText.toString()};
     const renderMetric = (metric, warning, critical, quota) => {
       if (!hasQuota(metric)) { const row = el('div', 'balance'); row.append(el('span', '', metric.name), el('strong', '', metric.remainingText || (metric.isUnlimited ? 'UNLIMITED' : metric.usageText || 'Not reported'))); return row; }
       const metricLevel = level(metric.usedPercent, warning, critical); const root = el('section', 'metric'); root.dataset.level = metricLevel;
       const remaining = quota === 'remaining'; const used = displayed(metric.usedPercent, 'used'); const left = displayed(metric.usedPercent, 'remaining');
       const head = el('div', 'metric-head'); head.append(el('span', 'metric-name', metric.name), el('span', 'metric-value', remaining ? left + '% left' : used + '% used'));
       const rail = el('progress', 'rail'); rail.setAttribute('aria-label', metric.name + (remaining ? ' remaining' : ' usage')); rail.max = 100; rail.value = remaining ? left : used;
-      const foot = el('div', 'metric-foot'); foot.append(el('span', '', metric.usageText || (remaining ? used + '% used' : left + '% left')), el('span', '', countdown(metric.resetsAt))); root.append(head, rail, foot); return root;
+      const foot = el('div', 'metric-foot'); foot.append(el('span', '', metric.usageText || (remaining ? used + '% used' : left + '% left')), el('span', '', [countdown(metric.resetsAt), pace(metric)].filter(Boolean).join(' · '))); root.append(head, rail, foot); return root;
     };
     const render = (payload) => {
       latestPayload = payload;

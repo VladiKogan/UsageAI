@@ -24,6 +24,9 @@
 
 ### Added
 
+- **The dashboard says whether you are on pace.** Each metered limit's footer now adds, after the
+  reset countdown, how use compares with the time its window has run: "On pace", "12% under pace" or
+  "8% over pace", once 5% of the window has passed.
 - **Codex shows model-specific limits such as Spark.** Codex reports a separate rate-limit bucket for
   some models, and UsageAI read only the main one. Every bucket now shows as its own group, named
   the way Codex names it. Accounts with only the main limit look exactly as before.
