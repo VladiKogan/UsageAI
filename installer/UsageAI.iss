@@ -17,12 +17,26 @@
 #endif
 
 #define MyAppName "UsageAI"
+; The rest can be overridden only so a throwaway copy can be installed and uninstalled in a test
+; without touching a real installation, its startup entry or its settings.
+#ifndef MyAppId
+  #define MyAppId "{{B1C6D9E4-6F5B-4E7B-9C2A-6E7B7F6B9B1D}"
+#endif
+#ifndef MyPrivileges
+  #define MyPrivileges "admin"
+#endif
+#ifndef DataFolderName
+  #define DataFolderName "UsageAI"
+#endif
+#ifndef StartupValueName
+  #define StartupValueName "UsageAI"
+#endif
 #define MyAppPublisher "VladiKogan"
 #define MyAppURL "https://github.com/VladiKogan/UsageAI"
 #define MyAppExeName "UsageAI.exe"
 
 [Setup]
-AppId={{B1C6D9E4-6F5B-4E7B-9C2A-6E7B7F6B9B1D}
+AppId={#MyAppId}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppPublisher={#MyAppPublisher}
@@ -40,7 +54,7 @@ OutputBaseFilename=UsageAI-{#MyAppVersion}-Setup
 Compression=lzma2/max
 SolidCompression=yes
 WizardStyle=modern
-PrivilegesRequired=admin
+PrivilegesRequired={#MyPrivileges}
 ArchitecturesAllowed=x64compatible
 ArchitecturesInstallIn64BitMode=x64compatible
 SetupLogging=yes
@@ -67,6 +81,9 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch {#MyAppName}"; Flags: no
 [Code]
 const
   DotNetRuntimeUrl = 'https://aka.ms/dotnet/10.0/windowsdesktop-runtime-win-x64.exe';
+  RunKey = 'Software\Microsoft\Windows\CurrentVersion\Run';
+  StartupApprovedKey = 'Software\Microsoft\Windows\CurrentVersion\Explorer\StartupApproved\Run';
+  StartupValueName = '{#StartupValueName}';
 
 function IsDotNetDesktopRuntimeInstalled(): Boolean;
 var
@@ -136,4 +153,44 @@ begin
         'automatically (this needs an internet connection). Install it manually from ' +
         'https://dotnet.microsoft.com/download/dotnet/10.0 and run this setup again.';
   end;
+end;
+
+{ "Start with Windows" is a Run value under the user's own key. Left behind, Windows would list a
+  startup app whose file is gone. Only the value that starts this copy goes: a portable copy's
+  entry names another path and stays. }
+procedure RemoveStartupEntry();
+var
+  Command: string;
+begin
+  if RegQueryStringValue(HKCU, RunKey, StartupValueName, Command) and
+     (CompareText(RemoveQuotes(Trim(Command)), ExpandConstant('{app}\{#MyAppExeName}')) = 0) then
+  begin
+    RegDeleteValue(HKCU, RunKey, StartupValueName);
+    RegDeleteValue(HKCU, StartupApprovedKey, StartupValueName);
+  end;
+end;
+
+{ Settings and recorded history stay unless the user asks, so a reinstall picks up where it left
+  off. A silent uninstall that suppresses message boxes keeps them. }
+procedure RemoveUserDataIfAsked();
+var
+  DataDir: string;
+begin
+  DataDir := ExpandConstant('{localappdata}\{#DataFolderName}');
+  if not DirExists(DataDir) then
+    Exit;
+
+  if SuppressibleMsgBox(
+       'Also delete your UsageAI settings and recorded usage history?' + #13#10#13#10 +
+       'They are in ' + DataDir + '. Keep them to pick up where you left off if you install UsageAI again.',
+       mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
+    DelTree(DataDir, True, True, True);
+end;
+
+procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);
+begin
+  if CurUninstallStep = usUninstall then
+    RemoveStartupEntry()
+  else if CurUninstallStep = usPostUninstall then
+    RemoveUserDataIfAsked();
 end;

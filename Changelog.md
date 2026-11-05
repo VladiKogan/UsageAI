@@ -34,7 +34,14 @@ The project follows [Semantic Versioning](https://semver.org/).
   The clean exit also stops UsageAI's own `agy --hub`, which each forced close had left running.
 - **Downloaded installers no longer pile up.** Every in-app update left its Setup file of about
   2.5 MB in `%LOCALAPPDATA%\UsageAI\updates`, and none was ever removed. They are now deleted when
-  the next version starts.
+  the next version starts. Developer previews (`--preview-*`) likewise delete their throwaway data
+  folder when they end, and clear any a killed preview left behind for over a day.
+- **Uninstalling no longer leaves a broken startup entry.** With "Start with Windows" on, the
+  uninstaller left the startup entry behind, so Windows kept listing a startup app whose file was
+  gone. It is now removed with the copy it starts; a portable copy's own entry is left alone. The
+  uninstaller also asks whether to delete the settings and recorded history in
+  `%LOCALAPPDATA%\UsageAI`, keeping them unless the answer is yes, so a reinstall picks up where it
+  left off.
 
 ## [0.15.0] - 2026-11-05
 

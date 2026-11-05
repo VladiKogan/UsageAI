@@ -332,14 +332,95 @@ internal static class PreviewRenderer
         Application.Run(dialog);
     }
 
+    /// <summary>The temp folder previews keep their throwaway data folders in.</summary>
+    internal static string PreviewRoot => Path.Combine(Path.GetTempPath(), "UsageAI.Preview");
+
+    /// <summary>A preview's data folder older than this was left by a preview that never ended cleanly.</summary>
+    internal static readonly TimeSpan StalePreviewAge = TimeSpan.FromDays(1);
+
+    private static string? _isolatedDataDirectory;
+
     /// <summary>
     /// Redirects <see cref="AppPaths"/> to a fresh folder under the temp directory. It must run
-    /// before anything reads <see cref="AppPaths.DataDirectory"/>, which resolves once.
+    /// before anything reads <see cref="AppPaths.DataDirectory"/>, which resolves once. Folders
+    /// that killed or crashed previews left behind are cleared first.
     /// </summary>
-    internal static void IsolateDataDirectory() =>
-        Environment.SetEnvironmentVariable(
-            "USAGEAI_DATA_DIR",
-            Path.Combine(Path.GetTempPath(), "UsageAI.Preview", Guid.NewGuid().ToString("N")));
+    internal static void IsolateDataDirectory()
+    {
+        DeleteStalePreviewDirectories(PreviewRoot, DateTime.UtcNow);
+        _isolatedDataDirectory = Path.Combine(PreviewRoot, Guid.NewGuid().ToString("N"));
+        Environment.SetEnvironmentVariable("USAGEAI_DATA_DIR", _isolatedDataDirectory);
+    }
+
+    /// <summary>Deletes this preview's data folder, and the shared folder once nothing is left in it.</summary>
+    internal static void DeleteIsolatedDataDirectory()
+    {
+        if (_isolatedDataDirectory is null)
+        {
+            return;
+        }
+
+        DeleteDirectoryBestEffort(_isolatedDataDirectory);
+        _isolatedDataDirectory = null;
+        try
+        {
+            if (Directory.Exists(PreviewRoot) && !Directory.EnumerateFileSystemEntries(PreviewRoot).Any())
+            {
+                Directory.Delete(PreviewRoot);
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Another preview started meanwhile.
+        }
+    }
+
+    /// <summary>
+    /// Deletes data folders older than <see cref="StalePreviewAge"/>. A preview still running
+    /// keeps a younger folder, so it is never pulled out from under it.
+    /// </summary>
+    internal static int DeleteStalePreviewDirectories(string root, DateTime nowUtc)
+    {
+        if (!Directory.Exists(root))
+        {
+            return 0;
+        }
+
+        var deleted = 0;
+        try
+        {
+            foreach (var directory in Directory.EnumerateDirectories(root))
+            {
+                if (nowUtc - Directory.GetLastWriteTimeUtc(directory) > StalePreviewAge &&
+                    DeleteDirectoryBestEffort(directory))
+                {
+                    deleted++;
+                }
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+        }
+
+        return deleted;
+    }
+
+    private static bool DeleteDirectoryBestEffort(string path)
+    {
+        try
+        {
+            if (Directory.Exists(path))
+            {
+                Directory.Delete(path, recursive: true);
+            }
+
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
 
     private static AppSettings PreviewSettings(string[] args)
     {

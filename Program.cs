@@ -26,25 +26,29 @@ internal static class Program
         {
             // Previews open real windows, and some of their buttons write local state (Settings'
             // Delete recorded history). Point them at a throwaway folder before anything reads
-            // AppPaths, so a preview can never touch an installed copy's settings or history.
+            // AppPaths, so a preview can never touch an installed copy's settings or history,
+            // and delete that folder when the preview ends.
             PreviewRenderer.IsolateDataDirectory();
-        }
+            try
+            {
+                if (HasFlag(args, "--render-preview"))
+                {
+                    PreviewRenderer.Render(args);
+                }
+                else if (HasFlag(args, "--preview-window"))
+                {
+                    PreviewRenderer.ShowWindow(args);
+                }
+                else
+                {
+                    PreviewRenderer.ShowTray(args);
+                }
+            }
+            finally
+            {
+                PreviewRenderer.DeleteIsolatedDataDirectory();
+            }
 
-        if (HasFlag(args, "--render-preview"))
-        {
-            PreviewRenderer.Render(args);
-            return;
-        }
-
-        if (HasFlag(args, "--preview-window"))
-        {
-            PreviewRenderer.ShowWindow(args);
-            return;
-        }
-
-        if (HasFlag(args, "--preview-tray"))
-        {
-            PreviewRenderer.ShowTray(args);
             return;
         }
 

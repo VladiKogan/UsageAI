@@ -331,7 +331,7 @@ Run `publish\UsageAI.exe`. The single-file, framework-dependent build is deliber
 & "$env:LOCALAPPDATA\Programs\Inno Setup 6\ISCC.exe" .\installer\UsageAI.iss /DMyAppVersion=<version>
 ```
 
-This produces `installer\Output\UsageAI-<version>-Setup.exe`. It installs to Program Files, adds a Start Menu shortcut and uninstaller, and silently installs the .NET 10 Desktop Runtime at install time if it's missing (see `installer\UsageAI.iss`).
+This produces `installer\Output\UsageAI-<version>-Setup.exe`. It installs to Program Files, adds a Start Menu shortcut and uninstaller, and silently installs the .NET 10 Desktop Runtime at install time if it's missing (see `installer\UsageAI.iss`). The uninstaller removes the copy's "Start with Windows" entry and asks whether to delete the settings and history in `%LOCALAPPDATA%\UsageAI`; they are kept unless you say yes.
 
 **Name and checksum both Windows assets before uploading:**
 
