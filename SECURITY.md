@@ -33,6 +33,11 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
   github.com and `api.<host>` for a GitHub Enterprise Cloud host (`*.ghe.com`), as named by the
   credential file the token came from. A token for any other host, such as a self-hosted GitHub
   Enterprise Server, is not used.
+- With "Show provider incidents" on (the default), the tray app reads the providers' public status
+  pages at most every five minutes: `status.claude.com`, `www.githubstatus.com` and
+  `status.openai.com`. These requests carry no credential, cookie or account identifier, go through
+  the same no-redirect, size-capped client, and only status JSON is read. Turning the setting off
+  stops them.
 - Browser storage is never scanned.
 - Claude web sessions are opt-in, memory-only, and never persisted by UsageAI.
 - Secrets are not forwarded to provider CLI child processes or included in diagnostic output.

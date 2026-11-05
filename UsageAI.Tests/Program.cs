@@ -101,6 +101,7 @@ internal static class Program
         ("Copilot HTTP success and error handling", CoverageExpansionTests.TestCopilotHttpAsync),
         ("Copilot sends each token only to its own GitHub and names an ended subscription", CoverageExpansionTests.TestCopilotHostsAndEndedSubscriptionAsync),
         ("--diagnose lists every attempt in a fixed vocabulary", CoverageExpansionTests.TestDiagnosticAttemptsAsync),
+        ("provider incidents from public status pages", CoverageExpansionTests.TestProviderIncidentsAsync),
         ("Gemini OAuth HTTP success and error handling", CoverageExpansionTests.TestGeminiHttpAsync),
         ("Codex app-server protocol and errors", CoverageExpansionTests.TestCodexProtocolAsync),
         ("Codex reads usage over HTTPS first and falls back to the app-server", CoverageExpansionTests.TestCodexHttpUsageAsync),

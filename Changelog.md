@@ -61,6 +61,13 @@ The project follows [Semantic Versioning](https://semver.org/).
   does not succeed, UsageAI asks the CLI as before, and the CLI renews the login itself; UsageAI never
   refreshes or writes `auth.json`. A rate limit from ChatGPT is reported with its retry window.
   `--diagnose codex` names the path that answered in `Source`.
+- **UsageAI shows when a provider reports an incident.** When Claude, GitHub Copilot or Codex reports
+  degraded service or an outage on its public status page, the tray icon gets a dot (orange for
+  degraded or maintenance, red for an outage), the tooltip names the incident, and the dashboard's
+  provider header shows it, so a card that went stale can be told apart from a provider that is
+  down. Only the components that serve the usage UsageAI shows count. The pages are read at most
+  every five minutes without any credential, and "Show provider incidents" in Settings turns it off.
+  Gemini has no status page that covers its quota.
 - **The dashboard says whether you are on pace.** For a limit that is not forecast to run out
   before it resets, the "At this pace" column now compares use with the time the window has run:
   "On pace", "12% under pace", or "8% over pace" in the warning colour. A limit forecast to run out

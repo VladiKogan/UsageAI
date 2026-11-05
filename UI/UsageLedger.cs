@@ -710,6 +710,13 @@ internal sealed class UsageLedger : Control
             return ("Refreshing…", Theme.Muted);
         }
 
+        // The provider's own status page explains a stale card better than a retry countdown, so an
+        // incident leads; the text names it, so the colour is never the only cue.
+        if (status.IncidentSummary is { } incident && status.IsConnected)
+        {
+            return (status.IsStale ? $"{incident} · stale" : incident, status.IncidentIsOutage ? Theme.CriticalText : Theme.WarningText);
+        }
+
         if (status.IsStale)
         {
             var age = status.LastUpdated is { } updated ? $"Last good {UsageFormatting.Age(updated, now)}" : "Stale";
@@ -718,7 +725,7 @@ internal sealed class UsageLedger : Control
 
         if (!status.IsConnected)
         {
-            return ("Not connected", Theme.CriticalText);
+            return (status.IncidentSummary is { } down ? $"Not connected · {down}" : "Not connected", Theme.CriticalText);
         }
 
         return (status.LastUpdated is { } last ? $"Connected · {UsageFormatting.Age(last, now)}" : "Connected", Theme.Faint);

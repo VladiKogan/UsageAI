@@ -35,6 +35,7 @@ internal sealed class SettingsForm : Form
     private readonly NumericUpDown _firstAlert;
     private readonly NumericUpDown _secondAlert;
     private readonly CheckBox _notifyOnReset;
+    private readonly CheckBox _showIncidents;
     private readonly NumericUpDown _warningPercent;
     private readonly NumericUpDown _criticalPercent;
     private readonly SegmentedControl _theme;
@@ -184,6 +185,7 @@ internal sealed class SettingsForm : Form
         _firstAlert = CreateNumeric(1, 100);
         _secondAlert = CreateNumeric(1, 100);
         _notifyOnReset = CreateCheckBox("Announce window resets");
+        _showIncidents = CreateCheckBox("Show provider incidents from their status pages");
         _warningPercent = CreateNumeric(1, 99);
         _criticalPercent = CreateNumeric(2, 100);
         _historyEnabled = CreateCheckBox("Record usage history on this machine");
@@ -288,6 +290,7 @@ internal sealed class SettingsForm : Form
         AddRow("First alert at (% used)", _firstAlert);
         AddRow("Second alert at (% used)", _secondAlert);
         AddSpan(_notifyOnReset);
+        AddSpan(_showIncidents);
 
         AddSection("Appearance");
         AddRow("Theme", _theme);
@@ -444,6 +447,7 @@ internal sealed class SettingsForm : Form
         _firstAlert.Value = _settings.AlertThreshold(0, 80);
         _secondAlert.Value = _settings.AlertThreshold(1, 95);
         _notifyOnReset.Checked = _settings.NotifyOnReset;
+        _showIncidents.Checked = _settings.ShowProviderIncidents;
         _warningPercent.Value = _settings.WarningPercent;
         _criticalPercent.Value = _settings.CriticalPercent;
         _theme.SelectedIndex = (int)_settings.Theme;
@@ -532,6 +536,7 @@ internal sealed class SettingsForm : Form
         _settings.NotificationsEnabled = _notificationsEnabled.Checked;
         _settings.NotifyAtPercent = new[] { (int)_firstAlert.Value, (int)_secondAlert.Value };
         _settings.NotifyOnReset = _notifyOnReset.Checked;
+        _settings.ShowProviderIncidents = _showIncidents.Checked;
         _settings.WarningPercent = (int)_warningPercent.Value;
         _settings.CriticalPercent = (int)_criticalPercent.Value;
         _settings.Theme = _theme.SelectedIndex switch

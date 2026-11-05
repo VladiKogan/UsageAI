@@ -113,6 +113,12 @@ internal sealed class AppSettings
 
     public bool ForecastEnabled { get; set; } = true;
 
+    /// <summary>
+    /// Reads the providers' public status pages and marks an ongoing incident on the tray icon,
+    /// its tooltip and the dashboard. Only the published status JSON is fetched; no credential.
+    /// </summary>
+    public bool ShowProviderIncidents { get; set; } = true;
+
     public bool GlobalHotkeyEnabled { get; set; } = true;
 
     /// <summary>Last GitHub release check, used to keep the automatic request to once per day.</summary>

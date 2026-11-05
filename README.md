@@ -150,8 +150,11 @@ UsageAI reads the login your tools already made, and nothing else:
   When that token has expired, or the request does not succeed, UsageAI asks the official
   `codex app-server` instead (read-only sandbox, no approvals), which renews the login itself. UsageAI
   never refreshes or rewrites `auth.json`.
-- 🏠 **No telemetry or tracking.** Network access is limited to provider usage requests and
-  one automatic GitHub release check per day while UsageAI is running, and checks you start manually.
+- 🏠 **No telemetry or tracking.** Network access is limited to provider usage requests,
+  one automatic GitHub release check per day while UsageAI is running, checks you start manually,
+  and — unless you turn off "Show provider incidents" — the providers' public status pages
+  (`status.claude.com`, `www.githubstatus.com`, `status.openai.com`) at most every five minutes,
+  with no credential attached.
 - 🗑️ **Your history is yours to delete** — one button in Settings.
 
 For Gemini, UsageAI first reuses a running Antigravity language server, then the `agy --hub` server

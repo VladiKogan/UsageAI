@@ -1400,6 +1400,112 @@ internal static class CoverageExpansionTests
         return Task.CompletedTask;
     }
 
+    public static async Task TestProviderIncidentsAsync()
+    {
+        var claudePage = new Uri("https://status.claude.com/");
+        static JsonElement Json(string json)
+        {
+            using var document = JsonDocument.Parse(json);
+            return document.RootElement.Clone();
+        }
+
+        string[] claudeComponents = ["claude.ai", "Claude API", "Claude Code"];
+
+        // All operational: no incident.
+        Null(ProviderIncidentService.ParseStatuspage(Json(
+            """{"components":[{"name":"claude.ai","status":"operational"},{"name":"Claude Code","status":"operational"}],"incidents":[],"scheduled_maintenances":[]}"""),
+            "claude", claudePage, claudeComponents));
+
+        // An incident on an allowlisted component counts, titled and linked; another product's does not.
+        var incident = ProviderIncidentService.ParseStatuspage(Json(
+            """
+            {"components":[{"name":"Claude Code","status":"degraded_performance"},{"name":"Claude Cowork","status":"major_outage"}],
+             "incidents":[
+               {"id":"abc123","name":"Cowork is down","status":"investigating","impact":"critical","components":[{"name":"Claude Cowork","status":"major_outage"}]},
+               {"id":"def456","name":"Elevated errors on Claude Code","status":"identified","impact":"minor","components":[{"name":"Claude Code","status":"degraded_performance"}]},
+               {"id":"old","name":"Resolved yesterday","status":"resolved","impact":"critical","components":[]}],
+             "scheduled_maintenances":[]}
+            """), "claude", claudePage, claudeComponents)!;
+        Equal(IncidentSeverity.Degraded, incident.Severity);
+        Equal("Elevated errors on Claude Code", incident.Title);
+        Equal(new Uri("https://status.claude.com/incidents/def456"), incident.Page);
+        False(incident.IsOutage);
+        Equal("Degraded", incident.SeverityLabel);
+
+        // A component outage with no incident written yet still counts, named after the component.
+        var componentOnly = ProviderIncidentService.ParseStatuspage(Json(
+            """{"components":[{"name":"Claude API (api.anthropic.com)","status":"partial_outage"}],"incidents":[],"scheduled_maintenances":[]}"""),
+            "claude", claudePage, claudeComponents)!;
+        True(componentOnly.IsOutage);
+        Equal("Claude API (api.anthropic.com): partial outage", componentOnly.Title);
+
+        // Maintenance in progress counts; scheduled maintenance does not yet.
+        Equal(IncidentSeverity.Maintenance, ProviderIncidentService.ParseStatuspage(Json(
+            """{"components":[],"incidents":[],"scheduled_maintenances":[{"id":"m1","name":"Copilot maintenance","status":"in_progress","components":[{"name":"Copilot","status":"under_maintenance"}]}]}"""),
+            "copilot", new Uri("https://www.githubstatus.com/"), ["Copilot"])!.Severity);
+        Null(ProviderIncidentService.ParseStatuspage(Json(
+            """{"components":[],"incidents":[],"scheduled_maintenances":[{"name":"Later","status":"scheduled","components":[{"name":"Copilot","status":"operational"}]}]}"""),
+            "copilot", new Uri("https://www.githubstatus.com/"), ["Copilot"]));
+
+        // incident.io (OpenAI): only components in the "Codex" group count.
+        const string openAi = """
+            {"summary":{
+              "structure":{"items":[
+                {"group":{"name":"APIs","components":[{"component_id":"api-1"}]}},
+                {"group":{"name":"Codex","components":[{"component_id":"codex-1"},{"component_id":"codex-2"}]}}]},
+              "affected_components":[{"component_id":"api-1","status":"full_outage"},{"component_id":"codex-2","status":"degraded_performance"}],
+              "ongoing_incidents":[{"name":"Responses API outage"},{"name":"Codex tasks are slow"}]}}
+            """;
+        var codex = ProviderIncidentService.ParseIncidentIo(Json(openAi), "codex", new Uri("https://status.openai.com/"), "Codex")!;
+        Equal(IncidentSeverity.Degraded, codex.Severity);
+        Equal("Codex tasks are slow", codex.Title);
+        Null(ProviderIncidentService.ParseIncidentIo(Json(
+            """{"summary":{"structure":{"items":[{"group":{"name":"Codex","components":[{"component_id":"codex-1"}]}}]},"affected_components":[]}}"""),
+            "codex", new Uri("https://status.openai.com/"), "Codex"));
+
+        // The service polls at most every five minutes, keeps the last answer when a check fails,
+        // and clears everything when the setting is off.
+        var degraded = """{"components":[{"name":"Copilot","status":"degraded_performance"}],"incidents":[],"scheduled_maintenances":[]}""";
+        var respond = (HttpStatusCode.OK, degraded);
+        var requests = 0;
+        using var http = new HttpClient(new StubHttpHandler((request, _, _) =>
+        {
+            requests++;
+            Equal("www.githubstatus.com", request.RequestUri!.Host);
+            return Task.FromResult(respond.Item1 == HttpStatusCode.OK
+                ? JsonResponse(HttpStatusCode.OK, respond.Item2)
+                : new HttpResponseMessage(respond.Item1));
+        }));
+        var service = new ProviderIncidentService(http, [ProviderIncidentService.Sources.Single(source => source.ProviderId == "copilot")]);
+        var changes = 0;
+        service.Changed += (_, _) => changes++;
+        var now = DateTimeOffset.UtcNow;
+        await service.RefreshIfDueAsync(enabled: true, now);
+        Equal(IncidentSeverity.Degraded, service.For("copilot")!.Severity);
+        Equal(1, changes);
+        await service.RefreshIfDueAsync(enabled: true, now.AddMinutes(1));
+        Equal(1, requests);
+        respond = (HttpStatusCode.ServiceUnavailable, string.Empty);
+        await service.RefreshIfDueAsync(enabled: true, now.AddMinutes(6));
+        Equal(2, requests);
+        NotNull(service.For("copilot"));
+        Equal(1, changes);
+        await service.RefreshIfDueAsync(enabled: false, now.AddMinutes(7));
+        Null(service.For("copilot"));
+        Equal(2, changes);
+
+        // The tray tooltip names the incident on its own line; the icon draws the dot.
+        var tooltip = UsageApplicationContext.WithIncident("UsageAI - Copilot: 40% used", service.For("copilot") ?? incident with { ProviderId = "copilot" });
+        True(tooltip.Contains("\nCopilot degraded: ", StringComparison.Ordinal));
+        Equal("UsageAI - Copilot: 40% used", UsageApplicationContext.WithIncident("UsageAI - Copilot: 40% used", null));
+        using var plain = TrayIconFactory.Create(40, size: 32);
+        using var marked = TrayIconFactory.Create(40, size: 32, incident: IncidentSeverity.MajorOutage);
+        using var plainBitmap = plain.ToBitmap();
+        using var markedBitmap = marked.ToBitmap();
+        True(plainBitmap.GetPixel(29, 2).A < markedBitmap.GetPixel(29, 2).A);
+        using var tank = TrayIconFactory.CreateTank(40, 40, size: 32, incident: IncidentSeverity.Degraded);
+    }
+
     public static async Task TestDiagnosticAttemptsAsync()
     {
         static string Describe(IReadOnlyList<ProviderAttempt> attempts) =>
