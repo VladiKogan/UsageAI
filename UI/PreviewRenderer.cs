@@ -352,6 +352,7 @@ internal static class PreviewRenderer
                     "Plus",
                     new[]
                     {
+                        new UsageMetric("5-hour", UsageMetricKind.Session, 41, now.AddHours(1).AddMinutes(48), 300),
                         new UsageMetric("Weekly", UsageMetricKind.Rolling, 92, now.AddDays(2).AddHours(18), 10_080),
                         new UsageMetric(
                             "Credits",
@@ -462,6 +463,12 @@ internal static class PreviewRenderer
 
         var history = new[]
         {
+            // The Codex 5-hour window opened 3h 12m ago, so only these samples feed its forecast.
+            new UsageSample(now.AddHours(-3.0), "codex", "Session:5-hour", 6),
+            new UsageSample(now.AddHours(-2.0), "codex", "Session:5-hour", 18),
+            new UsageSample(now.AddHours(-1.0), "codex", "Session:5-hour", 30),
+            new UsageSample(lastRefreshed, "codex", "Session:5-hour", 41),
+
             new UsageSample(now.AddHours(-6.0), "codex", "Rolling:Weekly", 80),
             new UsageSample(now.AddHours(-4.0), "codex", "Rolling:Weekly", 84),
             new UsageSample(now.AddHours(-2.0), "codex", "Rolling:Weekly", 88),

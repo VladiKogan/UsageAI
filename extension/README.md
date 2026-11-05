@@ -7,13 +7,13 @@ UsageAI gives you a clear dashboard in the Activity Bar and optional Status Bar 
 ## Preview
 
 <p align="center">
-  <img src="media/dashboard-preview.png" alt="UsageAI quota dashboard in Visual Studio Code, showing Codex, Claude Code, GitHub Copilot, and Google Gemini usage" width="460" />
+  <img src="media/dashboard-preview.png" alt="UsageAI dashboard in Visual Studio Code: Codex at 92% in red, Claude Code at 78% in amber, a collapsed GitHub Copilot card with its one-line summary, and Google Gemini's two model groups" width="400" />
 </p>
 
 Open UsageAI from the Activity Bar to see each provider's usage, remaining allowance, and reset time in one place. You can also move the view to the Secondary Sidebar or Panel to match your editor layout.
 
 <p align="center">
-  <img src="media/status-bar-preview.png" alt="UsageAI provider readings in the Visual Studio Code Status Bar with the Claude Code usage details open" width="568" />
+  <img src="media/status-bar-preview.png" alt="UsageAI readings for Codex, Claude, Copilot, and Gemini in the Visual Studio Code Status Bar, with the Claude hover showing its 5-hour and weekly meters" width="520" />
 </p>
 
 Choose one or more providers for compact Status Bar readings. Hover over a reading to see its usage windows, segmented meters, last update time, and quick links to open or refresh UsageAI.
@@ -142,6 +142,14 @@ npm.cmd run test:coverage
 ```
 
 Open the `extension` folder in VS Code and press `F5` to launch an Extension Development Host.
+
+Regenerate the README previews after a dashboard or Status Bar change:
+
+```powershell
+npm.cmd run previews
+```
+
+It compiles the extension, renders the real dashboard webview and Status Bar items with sample providers in VS Code's Dark Modern colours, and captures them with headless Edge or Chrome into `media/`. Set `EDGE_PATH` or `CHROME_PATH` if the browser is not in its standard folder, and `VSCODE_CODICON_PATH` if `code` is not on `PATH`, since the view title's icons come from VS Code's own codicon font.
 
 Package an installable artifact:
 

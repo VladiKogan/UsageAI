@@ -10,7 +10,7 @@ import {
   refreshExpiredClaudeCredentials,
 } from "../src/providers/claude";
 import { parseCodexSnapshot } from "../src/providers/codex";
-import { parseCopilotSnapshot } from "../src/providers/copilot";
+import { parseCopilotSnapshot, resolveCopilotPlan } from "../src/providers/copilot";
 import {
   agyExecutableCandidates,
   parseAntigravityQuotaSummary,
@@ -172,6 +172,37 @@ test("Copilot retains metered and unlimited quotas", () => {
   assert.equal(snapshot.metrics[0]?.name, "AI credits");
   assert.equal(snapshot.metrics[0]?.usedPercent, 76);
   assert.equal(snapshot.metrics[1]?.isUnlimited, true);
+});
+
+test("Copilot names an individual plan from its SKU", () => {
+  // copilot_plan is "individual" for every personal plan; the SKU says which one it is.
+  const faculty = parseCopilotSnapshot({
+    copilot_plan: "individual",
+    access_type_sku: "free_faculty_quota",
+    quota_snapshots: { chat: { unlimited: true } },
+  });
+  assert.equal(faculty.plan, "Pro");
+
+  const cases: Array<[string | undefined, string | undefined, string]> = [
+    ["individual", "monthly_subscriber_quota", "Pro"],
+    ["individual", "yearly_subscriber_quota", "Pro"],
+    ["individual", "free_educational_quota", "Pro"],
+    ["individual", "free_engaged_oss_quota", "Pro"],
+    ["individual", "plus_monthly_subscriber_quota", "Pro+"],
+    ["Individual", " PLUS_YEARLY_SUBSCRIBER_QUOTA ", "Pro+"],
+    ["individual", "free_limited_copilot", "Free"],
+    [undefined, "free_faculty_quota", "Pro"],
+    // An unknown SKU keeps the reported plan, and only a personal plan is ever renamed.
+    ["individual", "some_future_quota", "Individual"],
+    ["individual", undefined, "Individual"],
+    ["business", "monthly_subscriber_quota", "Business"],
+    ["individual_pro", "free_limited_copilot", "Pro"],
+    [undefined, "some_future_quota", "Some Future Quota"],
+    [undefined, undefined, "Copilot"],
+  ];
+  for (const [plan, sku, expected] of cases) {
+    assert.equal(resolveCopilotPlan(plan, sku), expected, `${plan} / ${sku}`);
+  }
 });
 
 test("Gemini parses CLI and Antigravity quota shapes", () => {

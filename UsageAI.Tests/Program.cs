@@ -39,6 +39,7 @@ internal static class Program
         ("Codex snapshot parsing", TestCodexSnapshotParsingAsync),
         ("Claude snapshot parsing", TestClaudeSnapshotParsingAsync),
         ("Copilot keeps every reported quota", TestCopilotSnapshotParsingAsync),
+        ("Copilot names an individual plan from its SKU", TestCopilotPlanFromSkuAsync),
         ("Gemini snapshot parsing", TestGeminiSnapshotParsingAsync),
         ("official agy output and fallback order", TestAgyFallbackAsync),
         ("Gemini JWT claims extraction", TestGeminiJwtExtractionAsync),
@@ -710,6 +711,40 @@ internal static class Program
         True(snapshot.Metrics[1].IsUnlimited);
         False(snapshot.Metrics[1].HasQuota);
         Equal(76, snapshot.HighestUsedPercent);
+        return Task.CompletedTask;
+    }
+
+    private static Task TestCopilotPlanFromSkuAsync()
+    {
+        // copilot_plan is "individual" for every personal plan; the SKU says which one it is.
+        using (var document = JsonDocument.Parse(
+                   """
+                   {
+                     "copilot_plan": "individual",
+                     "access_type_sku": "free_faculty_quota",
+                     "quota_snapshots": { "chat": { "unlimited": true } }
+                   }
+                   """))
+        {
+            Equal("Pro", GitHubCopilotUsageClient.ParseSnapshot(document.RootElement).Plan);
+        }
+
+        Equal("Pro", GitHubCopilotUsageClient.ResolvePlan("individual", "monthly_subscriber_quota"));
+        Equal("Pro", GitHubCopilotUsageClient.ResolvePlan("individual", "yearly_subscriber_quota"));
+        Equal("Pro", GitHubCopilotUsageClient.ResolvePlan("individual", "free_educational_quota"));
+        Equal("Pro", GitHubCopilotUsageClient.ResolvePlan("individual", "free_engaged_oss_quota"));
+        Equal("Pro+", GitHubCopilotUsageClient.ResolvePlan("individual", "plus_monthly_subscriber_quota"));
+        Equal("Pro+", GitHubCopilotUsageClient.ResolvePlan("Individual", " PLUS_YEARLY_SUBSCRIBER_QUOTA "));
+        Equal("Free", GitHubCopilotUsageClient.ResolvePlan("individual", "free_limited_copilot"));
+        Equal("Pro", GitHubCopilotUsageClient.ResolvePlan(null, "free_faculty_quota"));
+
+        // An unknown SKU keeps the reported plan, and only a personal plan is ever renamed.
+        Equal("Individual", GitHubCopilotUsageClient.ResolvePlan("individual", "some_future_quota"));
+        Equal("Individual", GitHubCopilotUsageClient.ResolvePlan("individual", null));
+        Equal("Business", GitHubCopilotUsageClient.ResolvePlan("business", "monthly_subscriber_quota"));
+        Equal("Pro", GitHubCopilotUsageClient.ResolvePlan("individual_pro", "free_limited_copilot"));
+        Equal("Some Future Quota", GitHubCopilotUsageClient.ResolvePlan(null, "some_future_quota"));
+        Equal("Copilot", GitHubCopilotUsageClient.ResolvePlan(null, null));
         return Task.CompletedTask;
     }
 

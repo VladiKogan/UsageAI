@@ -8,6 +8,11 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **GitHub Copilot names a personal plan as Pro, Pro+ or Free instead of "Individual".** GitHub
+  reports `copilot_plan` as `individual` for every personal plan, so a Copilot Pro account,
+  including one granted free to a verified teacher, student or open-source maintainer, read as
+  "Individual". The plan is now named from the account's `access_type_sku` when it is one UsageAI
+  recognises; an unrecognised SKU and every Business or Enterprise plan keep the name GitHub reports.
 - **Google Gemini says when Google has stopped serving Gemini CLI quota for a plan.** Since June
   2026 Google no longer answers Gemini CLI usage requests for personal, Google AI Pro and Ultra
   accounts, and UsageAI took the refusal for an expired sign-in, asking for a sign-in that could
@@ -46,6 +51,11 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Changed
 
+- **The sample Codex account in the previews now has its 5-hour window.** A Codex Plus plan
+  reports a 5-hour limit as well as the weekly one, but the sample data behind `--render-preview`,
+  `--preview-window` and `--preview-tray` gave it only the weekly limit, so the README screenshots
+  showed a plan that does not exist. The sample now reports both, with history inside the current
+  5-hour window so its forecast reads too, and the README previews are regenerated from it.
 - The Gemini CLI fallback now asks for quota on the Code Assist project Google reports for the
   account, rather than leaving Google to pick a default project.
 - The Codex server UsageAI starts now runs with a read-only sandbox and never asks for approval

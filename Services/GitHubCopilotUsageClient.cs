@@ -157,9 +157,8 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
                 "GitHub Copilot returned account details without any quota information.");
         }
 
-        var plan = GetString(root, "copilot_plan") ?? GetString(root, "access_type_sku") ?? "Copilot";
         return new UsageSnapshot(
-            FormatPlan(plan),
+            ResolvePlan(GetString(root, "copilot_plan"), GetString(root, "access_type_sku")),
             selected,
             DateTimeOffset.Now,
             "copilot",
@@ -586,6 +585,46 @@ internal sealed class GitHubCopilotUsageClient : IUsageClient
 
     private static string FormatNumber(double value) =>
         value.ToString(Math.Abs(value % 1) < 0.001 ? "N0" : "N1", CultureInfo.CurrentCulture);
+
+    /// <summary>
+    /// GitHub reports <c>copilot_plan</c> as "individual" for Free, Pro and Pro+ alike, so a personal
+    /// plan is named from <c>access_type_sku</c> when that SKU is one we recognise. Every other plan,
+    /// and an unrecognised SKU, keeps the reported plan name.
+    /// </summary>
+    internal static string ResolvePlan(string? copilotPlan, string? accessTypeSku)
+    {
+        var individual = copilotPlan is null
+            || copilotPlan.Trim().Equals("individual", StringComparison.OrdinalIgnoreCase);
+        if (individual && IndividualPlanFromSku(accessTypeSku) is { } fromSku)
+        {
+            return fromSku;
+        }
+
+        return FormatPlan(copilotPlan ?? accessTypeSku ?? "Copilot");
+    }
+
+    private static string? IndividualPlanFromSku(string? accessTypeSku)
+    {
+        var sku = accessTypeSku?.Trim().ToLowerInvariant();
+        if (string.IsNullOrEmpty(sku))
+        {
+            return null;
+        }
+
+        if (sku.StartsWith("plus_", StringComparison.Ordinal))
+        {
+            return "Pro+";
+        }
+
+        return sku switch
+        {
+            "free_limited_copilot" => "Free",
+            // Paid monthly or yearly, or granted free to verified teachers, students and maintainers.
+            "monthly_subscriber_quota" or "yearly_subscriber_quota" or "free_faculty_quota"
+                or "free_educational_quota" or "free_engaged_oss_quota" => "Pro",
+            _ => null,
+        };
+    }
 
     private static string FormatPlan(string plan)
     {

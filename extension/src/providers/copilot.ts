@@ -177,7 +177,7 @@ export function parseCopilotSnapshot(root: unknown): UsageSnapshot {
   }
   const accountName = getString(root, "login");
   return {
-    plan: formatPlan(getString(root, "copilot_plan") ?? getString(root, "access_type_sku") ?? "Copilot"),
+    plan: resolveCopilotPlan(getString(root, "copilot_plan"), getString(root, "access_type_sku")),
     metrics,
     fetchedAt: new Date().toISOString(),
     providerId: "copilot",
@@ -317,6 +317,34 @@ async function readGitHubCliToken(): Promise<string | undefined> {
 
 function formatNumber(value: number): string {
   return new Intl.NumberFormat(undefined, { maximumFractionDigits: Math.abs(value % 1) < 0.001 ? 0 : 1 }).format(value);
+}
+
+/**
+ * GitHub reports `copilot_plan` as "individual" for Free, Pro and Pro+ alike, so a personal plan is
+ * named from `access_type_sku` when that SKU is one we recognise. Every other plan, and an
+ * unrecognised SKU, keeps the reported plan name. Mirrors the desktop's `ResolvePlan`.
+ */
+export function resolveCopilotPlan(copilotPlan: string | undefined, accessTypeSku: string | undefined): string {
+  const individual = copilotPlan === undefined || copilotPlan.trim().toLowerCase() === "individual";
+  const fromSku = individual ? individualPlanFromSku(accessTypeSku) : undefined;
+  return fromSku ?? formatPlan(copilotPlan ?? accessTypeSku ?? "Copilot");
+}
+
+function individualPlanFromSku(accessTypeSku: string | undefined): string | undefined {
+  const sku = accessTypeSku?.trim().toLowerCase();
+  if (!sku) {
+    return undefined;
+  }
+  if (sku.startsWith("plus_")) {
+    return "Pro+";
+  }
+  if (sku === "free_limited_copilot") {
+    return "Free";
+  }
+  // Paid monthly or yearly, or granted free to verified teachers, students and maintainers.
+  const pro = ["monthly_subscriber_quota", "yearly_subscriber_quota", "free_faculty_quota",
+    "free_educational_quota", "free_engaged_oss_quota"];
+  return pro.includes(sku) ? "Pro" : undefined;
 }
 
 function formatPlan(plan: string): string {

@@ -4,6 +4,11 @@
 
 ### Fixed
 
+- **GitHub Copilot names a personal plan as Pro, Pro+ or Free instead of "Individual".** GitHub
+  reports `copilot_plan` as `individual` for every personal plan, so a Copilot Pro account,
+  including one granted free to a verified teacher, student or open-source maintainer, read as
+  "Individual". The plan is now named from the account's `access_type_sku` when it is one UsageAI
+  recognises; an unrecognised SKU and every Business or Enterprise plan keep the name GitHub reports.
 - **Google Gemini says when Google has stopped serving Gemini CLI quota for a plan.** Since June
   2026 Google no longer answers Gemini CLI usage requests for personal, Google AI Pro and Ultra
   accounts, and UsageAI took the refusal for an expired sign-in. It now recognises Google's
@@ -42,6 +47,10 @@
 
 ### Changed
 
+- **The README previews show the current dashboard and Status Bar.** The August screenshots
+  predated collapsible cards, the metric filter and the new provider icons. `npm.cmd run previews`
+  now renders both from the compiled extension and sample providers in Dark Modern colours, so they
+  can be regenerated after any UI change instead of retaken by hand.
 - The Gemini CLI fallback now asks for quota on the Code Assist project Google reports for the
   account, rather than leaving Google to pick a default project.
 - The Codex server UsageAI starts now runs with a read-only sandbox and never asks for approval
