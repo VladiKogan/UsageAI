@@ -78,6 +78,7 @@ The project follows [Semantic Versioning](https://semver.org/).
   down. Only the components that serve the usage UsageAI shows count. The pages are read at most
   every five minutes without any credential, and "Show provider incidents" in Settings turns it off.
   On a popup tile the incident turns the header indicator into a "!" whose hover text names it.
+  The editor extension shows the same incidents on its Status Bar item and dashboard cards.
   Gemini has no status page that covers its quota.
 - **The dashboard says whether you are on pace.** For a limit that is not forecast to run out
   before it resets, the "At this pace" column now compares use with the time the window has run:

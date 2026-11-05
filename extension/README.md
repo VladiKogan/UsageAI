@@ -110,6 +110,8 @@ If a provider says it is not connected, sign in with that provider's CLI or IDE 
 
 Your provider credentials stay in the extension host. UsageAI does not scan browser storage, send credentials to the dashboard webview, or include credentials in its cached usage snapshots.
 
+Unless you turn off `usageai.showProviderIncidents`, UsageAI also reads the providers' public status pages (`status.claude.com`, `www.githubstatus.com`, `status.openai.com`) at most every five minutes, with no credential, cookie or account identifier attached, and shows an ongoing incident as a marker on the Status Bar item, a line in its tooltip, and a line on the provider's card.
+
 Additional protections include allowlisted provider endpoints, blocked redirects, size-limited responses, read-only Claude OAuth credentials, in-memory-only refresh caching for other providers, and a local Antigravity connection reachable only over loopback. When Claude's short-lived access token expires—or the first usage request indicates that a seemingly current login is stale—the extension invokes the official `claude auth status --json` command once with bounded runtime and output—plus `claude mcp list` while the stored token is still expired, which makes Claude Code refresh its own login—rereads the credentials, and retries usage once. Claude Code remains the only process that can exchange the shared refresh token or update its credential store; explicit environment-token overrides are never replaced by this fallback. The optional Claude web session key remains an environment variable and is never saved by UsageAI.
 
 For Gemini, the extension first reuses a running Antigravity language server, then the `agy --hub`

@@ -183,6 +183,13 @@
             "order": 40,
             "description": "Allow UsageAI to invoke `gh auth token` when no Copilot credential file is usable."
           },
+          "usageai.showProviderIncidents": {
+            "type": "boolean",
+            "default": true,
+            "order": 41,
+            "scope": "application",
+            "description": "Read the providers' public status pages (status.claude.com, www.githubstatus.com, status.openai.com) at most every five minutes, without any credential, and show an ongoing incident in the Status Bar tooltip and on the provider's card."
+          },
           "usageai.metricDisplayMode": {
             "type": "string",
             "enum": [

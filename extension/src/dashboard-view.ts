@@ -240,6 +240,8 @@ function dashboardHtml(webview: vscode.Webview): string {
     .provider-name { display: block; font-weight: 650; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .plan, .collapsed-summary { display: block; color: var(--vscode-descriptionForeground); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     .collapsed-summary { margin-top: 3px; }
+    .incident { display: block; margin-top: 3px; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; color: var(--vscode-editorWarning-foreground); }
+    .incident[data-outage="true"] { color: var(--vscode-errorForeground); }
     .headline { display: inline-flex; min-height: 25px; align-items: center; gap: 6px; font-family: var(--vscode-editor-font-family); font-size: 18px; font-weight: 650; letter-spacing: -.04em; white-space: nowrap; }
     .headline-unit { color: var(--vscode-descriptionForeground); font-size: 11px; font-weight: 600; letter-spacing: 0; }
     .spinner { display: inline-block; width: 13px; height: 13px; flex: 0 0 auto; border: 2px solid color-mix(in srgb, var(--vscode-progressBar-background) 26%, transparent); border-top-color: var(--vscode-progressBar-background); border-radius: 50%; animation: refresh-spin .8s linear infinite; }
@@ -322,6 +324,7 @@ function dashboardHtml(webview: vscode.Webview): string {
         head.addEventListener('click', () => vscode.postMessage({ type: 'setProviderExpanded', providerId: state.id, expanded: !expanded }));
         const chevron = el('span', 'chevron', '⌄'); chevron.setAttribute('aria-hidden', 'true'); const provider = el('div', 'provider');
         const planParts = state.snapshot ? [state.snapshot.plan, state.snapshot.accountName] : ['Not connected']; if (state.stale) planParts.push('Stale'); provider.append(el('span', 'provider-name', state.displayName), el('span', 'plan', planParts.filter(Boolean).join(' · ')));
+        if (state.incident) { const incident = el('span', 'incident', 'Status page: ' + state.incident); incident.dataset.outage = String(Boolean(state.incidentIsOutage)); provider.append(incident); }
         if (!expanded) provider.append(el('span', 'collapsed-summary', highestMetric ? highestMetric.name + ' · ' + displayed(highest, quota) + (quota === 'remaining' ? '% left · ' : '% · ') + countdown(highestMetric.resetsAt) : 'No metered limit'));
         const headline = el('div', 'headline'); if (state.refreshing) { const spinner = el('span', 'spinner'); spinner.setAttribute('aria-hidden', 'true'); headline.append(spinner); }
         // Remaining mode never shows a provider without a metered limit as "100% left".

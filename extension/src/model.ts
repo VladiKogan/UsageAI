@@ -33,6 +33,9 @@ export interface ProviderState {
   readonly refreshing: boolean;
   readonly lastAttemptedAt?: string;
   readonly nextRefreshAt?: string;
+  /** The provider's own status-page incident, such as "Degraded: Elevated errors", when there is one. */
+  readonly incident?: string;
+  readonly incidentIsOutage?: boolean;
 }
 
 export interface UsageClient {

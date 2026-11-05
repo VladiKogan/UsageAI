@@ -29,6 +29,12 @@
 
 ### Added
 
+- **UsageAI shows when a provider reports an incident.** When Claude, GitHub Copilot or Codex reports
+  degraded service or an outage on its public status page, the provider's Status Bar item gets a
+  warning or error marker, its tooltip names the incident, and its dashboard card shows it, so a card
+  that went stale can be told apart from a provider that is down. Only the components that serve the
+  usage UsageAI shows count. The pages are read at most every five minutes without any credential;
+  `usageai.showProviderIncidents` turns it off. Gemini has no status page that covers its quota.
 - **The dashboard says whether you are on pace.** Each metered limit's footer now adds, after the
   reset countdown, how use compares with the time its window has run: "On pace", "12% under pace" or
   "8% over pace", once 5% of the window has passed.
