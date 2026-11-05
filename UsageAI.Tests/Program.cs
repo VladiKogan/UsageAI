@@ -134,6 +134,12 @@ internal static class Program
     {
         if (args.FirstOrDefault() == "app-server")
         {
+            // UsageAI always starts the server sandboxed; a bare `app-server` means it no longer does.
+            return 4;
+        }
+
+        if (args.Length >= 5 && args.AsSpan(0, 5).SequenceEqual(["-s", "read-only", "-a", "never", "app-server"]))
+        {
             return await RunFakeCodexAppServerAsync();
         }
 
@@ -316,6 +322,20 @@ internal static class Program
                 """
                 {"id":2,"result":{"rateLimitsByLimitId":{"codex":{"planType":"pro","primary":{"usedPercent":44,"windowDurationMins":300},"secondary":{"usedPercent":61,"windowDurationMins":10080}}}}}
                 """);
+            await Console.Out.FlushAsync();
+
+            // The optional account lookup follows; it must never refresh the login.
+            var accountRequest = await Console.In.ReadLineAsync();
+            if (accountRequest is null ||
+                !accountRequest.Contains("\"method\":\"account/read\"", StringComparison.Ordinal) ||
+                !accountRequest.Contains("\"refreshToken\":false", StringComparison.Ordinal))
+            {
+                return 5;
+            }
+
+            await Console.Out.WriteLineAsync(scenario.EndsWith("account-error", StringComparison.Ordinal)
+                ? """{"id":3,"error":{"message":"method not found"}}"""
+                : """{"id":3,"result":{"account":{"type":"chatgpt","email":"dev@example.com","planType":"pro"},"requiresOpenaiAuth":true}}""");
         }
 
         await Console.Out.FlushAsync();
@@ -572,6 +592,44 @@ internal static class Program
         False(snapshot.Metrics[2].HasQuota);
         Equal("Reset credits", snapshot.Metrics[3].Name);
         Equal(63, snapshot.HighestUsedPercent);
+        Null(snapshot.AccountName);
+
+        // Model-specific buckets such as Spark become their own named groups, and the main bucket
+        // is then named too, so the popup can offer each as a ring group.
+        using var multiBucket = JsonDocument.Parse(
+            """
+            {
+              "rateLimitsByLimitId": {
+                "codex_bengalfox": {
+                  "limitId": "codex_bengalfox", "limitName": "GPT-5.3-Codex-Spark",
+                  "primary": { "usedPercent": 91, "windowDurationMins": 300 },
+                  "secondary": { "usedPercent": 12, "windowDurationMins": 10080 }
+                },
+                "codex": {
+                  "limitId": "codex", "planType": "pro",
+                  "primary": { "usedPercent": 5, "windowDurationMins": 300 },
+                  "secondary": { "usedPercent": 40, "windowDurationMins": 10080 }
+                },
+                "codex_other": { "limitId": "codex_other", "normalModelSlug": "gpt-mini (preview)",
+                  "secondary": { "usedPercent": 3, "windowDurationMins": 10080 } },
+                "codex_unnamed": { "primary": { "usedPercent": 1, "windowDurationMins": 300 } },
+                "codex_empty": { "limitName": "No windows" }
+              }
+            }
+            """);
+        using var account = JsonDocument.Parse(
+            """{"account":{"type":"chatgpt","email":"dev@example.com","planType":"plus"}}""");
+        var grouped = CodexUsageClient.ParseSnapshot(multiBucket.RootElement, account.RootElement);
+        Equal(
+            "Codex (5-hour)|Codex (Weekly)|GPT-5.3-Codex-Spark (5-hour)|GPT-5.3-Codex-Spark (Weekly)|gpt-mini preview (Weekly)|Codex Unnamed (5-hour)",
+            string.Join('|', grouped.Metrics.Select(metric => metric.Name)));
+        Equal(91, grouped.Metrics[2].UsedPercent);
+        // The rate-limit response's plan wins over the account's; the account only names who is signed in.
+        Equal("Pro", grouped.Plan);
+        Equal("dev@example.com", grouped.AccountName);
+        Equal(
+            "Codex|GPT-5.3-Codex-Spark|gpt-mini preview|Codex Unnamed",
+            string.Join('|', PopupMetricSelection.Groups(grouped.Metrics)));
         return Task.CompletedTask;
     }
 

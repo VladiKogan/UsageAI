@@ -14,10 +14,21 @@ The project follows [Semantic Versioning](https://semver.org/).
   never help. It now recognises Google's `UNSUPPORTED_CLIENT` answer and points to Antigravity or
   `agy` instead; Standard, paid Code Assist and Workspace accounts keep the sign-in message.
 
+### Added
+
+- **Codex shows model-specific limits such as Spark.** Codex reports a separate rate-limit bucket for
+  some models, and UsageAI read only the main one. Every bucket now shows as its own group,
+  named the way Codex names it, and the popup lets you pick which group its rings follow, as it
+  does for Gemini's model groups. Accounts with only the main limit look exactly as before.
+- **The Codex card names the signed-in account.** UsageAI asks the Codex CLI which account is signed
+  in, without refreshing the login; an older CLI that cannot answer still shows usage.
+
 ### Changed
 
 - The Gemini CLI fallback now asks for quota on the Code Assist project Google reports for the
   account, rather than leaving Google to pick a default project.
+- The Codex server UsageAI starts now runs with a read-only sandbox and never asks for approval
+  (`-s read-only -a never`), so it can never be asked to run or approve anything.
 - **The `agy` server UsageAI starts no longer updates itself.** It runs for as long as UsageAI does,
   so it kept the CLI's background updater alive too; UsageAI now sets
   `AGY_CLI_DISABLE_AUTO_UPDATE` for every `agy` it starts, and `agy` sessions you run yourself

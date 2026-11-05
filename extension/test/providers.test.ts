@@ -34,6 +34,43 @@ test("Codex keeps rolling windows and balances", () => {
   assert.equal(snapshot.plan, "Plus");
   assert.deepEqual(snapshot.metrics.map((metric) => metric.name), ["5-hour", "Weekly", "Credits", "Reset credits"]);
   assert.equal(snapshot.metrics[1]?.usedPercent, 63);
+  assert.equal(snapshot.accountName, undefined);
+
+  // Model-specific buckets such as Spark become their own named groups, and the main bucket is then
+  // named too. Mirrors the desktop check.
+  const grouped = parseCodexSnapshot(
+    {
+      rateLimitsByLimitId: {
+        codex_bengalfox: {
+          limitId: "codex_bengalfox",
+          limitName: "GPT-5.3-Codex-Spark",
+          primary: { usedPercent: 91, windowDurationMins: 300 },
+          secondary: { usedPercent: 12, windowDurationMins: 10_080 },
+        },
+        codex: {
+          limitId: "codex",
+          planType: "pro",
+          primary: { usedPercent: 5, windowDurationMins: 300 },
+          secondary: { usedPercent: 40, windowDurationMins: 10_080 },
+        },
+        codex_other: { normalModelSlug: "gpt-mini (preview)", secondary: { usedPercent: 3, windowDurationMins: 10_080 } },
+        codex_unnamed: { primary: { usedPercent: 1, windowDurationMins: 300 } },
+        codex_empty: { limitName: "No windows" },
+      },
+    },
+    { account: { type: "chatgpt", email: "dev@example.com", planType: "plus" } },
+  );
+  assert.deepEqual(grouped.metrics.map((metric) => metric.name), [
+    "Codex (5-hour)",
+    "Codex (Weekly)",
+    "GPT-5.3-Codex-Spark (5-hour)",
+    "GPT-5.3-Codex-Spark (Weekly)",
+    "gpt-mini preview (Weekly)",
+    "Codex Unnamed (5-hour)",
+  ]);
+  assert.equal(grouped.metrics[2]?.usedPercent, 91);
+  assert.equal(grouped.plan, "Pro");
+  assert.equal(grouped.accountName, "dev@example.com");
 });
 
 test("Claude parses OAuth credentials and every reported limit", () => {

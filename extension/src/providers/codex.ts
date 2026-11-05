@@ -30,7 +30,7 @@ export class CodexUsageClient implements UsageClient {
     const launch = await findCodexLaunch(this.resolveExtensionPath);
     const child = spawnSecure(
       launch.executable,
-      [...launch.args, "app-server", "--listen", "stdio://"],
+      [...launch.args, ...codexAppServerArguments],
       ["CODEX_HOME", "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR", "SSL_CERT_FILE"],
     );
     let stderr = "";
@@ -59,7 +59,7 @@ export class CodexUsageClient implements UsageClient {
       writeProtocolMessage(child.stdin, { method: "initialized" });
       writeProtocolMessage(child.stdin, { id: 2, method: "account/rateLimits/read", params: null });
       const result = await readResponse(iterator, 2);
-      return parseCodexSnapshot(result);
+      return parseCodexSnapshot(result, await tryReadAccount(child.stdin, iterator));
     } catch (error) {
       if (signal?.aborted) {
         throw signal.reason;
@@ -82,6 +82,41 @@ export class CodexUsageClient implements UsageClient {
       child.stdin.end();
       child.kill();
     }
+  }
+}
+
+/**
+ * The arguments ahead of the launch's own: a read-only sandbox and no approval prompts, so the
+ * server UsageAI starts can never be asked to run or approve anything. Mirrors the desktop.
+ */
+export const codexAppServerArguments: readonly string[] = ["-s", "read-only", "-a", "never", "app-server", "--listen", "stdio://"];
+
+/** How long the optional account lookup may take after usage has already arrived. */
+const accountReadTimeoutMs = 5_000;
+
+/**
+ * Asks which account is signed in. Usage has already arrived, so an older CLI without
+ * `account/read`, an error, or a slow answer leaves the account unnamed instead of failing the
+ * refresh. `refreshToken: false` keeps the lookup from refreshing the login.
+ */
+async function tryReadAccount(
+  stdin: NodeJS.WritableStream,
+  iterator: AsyncIterator<string>,
+): Promise<Record<string, unknown> | undefined> {
+  let timer: NodeJS.Timeout | undefined;
+  try {
+    writeProtocolMessage(stdin, { id: 3, method: "account/read", params: { refreshToken: false } });
+    return await Promise.race([
+      readResponse(iterator, 3),
+      new Promise<undefined>((resolve) => {
+        timer = setTimeout(() => resolve(undefined), accountReadTimeoutMs);
+        timer.unref();
+      }),
+    ]);
+  } catch {
+    return undefined;
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -131,17 +166,19 @@ function matchesId(value: unknown, expectedId: number): boolean {
   return value === expectedId || value === String(expectedId);
 }
 
-export function parseCodexSnapshot(result: unknown): UsageSnapshot {
-  const rateLimits = selectCodexBucket(result);
-  const primary = parseWindow(rateLimits, "primary", "Primary");
-  const secondary = parseWindow(rateLimits, "secondary", "Secondary");
-  const { session, weekly } = classifyWindows(primary, secondary);
+/** At most this many extra rate-limit buckets (model-specific limits such as Spark) are shown. */
+const maxExtraBuckets = 6;
+
+export function parseCodexSnapshot(result: unknown, account?: unknown): UsageSnapshot {
+  const { key: mainKey, bucket: rateLimits } = selectCodexBucket(result);
+  const extras = extraBuckets(result, mainKey);
+  // With model-specific buckets such as Spark, every bucket becomes a named group, so the dashboard
+  // shows Codex and Spark as separate groups. An account with only the main bucket keeps the plain
+  // "5-hour" / "Weekly" names.
   const metrics: UsageMetric[] = [];
-  if (session) {
-    metrics.push(session);
-  }
-  if (weekly) {
-    metrics.push(weekly);
+  addWindows(metrics, rateLimits, extras.length > 0 ? "Codex" : undefined);
+  for (const { group, bucket } of extras) {
+    addWindows(metrics, bucket, group);
   }
 
   const credits = getObject(rateLimits, "credits");
@@ -167,30 +204,86 @@ export function parseCodexSnapshot(result: unknown): UsageSnapshot {
     });
   }
 
+  // The fresh rate-limit response knows the current plan best; the account only names who is signed in.
+  const accountDetails = getObject(account, "account");
+  const email = getString(accountDetails, "email");
   return {
-    plan: formatPlan(getString(rateLimits, "planType") ?? "Codex"),
+    plan: formatPlan(getString(rateLimits, "planType") ?? getString(accountDetails, "planType") ?? "Codex"),
     metrics,
     fetchedAt: new Date().toISOString(),
     providerId: "codex",
     providerName: "Codex",
+    ...(email && email.length <= 320 ? { accountName: email } : {}),
   };
 }
 
-function selectCodexBucket(result: unknown): Record<string, unknown> {
+function addWindows(metrics: UsageMetric[], bucket: Record<string, unknown>, group: string | undefined): void {
+  const primary = parseWindow(bucket, "primary", "Primary");
+  const secondary = parseWindow(bucket, "secondary", "Secondary");
+  const { session, weekly } = classifyWindows(primary, secondary);
+  for (const window of [session, weekly]) {
+    if (window) {
+      metrics.push(group ? { ...window, name: `${group} (${window.name})` } : window);
+    }
+  }
+}
+
+/**
+ * The buckets besides the main one that report at least one window, each named by the label the
+ * server gives it (`limitName`), else its model slug or a readable form of its id.
+ */
+function extraBuckets(
+  result: unknown,
+  mainKey: string | undefined,
+): Array<{ readonly group: string; readonly bucket: Record<string, unknown> }> {
+  const extras: Array<{ readonly group: string; readonly bucket: Record<string, unknown> }> = [];
+  const buckets = getObject(result, "rateLimitsByLimitId");
+  if (!buckets || mainKey === undefined) {
+    return extras;
+  }
+  for (const [key, bucket] of Object.entries(buckets)) {
+    if (extras.length >= maxExtraBuckets) {
+      break;
+    }
+    if (key === mainKey || !isObject(bucket) || (!parseWindow(bucket, "primary", "Primary") && !parseWindow(bucket, "secondary", "Secondary"))) {
+      continue;
+    }
+    const group = codexBucketLabel(bucket, key);
+    if (!extras.some((existing) => existing.group.toLowerCase() === group.toLowerCase())) {
+      extras.push({ group, bucket });
+    }
+  }
+  return extras;
+}
+
+export function codexBucketLabel(bucket: unknown, limitId: string): string {
+  let label = getString(bucket, "limitName") ?? getString(bucket, "normalModelSlug");
+  if (!label?.trim()) {
+    label = limitId.replace(/[_-]/g, " ").trim().replace(/\b\w/g, (value) => value.toUpperCase());
+  }
+  // A label ends up in a metric name, where a parenthesis would read as the window.
+  label =label.replace(/[\u0000-\u001f\u007f()]/g, "").trim();
+  if (!label) {
+    return "Other limit";
+  }
+  return label.length > 60 ? label.slice(0, 60).trimEnd() : label;
+}
+
+function selectCodexBucket(result: unknown): { readonly key: string | undefined; readonly bucket: Record<string, unknown> } {
   const buckets = getObject(result, "rateLimitsByLimitId");
   if (buckets) {
     const codex = getObject(buckets, "codex");
     if (codex) {
-      return codex;
+      return { key: "codex", bucket: codex };
     }
-    const first = Object.values(buckets).find(isObject);
-    if (first) {
-      return first;
+    const first = Object.entries(buckets).find(([, value]) => isObject(value));
+    if (first && isObject(first[1])) {
+      return { key: first[0], bucket: first[1] };
     }
   }
   const historical = getObject(result, "rateLimits");
   if (historical) {
-    return historical;
+    return { key: undefined, bucket: historical };
   }
   throw new UsageProviderError("Codex returned no rate-limit windows. Sign in with `codex login`, then refresh.");
 }

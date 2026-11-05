@@ -20,10 +20,19 @@ internal sealed class CodexUsageClient : IUsageClient
 
     public Uri AccountUrl { get; } = new("https://chatgpt.com/codex/settings/usage");
 
-    public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default) =>
-        ParseSnapshot(await GetRawUsageAsync(cancellationToken));
+    /// <summary>How long the optional account lookup may take after usage has already arrived.</summary>
+    private static readonly TimeSpan AccountReadTimeout = TimeSpan.FromSeconds(5);
 
-    private static async Task<JsonElement> GetRawUsageAsync(CancellationToken cancellationToken = default)
+    /// <summary>At most this many extra rate-limit buckets (model-specific limits such as Spark) are shown.</summary>
+    private const int MaxExtraBuckets = 6;
+
+    public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default)
+    {
+        var (rateLimits, account) = await GetRawUsageAsync(cancellationToken);
+        return ParseSnapshot(rateLimits, account);
+    }
+
+    private static async Task<(JsonElement RateLimits, JsonElement? Account)> GetRawUsageAsync(CancellationToken cancellationToken = default)
     {
         var codexLaunch = FindCodexLaunch();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
@@ -53,7 +62,8 @@ internal sealed class CodexUsageClient : IUsageClient
             await WriteMessageAsync(process, new { method = "initialized" }, timeout.Token);
             await WriteMessageAsync(process, new { id = 2, method = "account/rateLimits/read", @params = (object?)null }, timeout.Token);
 
-            return await ReadResponseAsync(process, 2, timeout.Token);
+            var rateLimits = await ReadResponseAsync(process, 2, timeout.Token);
+            return (rateLimits, await TryReadAccountAsync(process, timeout.Token));
         }
         catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
         {
@@ -85,6 +95,39 @@ internal sealed class CodexUsageClient : IUsageClient
         }
     }
 
+    /// <summary>
+    /// Asks which account is signed in, for the card's account line. It is optional: usage has
+    /// already arrived, so an older CLI without <c>account/read</c>, an error, or a slow answer
+    /// leaves the account unnamed instead of failing the refresh. <c>refreshToken: false</c>
+    /// keeps the lookup from refreshing the login.
+    /// </summary>
+    private static async Task<JsonElement?> TryReadAccountAsync(Process process, CancellationToken cancellationToken)
+    {
+        using var accountTimeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        accountTimeout.CancelAfter(AccountReadTimeout);
+        try
+        {
+            await WriteMessageAsync(
+                process,
+                new { id = 3, method = "account/read", @params = new { refreshToken = false } },
+                accountTimeout.Token);
+            return await ReadResponseAsync(process, 3, accountTimeout.Token);
+        }
+        catch (Exception exception) when (
+            exception is CodexUsageException or IOException ||
+            (exception is OperationCanceledException && !cancellationToken.IsCancellationRequested))
+        {
+            return null;
+        }
+    }
+
+    /// <summary>
+    /// The arguments ahead of <c>app-server</c>: a read-only sandbox and no approval prompts, so the
+    /// server UsageAI starts can never be asked to run or approve anything.
+    /// </summary>
+    internal static readonly string[] AppServerArguments =
+        ["-s", "read-only", "-a", "never", "app-server", "--listen", "stdio://"];
+
     private static Process StartAppServer(CodexLaunch launch)
     {
         var startInfo = new ProcessStartInfo
@@ -109,9 +152,10 @@ internal sealed class CodexUsageClient : IUsageClient
             startInfo.ArgumentList.Add(launch.Script);
         }
 
-        startInfo.ArgumentList.Add("app-server");
-        startInfo.ArgumentList.Add("--listen");
-        startInfo.ArgumentList.Add("stdio://");
+        foreach (var argument in AppServerArguments)
+        {
+            startInfo.ArgumentList.Add(argument);
+        }
 
         return Process.Start(startInfo)
             ?? throw new CodexUsageException("Windows could not start the Codex CLI.");
@@ -184,22 +228,19 @@ internal sealed class CodexUsageClient : IUsageClient
         (id.ValueKind == JsonValueKind.String &&
          id.GetString() == expectedId.ToString(System.Globalization.CultureInfo.InvariantCulture));
 
-    internal static UsageSnapshot ParseSnapshot(JsonElement result)
+    internal static UsageSnapshot ParseSnapshot(JsonElement result, JsonElement? account = null)
     {
-        var rateLimits = SelectCodexBucket(result);
-        var primary = ParseWindow(rateLimits, "primary", "Primary");
-        var secondary = ParseWindow(rateLimits, "secondary", "Secondary");
-        var (session, weekly) = ClassifyWindows(primary, secondary);
+        var (mainKey, rateLimits) = SelectCodexBucket(result);
+        var extraBuckets = ExtraBuckets(result, mainKey);
 
+        // With model-specific buckets such as Spark, every bucket becomes a named group, so the popup
+        // offers Codex and Spark as separate ring groups the way it does Gemini's model groups. An
+        // account with only the main bucket keeps the plain "5-hour" / "Weekly" names.
         var metrics = new List<UsageMetric>();
-        if (session is not null)
+        AddWindows(metrics, rateLimits, extraBuckets.Count > 0 ? "Codex" : null);
+        foreach (var (group, bucket) in extraBuckets)
         {
-            metrics.Add(session);
-        }
-
-        if (weekly is not null)
-        {
-            metrics.Add(weekly);
+            AddWindows(metrics, bucket, group);
         }
 
         if (rateLimits.TryGetProperty("credits", out var credits) &&
@@ -232,13 +273,95 @@ internal sealed class CodexUsageClient : IUsageClient
                 UsageText: $"Full reset{(resetCredits == 1 ? string.Empty : "s")} available"));
         }
 
-        var plan = GetString(rateLimits, "planType") ?? "Codex";
+        // The fresh rate-limit response knows the current plan best; the account lookup only names
+        // who is signed in.
+        var accountDetails = account is { ValueKind: JsonValueKind.Object } accountRoot &&
+                             accountRoot.TryGetProperty("account", out var accountElement) &&
+                             accountElement.ValueKind == JsonValueKind.Object
+            ? accountElement
+            : (JsonElement?)null;
+        var plan = GetString(rateLimits, "planType") ??
+                   (accountDetails is { } details ? GetString(details, "planType") : null) ??
+                   "Codex";
+        var email = accountDetails is { } signedIn ? GetString(signedIn, "email") : null;
         return new UsageSnapshot(
             FormatPlan(plan),
             metrics,
             DateTimeOffset.Now,
             "codex",
-            "Codex");
+            "Codex",
+            AccountName: email is { Length: > 0 and <= 320 } ? email : null);
+    }
+
+    private static void AddWindows(List<UsageMetric> metrics, JsonElement bucket, string? group)
+    {
+        var primary = ParseWindow(bucket, "primary", "Primary");
+        var secondary = ParseWindow(bucket, "secondary", "Secondary");
+        var (session, weekly) = ClassifyWindows(primary, secondary);
+        foreach (var window in new[] { session, weekly })
+        {
+            if (window is not null)
+            {
+                metrics.Add(group is null ? window : window with { Name = $"{group} ({window.Name})" });
+            }
+        }
+    }
+
+    /// <summary>
+    /// The buckets besides the main one that report at least one window, each named by the label the
+    /// server gives it (<c>limitName</c>), else its model slug or a readable form of its id.
+    /// </summary>
+    private static List<(string Group, JsonElement Bucket)> ExtraBuckets(JsonElement result, string? mainKey)
+    {
+        var extras = new List<(string Group, JsonElement Bucket)>();
+        if (mainKey is null ||
+            !result.TryGetProperty("rateLimitsByLimitId", out var buckets) ||
+            buckets.ValueKind != JsonValueKind.Object)
+        {
+            return extras;
+        }
+
+        foreach (var bucket in buckets.EnumerateObject())
+        {
+            if (extras.Count >= MaxExtraBuckets)
+            {
+                break;
+            }
+
+            if (bucket.Name == mainKey ||
+                bucket.Value.ValueKind != JsonValueKind.Object ||
+                (ParseWindow(bucket.Value, "primary", "Primary") ?? ParseWindow(bucket.Value, "secondary", "Secondary")) is null)
+            {
+                continue;
+            }
+
+            var group = BucketLabel(bucket.Value, bucket.Name);
+            if (!extras.Any(existing => string.Equals(existing.Group, group, StringComparison.OrdinalIgnoreCase)))
+            {
+                extras.Add((group, bucket.Value));
+            }
+        }
+
+        return extras;
+    }
+
+    internal static string BucketLabel(JsonElement bucket, string limitId)
+    {
+        var label = GetString(bucket, "limitName") ?? GetString(bucket, "normalModelSlug");
+        if (string.IsNullOrWhiteSpace(label))
+        {
+            label = System.Globalization.CultureInfo.CurrentCulture.TextInfo.ToTitleCase(
+                limitId.Replace('_', ' ').Replace('-', ' ').Trim());
+        }
+
+        // A label ends up in a metric name, where a parenthesis would read as the window.
+        label = new string(label.Where(character => !char.IsControl(character) && character is not '(' and not ')').ToArray()).Trim();
+        return label.Length switch
+        {
+            0 => "Other limit",
+            > 60 => label[..60].TrimEnd(),
+            _ => label,
+        };
     }
 
     private static (UsageMetric? Session, UsageMetric? Weekly) ClassifyWindows(
@@ -301,21 +424,22 @@ internal sealed class CodexUsageClient : IUsageClient
         return fallback;
     }
 
-    private static JsonElement SelectCodexBucket(JsonElement result)
+    /// <summary>The main bucket and its key; the key is null for the older single-bucket shape.</summary>
+    private static (string? Key, JsonElement Bucket) SelectCodexBucket(JsonElement result)
     {
         if (result.TryGetProperty("rateLimitsByLimitId", out var buckets) &&
             buckets.ValueKind == JsonValueKind.Object)
         {
             if (buckets.TryGetProperty("codex", out var codex) && codex.ValueKind == JsonValueKind.Object)
             {
-                return codex;
+                return ("codex", codex);
             }
 
             foreach (var bucket in buckets.EnumerateObject())
             {
                 if (bucket.Value.ValueKind == JsonValueKind.Object)
                 {
-                    return bucket.Value;
+                    return (bucket.Name, bucket.Value);
                 }
             }
         }
@@ -323,7 +447,7 @@ internal sealed class CodexUsageClient : IUsageClient
         if (result.TryGetProperty("rateLimits", out var historical) &&
             historical.ValueKind == JsonValueKind.Object)
         {
-            return historical;
+            return (null, historical);
         }
 
         throw new CodexUsageException("Codex returned no rate-limit windows. Sign in with `codex login`, then refresh.");

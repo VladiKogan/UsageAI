@@ -231,11 +231,17 @@ test("Codex client completes the app-server handshake through the configured CLI
   const oldPath = process.env.PATH;
   const fixtureSource = `
 const readline = require("node:readline");
+// UsageAI always starts the server sandboxed; anything else fails the handshake.
+if (process.argv.slice(2, 7).join(" ") !== "-s read-only -a never app-server") process.exit(4);
 const input = readline.createInterface({ input: process.stdin });
 input.on("line", (line) => {
   const message = JSON.parse(line);
   if (message.id === 1) {
     process.stdout.write(JSON.stringify({ id: 1, result: {} }) + "\\n");
+  } else if (message.id === 3) {
+    // The optional account lookup must never refresh the login.
+    if (message.method !== "account/read" || message.params?.refreshToken !== false) process.exit(5);
+    process.stdout.write(JSON.stringify({ id: 3, result: { account: { type: "chatgpt", email: "dev@example.com", planType: "plus" } } }) + "\\n");
   } else if (message.id === 2) {
     process.stdout.write(JSON.stringify({
       id: 2,
@@ -272,6 +278,7 @@ input.on("line", (line) => {
     const snapshot = await new CodexUsageClient().getUsage();
     assert.equal(snapshot.plan, "Plus");
     assert.deepEqual(snapshot.metrics.map((metric) => metric.usedPercent), [31, 52]);
+    assert.equal(snapshot.accountName, "dev@example.com");
   } finally {
     restoreEnvironment("CODEX_PATH", oldCodexPath);
     restoreEnvironment("PATH", oldPath);

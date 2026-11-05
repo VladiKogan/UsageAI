@@ -1414,6 +1414,15 @@ internal static class CoverageExpansionTests
             Equal("Pro", snapshot.Plan);
             Equal(44, snapshot.Metrics[0].UsedPercent);
             Equal(61, snapshot.Metrics[1].UsedPercent);
+            // The sandboxed server (the fixture refuses a bare `app-server`) names the account.
+            Equal("dev@example.com", snapshot.AccountName);
+            Equal("-s read-only -a never app-server --listen stdio://", string.Join(' ', CodexUsageClient.AppServerArguments));
+
+            // An older CLI without account/read still returns usage, just without the account.
+            Environment.SetEnvironmentVariable("CODEX_HOME", "usageai-test-account-error");
+            var unnamed = await new CodexUsageClient().GetUsageAsync();
+            Equal(44, unnamed.Metrics[0].UsedPercent);
+            Null(unnamed.AccountName);
             Equal("Codex", new CodexUsageClient().DisplayName);
             Equal("codex login", new CodexUsageClient().SignInCommand);
 
