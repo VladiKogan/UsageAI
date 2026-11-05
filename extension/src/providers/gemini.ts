@@ -313,6 +313,15 @@ export class GeminiUsageClient implements UsageClient {
   }
 }
 
+/**
+ * A model's remaining fraction. Google's protobuf JSON omits a zero value, so a quota block that still
+ * has its reset time but no fraction is exhausted; a block with neither (a model with no quota at all,
+ * such as "Gemini 4 Argon") says nothing and is skipped. Mirrors the desktop `QuotaFraction`.
+ */
+export function quotaFraction(remainingFraction: number | undefined, resetsAt: string | undefined): number | undefined {
+  return remainingFraction ?? (resetsAt === undefined ? undefined : 0);
+}
+
 export function parseGeminiQuotaResponse(
   root: unknown,
   planFromCodeAssist?: string,
@@ -325,11 +334,14 @@ export function parseGeminiQuotaResponse(
   const quotas = new Map<string, { readonly remaining: number; readonly resetsAt?: string }>();
   for (const bucket of buckets) {
     const modelId = getString(bucket, "modelId");
-    const remaining = getNumber(bucket, "remainingFraction") ?? 0;
     if (!modelId) {
       continue;
     }
     const resetsAt = parseDate(getString(bucket, "resetTime"));
+    const remaining = quotaFraction(getNumber(bucket, "remainingFraction"), resetsAt);
+    if (remaining === undefined) {
+      continue;
+    }
     const existing = quotas.get(modelId);
     if (!existing || remaining < existing.remaining) {
       quotas.set(modelId, { remaining, ...(resetsAt ? { resetsAt } : {}) });
@@ -381,8 +393,12 @@ export function parseAntigravityUserStatus(root: unknown): UsageSnapshot | undef
       continue;
     }
     const resetsAt = parseDate(getString(quotaInfo, "resetTime"));
+    const remaining = quotaFraction(getNumber(quotaInfo, "remainingFraction"), resetsAt);
+    if (remaining === undefined) {
+      continue;
+    }
     const entry: { readonly remaining: number; readonly resetsAt?: string } = {
-      remaining: getNumber(quotaInfo, "remainingFraction") ?? 0,
+      remaining,
       ...(resetsAt ? { resetsAt } : {}),
     };
     const group = modelGroupName(label);
@@ -1056,7 +1072,7 @@ function classifySummaryWindow(bucket: unknown): {
   return { name: displayName?.trim() || "Quota", kind: "rolling", order: 2 };
 }
 
-function mergeQuotaSummary(
+export function mergeQuotaSummary(
   currentMetrics: readonly UsageMetric[],
   summaryMetrics: readonly UsageMetric[],
 ): readonly UsageMetric[] {
@@ -1066,16 +1082,11 @@ function mergeQuotaSummary(
   };
   const groups = [...new Set(summaryMetrics.map((metric) => groupName(metric.name)))];
   const merged: UsageMetric[] = [];
+  // The summary names every window a group has, so it is the whole answer for that group. The status
+  // reading carries no window name; on a weekly-only plan (Google AI Plus) it is the weekly window
+  // again, and borrowing it as "5-hour" showed one limit twice. Mirrors the desktop.
   for (const group of groups) {
-    const summary = summaryMetrics.filter((metric) => groupName(metric.name).toLowerCase() === group.toLowerCase());
-    if (!summary.some((metric) => metric.kind === "session")) {
-      const existing = currentMetrics.find((metric) =>
-        metric.name.toLowerCase() === group.toLowerCase() || metric.name.toLowerCase().startsWith(`${group.toLowerCase()} (`));
-      if (existing) {
-        merged.push({ ...existing, name: `${group} (5-hour)`, kind: "session", durationMinutes: 300 });
-      }
-    }
-    merged.push(...summary);
+    merged.push(...summaryMetrics.filter((metric) => groupName(metric.name).toLowerCase() === group.toLowerCase()));
   }
   merged.push(...currentMetrics.filter((metric) => !groups.some((group) =>
     metric.name.toLowerCase() === group.toLowerCase() || metric.name.toLowerCase().startsWith(`${group.toLowerCase()} (`))));

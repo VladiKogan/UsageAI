@@ -4,6 +4,20 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Google Gemini no longer shows a weekly limit twice as "5-hour" and "Weekly".** Google dropped
+  the 5-hour window from the Google AI Plus plan, and UsageAI still filled the missing 5-hour row
+  from Antigravity's older status reading, which carries no window name and is the weekly figure on
+  such a plan. Gemini's quota summary names every window a group has, so it is now the whole answer:
+  a weekly-only plan shows only its weekly limits, and a plan with a 5-hour window still shows both.
+- **A Gemini model without any quota no longer reads as 100% used.** Antigravity lists some models,
+  such as "Gemini 4 Argon", with an empty quota block, which UsageAI took for an exhausted limit. A
+  missing fraction now means exhausted only when the block still has its reset time, as Google's
+  format omits a zero; a block with neither is skipped.
+
 ## [0.15.0] - 2026-11-05
 
 ### Fixed

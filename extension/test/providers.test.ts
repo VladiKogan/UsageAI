@@ -13,6 +13,7 @@ import { parseCodexSnapshot } from "../src/providers/codex";
 import { parseCopilotSnapshot, resolveCopilotPlan } from "../src/providers/copilot";
 import {
   agyExecutableCandidates,
+  mergeQuotaSummary,
   parseAntigravityQuotaSummary,
   parseAntigravityUserStatus,
   parseAgyUsageOutput,
@@ -221,13 +222,33 @@ test("Gemini parses CLI and Antigravity quota shapes", () => {
       cascadeModelConfigData: {
         clientModelConfigs: [
           { label: "Gemini Pro", quotaInfo: { remainingFraction: 0.8 } },
-          { label: "Claude Sonnet", quotaInfo: {} },
+          // An omitted fraction with a reset time is an exhausted limit (protobuf omits zero)...
+          { label: "Claude Sonnet", quotaInfo: { resetTime: "2026-07-29T18:00:00Z" } },
+          // ...while a block with neither belongs to a model with no quota and is skipped.
+          { label: "Gemini 4 Argon", quotaInfo: {} },
         ],
       },
     },
   });
   assert.ok(antigravity);
   assert.deepEqual(antigravity.metrics.map((metric) => metric.usedPercent), [20, 100]);
+  assert.equal(antigravity.metrics.length, 2);
+
+  // A Google AI Plus account's real answers: the summary names only weekly windows, so no "5-hour"
+  // row is borrowed from the status call, which repeats the weekly fractions without a window name.
+  const plusStatus = parseAntigravityUserStatus({
+    userStatus: { cascadeModelConfigData: { clientModelConfigs: [
+      { label: "Gemini 3.8 Flash (High)", quotaInfo: { remainingFraction: 1, resetTime: "2026-11-12T06:22:21Z" } },
+      { label: "Claude Sonnet 4.6 (Thinking)", quotaInfo: { remainingFraction: 0.060413, resetTime: "2026-11-10T06:16:45Z" } },
+    ] } },
+  })!;
+  const plusSummary = parseAntigravityQuotaSummary({ response: { groups: [
+    { displayName: "Gemini Models", buckets: [{ bucketId: "gemini-weekly", window: "weekly", remainingFraction: 1, resetTime: "2026-11-12T06:22:21Z" }] },
+    { displayName: "Claude and GPT models", buckets: [{ bucketId: "3p-weekly", window: "weekly", remainingFraction: 0.060413, resetTime: "2026-11-10T06:16:45Z" }] },
+  ] } });
+  const plus = mergeQuotaSummary(plusStatus.metrics, plusSummary);
+  assert.deepEqual(plus.map((metric) => metric.name), ["Gemini Models (Weekly)", "Claude and GPT models (Weekly)"]);
+  assert.equal(plus[1]?.usedPercent, 94);
 
   const summary = parseAntigravityQuotaSummary({
     response: {
