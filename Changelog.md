@@ -4,7 +4,7 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## [0.16.0] - 2026-11-06
 
 ### Added
 
