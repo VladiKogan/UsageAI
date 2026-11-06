@@ -492,6 +492,7 @@ internal sealed class AppSettings
                 account.Path = null;
                 account.Pending = false;
                 account.DuplicateOf = null;
+                account.Command = null;
             }
             else
             {
@@ -511,6 +512,7 @@ internal sealed class AppSettings
                 ? identity
                 : null;
             account.DuplicateOf = BoundedText(account.DuplicateOf, 320);
+            account.Command = TerminalCommands.NameProblem(account.Command) is null ? account.Command!.Trim() : null;
             account.Order = Math.Clamp(account.Order, 0, 1000);
             if (kept.Any(other => other.UnitKey.Equals(account.UnitKey, StringComparison.OrdinalIgnoreCase)))
             {

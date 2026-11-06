@@ -308,7 +308,8 @@ internal static class PreviewRenderer
             open: context.ExitThread,
             refresh: context.ExitThread,
             settings: context.ExitThread,
-            exit: context.ExitThread);
+            exit: context.ExitThread,
+            addAccount: context.ExitThread);
         menu.Closed += (_, _) => context.ExitThread();
         menu.Show(Cursor.Position);
         Application.Run(context);

@@ -66,6 +66,9 @@ internal sealed class AccountManager
 
     public IReadOnlyList<AccountNotice> Notices => _notices;
 
+    /// <summary>Writes terminal commands for login folders; null where they are not offered (previews, diagnostics).</summary>
+    public TerminalCommands? Terminal { get; init; }
+
     public string UserProfile => _userProfile;
 
     public string DefaultFolder(string providerId) => _defaultFolder(providerId);
@@ -272,6 +275,10 @@ internal sealed class AccountManager
         }
 
         _settings.Accounts.Remove(account);
+        if (account.Command is { } command)
+        {
+            Terminal?.Remove(command);
+        }
 
         // Whatever its source, a folder still on disk would be offered again by the next scan if it
         // matches the naming rule, so it is remembered as forgotten until added by hand again.
@@ -369,6 +376,68 @@ internal sealed class AccountManager
         if (!result.Added)
         {
             _settings.Accounts.Add(account);
+            return result;
+        }
+
+        // The account's terminal command follows it to the new folder, or goes when it cannot.
+        if (account.Command is { } command && _settings.FindAccount(result.UnitKey!) is { Path: { } path } moved)
+        {
+            if (Terminal?.Create(moved.ProviderId, path, command, previous: command) is { Succeeded: true })
+            {
+                moved.Command = command;
+            }
+            else
+            {
+                Terminal?.Remove(command);
+            }
+
+            _settings.Save();
+        }
+
+        return result;
+    }
+
+    /// <summary>
+    /// Gives a login folder a terminal command, such as <c>claude-team</c>, replacing the one it had;
+    /// an empty name removes it. Applies at once, like adding or removing an account.
+    /// </summary>
+    public TerminalCommandResult SetTerminalCommand(string unitKey, string? name)
+    {
+        if (Terminal is null)
+        {
+            return new TerminalCommandResult(null, "Terminal commands are not available here.");
+        }
+
+        if (_settings.FindAccount(unitKey) is not { IsDefault: false, Path: { } folder } account)
+        {
+            return new TerminalCommandResult(null, "The default login already starts with the provider's own command.");
+        }
+
+        if (string.IsNullOrWhiteSpace(name))
+        {
+            if (account.Command is { } old)
+            {
+                Terminal.Remove(old);
+                account.Command = null;
+                _settings.Save();
+            }
+
+            return new TerminalCommandResult(null, null);
+        }
+
+        name = name.Trim();
+        if (_settings.Accounts.FirstOrDefault(other =>
+                !ReferenceEquals(other, account) &&
+                name.Equals(other.Command, StringComparison.OrdinalIgnoreCase)) is { } taken)
+        {
+            return new TerminalCommandResult(null, $"{taken.DisplayLabel} already uses {name}. Choose another name.");
+        }
+
+        var result = Terminal.Create(account.ProviderId, folder, name, account.Command);
+        if (result.Succeeded)
+        {
+            account.Command = result.Command;
+            _settings.Save();
         }
 
         return result;

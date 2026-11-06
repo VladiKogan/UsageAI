@@ -990,6 +990,246 @@ internal static class AccountTests
         return Task.CompletedTask;
     }
 
+    public static Task TestTerminalCommandsAsync()
+    {
+        // Names: the CLI and the account's label, else the folder's own suffix.
+        Equal("claude-team", TerminalCommands.Suggest("claude", "Team", null));
+        Equal("codex-work", TerminalCommands.Suggest("codex", null, @"C:\Users\me\.codex-work"));
+        Equal("claude-account-2", TerminalCommands.Suggest("claude", "Claude", null));
+        Equal(null, TerminalCommands.NameProblem("claude-team"));
+        True(TerminalCommands.NameProblem("claude")!.Contains("default login", StringComparison.Ordinal));
+        NotNull(TerminalCommands.NameProblem("bad name"));
+        NotNull(TerminalCommands.NameProblem("-x"));
+        NotNull(TerminalCommands.NameProblem("con"));
+        NotNull(TerminalCommands.NameProblem(" "));
+
+        var root = NewDirectory("terminal");
+        try
+        {
+            var profile = Path.Combine(root, "profile");
+            var bin = Path.Combine(root, "bin");
+            var team = Login(profile, ".claude-team", ".credentials.json");
+            string? userPath = @"C:\Tools;%SystemRoot%";
+            var writes = 0;
+            string? cli = "claude";
+            var terminal = new TerminalCommands(
+                bin,
+                () => userPath,
+                value => { userPath = value; writes++; },
+                name => name == "taken" ? @"C:\elsewhere\taken.cmd" : null,
+                _ => cli,
+                profile);
+
+            // The file sets the folder (the profile written as %USERPROFILE%) and starts the CLI.
+            var made = terminal.Create("claude", team, "claude-team", previous: null);
+            True(made.Succeeded);
+            True(made.PathChanged);
+            Equal(@$"C:\Tools;%SystemRoot%;{terminal.Folder}", userPath);
+            var text = File.ReadAllText(terminal.FilePath("claude-team"));
+            True(text.StartsWith(TerminalCommands.Marker + "\r\n", StringComparison.Ordinal));
+            True(text.Contains("set \"CLAUDE_CONFIG_DIR=%USERPROFILE%\\.claude-team\"\r\n", StringComparison.Ordinal));
+            True(text.Contains("\r\nclaude %*\r\n", StringComparison.Ordinal));
+
+            // The PATH is written once; writing the same command again is fine.
+            True(terminal.Create("claude", team, "claude-team", previous: "claude-team").Succeeded);
+            Equal(1, writes);
+            True(terminal.IsOnUserPath());
+
+            // A command elsewhere on the PATH, or a file UsageAI did not write, is never replaced.
+            True(terminal.Create("claude", team, "taken", null).Problem!.Contains(@"C:\elsewhere\taken.cmd", StringComparison.Ordinal));
+            File.WriteAllText(terminal.FilePath("mine"), "@echo hand-written\r\n");
+            NotNull(terminal.Create("claude", team, "mine", null).Problem);
+            False(terminal.Remove("mine"));
+            True(File.Exists(terminal.FilePath("mine")));
+
+            // Renaming writes the new file and deletes the old one; a rename onto another file is refused.
+            True(terminal.Create("claude", team, "claude-work", previous: "claude-team").Succeeded);
+            False(File.Exists(terminal.FilePath("claude-team")));
+            True(terminal.Create("claude", team, "claude-other", previous: null).Succeeded);
+            NotNull(terminal.Create("claude", team, "claude-other", previous: "claude-work").Problem);
+
+            // Paths a .cmd file cannot hold, a CLI with an absolute path, and no CLI at all.
+            Equal(@"C:\a%%b\.claude-x", terminal.CmdText(@"C:\a%b\.claude-x"));
+            Equal(null, terminal.CmdText(@"C:\Логин\.claude-x"));
+            NotNull(terminal.Create("codex", @"C:\Логин\.codex-x", "codex-x", null).Problem);
+            cli = "\"C:\\Program Files\\codex\\codex.exe\"";
+            True(terminal.Create("codex", Path.Combine(root, ".codex-x"), "codex-x", null).Succeeded);
+            var codexText = File.ReadAllText(terminal.FilePath("codex-x"));
+            True(codexText.Contains("set \"CODEX_HOME=", StringComparison.Ordinal));
+            True(codexText.Contains("\r\n\"C:\\Program Files\\codex\\codex.exe\" %*\r\n", StringComparison.Ordinal));
+            cli = null;
+            True(terminal.Create("claude", team, "claude-none", null).Problem!.Contains("CLI was not found", StringComparison.Ordinal));
+            cli = "claude";
+
+            // A PATH that cannot be written still leaves a working file and says so.
+            var failing = new TerminalCommands(bin, () => null, _ => throw new UnauthorizedAccessException(), _ => null, _ => "claude", profile);
+            var unsaved = failing.Create("claude", team, "claude-nopath", null);
+            True(unsaved.Succeeded);
+            True(unsaved.PathUpdateFailed);
+
+            // The manager keeps one command per account and deletes it with the account.
+            var settings = new AppSettings { IsEphemeral = true, AccountsInitialized = true };
+            var manager = new AccountManager(settings, profile, providerId => Path.Combine(profile, "." + providerId), account => new StubClient(account.UnitKey))
+            {
+                Terminal = terminal,
+            };
+            var other = Login(profile, ".claude-side", ".credentials.json");
+            var teamKey = manager.AddFolder("claude", team, AccountSource.Added, "Team").UnitKey!;
+            var sideKey = manager.AddFolder("claude", other, AccountSource.Found, null).UnitKey!;
+            NotNull(manager.SetTerminalCommand("claude", "claude-x").Problem);
+            True(manager.SetTerminalCommand(teamKey, "claude-team").Succeeded);
+            Equal("claude-team", settings.FindAccount(teamKey)!.Command);
+            True(manager.SetTerminalCommand(sideKey, "CLAUDE-TEAM").Problem!.Contains("Team already uses", StringComparison.Ordinal));
+            True(manager.SetTerminalCommand(sideKey, "claude-side").Succeeded);
+            True(manager.SetTerminalCommand(sideKey, " ").Succeeded);
+            Equal(null, settings.FindAccount(sideKey)!.Command);
+            False(File.Exists(terminal.FilePath("claude-side")));
+
+            // Locating the folder elsewhere rewrites the command for the new path.
+            var moved = Login(root, ".claude-moved", ".credentials.json");
+            var movedKey = manager.Locate(teamKey, moved).UnitKey!;
+            Equal("claude-team", settings.FindAccount(movedKey)!.Command);
+            True(File.ReadAllText(terminal.FilePath("claude-team")).Contains(moved, StringComparison.Ordinal));
+            Equal(null, manager.Remove(movedKey, deleteCreatedFolder: false));
+            False(File.Exists(terminal.FilePath("claude-team")));
+            Equal("Terminal commands are not available here.", new AccountManager(settings, profile).SetTerminalCommand(sideKey, "x").Problem);
+
+            // The real lookups: a command on the PATH (outside UsageAI's own folder) and the CLI to start.
+            var environment = SaveEnvironment("PATH", "PATHEXT", "CLAUDE_PATH", "CODEX_PATH");
+            try
+            {
+                var tools = Path.Combine(root, "tools");
+                Directory.CreateDirectory(tools);
+                File.WriteAllText(Path.Combine(tools, "claude-busy.cmd"), "@echo off\r\n");
+                File.WriteAllText(Path.Combine(bin, "claude-ours.cmd"), TerminalCommands.Marker + "\r\n");
+                File.WriteAllText(Path.Combine(tools, "codex.cmd"), "@echo off\r\n");
+                Environment.SetEnvironmentVariable("PATH", $"{tools};relative;{bin}");
+                Environment.SetEnvironmentVariable("PATHEXT", null);
+                Environment.SetEnvironmentVariable("CODEX_PATH", null);
+                Environment.SetEnvironmentVariable("CLAUDE_PATH", null);
+                True(string.Equals(Path.Combine(tools, "claude-busy.cmd"), TerminalCommands.FindCommandOnPath("claude-busy", bin), StringComparison.OrdinalIgnoreCase));
+                Equal(null, TerminalCommands.FindCommandOnPath("claude-ours", bin));
+                Equal("codex", TerminalCommands.FindCli("codex"));
+                var claudeExe = Path.Combine(tools, "claude.exe");
+                File.WriteAllText(claudeExe, string.Empty);
+                Environment.SetEnvironmentVariable("CLAUDE_PATH", claudeExe);
+                Equal($"\"{claudeExe}\"", TerminalCommands.FindCli("claude"));
+                Environment.SetEnvironmentVariable("CLAUDE_PATH", null);
+                Equal("claude", TerminalCommands.FindCli("claude"));
+                Equal(Path.Combine(AppPaths.DataDirectory, "bin"), TerminalCommands.CreateDefault().Folder);
+                _ = UserEnvironmentPath.Read();
+            }
+            finally
+            {
+                RestoreEnvironment(environment);
+            }
+
+            // A saved command that is not a valid name is dropped on load.
+            var saved = new AppSettings { IsEphemeral = true };
+            saved.Accounts.Add(new ProviderAccount { ProviderId = "claude", Source = AccountSource.Added, Path = team, Command = "claude" });
+            saved.Accounts.Add(new ProviderAccount { ProviderId = "claude", Source = AccountSource.Added, Path = other, Command = " claude-ok " });
+            Invoke(saved, "Validate");
+            Equal(null, saved.Accounts[0].Command);
+            Equal("claude-ok", saved.Accounts[1].Command);
+        }
+        finally
+        {
+            TryDelete(root);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public static async Task TestAccountListClicksWheelAndLiveStatusAsync()
+    {
+        var profile = NewDirectory("list");
+        try
+        {
+            var work = Login(profile, ".claude-work", ".credentials.json");
+            var settings = new AppSettings { IsEphemeral = true, AccountsInitialized = true };
+            var manager = new AccountManager(settings, profile, providerId => Path.Combine(profile, "." + providerId), account => new StubClient(account.UnitKey));
+            var workKey = manager.AddFolder("claude", work, AccountSource.Added, "Work").UnitKey!;
+            using var dialog = new SettingsForm(
+                settings,
+                new[] { ("codex", "Codex"), ("claude", "Claude Code") },
+                _ => Task.FromResult(new UpdateCheckResult(true, null)),
+                _ => Task.CompletedTask,
+                dpiOverride: 96,
+                readStartup: static () => new StartupState(StartupStatus.NotRegistered, null),
+                writeStartup: _ => { },
+                accounts: new SettingsAccountActions(null, manager));
+            dialog.Show();
+            Application.DoEvents();
+            dialog.ShowSection(SettingsForm.AccountsSection);
+            Application.DoEvents();
+
+            var list = Field<CheckedListBox>(dialog, "_accountList");
+            var accounts = IsType<SettingsCheckList>(list);
+            var index = list.Items.Cast<object>().Select(item => item.ToString()!).ToList().FindIndex(item => item.StartsWith("Claude · Work", StringComparison.Ordinal));
+            True(index >= 0);
+            True(list.GetItemChecked(index));
+            False(Field<Button>(dialog, "_terminalCommand").Enabled);
+
+            // A click on the name selects the account and leaves its tick; a second click too.
+            var row = list.GetItemRectangle(index);
+            var onName = new Point(row.Left + (row.Width / 2), row.Top + (row.Height / 2));
+            Click(list, onName);
+            Equal(index, list.SelectedIndex);
+            True(list.GetItemChecked(index));
+            Click(list, onName);
+            True(list.GetItemChecked(index));
+            True(Field<Label>(dialog, "_accountDetails").Text.Contains("Added by you", StringComparison.Ordinal));
+
+            // The box itself, and Space, change the tick.
+            var onBox = new Point(row.Left + 4, row.Top + (row.Height / 2));
+            True(accounts.IsOnCheckBox(onBox));
+            False(accounts.IsOnCheckBox(onName));
+            Click(list, onBox);
+            False(list.GetItemChecked(index));
+            SendMessageW(list.Handle, 0x0100, (IntPtr)0x20, (IntPtr)0x00390001);
+            SendMessageW(list.Handle, 0x0102, (IntPtr)' ', (IntPtr)0x00390001);
+            Application.DoEvents();
+            True(list.GetItemChecked(index));
+
+            // With nothing to scroll in the list, the wheel scrolls the page instead.
+            var page = Field<Panel>(dialog, "_scrollHost");
+            False(accounts.CanScroll(up: true));
+            var before = page.AutoScrollPosition.Y;
+            True(before < 0);
+            SendMessageW(list.Handle, 0x020A, (IntPtr)(120 << 16), IntPtr.Zero);
+            Application.DoEvents();
+            True(page.AutoScrollPosition.Y > before);
+            var providers = IsType<SettingsCheckList>(Field<CheckedListBox>(dialog, "_providers"));
+            Equal(page, providers.WheelTarget);
+
+            // A reading that lands while Settings is open updates the row in place.
+            True(list.Items[index].ToString()!.EndsWith("Not read yet", StringComparison.Ordinal));
+            list.SetItemChecked(index, false);
+            dialog.UpdateAccountStatuses(new[] { new ProviderStatus(workKey, "Claude Code", Snapshot(workKey, 5), null, false) });
+            Equal(index, list.SelectedIndex);
+            False(list.GetItemChecked(index));
+            False(list.Items[index].ToString()!.EndsWith("Not read yet", StringComparison.Ordinal));
+            True(Field<Label>(dialog, "_accountDetails").Text.Contains("Pro", StringComparison.Ordinal));
+            dialog.Close();
+            await Task.CompletedTask;
+        }
+        finally
+        {
+            TryDelete(profile);
+        }
+    }
+
+    private static void Click(CheckedListBox list, Point point)
+    {
+        var lParam = (IntPtr)((point.Y << 16) | (point.X & 0xFFFF));
+        SendMessageW(list.Handle, 0x0201, (IntPtr)1, lParam);
+        SendMessageW(list.Handle, 0x0202, IntPtr.Zero, lParam);
+        Application.DoEvents();
+    }
+
+    [System.Runtime.InteropServices.DllImport("user32.dll", CharSet = System.Runtime.InteropServices.CharSet.Unicode)]
+    private static extern IntPtr SendMessageW(IntPtr window, int message, IntPtr wParam, IntPtr lParam);
+
     private static UsageSnapshot Snapshot(string key, int used) => new(
         "Pro",
         new[] { new UsageMetric("5-hour", UsageMetricKind.Session, used, DateTimeOffset.Now.AddHours(2), 300) },
@@ -1160,6 +1400,12 @@ internal static class AccountTests
 
     private static void False(bool condition, [System.Runtime.CompilerServices.CallerArgumentExpression(nameof(condition))] string? expression = null) =>
         True(!condition, $"not ({expression})");
+
+    private static void NotNull(object? value, [System.Runtime.CompilerServices.CallerArgumentExpression(nameof(value))] string? expression = null) =>
+        True(value is not null, $"{expression} is not null");
+
+    private static T IsType<T>(object? value) =>
+        value is T typed ? typed : throw new InvalidOperationException($"Expected {typeof(T).Name}, got {value?.GetType().Name ?? "null"}.");
 
     private static void Equal<T>(T expected, T actual)
     {

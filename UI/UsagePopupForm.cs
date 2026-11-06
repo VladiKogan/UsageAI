@@ -1128,7 +1128,7 @@ internal sealed class UsagePopupForm : Form
     }
 
     private static string ShortName(string providerName) =>
-        providerName.Equals("GitHub Copilot", StringComparison.OrdinalIgnoreCase) ? "Copilot" : providerName;
+        providerName.Equals("GitHub Copilot", StringComparison.OrdinalIgnoreCase) ? "Copilot" : ProviderNames.Popup(providerName);
 
     internal void ApplyPreferredSize(Rectangle workingArea)
     {

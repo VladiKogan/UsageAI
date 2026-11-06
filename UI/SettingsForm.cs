@@ -240,8 +240,9 @@ internal sealed partial class SettingsForm : Form
         _trayProvider.Items.Add(new ProviderEntry(string.Empty, "Automatic"));
         _trayProvider.Items.Add(new ProviderEntry(AppSettings.AllProvidersTrayId, "All connected"));
 
-        _providers = new CheckedListBox
+        _providers = new SettingsCheckList
         {
+            WheelTarget = _scrollHost,
             BackColor = Theme.SurfaceRaised,
             BorderStyle = BorderStyle.None,
             CheckOnClick = true,
@@ -316,7 +317,7 @@ internal sealed partial class SettingsForm : Form
 
         AddSection("Providers");
         AddRow("Tray icon provider", _trayProvider);
-        AddSpan(CreateHint("Automatic follows the connected provider with the highest active primary usage. All connected shows the UsageAI logo and lists every provider when you point at it."));
+        AddSpan(CreateHint("Automatic follows the connected provider with the highest active primary usage. All connected shows the UsageAI logo and lists every provider when you point at it.", belowRow: true));
         AddSpan(CreateHint("Tick to show. Drag a provider to reorder it, or use Alt+Up / Alt+Down."));
         AddSpan(_providers);
         AddSpan(CreateOrderButtons(scale));
@@ -537,7 +538,7 @@ internal sealed partial class SettingsForm : Form
 
         if (_popupGroupPickers.Count > 0)
         {
-            AddSpan(CreateHint("Which model group's limits the popup's rings show."));
+            AddSpan(CreateHint("Which model group's limits the popup's rings show.", belowRow: true));
         }
     }
 
@@ -943,14 +944,30 @@ internal sealed partial class SettingsForm : Form
         }
     }
 
-    private Label CreateHint(string text) => new()
+    /// <summary>
+    /// Muted explanatory text. A hint under a row's control (<paramref name="belowRow"/>) keeps a
+    /// gap from it, or a dropdown's bottom edge sits right on the text's first line.
+    /// </summary>
+    private Label CreateHint(string text, bool belowRow = false)
     {
-        AutoSize = true,
-        ForeColor = Theme.Muted,
-        Margin = Scale().Pad(0, 0, 0, 8),
-        Tag = HintTag,
-        Text = text,
-    };
+        var hint = new Label
+        {
+            AutoSize = true,
+            ForeColor = Theme.Muted,
+            Margin = Scale().Pad(0, belowRow ? 6 : 0, 0, 8),
+            Tag = HintTag,
+            Text = text,
+        };
+        if (belowRow)
+        {
+            _rowHints.Add(hint);
+        }
+
+        return hint;
+    }
+
+    /// <summary>Hints under a row's control, whose gap is scaled again on a DPI change.</summary>
+    private readonly List<Label> _rowHints = new();
 
     private const string HintTag = "hint";
 
@@ -1268,6 +1285,11 @@ internal sealed partial class SettingsForm : Form
             numeric.Width = scale[96];
         }
         foreach (var combo in _layout.Controls.OfType<ComboBox>()) combo.Margin = scale.Pad(0, 4, 0, 4);
+        foreach (var hint in _rowHints)
+        {
+            hint.Margin = scale.Pad(0, 6, 0, 8);
+        }
+
         foreach (var toggle in _layout.Controls.OfType<ToggleSwitch>())
         {
             toggle.Margin = scale.Pad(0, 2, 0, 2);

@@ -16,4 +16,13 @@ internal static class ProviderNames
             "gemini" => "Gemini",
             _ => fallback ?? providerId,
         };
+
+    /// <summary>
+    /// The name the compact popup shows: "Claude Code" reads as Claude there, so an account's tile,
+    /// "Claude · Personal", fits half the popup's width instead of ending in an ellipsis.
+    /// </summary>
+    public static string Popup(string providerName) =>
+        providerName.StartsWith("Claude Code", StringComparison.OrdinalIgnoreCase)
+            ? "Claude" + providerName["Claude Code".Length..]
+            : providerName;
 }

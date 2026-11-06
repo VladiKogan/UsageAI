@@ -1178,6 +1178,29 @@ internal static class RedesignTests
             Equal(Padding.Empty, scaled.Items[2].Padding);
             TrayMenu.ApplyMetrics(scaled, 192);
             Equal(new Padding(20, 10, 20, 10), scaled.Items[0].Padding);
+
+            // The bold default and the plain rows share one face and one size, made for the DPI the
+            // menu is at now: WinForms rescales them itself when the menu lands on another monitor,
+            // so fonts made for the target monitor would be scaled twice.
+            var plain = scaled.Items[1].Font;
+            var bold = scaled.Items[0].Font;
+            True(bold.Bold);
+            False(plain.Bold);
+            Equal(plain.Name, bold.Name);
+            Equal(plain.Size, bold.Size);
+            Equal(GraphicsUnit.Pixel, plain.Unit);
+            Equal(Typography.PixelSize(TrayMenu.FontPoints, scaled.DeviceDpi), plain.Size);
+            True(scaled.Items.Cast<ToolStripItem>().Where(item => item is not ToolStripSeparator).All(item => item.Font.Size == plain.Size));
+            TrayMenu.ApplyMetrics(scaled, 120);
+            True(ReferenceEquals(plain, scaled.Items[1].Font));
+
+            // A font that drifted (WinForms' own rescale replaces it) is put back on the next opening.
+            using var drifted = new Font(plain.FontFamily, plain.Size * 1.25F, FontStyle.Bold, GraphicsUnit.Pixel);
+            scaled.Items[0].Font = drifted;
+            TrayMenu.ApplyMetrics(scaled, 96);
+            Equal(plain.Size, scaled.Items[0].Font.Size);
+            True(scaled.Items[0].Font.Bold);
+            False(ReferenceEquals(drifted, scaled.Items[0].Font));
         }
 
         True(WindowThemeHelpers.MonitorDpiAt(Point.Empty) is >= 96);

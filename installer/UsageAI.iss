@@ -209,6 +209,40 @@ begin
   end;
 end;
 
+{ Terminal commands such as claude-team live in the data folder's bin, which the app put on the
+  user's PATH. They keep working without UsageAI, so the entry goes only with the data folder, and
+  every other entry is written back exactly as it was. }
+procedure RemoveCommandFolderFromPath(const Folder: string);
+var
+  Remaining, Entry, Kept: string;
+  Separator: Integer;
+  Found: Boolean;
+begin
+  if not RegQueryStringValue(HKCU, 'Environment', 'Path', Remaining) then
+    Exit;
+
+  Kept := '';
+  Found := False;
+  Remaining := Remaining + ';';
+  while Length(Remaining) > 0 do
+  begin
+    Separator := Pos(';', Remaining);
+    Entry := Copy(Remaining, 1, Separator - 1);
+    Delete(Remaining, 1, Separator);
+    if CompareText(RemoveBackslashUnlessRoot(Trim(Entry)), Folder) = 0 then
+      Found := True
+    else
+    begin
+      if Kept <> '' then
+        Kept := Kept + ';';
+      Kept := Kept + Entry;
+    end;
+  end;
+
+  if Found then
+    RegWriteExpandStringValue(HKCU, 'Environment', 'Path', Kept);
+end;
+
 { Settings and recorded history stay unless the user asks, so a reinstall picks up where it left
   off. A silent uninstall that suppresses message boxes keeps them. }
 procedure RemoveUserDataIfAsked();
@@ -223,7 +257,10 @@ begin
        'Also delete your UsageAI settings and recorded usage history?' + #13#10#13#10 +
        'They are in ' + DataDir + '. Keep them to pick up where you left off if you install UsageAI again.',
        mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
+  begin
     DelTree(DataDir, True, True, True);
+    RemoveCommandFolderFromPath(DataDir + '\bin');
+  end;
 end;
 
 procedure CurUninstallStepChanged(CurUninstallStep: TUninstallStep);

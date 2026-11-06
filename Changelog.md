@@ -4,6 +4,47 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Added
+
+- **An account can have its own terminal command, such as `claude-team`.** Choose **Terminal
+  command…** under Settings → Accounts. UsageAI suggests a name from the account's label and writes
+  a small `.cmd` file that sets `CLAUDE_CONFIG_DIR` or `CODEX_HOME` to that login folder and starts
+  the CLI. The files go in `%LOCALAPPDATA%\UsageAI\bin`, which is added to your user PATH once.
+  UsageAI refuses a name that another command on your PATH already uses, and it only ever changes
+  or deletes files it wrote itself. Forgetting the account deletes its command, and uninstalling
+  removes the PATH entry along with UsageAI's data folder.
+
+### Changed
+
+- **The popup calls Claude Code "Claude", so an account's tile reads "Claude · Personal" in full.**
+  "Claude Code · Personal" was cut off with an ellipsis on a half-width tile. The popup header uses
+  the short name too. The dashboard table still says Claude Code, since it has the room.
+
+### Fixed
+
+- **Clicking an account in Settings → Accounts selects it without hiding it.** Every click on a
+  row used to toggle its tick, so selecting an account to see its details also hid it, and clicking
+  it again showed it once more. Now the box, or Space, shows or hides the account, and a click on
+  its name only selects it.
+- **An account added from Settings shows Connected without reopening the window.** The Accounts
+  page used to keep the readings it opened with, so a new account said "Not read yet" until you
+  looked at the popup or dashboard. It now updates whenever a reading arrives.
+- **The mouse wheel scrolls the Settings page over the Providers and Accounts lists.** Each list
+  used to swallow the wheel even with nothing of its own to scroll, so the page stopped scrolling
+  under the mouse. A list now passes the wheel to the page whenever it cannot scroll further that
+  way itself.
+- **The tray menu's items all use one font size again.** The bold **Open dashboard** had its own
+  font, separate from the one the other items share. It could end up about a quarter larger than
+  the rest, which made its row taller and the menu look out of line. All items now share one face
+  made for the menu's current scale, and each time the menu opens it puts that face back on any
+  item whose font has changed. Opening the menu on a monitor at another scale still rescales it
+  once, correctly.
+- **The Tray icon provider and popup-ring dropdowns no longer touch the hint below them.** The
+  explanation under each dropdown started about two pixels below it, so the two ran together. It
+  now keeps the same gap as the rest of the page.
+
 ## [0.16.0] - 2026-11-06
 
 ### Added

@@ -258,7 +258,7 @@ internal sealed class ProviderTile : Control
         var nameRight = indicator.IsEmpty ? Width - scale[Inset] : indicator.Left - scale[6];
         DrawingHelpers.DrawText(
             graphics,
-            _status.ProviderName,
+            ProviderNames.Popup(_status.ProviderName),
             _fonts.Name,
             Theme.Text,
             new Rectangle(nameLeft, scale[HeaderTop], Math.Max(1, nameRight - nameLeft), scale[HeaderHeight]),
@@ -550,7 +550,7 @@ internal sealed class ProviderTile : Control
 
     private void ApplyAccessibility()
     {
-        AccessibleName = $"{_status.ProviderName} usage";
+        AccessibleName = $"{ProviderNames.Popup(_status.ProviderName)} usage";
         var parts = new List<string> { _status.StatusText };
         if (_status.Snapshot is { } snapshot)
         {
