@@ -10,18 +10,29 @@
     "node": ">=22"
   },
   "categories": [
-    "Other",
-    "Visualization",
-    "Machine Learning"
+    "AI",
+    "Machine Learning",
+    "Visualization"
   ],
   "keywords": [
+    "ai",
     "usage",
+    "usage-monitor",
     "quota",
+    "limits",
+    "rate-limit",
+    "tokens",
+    "status-bar",
     "codex",
+    "openai",
     "claude",
+    "claude-code",
+    "anthropic",
     "copilot",
+    "github-copilot",
     "gemini",
-    "antigravity"
+    "antigravity",
+    "antigravity-ide"
   ],
   "icon": "media/logo.png",
   "repository": {

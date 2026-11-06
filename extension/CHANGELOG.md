@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The extension is listed under the AI category and found by more search words.** Both
+  marketplaces now list it under AI, Machine Learning and Visualization instead of Other, and its
+  keywords follow the repository's GitHub topics: `claude-code`, `github-copilot`, `rate-limit`,
+  `usage-monitor` and other words people search for, such as `anthropic`, `openai` and `tokens`.
+
 ## 0.1.21
 
 ### Added
