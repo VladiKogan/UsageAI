@@ -38,6 +38,7 @@ internal sealed partial class SettingsForm
     private Button _reauthenticate = null!;
     private Button _locateAccount = null!;
     private Button _openFolder = null!;
+    private Button _terminalCommand = null!;
     private SettingsAccountActions? _accountActions;
     private IReadOnlyList<ProviderStatus> _accountStatuses = Array.Empty<ProviderStatus>();
 
@@ -67,13 +68,16 @@ internal sealed partial class SettingsForm
         AddSpan(CreateHint(
             "Every Claude Code and Codex login UsageAI reads. Tick to show an account in the popup and dashboard; " +
             "a provider with one account keeps its plain tile."));
-        _accountList = new CheckedListBox
+        // Selecting an account shows its details below, so a click on its name only selects it;
+        // the box (or Space) shows or hides it.
+        _accountList = new SettingsCheckList
         {
             AccessibleName = "Accounts",
-            AccessibleDescription = "Tick an account to show it. Reorder with Move up and Move down.",
+            AccessibleDescription = "Select an account to see its details. Tick its box, or press Space, to show it. Reorder with Move up and Move down.",
             BackColor = Theme.SurfaceRaised,
             BorderStyle = BorderStyle.None,
-            CheckOnClick = true,
+            CheckOnBoxOnly = true,
+            WheelTarget = _scrollHost,
             Dock = DockStyle.Fill,
             ForeColor = Theme.Text,
             Height = scale[120],
@@ -129,6 +133,8 @@ internal sealed partial class SettingsForm
         rowButtons.Controls.Add(_openFolder);
         _locateAccount = CreateLinkButton("Locate…", (_, _) => LocateSelectedAccount());
         rowButtons.Controls.Add(_locateAccount);
+        _terminalCommand = CreateLinkButton("Terminal command…", (_, _) => SetSelectedAccountCommand());
+        rowButtons.Controls.Add(_terminalCommand);
         _removeAccount = CreateLinkButton("Remove", (_, _) => RemoveSelectedAccount(), destructive: true);
         rowButtons.Controls.Add(_removeAccount);
         AddSpan(rowButtons);
@@ -283,6 +289,7 @@ internal sealed partial class SettingsForm
         _removeAccount.Enabled = isFolder && _accountActions is not null;
         _removeAccount.Text = account?.Source == AccountSource.Created ? "Remove" : "Forget";
         _locateAccount.Enabled = isFolder && _accountActions is not null;
+        _terminalCommand.Enabled = isFolder && _accountActions?.Manager.Terminal is not null;
         _reauthenticate.Enabled = key is not null;
         _openFolder.Enabled = key is not null;
         if (key is null)
@@ -305,7 +312,99 @@ internal sealed partial class SettingsForm
         var status = _accountStatuses.FirstOrDefault(candidate => candidate.ProviderId.Equals(key, StringComparison.OrdinalIgnoreCase));
         var plan = status?.Snapshot?.Plan is { Length: > 0 } planName ? $" · {planName}" : string.Empty;
         var email = account?.Email is { } known ? $"{known}{plan}\n" : plan.Length > 0 ? $"{plan.TrimStart(' ', '·')}\n" : string.Empty;
-        _accountDetails.Text = $"{email}{source}\n{StatusText(key)}{(status?.Error is { } error ? $": {error}" : string.Empty)}";
+        var command = account?.Command is { } name ? $"Terminal command: {name}\n" : string.Empty;
+        _accountDetails.Text = $"{email}{source}\n{command}{StatusText(key)}{(status?.Error is { } error ? $": {error}" : string.Empty)}";
+    }
+
+    /// <summary>
+    /// Takes the latest readings while Settings is open, so an account added or signed in again
+    /// here reads Connected without reopening the window. Ticks, selection and edits stay.
+    /// </summary>
+    internal void UpdateAccountStatuses(IReadOnlyList<ProviderStatus> statuses)
+    {
+        _accountStatuses = statuses;
+        if (_accountList is null || _accountList.IsDisposed)
+        {
+            return;
+        }
+
+        _loadingAccounts = true;
+        try
+        {
+            var selected = _accountList.SelectedIndex;
+            var top = _accountList.TopIndex;
+            for (var index = 0; index < _accountList.Items.Count; index++)
+            {
+                if (_accountList.Items[index] is not AccountEntry entry || !_accountDrafts.ContainsKey(entry.Key))
+                {
+                    continue;
+                }
+
+                var text = AccountText(entry.Key);
+                if (text != entry.Text)
+                {
+                    var isChecked = _accountList.GetItemChecked(index);
+                    _accountList.Items[index] = entry with { Text = text };
+                    _accountList.SetItemChecked(index, isChecked);
+                }
+            }
+
+            _accountList.SelectedIndex = selected;
+            _accountList.TopIndex = top;
+        }
+        finally
+        {
+            _loadingAccounts = false;
+        }
+
+        ShowSelectedAccount();
+    }
+
+    private void SetSelectedAccountCommand()
+    {
+        if (SelectedAccountKey() is not { } key ||
+            _accountActions?.Manager is not { Terminal: { } terminal } manager ||
+            _settings.FindAccount(key) is not { IsDefault: false, Path: { } folder } account)
+        {
+            return;
+        }
+
+        var providerName = AccountDiscovery.ProviderName(account.ProviderId);
+        var label = _accountDrafts.TryGetValue(key, out var draft) && draft.Label is { } drafted ? drafted : account.Label;
+        var suggested = account.Command ?? TerminalCommands.Suggest(account.ProviderId, label ?? account.Email?.Split('@')[0], folder);
+        var name = TextPrompt.Ask(
+            this,
+            "Terminal command",
+            account.Command is null
+                ? $"Command that starts {providerName} with this account:"
+                : "Command for this account (clear it to remove):",
+            suggested);
+        if (name is null)
+        {
+            return;
+        }
+
+        var result = manager.SetTerminalCommand(key, name);
+        if (result.Problem is { } problem)
+        {
+            PromptDialog.Ask("Terminal command", "The command was not saved", problem, "OK", declineText: null, PromptKind.Warning);
+        }
+        else if (result.Command is { } command)
+        {
+            var where = result.PathUpdateFailed
+                ? $"UsageAI wrote {result.FilePath}, but could not add {terminal.Folder} to your PATH. Add it yourself, then open a new terminal."
+                : result.PathChanged
+                    ? $"UsageAI wrote {result.FilePath} and added {terminal.Folder} to your PATH."
+                    : $"UsageAI wrote {result.FilePath}.";
+            PromptDialog.Ask(
+                "Terminal command",
+                $"Run {command} in a new terminal",
+                $"{where}\n\nOpen a new terminal window (one already open keeps its old PATH) and run {command} to use {providerName} with this account. Forget the account here to delete the command.",
+                "OK",
+                declineText: null);
+        }
+
+        ShowSelectedAccount();
     }
 
     private static string ShortenProfile(string folder)
@@ -377,8 +476,10 @@ internal sealed partial class SettingsForm
 
         // A folder UsageAI did not create is the user's: the command signs it in where it is.
         var folder = account?.Path ?? AccountDiscovery.DefaultFolder(providerId);
-        var command = ProviderKey.IsDefault(key)
-            ? providerId == AccountDiscovery.CodexProviderId ? "codex login" : "claude"
+        var login = providerId == AccountDiscovery.CodexProviderId ? " login" : string.Empty;
+        var command = ProviderKey.IsDefault(key) ? (providerId == AccountDiscovery.CodexProviderId ? "codex" : "claude") + login
+            : account?.Command is { } own && _accountActions?.Manager.Terminal is { } terminal &&
+              terminal.IsOnUserPath() && File.Exists(terminal.FilePath(own)) ? own + login
             : AccountCommands.SignIn(providerId, folder);
         if (PromptDialog.Ask(
                 "Re-authenticate",
@@ -442,7 +543,8 @@ internal sealed partial class SettingsForm
         var result = _accountActions.Manager.Locate(key, picker.SelectedPath);
         if (result.Problem is { } problem)
         {
-            PromptDialog.Ask("Locate account", "That folder cannot be used", problem, "OK", declineText: null, PromptKind.Warning);
+            var heading = result.UnitKey is null ? "That folder cannot be used" : "The terminal command was removed";
+            PromptDialog.Ask("Locate account", heading, problem, "OK", declineText: null, PromptKind.Warning);
         }
 
         ReloadAccounts();
@@ -456,18 +558,19 @@ internal sealed partial class SettingsForm
         }
 
         var created = account.Source == AccountSource.Created;
+        var commandNote = account.Command is { } command ? $"\n\nIts terminal command, {command}, is deleted too." : string.Empty;
         var confirmed = created
             ? PromptDialog.Ask(
                 "Remove account",
                 $"Remove {account.DisplayLabel} and delete its login?",
-                $"UsageAI created {account.Path} for this account. Removing it deletes that folder, and the login saved in it is removed. A terminal using it would need to sign in again.",
+                $"UsageAI created {account.Path} for this account. Removing it deletes that folder, and the login saved in it is removed. A terminal using it would need to sign in again.{commandNote}",
                 "Remove and delete",
                 "Cancel",
                 PromptKind.Warning)
             : PromptDialog.Ask(
                 "Forget account",
                 $"Forget {account.DisplayLabel}?",
-                $"UsageAI stops reading {account.Path}. The folder and its login are not touched.",
+                $"UsageAI stops reading {account.Path}. The folder and its login are not touched.{commandNote}",
                 "Forget",
                 "Cancel");
         if (!confirmed)

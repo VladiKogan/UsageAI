@@ -1045,7 +1045,7 @@ internal sealed class UsagePopupForm : Form
 
         var (status, metric, projection) = headline;
         var value = metric.DisplayPrimary(quotaDisplay).ToLowerInvariant();
-        var provider = ShortName(status.ProviderName);
+        var provider = ProviderNames.Popup(status, headline: true);
         if (projection is { BeforeReset: true })
         {
             return $"{provider} runs out first: {metric.Name} at {value}, around {UsageFormatting.AbsoluteReset(projection.ExhaustedAt, now, System.Globalization.CultureInfo.CurrentCulture)}.";
@@ -1126,9 +1126,6 @@ internal sealed class UsagePopupForm : Form
         _refreshAnimationTimer.Stop();
         _refreshButton.Rotation = 0F;
     }
-
-    private static string ShortName(string providerName) =>
-        providerName.Equals("GitHub Copilot", StringComparison.OrdinalIgnoreCase) ? "Copilot" : providerName;
 
     internal void ApplyPreferredSize(Rectangle workingArea)
     {

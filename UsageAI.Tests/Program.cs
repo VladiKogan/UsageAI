@@ -149,6 +149,8 @@ internal static class Program
         ("diagnostics name the account, never its token", AccountTests.TestAccountDiagnosticsAsync),
         ("add account dialog signs in, adds a folder or re-authenticates", AccountTests.TestAddAccountDialogAsync),
         ("forgotten and duplicate accounts stay right, and retries wait their turn", AccountTests.TestAccountReviewFixesAsync),
+        ("terminal commands start a CLI on one login folder", AccountTests.TestTerminalCommandsAsync),
+        ("settings account list selects on click, passes the wheel on and shows live status", AccountTests.TestAccountListClicksWheelAndLiveStatusAsync),
         ("an in-app update leaves a note for the copy that starts after it", UpdateFlowTests.TestUpdateHandoffAsync),
         ("the update progress window steps through each stage", UpdateFlowTests.TestUpdateProgressWindowAsync),
         ("Windows closing the app for an installer exits it at once", UpdateFlowTests.TestEndSessionExitsAsync),

@@ -26,6 +26,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     /// <summary>Extra logins of Claude and Codex. Null in tests and previews that do not use them.</summary>
     private readonly AccountManager? _accounts;
+    private SettingsForm? _openSettings;
     private readonly UsageRefreshService _service;
     private readonly ContextMenuStrip _menu;
     private readonly NotifyIcon _trayIcon;
@@ -345,6 +346,11 @@ internal sealed class UsageApplicationContext : ApplicationContext
             {
                 _accounts.Scan(DateTimeOffset.UtcNow);
             }
+            else
+            {
+                // A scan keeps terminal commands current; with scanning off they are checked here.
+                _accounts.RefreshTerminalCommands();
+            }
 
             return;
         }
@@ -467,6 +473,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
         PushStateToPopup();
         UpdateTray();
+        _openSettings?.UpdateAccountStatuses(_service.AllStatuses);
     });
 
     private void OnAlertsRaised(object? sender, UsageAlertEventArgs eventArgs) => RunOnUi(() =>
@@ -676,7 +683,22 @@ internal sealed class UsageApplicationContext : ApplicationContext
             dialog.Shown += (_, _) => dialog.ShowSection(section);
         }
 
-        if (dialog.ShowDialog() != DialogResult.OK)
+        // Open while a refresh lands (an account just added here is read straight away), so the
+        // Accounts page shows the new readings instead of the ones it opened with.
+        // Settings can be opened again from the tray while one is open; the outer one gets updates back.
+        var outerSettings = _openSettings;
+        _openSettings = dialog;
+        DialogResult answer;
+        try
+        {
+            answer = dialog.ShowDialog();
+        }
+        finally
+        {
+            _openSettings = outerSettings;
+        }
+
+        if (answer != DialogResult.OK)
         {
             return;
         }

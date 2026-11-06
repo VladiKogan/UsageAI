@@ -89,7 +89,7 @@ internal static class Program
         // An in-app update leaves a note for the copy that starts after it, and its download.
         var updateResult = UpdateHandoffStore.Take(AppIdentity.Version);
         UpdateHandoffStore.CleanUpInstallers();
-        var accounts = new AccountManager(settings);
+        var accounts = new AccountManager(settings) { Terminal = TerminalCommands.CreateDefault() };
         try
         {
             Application.Run(new UsageApplicationContext(accounts, settings, profileExisted, updateResult));

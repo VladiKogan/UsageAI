@@ -6565,7 +6565,7 @@ internal static class CoverageExpansionTests
             popup.Location = new Point(-10_000, -10_000);
             popup.SetStates(statuses, false, now, Array.Empty<UsageSample>());
             var summary = GetPrivateField<Label>(popup, "_summaryLabel");
-            True(summary.Text.StartsWith("Busiest: Claude Code Weekly at 5% left", StringComparison.Ordinal));
+            True(summary.Text.StartsWith("Busiest: Claude Weekly at 5% left", StringComparison.Ordinal));
             var tiles = GetPrivateField<FlowLayoutPanel>(popup, "_content").Controls.OfType<ProviderTile>().ToArray();
             Equal(2, tiles.Length);
             True(tiles.All(tile => GetPrivateField<QuotaDisplay>(tile, "_quotaDisplay") == QuotaDisplay.Remaining));
@@ -6703,11 +6703,11 @@ internal static class CoverageExpansionTests
             popup.Location = new Point(-10_000, -10_000);
             popup.SetStates(statuses, false, now, Array.Empty<UsageSample>());
             var summary = GetPrivateField<Label>(popup, "_summaryLabel");
-            True(summary.Text.StartsWith("Busiest: Claude Code Weekly at 95% used", StringComparison.Ordinal));
+            True(summary.Text.StartsWith("Busiest: Claude Weekly at 95% used", StringComparison.Ordinal));
             var usedColour = summary.ForeColor;
             switching.QuotaDisplay = QuotaDisplay.Remaining;
             popup.SetStates(statuses, false, now, Array.Empty<UsageSample>());
-            True(summary.Text.StartsWith("Busiest: Claude Code Weekly at 5% left", StringComparison.Ordinal));
+            True(summary.Text.StartsWith("Busiest: Claude Weekly at 5% left", StringComparison.Ordinal));
             Equal(usedColour, summary.ForeColor);
         }
 
