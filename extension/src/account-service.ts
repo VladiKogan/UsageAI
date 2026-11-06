@@ -10,6 +10,7 @@ import {
   defaultAccountId,
   defaultLoginFolder,
   discoverAccountFolders,
+  distinctAccountLabels,
   identityKey,
   nodeAccountFileSystem,
   providerTitle,
@@ -181,7 +182,7 @@ export function resolveAccounts(input: ResolveAccountsInput): ResolvedAccounts {
         pending.push(entry);
       }
     }
-    shown.push(...group);
+    shown.push(...distinctAccountLabels(group));
   }
   return { shown, pending, duplicates };
 }

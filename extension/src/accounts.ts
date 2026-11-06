@@ -365,6 +365,33 @@ export function accountLabel(userLabel: string | undefined, identity: AccountIde
   return userLabel ?? identity.email ?? (path.basename(folder) || folder);
 }
 
+/**
+ * Keeps one provider's account labels apart, as the desktop app does: when two read the same, each
+ * adds its organisation if they all have different ones, else the second becomes "label · Account 2".
+ */
+export function distinctAccountLabels<T extends { readonly label: string; readonly identity: AccountIdentity }>(
+  accounts: readonly T[],
+): T[] {
+  const groups = new Map<string, number[]>();
+  accounts.forEach((account, index) => {
+    const key = account.label.toLowerCase();
+    groups.set(key, [...(groups.get(key) ?? []), index]);
+  });
+  const labels = accounts.map((account) => account.label);
+  for (const members of groups.values()) {
+    if (members.length < 2) continue;
+    const organisations = members.map((index) => accounts[index]!.identity.organizationName);
+    const byOrganisation = organisations.every((name) => !!name) &&
+      new Set(organisations.map((name) => name!.toLowerCase())).size === members.length;
+    members.forEach((index, position) => {
+      labels[index] = byOrganisation
+        ? `${accounts[index]!.label} · ${organisations[position]}`
+        : position === 0 ? accounts[index]!.label : `${accounts[index]!.label} · Account ${position + 1}`;
+    });
+  }
+  return accounts.map((account, index) => labels[index] === account.label ? account : { ...account, label: labels[index]! });
+}
+
 /** "Claude Code · team" when the provider shows more than one account; otherwise today's plain title. */
 export function accountCardTitle(displayName: string, label: string | undefined, accountsShownForProvider: number): string {
   return accountsShownForProvider > 1 && label ? `${displayName} · ${label}` : displayName;

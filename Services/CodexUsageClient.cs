@@ -430,7 +430,16 @@ internal sealed class CodexUsageClient : IAccountUsageClient
     internal static readonly string[] AppServerArguments =
         ["app-server", "-c", "sandbox_mode=\"read-only\"", "-c", "approval_policy=\"never\"", "--listen", "stdio://"];
 
-    private static Process StartAppServer(CodexLaunch launch, string? codexHome)
+    private static Process StartAppServer(CodexLaunch launch, string? codexHome) =>
+        Process.Start(CreateCliStartInfo(launch, codexHome, AppServerArguments))
+            ?? throw new CodexUsageException("Windows could not start the Codex CLI.");
+
+    /// <summary>
+    /// How every Codex CLI child starts — the app-server and the sign-in alike: no window, redirected
+    /// streams, the minimal environment, and a given <c>CODEX_HOME</c> set explicitly rather than
+    /// inherited, so the child reads exactly that login.
+    /// </summary>
+    private static ProcessStartInfo CreateCliStartInfo(CodexLaunch launch, string? codexHome, IEnumerable<string> arguments)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -450,7 +459,6 @@ internal sealed class CodexUsageClient : IAccountUsageClient
             "SSL_CERT_FILE");
         if (codexHome is not null)
         {
-            // Given explicitly rather than inherited, so the child reads exactly this login.
             startInfo.Environment["CODEX_HOME"] = codexHome;
         }
 
@@ -459,13 +467,12 @@ internal sealed class CodexUsageClient : IAccountUsageClient
             startInfo.ArgumentList.Add(launch.Script);
         }
 
-        foreach (var argument in AppServerArguments)
+        foreach (var argument in arguments)
         {
             startInfo.ArgumentList.Add(argument);
         }
 
-        return Process.Start(startInfo)
-            ?? throw new CodexUsageException("Windows could not start the Codex CLI.");
+        return startInfo;
     }
 
     private static async Task WriteMessageAsync(Process process, object message, CancellationToken cancellationToken)
@@ -947,29 +954,10 @@ internal sealed class CodexUsageClient : IAccountUsageClient
     /// The official login, <c>codex login</c>, with <c>CODEX_HOME</c> pointed at <paramref name="codexHome"/>.
     /// The CLI writes its own <c>auth.json</c> there; UsageAI only starts it.
     /// </summary>
-    internal static ProcessStartInfo CreateLoginStartInfo(string codexHome)
-    {
-        var launch = FindCodexLaunch();
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = launch.Executable,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        };
-        ProcessSecurity.ApplyMinimalEnvironment(startInfo, "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR", "SSL_CERT_FILE");
-        startInfo.Environment["CODEX_HOME"] = codexHome;
-        if (launch.Script is not null)
-        {
-            startInfo.ArgumentList.Add(launch.Script);
-        }
+    internal static ProcessStartInfo CreateLoginStartInfo(string codexHome) =>
+        CreateCliStartInfo(FindCodexLaunch(), codexHome, LoginArguments);
 
-        startInfo.ArgumentList.Add("login");
-        return startInfo;
-    }
+    private static readonly string[] LoginArguments = ["login"];
 
     private static CodexLaunch FindCodexLaunch()
     {

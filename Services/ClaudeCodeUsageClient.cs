@@ -610,7 +610,16 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
         }
     }
 
-    private static Process StartClaudeCli(ClaudeLaunch launch, string? configDirectory, params string[] arguments)
+    private static Process StartClaudeCli(ClaudeLaunch launch, string? configDirectory, params string[] arguments) =>
+        Process.Start(CreateCliStartInfo(launch, configDirectory, arguments))
+            ?? throw new ClaudeCodeUsageException("Windows could not start the Claude CLI.");
+
+    /// <summary>
+    /// How every Claude CLI child starts — the recovery probes and the sign-in alike: no window,
+    /// redirected streams, the minimal environment, and a given login folder set explicitly rather
+    /// than inherited, so the child reads exactly that login.
+    /// </summary>
+    private static ProcessStartInfo CreateCliStartInfo(ClaudeLaunch launch, string? configDirectory, IEnumerable<string> arguments)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -632,7 +641,6 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
         startInfo.Environment["DISABLE_AUTOUPDATER"] = "1";
         if (configDirectory is not null)
         {
-            // Given explicitly rather than inherited, so the child reads exactly this login.
             startInfo.Environment["CLAUDE_CONFIG_DIR"] = configDirectory;
         }
 
@@ -646,8 +654,7 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
             startInfo.ArgumentList.Add(argument);
         }
 
-        return Process.Start(startInfo)
-            ?? throw new ClaudeCodeUsageException("Windows could not start the Claude CLI.");
+        return startInfo;
     }
 
     /// <summary>
@@ -655,44 +662,12 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
     /// The CLI writes its own credential file there; UsageAI only starts it. Null when no Claude
     /// CLI is installed.
     /// </summary>
-    internal static ProcessStartInfo? CreateLoginStartInfo(string configDirectory)
-    {
-        var launch = FindClaudeLaunch();
-        if (launch is null)
-        {
-            return null;
-        }
+    internal static ProcessStartInfo? CreateLoginStartInfo(string configDirectory) =>
+        FindClaudeLaunch() is { } launch
+            ? CreateCliStartInfo(launch, configDirectory, LoginArguments)
+            : null;
 
-        var startInfo = new ProcessStartInfo
-        {
-            FileName = launch.Executable,
-            UseShellExecute = false,
-            CreateNoWindow = true,
-            RedirectStandardInput = true,
-            RedirectStandardOutput = true,
-            RedirectStandardError = true,
-            WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-        };
-        ProcessSecurity.ApplyMinimalEnvironment(
-            startInfo,
-            "CLAUDE_CODE_GIT_BASH_PATH",
-            "NODE_EXTRA_CA_CERTS",
-            "SSL_CERT_DIR",
-            "SSL_CERT_FILE");
-        startInfo.Environment["DISABLE_AUTOUPDATER"] = "1";
-        startInfo.Environment["CLAUDE_CONFIG_DIR"] = configDirectory;
-        if (launch.Script is not null)
-        {
-            startInfo.ArgumentList.Add(launch.Script);
-        }
-
-        foreach (var argument in new[] { "auth", "login", "--claudeai" })
-        {
-            startInfo.ArgumentList.Add(argument);
-        }
-
-        return startInfo;
-    }
+    private static readonly string[] LoginArguments = ["auth", "login", "--claudeai"];
 
     private static ClaudeLaunch? FindClaudeLaunch()
     {

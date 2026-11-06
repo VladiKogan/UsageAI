@@ -51,8 +51,7 @@ internal static class AccountDiscovery
     public static string FolderVariable(string providerId) =>
         providerId.Equals(ClaudeProviderId, StringComparison.OrdinalIgnoreCase) ? "CLAUDE_CONFIG_DIR" : "CODEX_HOME";
 
-    public static string ProviderName(string providerId) =>
-        providerId.Equals(ClaudeProviderId, StringComparison.OrdinalIgnoreCase) ? "Claude" : "Codex";
+    public static string ProviderName(string providerId) => ProviderNames.Short(providerId);
 
     public static string UserProfile()
     {

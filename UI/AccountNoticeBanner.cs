@@ -68,6 +68,36 @@ internal sealed class AccountNoticeBanner : TableLayoutPanel
         ApplyTheme();
     }
 
+    /// <summary>
+    /// Re-measures padding and buttons for the DPI of the window the banner is in. The constructor
+    /// measured before any handle existed, at the start-up DPI.
+    /// </summary>
+    public void ApplyScale()
+    {
+        var scale = Scale();
+        Padding = scale.Pad(10, 6, 8, 6);
+        foreach (var button in new[] { _primary, _secondary })
+        {
+            button.Margin = scale.Pad(6, 2, 0, 0);
+            button.MinimumSize = new Size(scale[64], scale[26]);
+            button.Padding = scale.Pad(6, 0, 6, 0);
+        }
+
+        Invalidate();
+    }
+
+    protected override void OnHandleCreated(EventArgs e)
+    {
+        base.OnHandleCreated(e);
+        ApplyScale();
+    }
+
+    protected override void OnDpiChangedAfterParent(EventArgs e)
+    {
+        base.OnDpiChangedAfterParent(e);
+        ApplyScale();
+    }
+
     public event EventHandler<AccountNoticeEventArgs>? Answered;
 
     public AccountNotice? Notice => _notice;

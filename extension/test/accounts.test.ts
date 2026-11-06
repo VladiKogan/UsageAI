@@ -21,6 +21,7 @@ import {
   commandWithEnvironment,
   defaultLoginFolder,
   discoverAccountFolders,
+  distinctAccountLabels,
   identityKey,
   isAccountUnitKey,
   isKnownUnitKey,
@@ -614,4 +615,18 @@ test("Add Account signs in to a new folder with the official CLI, or adds a fold
 
   assert.equal(sanitizeAccountName("  My Team!! 2 "), "my-team-2");
   assert.equal(await proposeLoginFolder("codex", "", "/home/dev", async (folder) => folder.endsWith("account-2")), path.join("/home/dev", ".codex-account-3"));
+});
+
+test("two accounts with one label are told apart by organisation, else by number", () => {
+  const byOrg = distinctAccountLabels([
+    { label: "me@x.com", identity: { email: "me@x.com", organizationName: "Personal" } },
+    { label: "ME@x.com", identity: { email: "me@x.com", organizationName: "Acme" } },
+    { label: "team", identity: {} },
+  ]);
+  assert.deepEqual(byOrg.map((account) => account.label), ["me@x.com · Personal", "ME@x.com · Acme", "team"]);
+  const numbered = distinctAccountLabels([
+    { label: "me@x.com", identity: { email: "me@x.com" } },
+    { label: "me@x.com", identity: { email: "me@x.com", organizationName: "Acme" } },
+  ]);
+  assert.deepEqual(numbered.map((account) => account.label), ["me@x.com", "me@x.com · Account 2"]);
 });

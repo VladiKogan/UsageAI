@@ -740,6 +740,7 @@ internal sealed class UsagePopupForm : Form
         _header.Margin = edge;
         _footer.Margin = edge;
         _banner.Margin = scale.Pad(0, 0, RightEdge, 8);
+        _banner.ApplyScale();
         _shell.RowStyles[0] = new RowStyle(SizeType.Absolute, scale[HeaderRowBaseline]);
         _shell.RowStyles[1] = new RowStyle(SizeType.Absolute, BannerHeight(scale));
         _shell.RowStyles[3] = new RowStyle(SizeType.Absolute, scale[FooterRowBaseline]);

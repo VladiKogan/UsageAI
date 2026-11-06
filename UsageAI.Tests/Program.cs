@@ -148,6 +148,7 @@ internal static class Program
         ("the tray app scans, rebuilds and answers account banners", AccountTests.TestApplicationContextAccountsAsync),
         ("diagnostics name the account, never its token", AccountTests.TestAccountDiagnosticsAsync),
         ("add account dialog signs in, adds a folder or re-authenticates", AccountTests.TestAddAccountDialogAsync),
+        ("forgotten and duplicate accounts stay right, and retries wait their turn", AccountTests.TestAccountReviewFixesAsync),
         ("an in-app update leaves a note for the copy that starts after it", UpdateFlowTests.TestUpdateHandoffAsync),
         ("the update progress window steps through each stage", UpdateFlowTests.TestUpdateProgressWindowAsync),
         ("Windows closing the app for an installer exits it at once", UpdateFlowTests.TestEndSessionExitsAsync),

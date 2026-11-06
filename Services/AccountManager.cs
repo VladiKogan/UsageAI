@@ -170,11 +170,12 @@ internal sealed class AccountManager
             }
         }
 
+        var duplicatesChanged = RecheckDuplicates();
         _settings.AccountsInitialized = true;
         _settings.LastAccountScanUtc = nowUtc.ToUniversalTime();
         _settings.Save();
         WriteCreatedLoginsList();
-        if (added.Count > 0)
+        if (added.Count > 0 || duplicatesChanged)
         {
             AccountsChanged?.Invoke(this, EventArgs.Empty);
         }
@@ -271,14 +272,86 @@ internal sealed class AccountManager
         }
 
         _settings.Accounts.Remove(account);
-        if (account.Source == AccountSource.Found)
+
+        // Whatever its source, a folder still on disk would be offered again by the next scan if it
+        // matches the naming rule, so it is remembered as forgotten until added by hand again.
+        if (account.Path is { } remaining && Directory.Exists(remaining))
         {
-            _settings.ForgottenAccounts = _settings.ForgottenAccounts.Append(unitKey).ToArray();
+            Forget(unitKey);
         }
 
         _notices.RemoveAll(notice => unitKey.Equals(notice.UnitKey, StringComparison.OrdinalIgnoreCase));
         Commit();
         return null;
+    }
+
+    /// <summary>Remembers a forgotten key, newest last, dropping the oldest beyond the cap.</summary>
+    private void Forget(string unitKey)
+    {
+        var kept = _settings.ForgottenAccounts
+            .Where(id => !id.Equals(unitKey, StringComparison.OrdinalIgnoreCase))
+            .Append(unitKey)
+            .ToArray();
+        _settings.ForgottenAccounts = kept.Length > AppSettings.MaxForgottenAccounts
+            ? kept[^AppSettings.MaxForgottenAccounts..]
+            : kept;
+    }
+
+    /// <summary>
+    /// Works out again which accounts repeat a person already shown. The default login comes first,
+    /// then the provider's accounts in order; the first folder of a person is shown and the rest are
+    /// duplicates. A duplicate is never read, so its folder's identity is read again here: when the
+    /// account it repeated is removed or signs in to someone else, it is shown again.
+    /// Returns true when anything changed.
+    /// </summary>
+    public bool RecheckDuplicates()
+    {
+        var changed = false;
+        foreach (var providerId in AccountDiscovery.MultiAccountProviders)
+        {
+            var seen = new Dictionary<string, string>(StringComparer.Ordinal);
+            if (DefaultIdentityHash(providerId) is { } defaultHash)
+            {
+                seen[defaultHash] = DefaultLabel(providerId);
+            }
+
+            foreach (var account in _settings.Accounts
+                         .Where(account => !account.IsDefault && account.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase))
+                         .OrderBy(account => account.Order)
+                         .ToArray())
+            {
+                if (account.DuplicateOf is not null && account.Path is { } path &&
+                    AccountDiscovery.ReadIdentity(providerId, path, _userProfile) is { } fresh)
+                {
+                    account.Identity = fresh.Hash;
+                    account.Email = fresh.Email;
+                    account.Organization = fresh.OrganizationName;
+                }
+
+                string? duplicateOf = null;
+                if (account.Identity is { } hash && !seen.TryGetValue(hash, out duplicateOf))
+                {
+                    seen[hash] = account.DisplayLabel;
+                }
+
+                if (account.DuplicateOf == duplicateOf)
+                {
+                    continue;
+                }
+
+                account.DuplicateOf = duplicateOf;
+                if (duplicateOf is not null && account.Pending)
+                {
+                    // Nothing to answer for a person already shown.
+                    account.Pending = false;
+                    _notices.RemoveAll(notice => account.UnitKey.Equals(notice.UnitKey, StringComparison.OrdinalIgnoreCase));
+                }
+
+                changed = true;
+            }
+        }
+
+        return changed;
     }
 
     /// <summary>Points an account whose folder moved at its new location.</summary>
@@ -338,12 +411,22 @@ internal sealed class AccountManager
             providerId,
             previous is null ? $"{which} is now {current}." : $"{which} is now {current} (was {previous}).",
             unitKey));
+
+        // The person who left may have been the one another folder repeated, or the new one may
+        // repeat an account already shown.
+        if (RecheckDuplicates())
+        {
+            Commit();
+            return;
+        }
+
         NoticesChanged?.Invoke(this, EventArgs.Empty);
     }
 
     /// <summary>Saves a change made to the account list and rebuilds the clients.</summary>
     public void Commit()
     {
+        RecheckDuplicates();
         _settings.Save();
         WriteCreatedLoginsList();
         AccountsChanged?.Invoke(this, EventArgs.Empty);

@@ -514,7 +514,11 @@ internal static class AccountTests
 
             // The folder signed in to someone else: announced, and its history starts afresh.
             team.Used = 33;
+            // Who is signed in is read again only once the login itself was written, as a sign-in is.
             File.WriteAllText(Path.Combine(folder, ".claude.json"), ClaudeJson("other@example.com", "org-9", "Else"));
+            await service.RefreshAsync(force: true, anyWindowVisible: false);
+            Equal(0, changes.Count);
+            File.WriteAllText(Path.Combine(folder, ".credentials.json"), "{}");
             await service.RefreshAsync(force: true, anyWindowVisible: false);
             Equal(teamKey, changes.Single().UnitKey);
             Equal("team@example.com", changes.Single().Previous);
@@ -869,6 +873,100 @@ internal static class AccountTests
         timer.Start();
         result = TextPrompt.Ask(null, "Rename account", "Name:", "x");
         return result;
+    }
+
+    public static async Task TestAccountReviewFixesAsync()
+    {
+        var profile = NewDirectory("fixes");
+        try
+        {
+            var defaultClaude = Login(profile, ".claude", ".credentials.json");
+            File.WriteAllText(Path.Combine(profile, ".claude.json"), ClaudeJson("me@example.com", "org-0", "Personal"));
+            var settings = new AppSettings { IsEphemeral = true, AccountsInitialized = true, AskBeforeShowingNewAccounts = false };
+            var manager = new AccountManager(settings, profile, providerId => Path.Combine(profile, "." + providerId), account => new StubClient(account.UnitKey));
+
+            // Forgetting a folder added by hand keeps the scan from offering it again.
+            var work = Login(profile, ".claude-work", ".credentials.json");
+            File.WriteAllText(Path.Combine(work, ".claude.json"), ClaudeJson("work@example.com", "org-1", "Acme"));
+            var workKey = manager.AddFolder("claude", work, AccountSource.Added, null).UnitKey!;
+            Equal(null, manager.Remove(workKey, deleteCreatedFolder: true));
+            True(Directory.Exists(work));
+            Equal(0, manager.Scan(DateTimeOffset.UtcNow));
+            Equal(null, settings.FindAccount(workKey));
+            Equal(0, manager.Notices.Count);
+
+            // A duplicate is shown again once the account it repeated signs in to someone else.
+            var alt = Login(profile, ".claude-alt", ".credentials.json");
+            File.WriteAllText(Path.Combine(alt, ".claude.json"), ClaudeJson("me@example.com", "org-0", "Personal"));
+            manager.Scan(DateTimeOffset.UtcNow);
+            var altKey = ProviderKey.Compose("claude", ProviderKey.AccountIdFor(alt));
+            Equal("me@example.com", settings.FindAccount(altKey)!.DuplicateOf);
+            False(manager.CreateClients(Array.Empty<IUsageClient>()).Any(client => client.Id == altKey));
+            File.WriteAllText(Path.Combine(profile, ".claude.json"), ClaudeJson("new@example.com", "org-5", "New"));
+            settings.EnsureAccount("claude").Identity = AccountDiscovery.ReadIdentity("claude", defaultClaude, profile)!.Hash;
+            manager.NotifyIdentityChanged("claude", "me@example.com", "new@example.com");
+            Equal(null, settings.FindAccount(altKey)!.DuplicateOf);
+            True(manager.CreateClients(Array.Empty<IUsageClient>()).Any(client => client.Id == altKey));
+            False(manager.RecheckDuplicates());
+
+            // The newest forgotten folders are kept when the list is full.
+            var file = new AppSettings
+            {
+                ForgottenAccounts = Enumerable.Range(0, AppSettings.MaxForgottenAccounts + 5).Select(index => $"claude@{index:x8}").ToArray(),
+            };
+            file.Save();
+            var reloaded = AppSettings.Load().ForgottenAccounts;
+            Equal(AppSettings.MaxForgottenAccounts, reloaded.Length);
+            Equal($"claude@{AppSettings.MaxForgottenAccounts + 4:x8}", reloaded[^1]);
+            Equal("claude@00000005", reloaded[0]);
+        }
+        finally
+        {
+            TryDelete(profile);
+        }
+
+        // A one-provider retry asked for while another refresh runs is due afterwards, not dropped.
+        var slow = new GatedStub("codex", Task.CompletedTask);
+        var other = new GatedStub("claude", Task.CompletedTask);
+        using var service = new UsageRefreshService(new IUsageClient[] { slow, other }, new AppSettings { IsEphemeral = true });
+        await service.RefreshAsync(force: true, anyWindowVisible: false);
+        var gate = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        slow.Gate = gate.Task;
+        var running = service.RefreshProviderAsync("codex", anyWindowVisible: false);
+        await service.RefreshProviderAsync("claude", anyWindowVisible: false);
+        Equal(1, other.Calls);
+        gate.SetResult();
+        await running;
+        True(service.IsDue(DateTimeOffset.Now));
+        await service.RefreshDueAsync(anyWindowVisible: false);
+        Equal(2, other.Calls);
+
+        // The banner re-measures for its window's DPI.
+        using var banner = new AccountNoticeBanner(192);
+        banner.ApplyScale();
+        Equal(new Padding(20, 12, 16, 12), banner.Padding);
+    }
+
+    private sealed class GatedStub(string id, Task gate) : IUsageClient
+    {
+        public Task Gate { get; set; } = gate;
+
+        public int Calls { get; private set; }
+
+        public string Id => id;
+
+        public string DisplayName => id;
+
+        public string SignInCommand => id;
+
+        public Uri AccountUrl { get; } = new("https://example.com/");
+
+        public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default)
+        {
+            Calls++;
+            await Gate;
+            return Snapshot(id, 1);
+        }
     }
 
     public static Task TestAccountDiagnosticsAsync()

@@ -215,6 +215,9 @@ internal sealed class AppSettings
     /// </summary>
     public string[] ForgottenAccounts { get; set; } = Array.Empty<string>();
 
+    /// <summary>How many forgotten folders are remembered; the oldest go first.</summary>
+    public const int MaxForgottenAccounts = 64;
+
     /// <summary>The last account scan, kept apart from the update check so neither skips the other.</summary>
     public DateTimeOffset? LastAccountScanUtc { get; set; }
 
@@ -436,8 +439,10 @@ internal sealed class AppSettings
         ForgottenAccounts = ForgottenAccounts is { Length: > 0 } forgotten
             ? forgotten
                 .Where(id => id is { Length: > 0 and <= 80 } && id.All(character => char.IsAsciiLetterOrDigit(character) || character == '@'))
+                .Reverse()
                 .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Take(MaxAccounts)
+                .Take(MaxForgottenAccounts)
+                .Reverse()
                 .ToArray()
             : Array.Empty<string>();
         if (LastAccountScanUtc is { } lastScan)

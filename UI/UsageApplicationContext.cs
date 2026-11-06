@@ -352,7 +352,12 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _accounts.ScanIfDue(DateTimeOffset.UtcNow);
     }
 
-    /// <summary>Rebuilds the clients around the current account list and fetches new accounts at once.</summary>
+    /// <summary>
+    /// Rebuilds the clients around the current account list. It starts no refresh itself: a new
+    /// account is due, so the caller's own refresh or the next tick reads it, and a refresh started
+    /// here would hold the lock and swallow the forced one a caller (startup, Add account) is about
+    /// to ask for.
+    /// </summary>
     private void OnAccountsChanged(object? sender, EventArgs eventArgs) => RunOnUi(() =>
     {
         if (_isExiting || _accounts is null)
@@ -370,7 +375,6 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _service.ReplaceClients(_clients);
         PushStateToPopup();
         UpdateTray();
-        _ = RefreshIfDueAsync();
     });
 
     private void OnNoticesChanged(object? sender, EventArgs eventArgs) => RunOnUi(() =>
@@ -381,8 +385,20 @@ internal sealed class UsageApplicationContext : ApplicationContext
         }
     });
 
+    /// <summary>
+    /// Raised from inside a refresh as it folds in a reading; posted, so the account list (which may
+    /// change as duplicates are worked out again) is not rebuilt under that refresh.
+    /// </summary>
     private void OnAccountIdentityChanged(object? sender, AccountIdentityChangedEventArgs eventArgs) =>
-        _accounts?.NotifyIdentityChanged(eventArgs.UnitKey, eventArgs.Previous, eventArgs.Current);
+        _syncContext.Post(
+            _ =>
+            {
+                if (!_disposed && !_isExiting)
+                {
+                    _accounts?.NotifyIdentityChanged(eventArgs.UnitKey, eventArgs.Previous, eventArgs.Current);
+                }
+            },
+            null);
 
     /// <summary>The account banner's answers.</summary>
     internal void AnswerNotice(AccountNotice notice, bool primary)
@@ -396,6 +412,11 @@ internal sealed class UsageApplicationContext : ApplicationContext
         {
             case AccountNoticeKind.NewAccount when notice.UnitKey is { } key:
                 _accounts.AnswerNewAccount(key, show: primary);
+                if (primary)
+                {
+                    _ = RefreshIfDueAsync();
+                }
+
                 break;
             case AccountNoticeKind.FoundSeveral:
                 _accounts.Dismiss(notice);
@@ -639,9 +660,6 @@ internal sealed class UsageApplicationContext : ApplicationContext
     {
         ShowPendingWhatsNew();
         var pollingBefore = PollingInputs(_settings);
-
-        // A rescan from Settings' account page counts as opening it; the page lists what it found.
-        _accounts?.Scan(DateTimeOffset.UtcNow);
         using var dialog = new SettingsForm(
             _settings,
             _defaultClients.Select(client => (client.Id, client.DisplayName)).ToArray(),
@@ -663,12 +681,14 @@ internal sealed class UsageApplicationContext : ApplicationContext
             return;
         }
 
+        var accountsShown = false;
         if (_accounts is not null)
         {
-            // An account shown for the first time is read on the next tick.
+            // An account shown for the first time is due, and read straight after.
             _clients = _accounts.CreateClients(_defaultClients).ToArray();
             _service.ReplaceClients(_clients);
             _popup.SetNotices(_accounts.Notices);
+            accountsShown = true;
         }
 
         // A presentation-only change — theme, colours, metric or quota display — re-renders from
@@ -686,6 +706,10 @@ internal sealed class UsageApplicationContext : ApplicationContext
         if (pollingChanged)
         {
             _ = RefreshAsync(force: false);
+        }
+        else if (accountsShown)
+        {
+            _ = RefreshIfDueAsync();
         }
 
         _ = CheckForUpdatesIfDueAsync();
@@ -1229,14 +1253,8 @@ internal sealed class UsageApplicationContext : ApplicationContext
             ? $"{ShortProviderName(status.Kind, status.ProviderName)} · {label}"
             : ShortProviderName(status.Kind, status.ProviderName);
 
-    private static string ShortProviderName(string providerId, string? fallback = null) => providerId.ToLowerInvariant() switch
-    {
-        "codex" => "Codex",
-        "claude" => "Claude",
-        "copilot" => "Copilot",
-        "gemini" => "Gemini",
-        _ => fallback ?? providerId,
-    };
+    private static string ShortProviderName(string providerId, string? fallback = null) =>
+        ProviderNames.Short(providerId, fallback);
 
     private static string Trim(string value, int maximumLength) =>
         value.Length <= maximumLength ? value : value[..(maximumLength - 3)] + "...";

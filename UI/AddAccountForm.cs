@@ -212,6 +212,50 @@ internal sealed class AddAccountForm : Form
         UpdateForm(resetFolder: reauthenticate is null);
     }
 
+    /// <summary>
+    /// Measures the dialog for the DPI of the monitor it is on. The constructor measured before any
+    /// handle existed, at the start-up DPI, so this runs again once the window exists and whenever
+    /// it moves to a monitor at another scale.
+    /// </summary>
+    private void ApplyScale()
+    {
+        var scale = Scale();
+        _layout.Padding = scale.Pad(20, 16, 20, 14);
+        _layout.ColumnStyles[0] = new ColumnStyle(SizeType.Absolute, scale[110]);
+        foreach (var segmented in new[] { _provider, _way })
+        {
+            segmented.Margin = scale.Pad(0, 2, 0, 6);
+            segmented.MinimumSize = new Size(0, scale[30]);
+        }
+
+        foreach (var button in new[] { _browse, _copyCommand, _copyLink, _primary, _cancel })
+        {
+            button.Margin = scale.Pad(8, 2, 0, 2);
+            button.MinimumSize = new Size(scale[88], scale[30]);
+        }
+
+        _command.MaximumSize = new Size(scale[360], 0);
+        _status.MaximumSize = new Size(scale[500], 0);
+        _link.MaximumSize = new Size(scale[400], 0);
+        var workingArea = Screen.FromControl(this).WorkingArea;
+        ClientSize = new Size(
+            Math.Min(scale[560], workingArea.Width - (Width - ClientSize.Width)),
+            Math.Min(scale[430], workingArea.Height - (Height - ClientSize.Height)));
+    }
+
+    protected override void OnLoad(EventArgs e)
+    {
+        base.OnLoad(e);
+        ApplyScale();
+        CenterToScreen();
+    }
+
+    protected override void OnDpiChanged(DpiChangedEventArgs e)
+    {
+        base.OnDpiChanged(e);
+        ApplyScale();
+    }
+
     /// <summary>The provider key of the account added or signed in again, once the dialog succeeded.</summary>
     public string? AddedKey { get; private set; }
 

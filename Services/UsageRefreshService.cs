@@ -68,6 +68,17 @@ internal sealed class UsageRefreshService : IDisposable
     /// </summary>
     private readonly Dictionary<string, ResetPoll> _resetPolls = new(StringComparer.OrdinalIgnoreCase);
 
+    /// <summary>
+    /// When each account's identity was last read, and its credential file's write time then.
+    /// Claude's <c>.claude.json</c> can be megabytes and is rewritten constantly, so who is signed in
+    /// is read again only when the login itself was written (a sign-in to someone else rewrites it)
+    /// or after <see cref="IdentityRecheckInterval"/>.
+    /// </summary>
+    private readonly Dictionary<string, (DateTime CredentialWrittenAt, DateTimeOffset CheckedAt)> _identityChecks =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly TimeSpan IdentityRecheckInterval = TimeSpan.FromHours(6);
+
     private readonly List<UsageSample> _history = new();
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
     private readonly CancellationTokenSource _shutdown = new();
@@ -265,6 +276,13 @@ internal sealed class UsageRefreshService : IDisposable
         var entered = await _refreshLock.WaitAsync(0);
         if (!entered)
         {
+            // One provider asked for while another refresh runs — a dashboard Retry, an account just
+            // added or signed in again — is due on the next tick rather than dropped.
+            if (onlyProviderId is not null && _statuses.ContainsKey(onlyProviderId))
+            {
+                _nextAttempt[onlyProviderId] = DateTimeOffset.MinValue;
+            }
+
             return;
         }
 
@@ -421,6 +439,7 @@ internal sealed class UsageRefreshService : IDisposable
             _failures.Remove(removed);
             _nextAttempt.Remove(removed);
             _resetPolls.Remove(removed);
+            _identityChecks.Remove(removed);
             _notifications.Forget(removed);
         }
 
@@ -487,6 +506,11 @@ internal sealed class UsageRefreshService : IDisposable
             _failures.Remove(providerId);
             _nextAttempt.Remove(providerId);
             _statuses[providerId] = result.Status;
+            if (result.IdentityStamp is { } stamp)
+            {
+                _identityChecks[providerId] = (stamp, now);
+            }
+
             if (result.Identity is { } identity)
             {
                 ObserveIdentity(providerId, identity);
@@ -517,6 +541,26 @@ internal sealed class UsageRefreshService : IDisposable
     }
 
     private bool _accountsChanged;
+
+    /// <summary>The credential file's write time when the account's identity is due a read, else null.</summary>
+    private DateTime? IdentityCheckDue(IAccountUsageClient client, DateTimeOffset now)
+    {
+        DateTime written;
+        try
+        {
+            written = File.GetLastWriteTimeUtc(Path.Combine(client.LoginFolder, AccountDiscovery.CredentialFileName(client.ProviderId)));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            written = DateTime.MinValue;
+        }
+
+        return _identityChecks.TryGetValue(client.Id, out var last) &&
+               last.CredentialWrittenAt == written &&
+               now - last.CheckedAt < IdentityRecheckInterval
+            ? null
+            : written;
+    }
 
     /// <summary>
     /// Records who a login folder is signed in to. The first reading is kept silently; a different
@@ -554,16 +598,9 @@ internal sealed class UsageRefreshService : IDisposable
     {
         var visible = _clients.Where(client => _settings.IsUnitVisible(client.Id)).Select(client => client.Id).ToArray();
         return AccountLabels(visible).TryGetValue(unitKey, out var label)
-            ? $"{ShortName(ProviderKey.ProviderOf(unitKey), providerName)} · {label}"
+            ? $"{ProviderNames.Short(unitKey, providerName)} · {label}"
             : providerName;
     }
-
-    private static string ShortName(string providerId, string fallback) => providerId.ToLowerInvariant() switch
-    {
-        "claude" => "Claude",
-        "codex" => "Codex",
-        _ => fallback,
-    };
 
     private bool IsProviderDue(
         string providerId,
@@ -606,10 +643,14 @@ internal sealed class UsageRefreshService : IDisposable
     private async Task<FetchResult> FetchAsync(IUsageClient client, DateTimeOffset attemptedAt)
     {
         var previous = _statuses[client.Id];
+
+        // Decided before the first await, while this still runs with the refresh loop, and recorded
+        // by ApplyResult: this method mutates nothing shared.
+        var identityCheck = client is IAccountUsageClient candidate ? IdentityCheckDue(candidate, attemptedAt) : null;
         try
         {
             var snapshot = await client.GetUsageAsync(_shutdown.Token) with { ProviderId = client.Id };
-            var identity = client is IAccountUsageClient account
+            var identity = client is IAccountUsageClient account && identityCheck is not null
                 ? await Task.Run(() => AccountDiscovery.ReadIdentity(account.ProviderId, account.LoginFolder))
                 : null;
             return new FetchResult(
@@ -627,7 +668,8 @@ internal sealed class UsageRefreshService : IDisposable
                 IsFresh: true,
                 Failed: false,
                 ThrottleHint: null,
-                identity);
+                identity,
+                identityCheck);
         }
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
         {
@@ -666,5 +708,6 @@ internal sealed class UsageRefreshService : IDisposable
         bool IsFresh,
         bool Failed,
         TimeSpan? ThrottleHint,
-        AccountIdentity? Identity = null);
+        AccountIdentity? Identity = null,
+        DateTime? IdentityStamp = null);
 }
