@@ -40,6 +40,16 @@ You're mid-refactor and the model stops. Weekly limit. Nobody told you it was cl
 Current release: **UsageAI for Windows 0.15.1** and **UsageAI editor extension 0.1.20**.
 You can also browse the complete **[Releases page](https://github.com/VladiKogan/UsageAI/releases)**.
 
+**One line in PowerShell** installs the latest release, or updates to it:
+
+```powershell
+irm https://raw.githubusercontent.com/VladiKogan/UsageAI/main/scripts/install.ps1 | iex
+```
+
+It downloads the Setup.exe below, checks it against its published SHA-256, installs it silently
+(Windows asks for administrator approval) and starts UsageAI. [Read the script](scripts/install.ps1)
+first if you like.
+
 | | |
 | --- | --- |
 | 🚀 **[UsageAI-0.15.1-Setup.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.15.1/UsageAI-0.15.1-Setup.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.15.1/UsageAI-0.15.1-Setup.exe.sha256)) | The easy one. Start Menu shortcut, clean uninstall, and it installs the .NET 10 Desktop Runtime for you if you don't have it. |
@@ -54,21 +64,7 @@ The pure TypeScript editor extension lives in [`extension/`](extension/README.md
 Activity Bar view that can stay pinned in the Primary or Secondary Sidebar, plus an always-available
 Status Bar summary. The Status Bar shows session and weekly percentages side by side; hover it for
 segmented meters, the last-updated time, and quick Open/Refresh actions. One VSIX targets both VS Code
-and Antigravity; marketplace publication is kept separate for Visual Studio Marketplace and Open VSX.
-
-Install it from the [Visual Studio Marketplace](https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai)
-or [Open VSX](https://open-vsx.org/extension/vladikogan/usageai). For manual installation, download
-the VSIX from Open VSX and select **Extensions: Install from VSIX...** in VS Code or
-Antigravity. To build it from source instead:
-
-```powershell
-cd extension
-npm.cmd install
-npm.cmd test
-npm.cmd run package:vsix
-```
-
-> Every download ships with a matching `.sha256` file if you like to verify what you run.
+and Antigravity.
 
 ## 👀 What you'll see
 

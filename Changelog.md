@@ -24,6 +24,10 @@ The project follows [Semantic Versioning](https://semver.org/).
   hidden, renamed, moved, given its own alerts switch, re-authenticated, opened in Explorer,
   located after a move, and removed. Removing an account UsageAI created deletes its folder after a
   confirmation that names it; any other folder is only forgotten and never touched.
+- **One PowerShell line installs or updates UsageAI.** `irm
+  https://raw.githubusercontent.com/VladiKogan/UsageAI/main/scripts/install.ps1 | iex` downloads the
+  latest Setup.exe from GitHub Releases, refuses it unless it matches its published SHA-256, installs
+  it silently and starts the app.
 - **`--diagnose` lists every account of a provider.** With more than one it prints an array,
   default login first, each with its folder and label; `--account <label|email|id>` picks one.
 
