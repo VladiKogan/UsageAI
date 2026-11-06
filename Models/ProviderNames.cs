@@ -18,11 +18,25 @@ internal static class ProviderNames
         };
 
     /// <summary>
-    /// The name the compact popup shows: "Claude Code" reads as Claude there, so an account's tile,
-    /// "Claude · Personal", fits half the popup's width instead of ending in an ellipsis.
+    /// The name the compact popup shows, decided by the provider rather than by its display text.
+    /// Claude Code reads as Claude, so an account's tile, "Claude · Personal", fits half the popup's
+    /// width instead of ending in an ellipsis. The <paramref name="headline"/> sentence also
+    /// shortens GitHub Copilot to Copilot; every other provider keeps its own name. The account's
+    /// label follows, as it does everywhere.
     /// </summary>
-    public static string Popup(string providerName) =>
-        providerName.StartsWith("Claude Code", StringComparison.OrdinalIgnoreCase)
-            ? "Claude" + providerName["Claude Code".Length..]
-            : providerName;
+    public static string Popup(ProviderStatus status, bool headline = false)
+    {
+        var provider = status.Kind.ToLowerInvariant() switch
+        {
+            "claude" => "Claude",
+            "copilot" when headline => "Copilot",
+            _ => null,
+        };
+        if (provider is null)
+        {
+            return status.ProviderName;
+        }
+
+        return status.AccountLabel is { } label ? $"{provider} · {label}" : provider;
+    }
 }

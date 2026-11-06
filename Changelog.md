@@ -13,8 +13,11 @@ The project follows [Semantic Versioning](https://semver.org/).
   a small `.cmd` file that sets `CLAUDE_CONFIG_DIR` or `CODEX_HOME` to that login folder and starts
   the CLI. The files go in `%LOCALAPPDATA%\UsageAI\bin`, which is added to your user PATH once.
   UsageAI refuses a name that another command on your PATH already uses, and it only ever changes
-  or deletes files it wrote itself. Forgetting the account deletes its command, and uninstalling
-  removes the PATH entry along with UsageAI's data folder.
+  or deletes files it wrote itself. The command never runs a `claude.bat` or `codex.cmd` that
+  happens to be in your current folder, such as a cloned repository, in place of the real CLI. When
+  the CLI is the one bundled in an editor extension, the command is pointed at the new copy after
+  each extension update, at startup or on the daily account check. Forgetting the account deletes
+  its command, and uninstalling removes the PATH entry along with UsageAI's data folder.
 
 ### Changed
 

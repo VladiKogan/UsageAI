@@ -30,6 +30,11 @@ internal sealed partial class TerminalCommands
 
     private const int MaxNameLength = 40;
 
+    private static readonly HashSet<string> ProgramExtensions = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ".com", ".exe", ".bat", ".cmd", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".msc", ".ps1",
+    };
+
     private readonly string _folder;
     private readonly Func<string?> _readUserPath;
     private readonly Action<string> _writeUserPath;
@@ -116,6 +121,13 @@ internal sealed partial class TerminalCommands
             return $"Use letters, digits, '-', '_' or '.', starting with a letter or digit, up to {MaxNameLength} characters.";
         }
 
+        // The file is the name plus .cmd, so "x.exe" would be x.exe.cmd and typing x.exe would not
+        // find it; a trailing dot is dropped by Windows the same way.
+        if (trimmed.EndsWith('.') || ProgramExtensions.Contains(Path.GetExtension(trimmed)))
+        {
+            return "Leave the name without a final dot or a program extension such as .exe; .cmd is added for you.";
+        }
+
         if (trimmed.Equals("claude", StringComparison.OrdinalIgnoreCase) ||
             trimmed.Equals("codex", StringComparison.OrdinalIgnoreCase))
         {
@@ -152,27 +164,13 @@ internal sealed partial class TerminalCommands
             return new TerminalCommandResult(null, $"{file} already exists. Choose another name.");
         }
 
-        if (_findCli(providerId) is not { } cli)
+        if (Contents(providerId, loginFolder) is not { } contents)
         {
-            return new TerminalCommandResult(null, $"The {AccountDiscovery.ProviderName(providerId)} CLI was not found, so the command would have nothing to start. Install it, then try again.");
+            return new TerminalCommandResult(null, _findCli(providerId) is null
+                ? $"The {AccountDiscovery.ProviderName(providerId)} CLI was not found, so the command would have nothing to start. Install it, then try again."
+                : "A .cmd file cannot hold that folder's path reliably: it has characters outside plain ASCII beyond your user folder.");
         }
 
-        var folderText = CmdText(loginFolder);
-        var cliText = CmdText(cli);
-        if (folderText is null || cliText is null)
-        {
-            return new TerminalCommandResult(null, "A .cmd file cannot hold that folder's path reliably: it has characters outside plain ASCII beyond your user folder.");
-        }
-
-        var contents = new StringBuilder()
-            .Append(Marker).Append("\r\n")
-            .Append("@rem Starts ").Append(AccountDiscovery.ProviderName(providerId)).Append(" with the login in the folder below.\r\n")
-            .Append("@rem Forget the account in UsageAI to delete this file.\r\n")
-            .Append("@echo off\r\n")
-            .Append("setlocal\r\n")
-            .Append("set \"").Append(AccountDiscovery.FolderVariable(providerId)).Append('=').Append(folderText).Append("\"\r\n")
-            .Append(cliText).Append(" %*\r\n")
-            .ToString();
         try
         {
             Directory.CreateDirectory(_folder);
@@ -201,6 +199,66 @@ internal sealed partial class TerminalCommands
         return new TerminalCommandResult(name, null, file, pathChanged);
     }
 
+    /// <summary>
+    /// Writes an existing command again when what it should hold has changed, such as an editor
+    /// extension's bundled CLI that moved to a new version folder. Returns true when it rewrote the
+    /// file; a missing file, one UsageAI did not write, or a CLI that cannot be found is left alone.
+    /// </summary>
+    public bool Refresh(string providerId, string loginFolder, string name)
+    {
+        if (NameProblem(name) is not null)
+        {
+            return false;
+        }
+
+        var file = FilePath(name.Trim());
+        if (!File.Exists(file) || !IsOurs(file) || Contents(providerId, loginFolder) is not { } contents)
+        {
+            return false;
+        }
+
+        try
+        {
+            if (string.Equals(File.ReadAllText(file), contents, StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            AppPaths.WriteAllTextAtomic(file, contents);
+            return true;
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>
+    /// The file's text: the login folder in the provider's variable, then the CLI. Setting
+    /// <c>NoDefaultCurrentDirectoryInExePath</c> (inside <c>setlocal</c>, so it never leaks) keeps
+    /// cmd from running a <c>claude.bat</c> or <c>codex.cmd</c> that sits in the current folder,
+    /// such as a cloned repository, instead of the CLI on the PATH. Null when no CLI is found or a
+    /// path cannot be written.
+    /// </summary>
+    private string? Contents(string providerId, string loginFolder)
+    {
+        if (_findCli(providerId) is not { } cli || CmdText(loginFolder) is not { } folderText || CmdText(cli) is not { } cliText)
+        {
+            return null;
+        }
+
+        return new StringBuilder()
+            .Append(Marker).Append("\r\n")
+            .Append("@rem Starts ").Append(AccountDiscovery.ProviderName(providerId)).Append(" with the login in the folder below.\r\n")
+            .Append("@rem Forget the account in UsageAI to delete this file.\r\n")
+            .Append("@echo off\r\n")
+            .Append("setlocal\r\n")
+            .Append("set \"NoDefaultCurrentDirectoryInExePath=1\"\r\n")
+            .Append("set \"").Append(AccountDiscovery.FolderVariable(providerId)).Append('=').Append(folderText).Append("\"\r\n")
+            .Append(cliText).Append(" %*\r\n")
+            .ToString();
+    }
+
     /// <summary>Deletes a command UsageAI wrote; a file without the marker is left alone.</summary>
     public bool Remove(string name)
     {
@@ -227,19 +285,22 @@ internal sealed partial class TerminalCommands
     }
 
     /// <summary>True when the folder is already one of the user's PATH entries.</summary>
-    public bool IsOnUserPath() =>
-        (_readUserPath() ?? string.Empty)
+    public bool IsOnUserPath() => Contains(_readUserPath());
+
+    private bool Contains(string? userPath) =>
+        (userPath ?? string.Empty)
             .Split(';', StringSplitOptions.RemoveEmptyEntries)
             .Any(entry => SameFolder(entry, _folder));
 
     private bool EnsureOnUserPath()
     {
-        if (IsOnUserPath())
+        var saved = _readUserPath();
+        if (Contains(saved))
         {
             return false;
         }
 
-        var current = (_readUserPath() ?? string.Empty).TrimEnd(';');
+        var current = (saved ?? string.Empty).TrimEnd(';');
         _writeUserPath(current.Length == 0 ? _folder : $"{current};{_folder}");
         return true;
     }
@@ -348,7 +409,10 @@ internal sealed partial class TerminalCommands
     {
         var cli = CliName(providerId);
         var configured = Environment.GetEnvironmentVariable(cli == "claude" ? "CLAUDE_PATH" : "CODEX_PATH")?.Trim().Trim('"');
-        if (!string.IsNullOrEmpty(configured) && Path.IsPathFullyQualified(configured) && File.Exists(configured))
+        // Only an .exe or .cmd, as the usage clients accept: a .ps1 started from a .cmd file opens
+        // in an editor instead of running.
+        if (!string.IsNullOrEmpty(configured) && Path.IsPathFullyQualified(configured) && File.Exists(configured) &&
+            (configured.EndsWith(".exe", StringComparison.OrdinalIgnoreCase) || configured.EndsWith(".cmd", StringComparison.OrdinalIgnoreCase)))
         {
             return $"\"{Path.GetFullPath(configured)}\"";
         }

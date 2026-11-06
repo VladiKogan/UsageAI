@@ -174,6 +174,7 @@ internal sealed class AccountManager
         }
 
         var duplicatesChanged = RecheckDuplicates();
+        RefreshTerminalCommands();
         _settings.AccountsInitialized = true;
         _settings.LastAccountScanUtc = nowUtc.ToUniversalTime();
         _settings.Save();
@@ -185,6 +186,23 @@ internal sealed class AccountManager
 
         NoticesChanged?.Invoke(this, EventArgs.Empty);
         return added.Count;
+    }
+
+    /// <summary>
+    /// Brings every account's terminal command up to date, on the same startup and daily tick as the
+    /// scan. A command that starts the CLI bundled in an editor extension names that extension's
+    /// version folder, which an update deletes; this points it at the copy installed now.
+    /// </summary>
+    public int RefreshTerminalCommands()
+    {
+        if (Terminal is null)
+        {
+            return 0;
+        }
+
+        return _settings.Accounts
+            .Where(account => account is { IsDefault: false, Command: not null, Path: not null })
+            .Count(account => Terminal.Refresh(account.ProviderId, account.Path!, account.Command!));
     }
 
     /// <summary>
@@ -380,9 +398,11 @@ internal sealed class AccountManager
         }
 
         // The account's terminal command follows it to the new folder, or goes when it cannot.
+        // The account has moved either way; a command that could not follow is said, not dropped silently.
         if (account.Command is { } command && _settings.FindAccount(result.UnitKey!) is { Path: { } path } moved)
         {
-            if (Terminal?.Create(moved.ProviderId, path, command, previous: command) is { Succeeded: true })
+            var rewritten = Terminal?.Create(moved.ProviderId, path, command, previous: command);
+            if (rewritten is { Succeeded: true })
             {
                 moved.Command = command;
             }
@@ -392,6 +412,10 @@ internal sealed class AccountManager
             }
 
             _settings.Save();
+            if (rewritten is { Problem: { } problem })
+            {
+                return new AccountAddResult(result.UnitKey, $"The account now reads {path}, but its terminal command {command} was deleted. {problem}");
+            }
         }
 
         return result;

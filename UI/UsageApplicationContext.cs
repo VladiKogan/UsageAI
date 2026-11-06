@@ -346,6 +346,11 @@ internal sealed class UsageApplicationContext : ApplicationContext
             {
                 _accounts.Scan(DateTimeOffset.UtcNow);
             }
+            else
+            {
+                // A scan keeps terminal commands current; with scanning off they are checked here.
+                _accounts.RefreshTerminalCommands();
+            }
 
             return;
         }
@@ -680,6 +685,8 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
         // Open while a refresh lands (an account just added here is read straight away), so the
         // Accounts page shows the new readings instead of the ones it opened with.
+        // Settings can be opened again from the tray while one is open; the outer one gets updates back.
+        var outerSettings = _openSettings;
         _openSettings = dialog;
         DialogResult answer;
         try
@@ -688,7 +695,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         }
         finally
         {
-            _openSettings = null;
+            _openSettings = outerSettings;
         }
 
         if (answer != DialogResult.OK)

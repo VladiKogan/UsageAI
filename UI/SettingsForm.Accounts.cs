@@ -478,7 +478,8 @@ internal sealed partial class SettingsForm
         var folder = account?.Path ?? AccountDiscovery.DefaultFolder(providerId);
         var login = providerId == AccountDiscovery.CodexProviderId ? " login" : string.Empty;
         var command = ProviderKey.IsDefault(key) ? (providerId == AccountDiscovery.CodexProviderId ? "codex" : "claude") + login
-            : account?.Command is { } own ? own + login
+            : account?.Command is { } own && _accountActions?.Manager.Terminal is { } terminal &&
+              terminal.IsOnUserPath() && File.Exists(terminal.FilePath(own)) ? own + login
             : AccountCommands.SignIn(providerId, folder);
         if (PromptDialog.Ask(
                 "Re-authenticate",
@@ -542,7 +543,8 @@ internal sealed partial class SettingsForm
         var result = _accountActions.Manager.Locate(key, picker.SelectedPath);
         if (result.Problem is { } problem)
         {
-            PromptDialog.Ask("Locate account", "That folder cannot be used", problem, "OK", declineText: null, PromptKind.Warning);
+            var heading = result.UnitKey is null ? "That folder cannot be used" : "The terminal command was removed";
+            PromptDialog.Ask("Locate account", heading, problem, "OK", declineText: null, PromptKind.Warning);
         }
 
         ReloadAccounts();

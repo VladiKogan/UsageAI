@@ -1001,6 +1001,9 @@ internal static class AccountTests
         NotNull(TerminalCommands.NameProblem("bad name"));
         NotNull(TerminalCommands.NameProblem("-x"));
         NotNull(TerminalCommands.NameProblem("con"));
+        NotNull(TerminalCommands.NameProblem("claude-x.exe"));
+        NotNull(TerminalCommands.NameProblem("claude-x."));
+        Equal(null, TerminalCommands.NameProblem("claude-x.2"));
         NotNull(TerminalCommands.NameProblem(" "));
 
         var root = NewDirectory("terminal");
@@ -1029,6 +1032,10 @@ internal static class AccountTests
             True(text.StartsWith(TerminalCommands.Marker + "\r\n", StringComparison.Ordinal));
             True(text.Contains("set \"CLAUDE_CONFIG_DIR=%USERPROFILE%\\.claude-team\"\r\n", StringComparison.Ordinal));
             True(text.Contains("\r\nclaude %*\r\n", StringComparison.Ordinal));
+
+            // cmd never runs a claude.bat sitting in the current folder (a cloned repository) in
+            // place of the CLI on the PATH; the setting stays inside setlocal.
+            True(text.Contains("setlocal\r\nset \"NoDefaultCurrentDirectoryInExePath=1\"\r\n", StringComparison.Ordinal));
 
             // The PATH is written once; writing the same command again is fine.
             True(terminal.Create("claude", team, "claude-team", previous: "claude-team").Succeeded);
@@ -1090,9 +1097,47 @@ internal static class AccountTests
             var movedKey = manager.Locate(teamKey, moved).UnitKey!;
             Equal("claude-team", settings.FindAccount(movedKey)!.Command);
             True(File.ReadAllText(terminal.FilePath("claude-team")).Contains(moved, StringComparison.Ordinal));
-            Equal(null, manager.Remove(movedKey, deleteCreatedFolder: false));
+
+            // A command that cannot follow the folder is deleted, and the move says so.
+            cli = null;
+            var again = Login(root, ".claude-again", ".credentials.json");
+            var relocated = manager.Locate(movedKey, again);
+            cli = "claude";
+            True(relocated.Problem!.Contains("claude-team was deleted", StringComparison.Ordinal));
+            Equal(null, settings.FindAccount(relocated.UnitKey!)!.Command);
+            False(File.Exists(terminal.FilePath("claude-team")));
+            True(manager.SetTerminalCommand(relocated.UnitKey!, "claude-team").Succeeded);
+            Equal(null, manager.Remove(relocated.UnitKey!, deleteCreatedFolder: false));
             False(File.Exists(terminal.FilePath("claude-team")));
             Equal("Terminal commands are not available here.", new AccountManager(settings, profile).SetTerminalCommand(sideKey, "x").Problem);
+
+            // A command whose CLI moved (an editor extension's version folder after an update) is
+            // rewritten by the next scan; one already current, missing or not UsageAI's is left alone.
+            True(manager.SetTerminalCommand(sideKey, "claude-side").Succeeded);
+            False(terminal.Refresh("claude", other, "claude-side"));
+            Equal(0, manager.RefreshTerminalCommands());
+            cli = "\"C:\\Users\\me\\.vscode\\extensions\\anthropic.claude-code-2.0.1\\claude.exe\"";
+            Equal(0, new AccountManager(settings, profile).RefreshTerminalCommands());
+            manager.Scan(DateTimeOffset.UtcNow);
+            True(File.ReadAllText(terminal.FilePath("claude-side")).Contains("claude-code-2.0.1", StringComparison.Ordinal));
+            cli = null;
+            False(terminal.Refresh("claude", other, "claude-side"));
+            True(File.ReadAllText(terminal.FilePath("claude-side")).Contains("claude-code-2.0.1", StringComparison.Ordinal));
+            cli = "claude";
+            False(terminal.Refresh("claude", other, "mine"));
+            Equal("@echo hand-written\r\n", File.ReadAllText(terminal.FilePath("mine")));
+            False(terminal.Refresh("claude", other, "claude-missing"));
+            False(terminal.Refresh("claude", other, "claude"));
+            Equal(1, manager.RefreshTerminalCommands());
+            True(File.ReadAllText(terminal.FilePath("claude-side")).Contains("\r\nclaude %*\r\n", StringComparison.Ordinal));
+
+            // The popup's names are decided by provider: Claude Code reads as Claude, GitHub
+            // Copilot as Copilot only in the headline, and every other name is left as it is.
+            Equal("Claude", ProviderNames.Popup(new ProviderStatus("claude", "Claude Code", null, null, false)));
+            Equal("Claude · Team", ProviderNames.Popup(new ProviderStatus("claude@1a2b3c4d", "Claude Code · Team", null, null, false) { AccountLabel = "Team" }));
+            Equal("GitHub Copilot", ProviderNames.Popup(new ProviderStatus("copilot", "GitHub Copilot", null, null, false)));
+            Equal("Copilot", ProviderNames.Popup(new ProviderStatus("copilot", "GitHub Copilot", null, null, false), headline: true));
+            Equal("Codex · Mom", ProviderNames.Popup(new ProviderStatus("codex@1a2b3c4d", "Codex · Mom", null, null, false) { AccountLabel = "Mom" }, headline: true));
 
             // The real lookups: a command on the PATH (outside UsageAI's own folder) and the CLI to start.
             var environment = SaveEnvironment("PATH", "PATHEXT", "CLAUDE_PATH", "CODEX_PATH");

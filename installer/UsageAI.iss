@@ -212,11 +212,38 @@ end;
 { Terminal commands such as claude-team live in the data folder's bin, which the app put on the
   user's PATH. They keep working without UsageAI, so the entry goes only with the data folder, and
   every other entry is written back exactly as it was. }
+const
+  HKEY_CURRENT_USER_HANDLE = $80000001;
+  RRF_RT_ANY = $0000FFFF;
+  RRF_NOEXPAND = $10000000;
+  REG_SZ_TYPE = 1;
+  WM_SETTINGCHANGE = $001A;
+  SMTO_ABORTIFHUNG = $0002;
+
+function RegGetValueType(Key: LongWord; SubKey, ValueName: string; Flags: LongWord;
+  var ValueType: LongWord; Data: LongWord; DataSize: LongWord): Longint;
+  external 'RegGetValueW@advapi32.dll stdcall';
+
+function SendSettingChange(Window: LongWord; Msg: LongWord; WParam: LongWord; LParam: string;
+  Flags: LongWord; Timeout: LongWord; var MessageResult: LongWord): LongWord;
+  external 'SendMessageTimeoutW@user32.dll stdcall';
+
+{ True when the user's Path is a plain REG_SZ rather than the usual REG_EXPAND_SZ. }
+function UserPathIsPlainString(): Boolean;
+var
+  ValueType: LongWord;
+begin
+  ValueType := 0;
+  Result := (RegGetValueType(HKEY_CURRENT_USER_HANDLE, 'Environment', 'Path',
+    RRF_RT_ANY or RRF_NOEXPAND, ValueType, 0, 0) = 0) and (ValueType = REG_SZ_TYPE);
+end;
+
 procedure RemoveCommandFolderFromPath(const Folder: string);
 var
   Remaining, Entry, Kept: string;
   Separator: Integer;
   Found: Boolean;
+  BroadcastResult: LongWord;
 begin
   if not RegQueryStringValue(HKCU, 'Environment', 'Path', Remaining) then
     Exit;
@@ -239,8 +266,21 @@ begin
     end;
   end;
 
-  if Found then
+  if not Found then
+    Exit;
+
+  { A Path that held only this entry goes, rather than staying as an empty value; otherwise the
+    value keeps its type, so a plain REG_SZ Path is not turned into REG_EXPAND_SZ. }
+  if Kept = '' then
+    RegDeleteValue(HKCU, 'Environment', 'Path')
+  else if UserPathIsPlainString() then
+    RegWriteStringValue(HKCU, 'Environment', 'Path', Kept)
+  else
     RegWriteExpandStringValue(HKCU, 'Environment', 'Path', Kept);
+
+  { Explorer re-reads the environment on this broadcast, so a terminal opened next no longer
+    searches the deleted folder; without it the old PATH lasted until the next sign-in. }
+  SendSettingChange(HWND_BROADCAST, WM_SETTINGCHANGE, 0, 'Environment', SMTO_ABORTIFHUNG, 5000, BroadcastResult);
 end;
 
 { Settings and recorded history stay unless the user asks, so a reinstall picks up where it left
