@@ -31,6 +31,9 @@ internal static class AppPaths
 
     public static string UpdateDirectory => Path.Combine(DataDirectory, "updates");
 
+    /// <summary>The login folders UsageAI created, one per line, for the uninstaller's offer to delete them.</summary>
+    public static string CreatedLoginsFile => Path.Combine(DataDirectory, "created-logins.txt");
+
     /// <summary>The note an in-app update leaves for the copy that starts after it.</summary>
     public static string UpdateHandoffFile => Path.Combine(DataDirectory, "update-handoff.json");
 
@@ -188,6 +191,103 @@ internal sealed class AppSettings
     }
 
     /// <summary>
+    /// Every login UsageAI shows besides — or as well as — each provider's default one, with the
+    /// user's choices for it. The default login only gets an entry once something about it is
+    /// remembered (who is signed in, a name, hidden, alerts off, its position).
+    /// </summary>
+    public List<ProviderAccount> Accounts { get; set; } = new();
+
+    /// <summary>
+    /// False until the first account scan ran. That scan shows every login it finds, since they
+    /// are the user's own; later scans hold a new one back until the user answers its banner.
+    /// </summary>
+    public bool AccountsInitialized { get; set; }
+
+    /// <summary>Lists <c>%USERPROFILE%\.claude-*</c> / <c>.codex-*</c> at startup and once a day.</summary>
+    public bool FindAccountsAutomatically { get; set; } = true;
+
+    /// <summary>A login found after the first scan waits for Show or Ignore before it is shown.</summary>
+    public bool AskBeforeShowingNewAccounts { get; set; } = true;
+
+    /// <summary>
+    /// Account ids of found folders the user forgot, so the next scan does not offer them again.
+    /// Adding the folder by hand clears its entry.
+    /// </summary>
+    public string[] ForgottenAccounts { get; set; } = Array.Empty<string>();
+
+    /// <summary>How many forgotten folders are remembered; the oldest go first.</summary>
+    public const int MaxForgottenAccounts = 64;
+
+    /// <summary>The last account scan, kept apart from the update check so neither skips the other.</summary>
+    public DateTimeOffset? LastAccountScanUtc { get; set; }
+
+    public ProviderAccount? FindAccount(string unitKey)
+    {
+        var providerId = ProviderKey.ProviderOf(unitKey);
+        var accountId = ProviderKey.AccountOf(unitKey);
+        return Accounts.FirstOrDefault(account =>
+            account.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase) &&
+            account.Id.Equals(accountId, StringComparison.OrdinalIgnoreCase));
+    }
+
+    /// <summary>The account entry for a key, created (and kept) when it does not exist yet.</summary>
+    public ProviderAccount EnsureAccount(string unitKey)
+    {
+        if (FindAccount(unitKey) is { } existing)
+        {
+            return existing;
+        }
+
+        var account = new ProviderAccount
+        {
+            Id = ProviderKey.AccountOf(unitKey),
+            ProviderId = ProviderKey.ProviderOf(unitKey),
+            Source = AccountSource.Default,
+            Order = ProviderKey.IsDefault(unitKey) ? 0 : NextAccountOrder(ProviderKey.ProviderOf(unitKey)),
+        };
+        Accounts.Add(account);
+        return account;
+    }
+
+    public int NextAccountOrder(string providerId) => Accounts
+        .Where(account => account.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase))
+        .Select(account => account.Order + 1)
+        .DefaultIfEmpty(1)
+        .Max();
+
+    /// <summary>
+    /// Whether a provider key is shown: its provider is ticked and, for an account, it is not hidden,
+    /// waiting for an answer, or a repeat of an account already shown.
+    /// </summary>
+    public bool IsUnitVisible(string unitKey) =>
+        IsProviderVisible(ProviderKey.ProviderOf(unitKey)) &&
+        (FindAccount(unitKey) is not { } account ||
+         (!account.Hidden && !account.Pending && account.DuplicateOf is null));
+
+    public bool AccountAlertsEnabled(string unitKey) => FindAccount(unitKey)?.Alerts ?? true;
+
+    /// <summary>
+    /// Orders provider keys by provider (the saved provider order), then each provider's accounts by
+    /// their position, so one provider's accounts always sit together.
+    /// </summary>
+    public IReadOnlyList<string> OrderUnits(IReadOnlyList<string> unitKeys)
+    {
+        var providers = OrderProviders(unitKeys
+            .Select(ProviderKey.ProviderOf)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray());
+        return providers
+            .SelectMany(providerId => unitKeys
+                .Select((key, index) => (Key: key, Index: index))
+                .Where(entry => ProviderKey.ProviderOf(entry.Key).Equals(providerId, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(entry => FindAccount(entry.Key)?.Order ?? (ProviderKey.IsDefault(entry.Key) ? 0 : int.MaxValue))
+                .ThenBy(entry => ProviderKey.IsDefault(entry.Key) ? 0 : 1)
+                .ThenBy(entry => entry.Index)
+                .Select(entry => entry.Key))
+            .ToArray();
+    }
+
+    /// <summary>
     /// Keeps these settings in memory only. The interactive preview uses throwaway settings
     /// and must never overwrite the user's real file, whatever the window it opens saves.
     /// </summary>
@@ -335,17 +435,107 @@ internal sealed class AppSettings
             SettingsWindowSize = null;
         }
 
+        Accounts = NormalizeAccounts(Accounts);
+        ForgottenAccounts = ForgottenAccounts is { Length: > 0 } forgotten
+            ? forgotten
+                .Where(id => id is { Length: > 0 and <= 80 } && id.All(character => char.IsAsciiLetterOrDigit(character) || character == '@'))
+                .Reverse()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(MaxForgottenAccounts)
+                .Reverse()
+                .ToArray()
+            : Array.Empty<string>();
+        if (LastAccountScanUtc is { } lastScan)
+        {
+            var scannedUtc = lastScan.ToUniversalTime();
+            LastAccountScanUtc = scannedUtc > DateTimeOffset.UtcNow.AddMinutes(5) ? null : scannedUtc;
+        }
+
         // Deserialisation hands back a case-sensitive dictionary, or null for an explicit null.
         PopupMetricGroups = (PopupMetricGroups ?? new Dictionary<string, string>())
             .Where(entry => NormalizeId(entry.Key) is not null &&
                             !string.IsNullOrWhiteSpace(entry.Value) &&
                             entry.Value.Trim().Length <= 128)
-            .Take(16)
+            .Take(32)
             .GroupBy(entry => entry.Key.Trim(), StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
                 group => group.Key,
                 group => group.Last().Value.Trim(),
                 StringComparer.OrdinalIgnoreCase);
+    }
+
+    private const int MaxAccounts = 32;
+
+    /// <summary>
+    /// Keeps only well-formed accounts of providers that have them. A folder account's id is
+    /// recomputed from its path, so a hand-edited id can never point one key at another folder.
+    /// </summary>
+    private static List<ProviderAccount> NormalizeAccounts(List<ProviderAccount>? accounts)
+    {
+        var kept = new List<ProviderAccount>();
+        foreach (var account in accounts ?? new List<ProviderAccount>())
+        {
+            if (account is null ||
+                string.IsNullOrWhiteSpace(account.ProviderId) ||
+                !AccountDiscovery.SupportsAccounts(account.ProviderId.Trim()) ||
+                !Enum.IsDefined(account.Source))
+            {
+                continue;
+            }
+
+            account.ProviderId = account.ProviderId.Trim().ToLowerInvariant();
+            // The source decides, not the id: a folder entry whose id was left out is still a folder.
+            if (account.Source == AccountSource.Default)
+            {
+                account.Id = ProviderKey.DefaultAccountId;
+                account.Source = AccountSource.Default;
+                account.Path = null;
+                account.Pending = false;
+                account.DuplicateOf = null;
+            }
+            else
+            {
+                if (AccountDiscovery.PathProblem(account.Path) is not null)
+                {
+                    continue;
+                }
+
+                account.Path = ProviderKey.NormalizeFolder(account.Path!);
+                account.Id = ProviderKey.AccountIdFor(account.Path);
+            }
+
+            account.Label = BoundedText(account.Label, 64);
+            account.Email = BoundedText(account.Email, 320);
+            account.Organization = BoundedText(account.Organization, 128);
+            account.Identity = account.Identity is { Length: > 0 and <= 64 } identity && identity.All(char.IsAsciiLetterOrDigit)
+                ? identity
+                : null;
+            account.DuplicateOf = BoundedText(account.DuplicateOf, 320);
+            account.Order = Math.Clamp(account.Order, 0, 1000);
+            if (kept.Any(other => other.UnitKey.Equals(account.UnitKey, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            kept.Add(account);
+            if (kept.Count >= MaxAccounts)
+            {
+                break;
+            }
+        }
+
+        return kept;
+    }
+
+    private static string? BoundedText(string? value, int maxLength)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return null;
+        }
+
+        var trimmed = value.Trim();
+        return trimmed.Length <= maxLength && !trimmed.Any(char.IsControl) ? trimmed : null;
     }
 
     private static string[] NormalizeIds(string[]? ids) => ids is { Length: > 0 }

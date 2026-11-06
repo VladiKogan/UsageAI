@@ -170,6 +170,45 @@ begin
   end;
 end;
 
+{ "Sign in to another account" makes login folders such as %USERPROFILE%\.claude-team, and the app
+  lists them in created-logins.txt. Only those are offered, by path, defaulting to keep: they hold
+  logins the user's own CLI may still use. No other .claude-* or .codex-* folder is ever touched. }
+procedure RemoveCreatedLoginsIfAsked();
+var
+  ListFile, Listed: string;
+  Lines: TArrayOfString;
+  Folders: TStringList;
+  I: Integer;
+begin
+  ListFile := ExpandConstant('{localappdata}\{#DataFolderName}\created-logins.txt');
+  if not FileExists(ListFile) or not LoadStringsFromFile(ListFile, Lines) then
+    Exit;
+
+  Folders := TStringList.Create;
+  try
+    for I := 0 to GetArrayLength(Lines) - 1 do
+    begin
+      Listed := Trim(Lines[I]);
+      { A full local path below a drive root, never a root, a share or a relative path. }
+      if (Length(Listed) > 3) and (Copy(Listed, 2, 2) = ':\') and DirExists(Listed) then
+        Folders.Add(Listed);
+    end;
+
+    if Folders.Count = 0 then
+      Exit;
+
+    if SuppressibleMsgBox(
+         'Also delete the login folders UsageAI created for your other accounts?' + #13#10#13#10 +
+         Folders.Text + #13#10 +
+         'The Claude Code or Codex logins saved in them are removed. Keep them if you use these accounts from a terminal.',
+         mbConfirmation, MB_YESNO or MB_DEFBUTTON2, IDNO) = IDYES then
+      for I := 0 to Folders.Count - 1 do
+        DelTree(Folders[I], True, True, True);
+  finally
+    Folders.Free;
+  end;
+end;
+
 { Settings and recorded history stay unless the user asks, so a reinstall picks up where it left
   off. A silent uninstall that suppresses message boxes keeps them. }
 procedure RemoveUserDataIfAsked();
@@ -192,5 +231,8 @@ begin
   if CurUninstallStep = usUninstall then
     RemoveStartupEntry()
   else if CurUninstallStep = usPostUninstall then
+  begin
+    RemoveCreatedLoginsIfAsked();
     RemoveUserDataIfAsked();
+  end;
 end;

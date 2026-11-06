@@ -9,6 +9,25 @@ internal sealed class UsageAlertEventArgs : EventArgs
     public IReadOnlyList<UsageAlert> Alerts { get; }
 }
 
+/// <summary>A known login folder that is now signed in to someone else.</summary>
+internal sealed class AccountIdentityChangedEventArgs : EventArgs
+{
+    public AccountIdentityChangedEventArgs(string unitKey, string? previous, string current)
+    {
+        UnitKey = unitKey;
+        Previous = previous;
+        Current = current;
+    }
+
+    public string UnitKey { get; }
+
+    /// <summary>Who was signed in before (an email), when it was known.</summary>
+    public string? Previous { get; }
+
+    /// <summary>Who is signed in now (an email, or the account's label).</summary>
+    public string Current { get; }
+}
+
 /// <summary>
 /// Owns provider polling: which providers are due, how long to back off after a failure,
 /// what the last good reading was, and what should be announced. The UI observes it and
@@ -35,7 +54,7 @@ internal sealed class UsageRefreshService : IDisposable
     /// <summary>Total polls one window may cause, so a lagging provider cannot be polled forever.</summary>
     private const int MaximumResetAttempts = 3;
 
-    private readonly IUsageClient[] _clients;
+    private IUsageClient[] _clients;
     private readonly AppSettings _settings;
     private readonly NotificationCoordinator _notifications = NotificationCoordinator.CreatePersistent();
     private readonly Dictionary<string, ProviderStatus> _statuses = new(StringComparer.OrdinalIgnoreCase);
@@ -48,6 +67,17 @@ internal sealed class UsageRefreshService : IDisposable
     /// left has to be asked again, but never in a tight loop.
     /// </summary>
     private readonly Dictionary<string, ResetPoll> _resetPolls = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>
+    /// When each account's identity was last read, and its credential file's write time then.
+    /// Claude's <c>.claude.json</c> can be megabytes and is rewritten constantly, so who is signed in
+    /// is read again only when the login itself was written (a sign-in to someone else rewrites it)
+    /// or after <see cref="IdentityRecheckInterval"/>.
+    /// </summary>
+    private readonly Dictionary<string, (DateTime CredentialWrittenAt, DateTimeOffset CheckedAt)> _identityChecks =
+        new(StringComparer.OrdinalIgnoreCase);
+
+    private static readonly TimeSpan IdentityRecheckInterval = TimeSpan.FromHours(6);
 
     private readonly List<UsageSample> _history = new();
     private readonly SemaphoreSlim _refreshLock = new(1, 1);
@@ -95,19 +125,59 @@ internal sealed class UsageRefreshService : IDisposable
 
     public event EventHandler<UsageAlertEventArgs>? AlertsRaised;
 
-    /// <summary>Visible providers in the user's preferred order.</summary>
+    /// <summary>Raised when a known login folder turns out to be signed in to a different person.</summary>
+    public event EventHandler<AccountIdentityChangedEventArgs>? AccountIdentityChanged;
+
+    /// <summary>
+    /// Visible providers in the user's preferred order, a provider's accounts together. When a
+    /// provider shows more than one account, each is named "Claude Code · label".
+    /// </summary>
     public IReadOnlyList<ProviderStatus> Statuses
     {
         get
         {
             var visible = _clients
-                .Where(client => _settings.IsProviderVisible(client.Id))
+                .Where(client => _settings.IsUnitVisible(client.Id))
                 .Select(client => client.Id)
                 .ToArray();
-            return _settings.OrderProviders(visible)
-                .Select(id => _statuses[id])
+            var labels = AccountLabels(visible);
+            return _settings.OrderUnits(visible)
+                .Select(id => labels.TryGetValue(id, out var label)
+                    ? _statuses[id] with
+                    {
+                        ProviderName = $"{_statuses[id].ProviderName} · {label}",
+                        AccountLabel = label,
+                    }
+                    : _statuses[id])
                 .ToArray();
         }
+    }
+
+    /// <summary>Every client's key, shown or not, for Settings' account list.</summary>
+    public IReadOnlyList<ProviderStatus> AllStatuses => _clients.Select(client => _statuses[client.Id]).ToArray();
+
+    /// <summary>
+    /// Labels for the accounts of every provider that shows more than one: the user's name, else
+    /// the email, else the folder; two alike add the organisation, else "Account 2".
+    /// </summary>
+    internal IReadOnlyDictionary<string, string> AccountLabels(IReadOnlyList<string> visibleKeys)
+    {
+        var labels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var provider in visibleKeys.GroupBy(ProviderKey.ProviderOf, StringComparer.OrdinalIgnoreCase))
+        {
+            var keys = _settings.OrderUnits(provider.ToArray());
+            if (keys.Count < 2)
+            {
+                continue;
+            }
+
+            foreach (var (key, label) in Models.AccountLabels.Distinct(keys.Select(key => (key, _settings.FindAccount(key)))))
+            {
+                labels[key] = label;
+            }
+        }
+
+        return labels;
     }
 
     public bool IsRefreshing => _isRefreshing;
@@ -119,7 +189,7 @@ internal sealed class UsageRefreshService : IDisposable
     public bool IsDue(DateTimeOffset now) =>
         now >= _nextRegularRefresh ||
         _clients
-            .Where(client => _settings.IsProviderVisible(client.Id))
+            .Where(client => _settings.IsUnitVisible(client.Id))
             .Any(client => _nextAttempt.TryGetValue(client.Id, out var retryAt)
                 ? now >= retryAt
                 : PendingResetAt(client.Id, now) is not null);
@@ -206,6 +276,13 @@ internal sealed class UsageRefreshService : IDisposable
         var entered = await _refreshLock.WaitAsync(0);
         if (!entered)
         {
+            // One provider asked for while another refresh runs — a dashboard Retry, an account just
+            // added or signed in again — is due on the next tick rather than dropped.
+            if (onlyProviderId is not null && _statuses.ContainsKey(onlyProviderId))
+            {
+                _nextAttempt[onlyProviderId] = DateTimeOffset.MinValue;
+            }
+
             return;
         }
 
@@ -220,7 +297,7 @@ internal sealed class UsageRefreshService : IDisposable
             var regularRefresh = onlyProviderId is null && (!scheduled || force || now >= _nextRegularRefresh);
             var due = _clients
                 .Where(client => onlyProviderId is null || client.Id.Equals(onlyProviderId, StringComparison.OrdinalIgnoreCase))
-                .Where(client => _settings.IsProviderVisible(client.Id))
+                .Where(client => _settings.IsUnitVisible(client.Id))
                 .Where(client => IsProviderDue(client.Id, force, regularRefresh, now))
                 .ToArray();
             if (force)
@@ -306,6 +383,11 @@ internal sealed class UsageRefreshService : IDisposable
             }
 
             _notifications.SaveIfChanged(now);
+            if (_accountsChanged)
+            {
+                _accountsChanged = false;
+                _settings.Save();
+            }
 
             if (regularRefresh)
             {
@@ -330,12 +412,69 @@ internal sealed class UsageRefreshService : IDisposable
     /// <summary>Re-applies preferences that change scheduling or provider visibility.</summary>
     public void ApplySettings()
     {
-        foreach (var client in _clients.Where(client => !_settings.IsProviderVisible(client.Id)))
+        foreach (var client in _clients.Where(client => !_settings.IsUnitVisible(client.Id)))
         {
             _notifications.Forget(client.Id);
         }
 
         _nextRegularRefresh = DateTimeOffset.MinValue;
+    }
+
+    /// <summary>
+    /// Swaps in the clients for the current account list. Clients that stay keep their reading,
+    /// backoff and reset bookkeeping; a new one is due at once; a removed one is forgotten.
+    /// </summary>
+    public void ReplaceClients(IEnumerable<IUsageClient> clients)
+    {
+        var next = clients.ToArray();
+        if (next.Length == 0)
+        {
+            throw new ArgumentException("At least one usage provider is required.", nameof(clients));
+        }
+
+        var keep = new HashSet<string>(next.Select(client => client.Id), StringComparer.OrdinalIgnoreCase);
+        foreach (var removed in _clients.Where(client => !keep.Contains(client.Id)).Select(client => client.Id).ToArray())
+        {
+            _statuses.Remove(removed);
+            _failures.Remove(removed);
+            _nextAttempt.Remove(removed);
+            _resetPolls.Remove(removed);
+            _identityChecks.Remove(removed);
+            _notifications.Forget(removed);
+        }
+
+        foreach (var client in next.Where(client => !_statuses.ContainsKey(client.Id)))
+        {
+            _statuses[client.Id] = new ProviderStatus(
+                client.Id,
+                client.DisplayName,
+                null,
+                null,
+                IsLoading: true,
+                null,
+                client.SignInCommand,
+                client.AccountUrl);
+        }
+
+        // A new account, or one just shown that was never read, is due on the next tick rather
+        // than at the next regular refresh.
+        foreach (var client in next.Where(client => _statuses[client.Id].Snapshot is null && !_nextAttempt.ContainsKey(client.Id)))
+        {
+            _nextAttempt[client.Id] = DateTimeOffset.MinValue;
+        }
+
+        _clients = next;
+    }
+
+    /// <summary>
+    /// Starts a key afresh: its alert memory and recorded history go, so a folder now signed in to
+    /// someone else does not inherit the previous person's readings.
+    /// </summary>
+    public void ForgetHistory(string unitKey)
+    {
+        _notifications.Forget(unitKey);
+        _history.RemoveAll(sample => sample.ProviderId.Equals(unitKey, StringComparison.OrdinalIgnoreCase));
+        UsageHistoryStore.RemoveProvider(unitKey);
     }
 
     public void Dispose()
@@ -356,13 +495,32 @@ internal sealed class UsageRefreshService : IDisposable
         List<UsageSample> samples)
     {
         var providerId = result.Status.ProviderId;
+        if (!_clients.Any(client => client.Id.Equals(providerId, StringComparison.OrdinalIgnoreCase)))
+        {
+            // The account was removed while its fetch was in flight.
+            return;
+        }
 
         if (result.IsFresh && result.Status.Snapshot is { } snapshot)
         {
             _failures.Remove(providerId);
             _nextAttempt.Remove(providerId);
             _statuses[providerId] = result.Status;
-            alerts.AddRange(_notifications.Evaluate(snapshot, _settings, now));
+            if (result.IdentityStamp is { } stamp)
+            {
+                _identityChecks[providerId] = (stamp, now);
+            }
+
+            if (result.Identity is { } identity)
+            {
+                ObserveIdentity(providerId, identity);
+            }
+
+            var raised = _notifications.Evaluate(snapshot with { ProviderName = AlertName(providerId, snapshot.ProviderName) }, _settings, now);
+            if (_settings.AccountAlertsEnabled(providerId))
+            {
+                alerts.AddRange(raised);
+            }
             if (_settings.HistoryEnabled)
             {
                 samples.AddRange(UsageHistoryStore.SamplesFrom(snapshot));
@@ -380,6 +538,68 @@ internal sealed class UsageRefreshService : IDisposable
         {
             _statuses[providerId] = result.Status;
         }
+    }
+
+    private bool _accountsChanged;
+
+    /// <summary>The credential file's write time when the account's identity is due a read, else null.</summary>
+    private DateTime? IdentityCheckDue(IAccountUsageClient client, DateTimeOffset now)
+    {
+        DateTime written;
+        try
+        {
+            written = File.GetLastWriteTimeUtc(Path.Combine(client.LoginFolder, AccountDiscovery.CredentialFileName(client.ProviderId)));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or ArgumentException)
+        {
+            written = DateTime.MinValue;
+        }
+
+        return _identityChecks.TryGetValue(client.Id, out var last) &&
+               last.CredentialWrittenAt == written &&
+               now - last.CheckedAt < IdentityRecheckInterval
+            ? null
+            : written;
+    }
+
+    /// <summary>
+    /// Records who a login folder is signed in to. The first reading is kept silently; a different
+    /// person later starts the key afresh and is announced.
+    /// </summary>
+    private void ObserveIdentity(string unitKey, AccountIdentity identity)
+    {
+        var hash = identity.Hash;
+        var account = _settings.FindAccount(unitKey);
+        if (account?.Identity == hash)
+        {
+            return;
+        }
+
+        account ??= _settings.EnsureAccount(unitKey);
+        var previous = account.Identity is null ? null : account.Email ?? "another account";
+        var changed = account.Identity is not null;
+        account.Identity = hash;
+        account.Email = identity.Email;
+        account.Organization = identity.OrganizationName;
+        _accountsChanged = true;
+        if (!changed)
+        {
+            return;
+        }
+
+        ForgetHistory(unitKey);
+        AccountIdentityChanged?.Invoke(
+            this,
+            new AccountIdentityChangedEventArgs(unitKey, previous, identity.Email ?? account.DisplayLabel));
+    }
+
+    /// <summary>The provider name an alert's title carries: with the account when the provider shows several.</summary>
+    private string AlertName(string unitKey, string providerName)
+    {
+        var visible = _clients.Where(client => _settings.IsUnitVisible(client.Id)).Select(client => client.Id).ToArray();
+        return AccountLabels(visible).TryGetValue(unitKey, out var label)
+            ? $"{ProviderNames.Short(unitKey, providerName)} · {label}"
+            : providerName;
     }
 
     private bool IsProviderDue(
@@ -423,9 +643,16 @@ internal sealed class UsageRefreshService : IDisposable
     private async Task<FetchResult> FetchAsync(IUsageClient client, DateTimeOffset attemptedAt)
     {
         var previous = _statuses[client.Id];
+
+        // Decided before the first await, while this still runs with the refresh loop, and recorded
+        // by ApplyResult: this method mutates nothing shared.
+        var identityCheck = client is IAccountUsageClient candidate ? IdentityCheckDue(candidate, attemptedAt) : null;
         try
         {
-            var snapshot = await client.GetUsageAsync(_shutdown.Token);
+            var snapshot = await client.GetUsageAsync(_shutdown.Token) with { ProviderId = client.Id };
+            var identity = client is IAccountUsageClient account && identityCheck is not null
+                ? await Task.Run(() => AccountDiscovery.ReadIdentity(account.ProviderId, account.LoginFolder))
+                : null;
             return new FetchResult(
                 new ProviderStatus(
                     client.Id,
@@ -440,7 +667,9 @@ internal sealed class UsageRefreshService : IDisposable
                     NextRetryAt: null),
                 IsFresh: true,
                 Failed: false,
-                ThrottleHint: null);
+                ThrottleHint: null,
+                identity,
+                identityCheck);
         }
         catch (OperationCanceledException) when (_shutdown.IsCancellationRequested)
         {
@@ -478,5 +707,7 @@ internal sealed class UsageRefreshService : IDisposable
         ProviderStatus Status,
         bool IsFresh,
         bool Failed,
-        TimeSpan? ThrottleHint);
+        TimeSpan? ThrottleHint,
+        AccountIdentity? Identity = null,
+        DateTime? IdentityStamp = null);
 }

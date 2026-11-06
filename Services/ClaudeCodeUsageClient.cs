@@ -8,7 +8,7 @@ using UsageAI.Models;
 
 namespace UsageAI.Services;
 
-internal sealed class ClaudeCodeUsageClient : IUsageClient
+internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
 {
     private const string CredentialManagerService = "Claude Code-credentials";
     private const string OAuthBeta = "oauth-2025-04-20";
@@ -29,33 +29,66 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
     /// <summary>Until when the opt-in web path is skipped after claude.ai asked for a browser check.</summary>
     private DateTimeOffset _webRetryAfterUtc;
 
+    /// <summary>
+    /// The login folder of an extra account, or null for the default login. An extra account reads
+    /// only its own folder's credential file: never the environment token, the web session or the
+    /// shared Credential Manager item, which all belong to the default login.
+    /// </summary>
+    private readonly string? _configDirectory;
+
     public ClaudeCodeUsageClient()
         : this(SharedClient, null, RunClaudeAuthRecoveryAsync)
+    {
+    }
+
+    /// <summary>A client for the login in <paramref name="configDirectory"/>, an extra account.</summary>
+    public ClaudeCodeUsageClient(string configDirectory)
+        : this(
+            SharedClient,
+            static () => Array.Empty<string>(),
+            cancellationToken => RunClaudeAuthRecoveryAsync(configDirectory, cancellationToken),
+            configDirectory)
     {
     }
 
     internal ClaudeCodeUsageClient(
         HttpClient client,
         Func<IReadOnlyList<string>>? keyringPasswords = null,
-        Func<CancellationToken, Task<bool>>? claudeAuthProbe = null)
+        Func<CancellationToken, Task<bool>>? claudeAuthProbe = null,
+        string? configDirectory = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
-        _keyringPasswords = keyringPasswords ??
-            (() => WindowsCredentialReader.FindKeyringPasswords(CredentialManagerService));
+        _configDirectory = configDirectory is null ? null : ProviderKey.NormalizeFolder(configDirectory);
+        _keyringPasswords = _configDirectory is not null
+            ? static () => Array.Empty<string>()
+            : keyringPasswords ?? (() => WindowsCredentialReader.FindKeyringPasswords(CredentialManagerService));
         _claudeAuthProbe = claudeAuthProbe ?? (_ => Task.FromResult(false));
+        AccountId = _configDirectory is null ? ProviderKey.DefaultAccountId : ProviderKey.AccountIdFor(_configDirectory);
     }
 
-    public string Id => "claude";
+    public string Id => ProviderKey.Compose(ProviderId, AccountId);
+
+    public string ProviderId => "claude";
+
+    public string AccountId { get; }
+
+    public string LoginFolder => _configDirectory ?? AccountDiscovery.DefaultFolder(ProviderId);
 
     public string DisplayName => "Claude Code";
 
-    public string SignInCommand => "claude";
+    public string SignInCommand => _configDirectory is null ? "claude" : AccountCommands.SignIn(ProviderId, _configDirectory);
 
     public Uri AccountUrl { get; } = new("https://claude.ai/settings/usage");
 
     public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default)
     {
-        if (ClaudeWebUsageClient.IsConfigured && DateTimeOffset.UtcNow >= _webRetryAfterUtc)
+        var snapshot = await GetUsageCoreAsync(cancellationToken);
+        return _configDirectory is null ? snapshot : snapshot with { ProviderId = Id };
+    }
+
+    private async Task<UsageSnapshot> GetUsageCoreAsync(CancellationToken cancellationToken)
+    {
+        if (_configDirectory is null && ClaudeWebUsageClient.IsConfigured && DateTimeOffset.UtcNow >= _webRetryAfterUtc)
         {
             var webTimer = System.Diagnostics.Stopwatch.StartNew();
             try
@@ -81,7 +114,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
                 }
             }
         }
-        else if (ClaudeWebUsageClient.IsConfigured)
+        else if (_configDirectory is null && ClaudeWebUsageClient.IsConfigured)
         {
             ProviderAttempts.Record("claude-web", "skipped-browser-check");
         }
@@ -320,7 +353,14 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 
     private ClaudeCredentials LoadCredentials()
     {
-        var environmentToken = CredentialInput.NormalizeToken(
+        if (_configDirectory is not null && !Directory.Exists(_configDirectory))
+        {
+            throw new ClaudeCodeUsageException(
+                $"Claude login not found at {_configDirectory}. Forget it or locate it in Settings → Accounts.");
+        }
+
+        // An explicit token stands for the default login only; an extra account is its own folder.
+        var environmentToken = _configDirectory is not null ? null : CredentialInput.NormalizeToken(
             Environment.GetEnvironmentVariable("USAGEAI_CLAUDE_OAUTH_TOKEN"));
         if (environmentToken is not null)
         {
@@ -338,7 +378,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         }
 
         Exception? fileError = null;
-        var credentialPath = GetCredentialPath();
+        var credentialPath = GetCredentialPath(_configDirectory);
         if (File.Exists(credentialPath))
         {
             try
@@ -368,6 +408,12 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             throw new ClaudeCodeUsageException(
                 "Claude Code's saved login could not be read. Run `claude` or use the Claude Code extension to sign in again.",
                 fileError);
+        }
+
+        if (_configDirectory is not null)
+        {
+            throw new ClaudeCodeUsageException(
+                $"Claude Code is not signed in at {_configDirectory}. Re-authenticate it in Settings → Accounts, then refresh.");
         }
 
         throw new ClaudeCodeUsageException(
@@ -438,17 +484,24 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
     /// stored token is still expired a command that needs a live token (`mcp list`) makes the CLI
     /// refresh it through its own credential store. UsageAI never touches the refresh token itself.
     /// </summary>
-    internal static async Task<bool> RunClaudeAuthRecoveryAsync(CancellationToken cancellationToken)
+    internal static Task<bool> RunClaudeAuthRecoveryAsync(CancellationToken cancellationToken) =>
+        RunClaudeAuthRecoveryAsync(configDirectory: null, cancellationToken);
+
+    /// <summary>
+    /// The recovery for one login folder: both CLI children run with <c>CLAUDE_CONFIG_DIR</c> set to
+    /// it explicitly, so an extra account is never refreshed through the default login's folder.
+    /// </summary>
+    internal static async Task<bool> RunClaudeAuthRecoveryAsync(string? configDirectory, CancellationToken cancellationToken)
     {
         var launch = FindClaudeLaunch();
-        if (launch is null || !await RunClaudeAuthStatusAsync(launch, cancellationToken))
+        if (launch is null || !await RunClaudeAuthStatusAsync(launch, configDirectory, cancellationToken))
         {
             return false;
         }
 
-        if (!HasFreshStoredCredential())
+        if (!HasFreshStoredCredential(configDirectory))
         {
-            await NudgeClaudeCredentialRefreshAsync(launch, cancellationToken);
+            await NudgeClaudeCredentialRefreshAsync(launch, configDirectory, cancellationToken);
         }
 
         return true;
@@ -456,11 +509,12 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 
     private static async Task<bool> RunClaudeAuthStatusAsync(
         ClaudeLaunch launch,
+        string? configDirectory,
         CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(AuthProbeTimeout);
-        using var process = StartClaudeCli(launch, "auth", "status", "--json");
+        using var process = StartClaudeCli(launch, configDirectory, "auth", "status", "--json");
         var stdoutTask = ProcessSecurity.DrainTextAsync(
             process.StandardOutput,
             MaxAuthProbeOutputCharacters,
@@ -502,11 +556,12 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
 
     private static async Task NudgeClaudeCredentialRefreshAsync(
         ClaudeLaunch launch,
+        string? configDirectory,
         CancellationToken cancellationToken)
     {
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(RefreshNudgeTimeout);
-        using var process = StartClaudeCli(launch, "mcp", "list");
+        using var process = StartClaudeCli(launch, configDirectory, "mcp", "list");
         var stdoutTask = ProcessSecurity.DrainTextAsync(
             process.StandardOutput,
             MaxAuthProbeOutputCharacters,
@@ -522,7 +577,7 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             var exited = process.WaitForExitAsync(timeout.Token);
 
             // The refresh lands in the first seconds; the MCP health checks after it are not needed.
-            while (!exited.IsCompleted && !HasFreshStoredCredential())
+            while (!exited.IsCompleted && !HasFreshStoredCredential(configDirectory))
             {
                 await Task.WhenAny(exited, Task.Delay(TimeSpan.FromMilliseconds(100), timeout.Token));
             }
@@ -541,11 +596,11 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         cancellationToken.ThrowIfCancellationRequested();
     }
 
-    private static bool HasFreshStoredCredential()
+    private static bool HasFreshStoredCredential(string? configDirectory)
     {
         try
         {
-            var credentialPath = GetCredentialPath();
+            var credentialPath = GetCredentialPath(configDirectory);
             return File.Exists(credentialPath) &&
                    !ParseCredentials(SecureLocalFile.ReadAllText(credentialPath)).IsExpired;
         }
@@ -555,7 +610,16 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
         }
     }
 
-    private static Process StartClaudeCli(ClaudeLaunch launch, params string[] arguments)
+    private static Process StartClaudeCli(ClaudeLaunch launch, string? configDirectory, params string[] arguments) =>
+        Process.Start(CreateCliStartInfo(launch, configDirectory, arguments))
+            ?? throw new ClaudeCodeUsageException("Windows could not start the Claude CLI.");
+
+    /// <summary>
+    /// How every Claude CLI child starts — the recovery probes and the sign-in alike: no window,
+    /// redirected streams, the minimal environment, and a given login folder set explicitly rather
+    /// than inherited, so the child reads exactly that login.
+    /// </summary>
+    private static ProcessStartInfo CreateCliStartInfo(ClaudeLaunch launch, string? configDirectory, IEnumerable<string> arguments)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -575,6 +639,11 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             "SSL_CERT_DIR",
             "SSL_CERT_FILE");
         startInfo.Environment["DISABLE_AUTOUPDATER"] = "1";
+        if (configDirectory is not null)
+        {
+            startInfo.Environment["CLAUDE_CONFIG_DIR"] = configDirectory;
+        }
+
         if (launch.Script is not null)
         {
             startInfo.ArgumentList.Add(launch.Script);
@@ -585,9 +654,20 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             startInfo.ArgumentList.Add(argument);
         }
 
-        return Process.Start(startInfo)
-            ?? throw new ClaudeCodeUsageException("Windows could not start the Claude CLI.");
+        return startInfo;
     }
+
+    /// <summary>
+    /// The official login, <c>claude auth login --claudeai</c>, pointed at <paramref name="configDirectory"/>.
+    /// The CLI writes its own credential file there; UsageAI only starts it. Null when no Claude
+    /// CLI is installed.
+    /// </summary>
+    internal static ProcessStartInfo? CreateLoginStartInfo(string configDirectory) =>
+        FindClaudeLaunch() is { } launch
+            ? CreateCliStartInfo(launch, configDirectory, LoginArguments)
+            : null;
+
+    private static readonly string[] LoginArguments = ["auth", "login", "--claudeai"];
 
     private static ClaudeLaunch? FindClaudeLaunch()
     {
@@ -1063,8 +1143,13 @@ internal sealed class ClaudeCodeUsageClient : IUsageClient
             ? value.ToString("C2", CultureInfo.GetCultureInfo("en-US"))
             : $"{value:N2} {currency.ToUpperInvariant()}";
 
-    private static string GetCredentialPath()
+    private static string GetCredentialPath(string? configDirectory)
     {
+        if (configDirectory is not null)
+        {
+            return Path.Combine(configDirectory, ".credentials.json");
+        }
+
         var configuredDirectory = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
         if (!string.IsNullOrWhiteSpace(configuredDirectory))
         {

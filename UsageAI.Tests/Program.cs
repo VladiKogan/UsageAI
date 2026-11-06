@@ -138,6 +138,17 @@ internal static class Program
         ("update restart registration contract", WindowsIntegrationTests.TestUpdateRestartRegistrationAsync),
         ("Windows Credential Manager integration", WindowsIntegrationTests.TestCredentialManagerAsync),
         ("installer elevation launch contract", WindowsIntegrationTests.TestInstallerLaunchAsync),
+        ("account keys, labels and saved accounts", AccountTests.TestAccountKeysAndSettingsAsync),
+        ("account discovery and who is signed in", AccountTests.TestAccountDiscoveryAndIdentityAsync),
+        ("account scans, banners, add and remove", AccountTests.TestAccountManagerAsync),
+        ("extra accounts read only their own login folder", AccountTests.TestAccountClientsReadOwnFolderAsync),
+        ("refresh keeps accounts apart and notices a new person", AccountTests.TestRefreshServiceKeepsAccountsApartAsync),
+        ("sign in to another account runs the official login", AccountTests.TestAccountSignInAsync),
+        ("settings account page and the popup's account banner", AccountTests.TestAccountSettingsAndBannerAsync),
+        ("the tray app scans, rebuilds and answers account banners", AccountTests.TestApplicationContextAccountsAsync),
+        ("diagnostics name the account, never its token", AccountTests.TestAccountDiagnosticsAsync),
+        ("add account dialog signs in, adds a folder or re-authenticates", AccountTests.TestAddAccountDialogAsync),
+        ("forgotten and duplicate accounts stay right, and retries wait their turn", AccountTests.TestAccountReviewFixesAsync),
         ("an in-app update leaves a note for the copy that starts after it", UpdateFlowTests.TestUpdateHandoffAsync),
         ("the update progress window steps through each stage", UpdateFlowTests.TestUpdateProgressWindowAsync),
         ("Windows closing the app for an installer exits it at once", UpdateFlowTests.TestEndSessionExitsAsync),
@@ -194,6 +205,33 @@ internal static class Program
                 """;
             await File.WriteAllTextAsync(credentialPath, refreshed);
             await Console.Out.WriteLineAsync("No MCP servers configured.");
+            return 0;
+        }
+
+        // Stands in for an official CLI login (`claude auth login`, `codex login`): prints its sign-in
+        // link, then writes the credential file into the folder its variable names, or never does.
+        if (args.FirstOrDefault() == "usageai-fake-login")
+        {
+            await Console.Out.WriteLineAsync("Opening browser. If it did not open, visit: https://example.com/oauth/authorize?state=fake.");
+            await Console.Out.FlushAsync();
+            if (args.Contains("exit"))
+            {
+                return 1;
+            }
+
+            if (args.Contains("hang"))
+            {
+                await Task.Delay(TimeSpan.FromSeconds(30));
+                return 1;
+            }
+
+            await Task.Delay(300);
+            var claudeFolder = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
+            var codexFolder = Environment.GetEnvironmentVariable("CODEX_HOME");
+            var target = !string.IsNullOrEmpty(claudeFolder)
+                ? Path.Combine(claudeFolder, ".credentials.json")
+                : Path.Combine(codexFolder!, "auth.json");
+            await File.WriteAllTextAsync(target, "{}");
             return 0;
         }
 

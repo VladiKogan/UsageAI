@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { providerKindOf } from "./accounts";
 import {
   displayedPercent,
   highestUsedPercent,
@@ -8,6 +9,7 @@ import {
   type ProviderState,
   type QuotaDisplay,
   type StatusBarProviderId,
+  type StatusBarSelectionId,
   type UsageMetric,
   type UsageSnapshot,
 } from "./model";
@@ -27,7 +29,7 @@ const providerIcons: Record<Exclude<StatusBarProviderId, "hottest">, string> = {
 };
 
 export class StatusBarController implements vscode.Disposable {
-  private readonly items = new Map<StatusBarProviderId, vscode.StatusBarItem>();
+  private readonly items = new Map<StatusBarSelectionId, vscode.StatusBarItem>();
   private selectionSignature = "";
 
   update(states: readonly ProviderState[], rawSelection: unknown, quotaDisplay: QuotaDisplay = "used"): void {
@@ -49,14 +51,16 @@ export class StatusBarController implements vscode.Disposable {
     this.disposeItems();
   }
 
-  private getOrCreateItem(providerId: StatusBarProviderId, index: number): vscode.StatusBarItem {
+  private getOrCreateItem(providerId: StatusBarSelectionId, index: number): vscode.StatusBarItem {
     const existing = this.items.get(providerId);
     if (existing) {
       return existing;
     }
 
     const item = vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Left, 25 - index);
-    item.name = providerId === "hottest" ? "UsageAI: Hottest provider" : `UsageAI: ${providerLabels[providerId]}`;
+    item.name = providerId === "hottest"
+      ? "UsageAI: Hottest provider"
+      : `UsageAI: ${providerLabel(providerId)}${providerId.includes("@") ? " account" : ""}`;
     item.command = "usageai.show";
     this.items.set(providerId, item);
     return item;
@@ -64,7 +68,7 @@ export class StatusBarController implements vscode.Disposable {
 
   private updateItem(
     item: vscode.StatusBarItem,
-    providerId: StatusBarProviderId,
+    providerId: StatusBarSelectionId,
     states: readonly ProviderState[],
     quotaDisplay: QuotaDisplay,
   ): void {
@@ -88,18 +92,20 @@ export class StatusBarController implements vscode.Disposable {
       return;
     }
 
+    // A provider id follows that provider's primary account; a unit key names one account.
     const state = states.find((candidate) => candidate.id === providerId);
+    const label = state ? shortProviderName(state) : providerLabel(providerId);
     if (state?.snapshot) {
       renderSnapshot(
         item,
         state as ProviderState & { snapshot: UsageSnapshot },
-        providerLabels[providerId],
+        label,
         quotaDisplay,
       );
       return;
     }
 
-    renderUnavailable(item, providerId, providerLabels[providerId], state ? [state] : []);
+    renderUnavailable(item, providerId, label, state ? [state] : []);
   }
 
   private disposeItems(): void {
@@ -122,7 +128,7 @@ function renderSnapshot(
   refreshing = state.refreshing,
 ): void {
   const metrics = statusBarMetrics(state.snapshot);
-  const icon = refreshing ? "$(sync~spin)" : providerIcon(state.id);
+  const icon = refreshing ? "$(sync~spin)" : providerIcon(providerKindOf(state.id));
   // An incident on the provider's status page adds a marker, the Status Bar's counterpart of the
   // desktop tray dot; the tooltip names it.
   const incident = state.incident ? ` ${state.incidentIsOutage ? "$(error)" : "$(warning)"}` : "";
@@ -154,7 +160,7 @@ function snapshotTooltip(
   refreshing: boolean,
 ): vscode.MarkdownString {
   const tooltip = new vscode.MarkdownString(undefined, true);
-  tooltip.appendMarkdown(`${providerIcon(state.id)} **`);
+  tooltip.appendMarkdown(`${providerIcon(providerKindOf(state.id))} **`);
   tooltip.appendText(state.displayName);
   tooltip.appendMarkdown("**");
   tooltip.appendText(` · ${state.snapshot.plan}${state.stale ? " (stale)" : ""}`);
@@ -212,7 +218,7 @@ function formatMeterRows(metrics: readonly UsageMetric[], quotaDisplay: QuotaDis
 
 function renderUnavailable(
   item: vscode.StatusBarItem,
-  providerId: StatusBarProviderId,
+  providerId: StatusBarSelectionId,
   label: string,
   states: readonly ProviderState[],
 ): void {
@@ -223,7 +229,7 @@ function renderUnavailable(
     item.text = `$(warning) ${label}`;
     item.tooltip = `${label} needs attention. Click to open UsageAI.`;
   } else {
-    item.text = `${providerIcon(providerId)} ${label} —`;
+    item.text = `${providerIcon(providerKindOf(providerId))} ${label} —`;
     item.tooltip = `${label} has no usage reading. Click to open UsageAI.`;
   }
 }
@@ -234,8 +240,14 @@ function providerIcon(providerId: string): string {
     : "$(dashboard)";
 }
 
+function providerLabel(unit: string): string {
+  const kind = providerKindOf(unit);
+  return kind in providerLabels ? providerLabels[kind as keyof typeof providerLabels] : unit;
+}
+
+/** "Claude", or "Claude · team" while Claude shows more than one account. */
 function shortProviderName(state: ProviderState): string {
-  return state.id in providerLabels
-    ? providerLabels[state.id as keyof typeof providerLabels]
-    : state.displayName;
+  const kind = providerKindOf(state.id);
+  const name = kind in providerLabels ? providerLabels[kind as keyof typeof providerLabels] : state.displayName;
+  return state.accountLabel ? `${name} · ${state.accountLabel}` : name;
 }

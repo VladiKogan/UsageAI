@@ -7,13 +7,13 @@ namespace UsageAI.UI;
 /// Preferences that used to be compile-time constants: refresh cadence, alert thresholds,
 /// theme, history, and which providers appear and in what order.
 /// </summary>
-internal sealed class SettingsForm : Form
+internal sealed partial class SettingsForm : Form
 {
     // Indexes match ThemeMode, MetricDisplayMode and QuotaDisplay.
     private static readonly string[] ThemeOptions = { "System", "Dark", "Light" };
     private static readonly string[] MetricOptions = { "All", "Metered", "Important" };
     private static readonly string[] QuotaOptions = { "Used", "Remaining" };
-    private static readonly string[] SectionNames = { "General", "Alerts", "Appearance", "Providers", "History", "About" };
+    private static readonly string[] SectionNames = { "General", "Alerts", "Appearance", "Providers", AccountsSection, "History", "About" };
     private const int NavWidthBaseline = 176;
     private const string SectionHeaderTag = "section-header";
 
@@ -91,9 +91,14 @@ internal sealed class SettingsForm : Form
         int? dpiOverride = null,
         Func<StartupState>? readStartup = null,
         Action<bool>? writeStartup = null,
-        IReadOnlyDictionary<string, IReadOnlyList<string>>? popupGroups = null)
+        IReadOnlyDictionary<string, IReadOnlyList<string>>? popupGroups = null,
+        SettingsAccountActions? accounts = null,
+        IReadOnlyList<ProviderStatus>? accountStatuses = null,
+        IReadOnlyList<(string Id, string DisplayName)>? trayChoices = null)
     {
         _settings = settings;
+        _accountActions = accounts;
+        _accountStatuses = accountStatuses ?? Array.Empty<ProviderStatus>();
         _dpiOverride = dpiOverride;
         _checkForUpdates = checkForUpdates;
         _promptForUpdate = promptForUpdate;
@@ -264,6 +269,12 @@ internal sealed class SettingsForm : Form
             _trayProvider.Items.Add(entry);
         }
 
+        // An account other than a default login can drive the tray too, once it is shown.
+        foreach (var (id, displayName) in (trayChoices ?? Array.Empty<(string, string)>()).Where(choice => !ProviderKey.IsDefault(choice.Item1)))
+        {
+            _trayProvider.Items.Add(new ProviderEntry(id, displayName));
+        }
+
         _checkForUpdatesButton = CreateDialogButton("Check for updates", scale, primary: false);
         _checkForUpdatesButton.AutoSize = true;
         _checkForUpdatesButton.MinimumSize = new Size(scale[142], scale[30]);
@@ -309,7 +320,9 @@ internal sealed class SettingsForm : Form
         AddSpan(CreateHint("Tick to show. Drag a provider to reorder it, or use Alt+Up / Alt+Down."));
         AddSpan(_providers);
         AddSpan(CreateOrderButtons(scale));
-        AddPopupGroupPickers(providers, popupGroups, scale);
+        AddPopupGroupPickers(trayChoices is { Count: > 0 } ? trayChoices : providers, popupGroups, scale);
+
+        AddAccountsSection(scale);
 
         AddSection("History");
         AddSpan(_historyEnabled);
@@ -459,6 +472,7 @@ internal sealed class SettingsForm : Form
         _forecastEnabled.Checked = _settings.ForecastEnabled;
         _hotkeyEnabled.Checked = _settings.GlobalHotkeyEnabled;
         LoadStartupState();
+        LoadAccountValues();
         _trayProvider.SelectedIndex = 0;
         if (_settings.TrayProviderId is { } trayProviderId)
         {
@@ -570,6 +584,7 @@ internal sealed class SettingsForm : Form
         }
 
         _settings.ProviderOrder = order.ToArray();
+        ApplyAccounts();
         foreach (var picker in _popupGroupPickers)
         {
             _settings.SetPopupMetricGroup(
@@ -1242,6 +1257,7 @@ internal sealed class SettingsForm : Form
         _nav.Margin = scale.Pad(8, 12, 4, 8);
         _layout.Padding = LayoutPadding(scale);
         _providers.Height = scale[104];
+        _accountList.Height = scale[120];
         _checkForUpdatesButton.MinimumSize = new Size(scale[142], scale[30]);
         _buttons.Padding = scale.Pad(0, 10, 18, 10);
         _saveButton.Size = new Size(scale[104], scale[30]);
@@ -1292,6 +1308,7 @@ internal sealed class SettingsForm : Form
         WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
         WindowThemeHelpers.ApplyDarkScrollbar(_scrollHost, Theme.IsDark && !Theme.IsHighContrast);
         WindowThemeHelpers.ApplyDarkScrollbar(_providers, Theme.IsDark && !Theme.IsHighContrast);
+        WindowThemeHelpers.ApplyDarkScrollbar(_accountList, Theme.IsDark && !Theme.IsHighContrast);
         Invalidate(invalidateChildren: true);
     }
 

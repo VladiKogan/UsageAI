@@ -19,7 +19,13 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private const int MaximumBalloonText = 255;
 
     private readonly AppSettings _settings;
-    private readonly IUsageClient[] _clients;
+    private IUsageClient[] _clients;
+
+    /// <summary>The providers' default logins; the account clients are rebuilt around them.</summary>
+    private readonly IUsageClient[] _defaultClients;
+
+    /// <summary>Extra logins of Claude and Codex. Null in tests and previews that do not use them.</summary>
+    private readonly AccountManager? _accounts;
     private readonly UsageRefreshService _service;
     private readonly ContextMenuStrip _menu;
     private readonly NotifyIcon _trayIcon;
@@ -45,18 +51,19 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private UpdateProgressForm? _updateWindow;
 
     public UsageApplicationContext(
-        IEnumerable<IUsageClient> clients,
+        AccountManager accounts,
         AppSettings settings,
         bool profileExisted,
         UpdateHandoffResult? updateResult)
         : this(
-            clients,
+            Program.CreateUsageClients(),
             settings,
             showTrayIcon: true,
             enableAutomaticUpdateChecks: true,
             profileExisted,
             incidents: new ProviderIncidentService(),
-            updateResult: updateResult)
+            updateResult: updateResult,
+            accounts: accounts)
     {
     }
 
@@ -79,9 +86,11 @@ internal sealed class UsageApplicationContext : ApplicationContext
         ProviderIncidentService? incidents = null,
         UpdateHandoffResult? updateResult = null,
         Func<UpdateRelease, IProgress<double>?, CancellationToken, Task<string>>? downloadInstaller = null,
-        Func<string, Process>? launchInstaller = null)
+        Func<string, Process>? launchInstaller = null,
+        AccountManager? accounts = null)
     {
         _settings = settings;
+        _accounts = accounts;
         _updateResult = updateResult;
         _downloadInstaller = downloadInstaller ?? UpdateInstaller.DownloadAndVerifyAsync;
         _launchInstaller = launchInstaller ?? UpdateInstaller.Launch;
@@ -99,7 +108,8 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _checkForUpdates = checkForUpdates ?? UpdateChecker.CheckForUpdateAsync;
         _readStartup = readStartup;
         _writeStartup = writeStartup;
-        _clients = clients.ToArray();
+        _defaultClients = clients.ToArray();
+        _clients = _accounts?.CreateClients(_defaultClients).ToArray() ?? _defaultClients;
         Theme.Apply(_settings.Theme, _settings.WarningPercent, _settings.CriticalPercent);
         _upgradeNotice = UpgradeNotice.Create(
             _settings,
@@ -110,18 +120,29 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _service = new UsageRefreshService(_clients, _settings);
         _service.Updated += OnServiceUpdated;
         _service.AlertsRaised += OnAlertsRaised;
+        _service.AccountIdentityChanged += OnAccountIdentityChanged;
 
         _popup = new UsagePopupForm(_settings);
         _popup.RefreshRequested += async (_, _) => await RefreshRequestedByUserAsync();
         _popup.ProviderRefreshRequested += async (_, eventArgs) => await RetryProviderAsync(eventArgs.Status.ProviderId);
         _popup.SettingsRequested += (_, _) => OpenSettings();
+        _popup.AddAccountRequested += (_, _) => OpenAddAccount();
+        _popup.NoticeAnswered += (_, eventArgs) => AnswerNotice(eventArgs.Notice, eventArgs.Primary);
         PushStateToPopup();
+
+        if (_accounts is not null)
+        {
+            _accounts.AccountsChanged += OnAccountsChanged;
+            _accounts.NoticesChanged += OnNoticesChanged;
+            _popup.SetNotices(_accounts.Notices);
+        }
 
         _menu = TrayMenu.Create(
             open: OpenDashboard,
             refresh: () => _ = RefreshRequestedByUserAsync(),
             settings: OpenSettings,
-            exit: Exit);
+            exit: Exit,
+            addAccount: () => OpenAddAccount());
 
         _currentIcon = TrayIconFactory.Create(0);
         _trayIcon = new NotifyIcon
@@ -154,6 +175,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         {
             // The status pages are checked alongside, not after, a provider refresh that can take seconds.
             var incidentCheck = RefreshIncidentsIfDueAsync();
+            ScanAccountsIfDue();
             await RefreshIfDueAsync();
             await CheckForUpdatesIfDueAsync();
             await incidentCheck;
@@ -183,6 +205,9 @@ internal sealed class UsageApplicationContext : ApplicationContext
     private void RefreshOnFirstIdle(object? sender, EventArgs eventArgs)
     {
         Application.Idle -= RefreshOnFirstIdle;
+
+        // A login folder may have appeared while UsageAI was closed; found ones join this refresh.
+        ScanAccountsIfDue(atStartup: true);
         _ = RefreshAsync(force: true);
         _ = CheckForUpdatesIfDueAsync();
         _ = RefreshIncidentsIfDueAsync();
@@ -303,6 +328,136 @@ internal sealed class UsageApplicationContext : ApplicationContext
         await _service.RefreshProviderAsync(providerId, _popup.Visible);
     }
 
+    /// <summary>
+    /// Scans the profile for login folders at startup and then once a day, on the same tick as the
+    /// update check but with its own timestamp, so an offline update check never skips it.
+    /// </summary>
+    private void ScanAccountsIfDue(bool atStartup = false)
+    {
+        if (_accounts is null || _isExiting)
+        {
+            return;
+        }
+
+        if (atStartup)
+        {
+            if (_settings.FindAccountsAutomatically || !_settings.AccountsInitialized)
+            {
+                _accounts.Scan(DateTimeOffset.UtcNow);
+            }
+
+            return;
+        }
+
+        _accounts.ScanIfDue(DateTimeOffset.UtcNow);
+    }
+
+    /// <summary>
+    /// Rebuilds the clients around the current account list. It starts no refresh itself: a new
+    /// account is due, so the caller's own refresh or the next tick reads it, and a refresh started
+    /// here would hold the lock and swallow the forced one a caller (startup, Add account) is about
+    /// to ask for.
+    /// </summary>
+    private void OnAccountsChanged(object? sender, EventArgs eventArgs) => RunOnUi(() =>
+    {
+        if (_isExiting || _accounts is null)
+        {
+            return;
+        }
+
+        var before = _clients.Select(client => client.Id).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        _clients = _accounts.CreateClients(_defaultClients).ToArray();
+        foreach (var removed in before.Where(id => !_clients.Any(client => client.Id.Equals(id, StringComparison.OrdinalIgnoreCase))))
+        {
+            _service.ForgetHistory(removed);
+        }
+
+        _service.ReplaceClients(_clients);
+        PushStateToPopup();
+        UpdateTray();
+    });
+
+    private void OnNoticesChanged(object? sender, EventArgs eventArgs) => RunOnUi(() =>
+    {
+        if (!_isExiting && _accounts is not null)
+        {
+            _popup.SetNotices(_accounts.Notices);
+        }
+    });
+
+    /// <summary>
+    /// Raised from inside a refresh as it folds in a reading; posted, so the account list (which may
+    /// change as duplicates are worked out again) is not rebuilt under that refresh.
+    /// </summary>
+    private void OnAccountIdentityChanged(object? sender, AccountIdentityChangedEventArgs eventArgs) =>
+        _syncContext.Post(
+            _ =>
+            {
+                if (!_disposed && !_isExiting)
+                {
+                    _accounts?.NotifyIdentityChanged(eventArgs.UnitKey, eventArgs.Previous, eventArgs.Current);
+                }
+            },
+            null);
+
+    /// <summary>The account banner's answers.</summary>
+    internal void AnswerNotice(AccountNotice notice, bool primary)
+    {
+        if (_accounts is null)
+        {
+            return;
+        }
+
+        switch (notice.Kind)
+        {
+            case AccountNoticeKind.NewAccount when notice.UnitKey is { } key:
+                _accounts.AnswerNewAccount(key, show: primary);
+                if (primary)
+                {
+                    _ = RefreshIfDueAsync();
+                }
+
+                break;
+            case AccountNoticeKind.FoundSeveral:
+                _accounts.Dismiss(notice);
+                if (!primary)
+                {
+                    OpenSettings(SettingsForm.AccountsSection);
+                }
+
+                break;
+            default:
+                _accounts.Dismiss(notice);
+                if (primary)
+                {
+                    OpenAddAccount(notice.ProviderId);
+                }
+
+                break;
+        }
+    }
+
+    /// <summary>
+    /// Add account…: signs another account in through the provider's official CLI, or adds a login
+    /// folder the user already has. With <paramref name="reauthenticate"/>, signs that account's
+    /// own folder in again.
+    /// </summary>
+    internal void OpenAddAccount(string? providerId = null, ProviderAccount? reauthenticate = null)
+    {
+        if (_isExiting || _accounts is null)
+        {
+            return;
+        }
+
+        ShowPendingWhatsNew();
+        _popup.Hide();
+        using var dialog = new AddAccountForm(_accounts, providerId, reauthenticate);
+        if (dialog.ShowDialog() == DialogResult.OK && dialog.AddedKey is { } added)
+        {
+            _ = _service.RefreshProviderAsync(added, _popup.Visible);
+        }
+    }
+
     private void OnServiceUpdated(object? sender, EventArgs eventArgs) => RunOnUi(() =>
     {
         if (_isExiting)
@@ -345,7 +500,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _incidents is null || _incidents.Current.Count == 0
             ? statuses
             : statuses
-                .Select(status => _incidents.For(status.ProviderId) is { } incident
+                .Select(status => _incidents.For(status.Kind) is { } incident
                     ? status with
                     {
                         IncidentSummary = $"{incident.SeverityLabel}: {incident.Title}",
@@ -382,7 +537,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         {
             var tank = TankLevel(connected, _settings);
             var worst = connected
-                .Select(status => _incidents?.For(status.ProviderId))
+                .Select(status => _incidents?.For(status.Kind))
                 .OfType<ProviderIncident>()
                 .MaxBy(incident => incident.Severity);
             ReplaceIcon(TrayIconFactory.CreateTank(tank.UsedPercent, tank.FillPercent, incident: worst?.Severity));
@@ -392,7 +547,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
         var trayStatus = SelectTrayStatus(connected, _settings.TrayProviderId)!;
         var usedPercent = TrayUsedPercent(trayStatus);
-        var trayIncident = _incidents?.For(trayStatus.ProviderId);
+        var trayIncident = _incidents?.For(trayStatus.Kind);
         ReplaceIcon(TrayIconFactory.Create(
             usedPercent,
             identityColor: Theme.ForProvider(trayStatus.ProviderId),
@@ -499,21 +654,41 @@ internal sealed class UsageApplicationContext : ApplicationContext
         }
     }
 
-    private void OpenSettings()
+    private void OpenSettings() => OpenSettings(null);
+
+    private void OpenSettings(string? section)
     {
         ShowPendingWhatsNew();
         var pollingBefore = PollingInputs(_settings);
         using var dialog = new SettingsForm(
             _settings,
-            _clients.Select(client => (client.Id, client.DisplayName)).ToArray(),
+            _defaultClients.Select(client => (client.Id, client.DisplayName)).ToArray(),
             _checkForUpdates,
             PromptForUpdateAsync,
             readStartup: _readStartup,
             writeStartup: _writeStartup,
-            popupGroups: PopupGroups(_service.Statuses));
+            popupGroups: PopupGroups(_service.Statuses),
+            accounts: _accounts is null ? null : new SettingsAccountActions(this, _accounts),
+            accountStatuses: _service.AllStatuses,
+            trayChoices: _service.Statuses.Select(status => (status.ProviderId, status.ProviderName)).ToArray());
+        if (section is not null)
+        {
+            dialog.Shown += (_, _) => dialog.ShowSection(section);
+        }
+
         if (dialog.ShowDialog() != DialogResult.OK)
         {
             return;
+        }
+
+        var accountsShown = false;
+        if (_accounts is not null)
+        {
+            // An account shown for the first time is due, and read straight after.
+            _clients = _accounts.CreateClients(_defaultClients).ToArray();
+            _service.ReplaceClients(_clients);
+            _popup.SetNotices(_accounts.Notices);
+            accountsShown = true;
         }
 
         // A presentation-only change — theme, colours, metric or quota display — re-renders from
@@ -531,6 +706,10 @@ internal sealed class UsageApplicationContext : ApplicationContext
         if (pollingChanged)
         {
             _ = RefreshAsync(force: false);
+        }
+        else if (accountsShown)
+        {
+            _ = RefreshIfDueAsync();
         }
 
         _ = CheckForUpdatesIfDueAsync();
@@ -556,6 +735,12 @@ internal sealed class UsageApplicationContext : ApplicationContext
             ',',
             settings.HiddenProviders
                 .Select(id => id.ToUpperInvariant())
+                .Order(StringComparer.Ordinal)),
+        string.Join(
+            ',',
+            settings.Accounts
+                .Where(account => account.Hidden)
+                .Select(account => account.UnitKey.ToUpperInvariant())
                 .Order(StringComparer.Ordinal)));
 
     private void ShowPendingWhatsNew()
@@ -896,6 +1081,13 @@ internal sealed class UsageApplicationContext : ApplicationContext
             SystemEvents.UserPreferenceChanged -= OnUserPreferenceChanged;
             _service.Updated -= OnServiceUpdated;
             _service.AlertsRaised -= OnAlertsRaised;
+            _service.AccountIdentityChanged -= OnAccountIdentityChanged;
+            if (_accounts is not null)
+            {
+                _accounts.AccountsChanged -= OnAccountsChanged;
+                _accounts.NoticesChanged -= OnNoticesChanged;
+            }
+
             _shutdown.Cancel();
             _refreshAnimationTimer.Dispose();
             _tickTimer.Dispose();
@@ -1026,7 +1218,9 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     /// <summary>
     /// Resolves the provider represented by the tray gauge. An unavailable pinned provider
-    /// falls back to the most-consumed connected provider until it reconnects.
+    /// falls back to the most-consumed connected provider until it reconnects. Automatic
+    /// follows the providers' default logins, so adding an account never moves the tray; an
+    /// account is followed only when the user picks it.
     /// </summary>
     internal static ProviderStatus? SelectTrayStatus(
         IReadOnlyList<ProviderStatus> connected,
@@ -1043,24 +1237,24 @@ internal sealed class UsageApplicationContext : ApplicationContext
             }
         }
 
-        return connected
-            .Where(status => status.Snapshot is not null)
+        var candidates = connected.Where(status => status.Snapshot is not null).ToArray();
+        var primaries = candidates.Where(status => ProviderKey.IsDefault(status.ProviderId)).ToArray();
+        return (primaries.Length > 0 ? primaries : candidates)
             .OrderByDescending(TrayUsedPercent)
             .FirstOrDefault();
     }
 
-    /// <summary>The editor Status Bar's labels, so "Claude Code" reads as Claude in both.</summary>
+    /// <summary>
+    /// The editor Status Bar's labels, so "Claude Code" reads as Claude in both, with the account
+    /// when its provider shows more than one.
+    /// </summary>
     private static string ShortProviderName(ProviderStatus status) =>
-        ShortProviderName(status.ProviderId, status.ProviderName);
+        status.AccountLabel is { } label
+            ? $"{ShortProviderName(status.Kind, status.ProviderName)} · {label}"
+            : ShortProviderName(status.Kind, status.ProviderName);
 
-    private static string ShortProviderName(string providerId, string? fallback = null) => providerId.ToLowerInvariant() switch
-    {
-        "codex" => "Codex",
-        "claude" => "Claude",
-        "copilot" => "Copilot",
-        "gemini" => "Gemini",
-        _ => fallback ?? providerId,
-    };
+    private static string ShortProviderName(string providerId, string? fallback = null) =>
+        ProviderNames.Short(providerId, fallback);
 
     private static string Trim(string value, int maximumLength) =>
         value.Length <= maximumLength ? value : value[..(maximumLength - 3)] + "...";

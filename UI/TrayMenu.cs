@@ -7,7 +7,7 @@ namespace UsageAI.UI;
 /// </summary>
 internal static class TrayMenu
 {
-    public static ContextMenuStrip Create(Action open, Action refresh, Action settings, Action exit)
+    public static ContextMenuStrip Create(Action open, Action refresh, Action settings, Action exit, Action? addAccount = null)
     {
         var menu = new ContextMenuStrip
         {
@@ -19,6 +19,11 @@ internal static class TrayMenu
         menu.Items.Add(openItem);
         menu.Items.Add("Refresh", null, (_, _) => refresh());
         menu.Items.Add(new ToolStripSeparator());
+        if (addAccount is not null)
+        {
+            menu.Items.Add("Add account…", null, (_, _) => addAccount());
+        }
+
         menu.Items.Add("Settings…", null, (_, _) => settings());
         menu.Items.Add(new ToolStripSeparator());
         menu.Items.Add("Exit", null, (_, _) => exit());

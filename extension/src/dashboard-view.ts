@@ -1,4 +1,5 @@
 import * as vscode from "vscode";
+import { isKnownUnitKey } from "./accounts";
 import {
   displayedPercent,
   formatResetCountdown,
@@ -14,8 +15,12 @@ import {
 } from "./model";
 import type { UsageRefreshService } from "./refresh-service";
 
-export const dashboardExpandedProvidersKey = "usageai.dashboard.expandedProviders.v1";
+/** Expanded cards by unit key (`claude`, `claude@1a2b3c4d`). */
+export const dashboardExpandedProvidersKey = "usageai.dashboard.expandedProviders.v2";
+/** The provider-id list used before accounts; migrated once into the `.v2` key. */
+export const legacyDashboardExpandedProvidersKey = "usageai.dashboard.expandedProviders.v1";
 const knownProviderIds = ["codex", "claude", "copilot", "gemini"] as const;
+const maxRememberedCards = 64;
 
 export interface DashboardViewOptions {
   readonly loadExpandedProviders?: () => unknown;
@@ -25,6 +30,7 @@ export interface DashboardViewOptions {
   readonly quotaDisplay?: () => unknown;
 }
 
+/** Known unit keys only: a provider id, or an account unit key of a provider that has accounts. */
 export function sanitizeExpandedProviderIds(
   value: unknown,
   knownIds: readonly string[] = knownProviderIds,
@@ -33,9 +39,29 @@ export function sanitizeExpandedProviderIds(
     return [...knownIds];
   }
 
-  const allowed = new Set(knownIds);
-  return [...new Set(value.filter((candidate): candidate is string =>
-    typeof candidate === "string" && allowed.has(candidate)))];
+  return [...new Set(value.filter((candidate): candidate is string => isKnownUnitKey(candidate, knownIds)))]
+    .slice(0, maxRememberedCards);
+}
+
+/**
+ * The saved expansion state, moving the provider-id list of `.v1` into `.v2` once. A provider id is
+ * the unit key of its default account, so the old list carries over unchanged.
+ */
+export function loadExpandedProviders(
+  get: (key: string) => unknown,
+  update: (key: string, value: readonly string[]) => unknown,
+): unknown {
+  const current = get(dashboardExpandedProvidersKey);
+  if (current !== undefined) {
+    return current;
+  }
+  const legacy = get(legacyDashboardExpandedProvidersKey);
+  if (!Array.isArray(legacy)) {
+    return undefined;
+  }
+  const migrated = sanitizeExpandedProviderIds(legacy);
+  void Promise.resolve(update(dashboardExpandedProvidersKey, migrated)).catch(() => undefined);
+  return migrated;
 }
 
 export function dashboardNeedsAttention(
@@ -70,6 +96,8 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
   private readonly disposables: vscode.Disposable[] = [];
   private readonly removeUpdateListener: () => void;
   private readonly expandedProviders: Set<string>;
+  /** Nothing saved yet: every card starts expanded, including accounts that appear later. */
+  private expandEverything: boolean;
   private metricDisplayMode: MetricDisplayMode;
   private quotaDisplay: QuotaDisplay;
 
@@ -79,7 +107,9 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
     private readonly criticalPercent: () => number,
     private readonly options: DashboardViewOptions = {},
   ) {
-    this.expandedProviders = new Set(sanitizeExpandedProviderIds(options.loadExpandedProviders?.()));
+    const saved = options.loadExpandedProviders?.();
+    this.expandEverything = !Array.isArray(saved);
+    this.expandedProviders = new Set(sanitizeExpandedProviderIds(saved));
     this.metricDisplayMode = normalizeMetricDisplayMode(options.metricDisplayMode?.());
     this.quotaDisplay = normalizeQuotaDisplay(options.quotaDisplay?.());
     this.removeUpdateListener = refreshService.onDidUpdate((states) => this.postStates(states));
@@ -123,14 +153,15 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
       criticalPercent: this.criticalPercent(),
       metricDisplayMode: this.metricDisplayMode,
       quotaDisplay: this.quotaDisplay,
-      expandedProviders: [...this.expandedProviders],
+      expandedProviders: this.expandEverything
+        ? [...new Set([...this.expandedProviders, ...states.map((state) => state.id)])]
+        : [...this.expandedProviders],
     });
   }
 
   private async persistExpansion(): Promise<void> {
-    await this.options.saveExpandedProviders?.(
-      knownProviderIds.filter((providerId) => this.expandedProviders.has(providerId)),
-    );
+    this.expandEverything = false;
+    await this.options.saveExpandedProviders?.(sanitizeExpandedProviderIds([...this.expandedProviders]));
     this.postStates(this.refreshService.getStates());
   }
 
@@ -168,12 +199,20 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
     if (message.type === "setAllExpanded") {
       if (typeof message.expanded !== "boolean") return;
       this.expandedProviders.clear();
-      if (message.expanded) for (const providerId of knownProviderIds) this.expandedProviders.add(providerId);
+      if (message.expanded) {
+        for (const unit of [...knownProviderIds, ...this.refreshService.getStates().map((state) => state.id)]) {
+          this.expandedProviders.add(unit);
+        }
+      }
       await this.persistExpansion();
       return;
     }
     if (message.type === "setProviderExpanded") {
-      if (!isKnownProviderId(message.providerId) || typeof message.expanded !== "boolean") return;
+      if (!isKnownUnitKey(message.providerId, knownProviderIds) || typeof message.expanded !== "boolean") return;
+      if (this.expandEverything) {
+        // The first change keeps every other card as it was shown: expanded.
+        for (const state of this.refreshService.getStates()) this.expandedProviders.add(state.id);
+      }
       if (message.expanded) this.expandedProviders.add(message.providerId);
       else this.expandedProviders.delete(message.providerId);
       await this.persistExpansion();
@@ -200,10 +239,6 @@ interface DashboardMessage {
 
 function isMessage(value: unknown): value is DashboardMessage {
   return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string";
-}
-
-function isKnownProviderId(value: unknown): value is typeof knownProviderIds[number] {
-  return typeof value === "string" && (knownProviderIds as readonly string[]).includes(value);
 }
 
 function dashboardHtml(webview: vscode.Webview): string {

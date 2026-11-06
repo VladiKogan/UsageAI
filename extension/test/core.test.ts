@@ -96,9 +96,15 @@ test("extension manifest keeps local hosting and a compact view toolbar", async 
 
   // A view-title command without an icon renders as a text button, which overlapped the view
   // title in a narrow sidebar.
-  const toolbar = (packageJson.contributes?.menus?.["view/title"] ?? [])
+  const viewMenu = (packageJson.contributes?.menus?.["view/title"] ?? [])
     .filter((entry) => entry.when === "view == usageai.dashboard");
+  const toolbar = viewMenu.filter((entry) => entry.group?.startsWith("navigation"));
   assert.deepEqual(toolbar.map((entry) => entry.command), ["usageai.refresh", "usageai.openSettings"]);
+  // The account commands live in the view's "…" menu, never as toolbar buttons.
+  assert.deepEqual(
+    viewMenu.filter((entry) => !entry.group?.startsWith("navigation")).map((entry) => entry.command),
+    ["usageai.addAccount", "usageai.rescanAccounts"],
+  );
   for (const entry of toolbar) {
     assert.match(entry.group ?? "", /^navigation/, entry.command);
     assert.match(commands.get(entry.command)?.icon ?? "", /^\$\([a-z-]+\)$/, entry.command);

@@ -96,6 +96,47 @@ internal static class UsageHistoryStore
         }
     }
 
+    /// <summary>
+    /// Drops every sample of one provider key, for an account now signed in to someone else or one
+    /// the user removed.
+    /// </summary>
+    public static void RemoveProvider(string providerId)
+    {
+        try
+        {
+            var path = AppPaths.HistoryFile;
+            if (!File.Exists(path) || new FileInfo(path).Length > MaxReadBytes)
+            {
+                return;
+            }
+
+            var kept = new StringBuilder();
+            var removed = false;
+            foreach (var line in File.ReadLines(path))
+            {
+                if (TryParse(line) is { } sample)
+                {
+                    if (sample.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase))
+                    {
+                        removed = true;
+                        continue;
+                    }
+
+                    kept.Append(line).Append('\n');
+                }
+            }
+
+            if (removed)
+            {
+                AppPaths.WriteAllTextAtomic(path, kept.ToString());
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // History is optional; the samples age out with the retention window instead.
+        }
+    }
+
     /// <summary>Extracts the metered samples worth recording from a snapshot.</summary>
     public static IReadOnlyList<UsageSample> SamplesFrom(UsageSnapshot snapshot) => snapshot.Metrics
         .Where(metric => metric.HasQuota)

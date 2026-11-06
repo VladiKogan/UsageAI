@@ -1,4 +1,5 @@
 using System.Text.Json;
+using UsageAI.Models;
 
 namespace UsageAI.Services;
 
@@ -75,7 +76,7 @@ internal sealed class ProviderIncidentService
     public IReadOnlyDictionary<string, ProviderIncident> Current => _current;
 
     public ProviderIncident? For(string providerId) =>
-        _current.TryGetValue(providerId, out var incident) ? incident : null;
+        _current.TryGetValue(ProviderKey.ProviderOf(providerId), out var incident) ? incident : null;
 
     /// <summary>
     /// Checks the status pages when due. With <paramref name="enabled"/> false nothing is fetched
