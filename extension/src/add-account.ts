@@ -269,7 +269,7 @@ async function waitForLogin(
       // The CLI may write its file just as it exits.
       return fileSystem.hasCredentialFile(provider, folder);
     }
-    await new Promise((resolve) => setTimeout(resolve, interval).unref());
+    await new Promise((resolve) => setTimeout(resolve, interval));
   }
   return false;
 }

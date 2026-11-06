@@ -608,7 +608,7 @@ test("Add Account signs in to a new folder with the official CLI, or adds a fold
     assert.ok(log.some((line) => /Codex CLI was not found/.test(line)));
     log.length = 0;
     const remote = { ...dependencies({ picks: ["Codex", "Sign in to another account"], inputs: ["remote", path.join(home, ".codex-remote")] }), canRunLoginInTerminal: () => false };
-    setTimeout(() => void writeLogin(path.join(home, ".codex-remote"), "codex"), 20).unref();
+    setTimeout(() => void writeLogin(path.join(home, ".codex-remote"), "codex"), 20);
     assert.equal(await addAccount(remote), "added");
     assert.ok(log.some((line) => line.startsWith("copy ") && line.includes("CODEX_HOME") && line.includes("codex login")));
   });
