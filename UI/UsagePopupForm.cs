@@ -40,6 +40,11 @@ internal sealed class UsagePopupForm : Form
     private readonly Button _detailsButton;
     private readonly IconButton _refreshButton;
     private readonly IconButton _settingsButton;
+    private readonly IconButton _addAccountButton;
+    private readonly AccountNoticeBanner _banner;
+
+    /// <summary>Whether the banner row is open; read instead of Visible, which is false while the window is hidden.</summary>
+    private bool _showBanner;
     private readonly TableLayoutPanel _footer;
     private IReadOnlyList<ProviderStatus> _states = Array.Empty<ProviderStatus>();
     private IReadOnlyList<UsageSample> _history = Array.Empty<UsageSample>();
@@ -96,10 +101,11 @@ internal sealed class UsagePopupForm : Form
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
             Padding = ShellPadding(scale),
-            RowCount = 3,
+            RowCount = 4,
         };
         _shell.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
         _shell.RowStyles.Add(new RowStyle(SizeType.Absolute, scale[HeaderRowBaseline]));
+        _shell.RowStyles.Add(new RowStyle(SizeType.Absolute, 0));
         _shell.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _shell.RowStyles.Add(new RowStyle(SizeType.Absolute, scale[FooterRowBaseline]));
         Controls.Add(_shell);
@@ -157,10 +163,17 @@ internal sealed class UsagePopupForm : Form
             Margin = Padding.Empty,
         };
         _settingsButton.Click += (_, _) => SettingsRequested?.Invoke(this, EventArgs.Empty);
+        _addAccountButton = new IconButton(IconGlyph.AddAccount, "Add account…")
+        {
+            Dock = DockStyle.Fill,
+            DpiOverride = _dpiOverride,
+            Margin = Padding.Empty,
+        };
+        _addAccountButton.Click += (_, _) => AddAccountRequested?.Invoke(this, EventArgs.Empty);
 
         _header = new TableLayoutPanel
         {
-            ColumnCount = 4,
+            ColumnCount = 5,
             Dock = DockStyle.Fill,
             // The shell's right edge is open for the scrollbar; this keeps the window's inset.
             Margin = scale.Pad(0, 0, RightEdge, 0),
@@ -170,15 +183,27 @@ internal sealed class UsagePopupForm : Form
         _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 0));
         _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[32]));
         _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[32]));
+        _header.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, scale[32]));
         _header.RowStyles.Add(new RowStyle(SizeType.Absolute, scale[32]));
         _header.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _header.Controls.Add(_titleLabel, 0, 0);
         _header.Controls.Add(_metricMode, 1, 0);
-        _header.Controls.Add(_refreshButton, 2, 0);
-        _header.Controls.Add(_settingsButton, 3, 0);
+        _header.Controls.Add(_addAccountButton, 2, 0);
+        _header.Controls.Add(_refreshButton, 3, 0);
+        _header.Controls.Add(_settingsButton, 4, 0);
         _header.Controls.Add(_summaryLabel, 0, 1);
-        _header.SetColumnSpan(_summaryLabel, 4);
+        _header.SetColumnSpan(_summaryLabel, 5);
         _shell.Controls.Add(_header, 0, 0);
+
+        // Account banners sit between the header and the tiles, in a row that is empty without one.
+        _banner = new AccountNoticeBanner(_dpiOverride)
+        {
+            Dock = DockStyle.Fill,
+            Margin = scale.Pad(0, 0, RightEdge, 8),
+            Visible = false,
+        };
+        _banner.Answered += (_, eventArgs) => NoticeAnswered?.Invoke(this, eventArgs);
+        _shell.Controls.Add(_banner, 0, 1);
 
         // Both modes lay out in rows of two; SetMode returns early for the starting mode, so the
         // flow is set here rather than only there.
@@ -200,7 +225,7 @@ internal sealed class UsagePopupForm : Form
             Dock = DockStyle.Fill,
             Margin = Padding.Empty,
         };
-        _shell.Controls.Add(_contentFrame, 0, 1);
+        _shell.Controls.Add(_contentFrame, 0, 2);
 
         _updatedLabel = new Label
         {
@@ -228,7 +253,7 @@ internal sealed class UsagePopupForm : Form
         _footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _footer.Controls.Add(_updatedLabel, 0, 0);
         _footer.Controls.Add(_detailsButton, 1, 0);
-        _shell.Controls.Add(_footer, 0, 2);
+        _shell.Controls.Add(_footer, 0, 3);
 
         if (_settings.DashboardBounds is { Length: 4 } saved)
         {
@@ -292,6 +317,51 @@ internal sealed class UsagePopupForm : Form
     public event EventHandler? RefreshRequested;
 
     public event EventHandler? SettingsRequested;
+
+    /// <summary>The header's Add account… button.</summary>
+    public event EventHandler? AddAccountRequested;
+
+    /// <summary>An answer to the account banner.</summary>
+    public event EventHandler<AccountNoticeEventArgs>? NoticeAnswered;
+
+    /// <summary>The account banner's notice while one shows, for tests.</summary>
+    internal AccountNotice? ShownNotice => _showBanner ? _banner.Notice : null;
+
+    /// <summary>
+    /// Shows the first account notice in the banner row, or hides the row. The window is sized
+    /// again so the tiles keep their room.
+    /// </summary>
+    public void SetNotices(IReadOnlyList<AccountNotice> notices)
+    {
+        _banner.SetNotices(notices);
+        var show = notices.Count > 0;
+        if (_showBanner == show && !show)
+        {
+            return;
+        }
+
+        _showBanner = show;
+        _banner.Visible = show;
+        ApplyScaledChrome();
+        if (Visible)
+        {
+            if (_mode == DashboardMode.Compact)
+            {
+                ApplyPreferredSize(Screen.FromControl(this).WorkingArea);
+                if (_trayAnchor is { } anchor)
+                {
+                    PlaceNearTray(anchor, Screen.FromPoint(anchor).WorkingArea);
+                }
+            }
+            else
+            {
+                UpdateCardWidths();
+            }
+        }
+    }
+
+    private int BannerHeight(LayoutScale scale) =>
+        _showBanner ? scale[AccountNoticeBanner.HeightBaseline] + _banner.Margin.Vertical : 0;
 
     /// <summary>A stale provider's Retry: refresh that provider alone.</summary>
     public event EventHandler<ProviderCardActionEventArgs>? ProviderRefreshRequested;
@@ -653,6 +723,8 @@ internal sealed class UsagePopupForm : Form
         _detailsButton.FlatAppearance.MouseOverBackColor = Theme.Blend(Theme.Accent, Theme.Text, 0.88);
         _refreshButton.Invalidate();
         _settingsButton.Invalidate();
+        _addAccountButton.Invalidate();
+        _banner.ApplyTheme();
         WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
         WindowThemeHelpers.ApplyWindowFrame(this);
         WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
@@ -667,13 +739,16 @@ internal sealed class UsagePopupForm : Form
         var edge = scale.Pad(0, 0, RightEdge, 0);
         _header.Margin = edge;
         _footer.Margin = edge;
+        _banner.Margin = scale.Pad(0, 0, RightEdge, 8);
         _shell.RowStyles[0] = new RowStyle(SizeType.Absolute, scale[HeaderRowBaseline]);
-        _shell.RowStyles[2] = new RowStyle(SizeType.Absolute, scale[FooterRowBaseline]);
+        _shell.RowStyles[1] = new RowStyle(SizeType.Absolute, BannerHeight(scale));
+        _shell.RowStyles[3] = new RowStyle(SizeType.Absolute, scale[FooterRowBaseline]);
         _header.ColumnStyles[1] = new ColumnStyle(
             SizeType.Absolute,
             _mode == DashboardMode.Full ? _metricMode.PreferredWidth + _metricMode.Margin.Horizontal : 0);
         _header.ColumnStyles[2] = new ColumnStyle(SizeType.Absolute, scale[32]);
         _header.ColumnStyles[3] = new ColumnStyle(SizeType.Absolute, scale[32]);
+        _header.ColumnStyles[4] = new ColumnStyle(SizeType.Absolute, scale[32]);
         _header.RowStyles[0] = new RowStyle(SizeType.Absolute, scale[32]);
         _footer.ColumnStyles[1] = new ColumnStyle(SizeType.Absolute, _mode == DashboardMode.Compact ? scale[132] : 0);
     }
@@ -1076,7 +1151,7 @@ internal sealed class UsagePopupForm : Form
         }
 
         contentHeight = Math.Max(scale[104], contentHeight);
-        var chromeHeight = _shell.Padding.Vertical + scale[HeaderRowBaseline] + scale[FooterRowBaseline];
+        var chromeHeight = _shell.Padding.Vertical + scale[HeaderRowBaseline] + BannerHeight(scale) + scale[FooterRowBaseline];
         var nonClientWidth = Width - ClientSize.Width;
         var nonClientHeight = Height - ClientSize.Height;
         // A comfortable minimum, but never more than the screen: at extreme scaling the minimum

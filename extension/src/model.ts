@@ -23,8 +23,12 @@ export interface UsageSnapshot {
 }
 
 export interface ProviderState {
+  /** The unit key: the provider id for its default login, `claude@1a2b3c4d` for another account. */
   readonly id: string;
+  /** The card title: "Claude Code", or "Claude Code · team" when the provider shows several accounts. */
   readonly displayName: string;
+  /** The account's label, set only while its provider shows more than one account. */
+  readonly accountLabel?: string;
   readonly signInCommand: string;
   readonly accountUrl: string;
   readonly snapshot?: UsageSnapshot;
@@ -61,9 +65,13 @@ const statusBarProviderIds = new Set<StatusBarProviderId>([
   "gemini",
 ]);
 
-export function normalizeStatusBarProviders(value: unknown): StatusBarProviderId[] {
+/** A Status Bar entry: a provider (its primary account), "hottest", or an account unit key. */
+export type StatusBarSelectionId = StatusBarProviderId | `${"claude" | "codex"}@${string}`;
+
+export function normalizeStatusBarProviders(value: unknown): StatusBarSelectionId[] {
   const values = typeof value === "string" ? [value] : Array.isArray(value) ? value : [];
-  const selected = [...new Set(values.filter(isStatusBarProviderId))];
+  const selected = [...new Set(values.filter((candidate): candidate is StatusBarSelectionId =>
+    isStatusBarProviderId(candidate) || isAccountSelection(candidate)))];
   return selected.length > 1 ? selected.filter((providerId) => providerId !== "hottest") : selected;
 }
 
@@ -84,6 +92,10 @@ export function statusBarProvidersFromCheckboxes(
     return explicitProviders;
   }
   return checkboxes.hottestWhenNoneSelected ? ["hottest"] : [];
+}
+
+function isAccountSelection(value: unknown): boolean {
+  return typeof value === "string" && /^(claude|codex)@[0-9a-f]{8}$/.test(value);
 }
 
 function isStatusBarProviderId(value: unknown): value is StatusBarProviderId {

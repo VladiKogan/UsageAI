@@ -1,6 +1,7 @@
 import { access } from "node:fs/promises";
 import * as path from "node:path";
 import * as readline from "node:readline";
+import { commandWithEnvironment } from "../accounts";
 import { codexBundledPaths, findBundledExecutable, noExtensions, type ExtensionPathResolver } from "../bundled-cli";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
@@ -34,17 +35,32 @@ export interface CodexLaunch {
   readonly args: readonly string[];
 }
 
+/** A Codex login other than the default one: its own `CODEX_HOME`, read directly. */
+export interface CodexAccount {
+  /** The account id; the client's id becomes the unit key `codex@<id>`. */
+  readonly id: string;
+  readonly home: string;
+}
+
 export class CodexUsageClient implements UsageClient {
-  public readonly id = "codex";
+  public readonly id: string;
   public readonly displayName = "Codex";
-  public readonly signInCommand = "codex login";
+  public readonly signInCommand: string;
   public readonly accountUrl = "https://chatgpt.com/codex/settings/usage";
 
-  /** `resolveExtensionPath` lets the CLI bundled in OpenAI's Codex extension serve as a last resort. */
+  /**
+   * `resolveExtensionPath` lets the CLI bundled in OpenAI's Codex extension serve as a last resort.
+   * With `account`, that folder's `auth.json` is read for the HTTP path and the app-server is started
+   * with exactly that `CODEX_HOME`, set explicitly rather than inherited.
+   */
   public constructor(
     private readonly resolveExtensionPath: ExtensionPathResolver = noExtensions,
     private readonly dependencies: CodexDependencies = {},
-  ) {}
+    private readonly account?: CodexAccount,
+  ) {
+    this.id = account ? `codex@${account.id}` : "codex";
+    this.signInCommand = account ? commandWithEnvironment("CODEX_HOME", account.home, "codex login") : "codex login";
+  }
 
   /**
    * Reads usage over HTTPS with the Codex login's own token when that login is a ChatGPT login that
@@ -54,7 +70,10 @@ export class CodexUsageClient implements UsageClient {
    * writes the token. Mirrors the desktop `CodexUsageClient`.
    */
   public async getUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
-    const credentials = await (this.dependencies.loadCredentials ?? loadCodexHttpCredentials)();
+    const account = this.account;
+    const load = this.dependencies.loadCredentials
+      ?? (account ? () => readCodexHttpCredentials(account.home) : () => loadCodexHttpCredentials());
+    const credentials = await load();
     if (credentials) {
       const viaHttp = await tryHttpUsage(credentials, signal);
       if (viaHttp) {
@@ -66,10 +85,12 @@ export class CodexUsageClient implements UsageClient {
 
   private async getAppServerUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
     const launch = await findCodexLaunch(this.resolveExtensionPath);
+    const environment = codexAppServerEnvironment(this.account?.home);
     const child = spawnSecure(
       launch.executable,
       [...launch.args, ...codexAppServerArguments],
-      ["CODEX_HOME", "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR", "SSL_CERT_FILE"],
+      environment.inherited,
+      environment.overrides,
     );
     let stderr = "";
     child.stderr.setEncoding("utf8");
@@ -121,6 +142,20 @@ export class CodexUsageClient implements UsageClient {
       child.kill();
     }
   }
+}
+
+/**
+ * The environment the app-server gets: the default login inherits `CODEX_HOME`, while an account's
+ * folder is set explicitly and never inherited.
+ */
+export function codexAppServerEnvironment(home?: string): {
+  readonly inherited: readonly string[];
+  readonly overrides: NodeJS.ProcessEnv;
+} {
+  return {
+    inherited: [...(home ? [] : ["CODEX_HOME"]), "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR", "SSL_CERT_FILE"],
+    overrides: home ? { CODEX_HOME: home } : {},
+  };
 }
 
 async function tryHttpUsage(credentials: CodexHttpCredentials, signal?: AbortSignal): Promise<UsageSnapshot | undefined> {

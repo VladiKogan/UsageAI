@@ -1,3 +1,4 @@
+using UsageAI.Models;
 using UsageAI.Services;
 using UsageAI.UI;
 
@@ -88,9 +89,10 @@ internal static class Program
         // An in-app update leaves a note for the copy that starts after it, and its download.
         var updateResult = UpdateHandoffStore.Take(AppIdentity.Version);
         UpdateHandoffStore.CleanUpInstallers();
+        var accounts = new AccountManager(settings);
         try
         {
-            Application.Run(new UsageApplicationContext(CreateUsageClients(), settings, profileExisted, updateResult));
+            Application.Run(new UsageApplicationContext(accounts, settings, profileExisted, updateResult));
         }
         finally
         {
@@ -102,8 +104,11 @@ internal static class Program
         UsageAI - a Windows tray meter for Codex, Claude Code, GitHub Copilot, and Google Gemini usage.
 
           UsageAI.exe                       Start the tray application.
-          UsageAI.exe --diagnose <provider>  Print one provider's usage as JSON.
+          UsageAI.exe --diagnose <provider> [--account <label|id>]
+                                             Print one provider's usage as JSON.
                                              Providers: codex, claude, copilot, gemini.
+                                             A provider with several accounts prints
+                                             an array, default login first.
           UsageAI.exe --render-preview [path] [--full] [--dpi 96|192|288]
                                     [--quota-display used|remaining] [--theme light|dark]
                                              Render a preview image of the popup, or of
@@ -130,33 +135,79 @@ internal static class Program
         try
         {
             var providerId = GetDiagnosticProviderId(args);
-            var client = CreateUsageClients().FirstOrDefault(candidate =>
-                candidate.Id.Equals(providerId, StringComparison.OrdinalIgnoreCase));
-            if (client is null)
+            if (!CreateUsageClients().Any(candidate => candidate.Id.Equals(providerId, StringComparison.OrdinalIgnoreCase)))
             {
                 throw new ArgumentException($"Unknown usage provider '{providerId}'. Use 'codex', 'claude', 'copilot', or 'gemini'.");
             }
 
-            var attempts = ProviderAttempts.Begin();
-            try
+            // The saved accounts plus a scan of the profile, kept in memory: a diagnostic never
+            // changes what the tray app shows.
+            var settings = AppSettings.Load();
+            var ephemeral = new AppSettings { IsEphemeral = true };
+            ephemeral.Accounts.AddRange(settings.Accounts.Select(account => account.Clone()));
+            ephemeral.ForgottenAccounts = settings.ForgottenAccounts;
+            ephemeral.AccountsInitialized = true;
+            ephemeral.AskBeforeShowingNewAccounts = false;
+            var manager = new AccountManager(ephemeral);
+            manager.Scan(DateTimeOffset.UtcNow);
+            var clients = manager.CreateClients(CreateUsageClients())
+                .Where(candidate => ProviderKey.ProviderOf(candidate.Id).Equals(providerId, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            var accountFilter = ValueAfter(args, "--account");
+            if (accountFilter is not null)
             {
-                var snapshot = await client.GetUsageAsync();
-                Console.WriteLine(DiagnosticJson(snapshot, attempts));
-            }
-            catch (Exception exception)
-            {
-                // The error stays on stderr as before; the attempts that led to it go to stdout.
-                Console.Error.WriteLine(GetSafeDiagnosticError(exception));
-                if (attempts.Count > 0)
+                clients = clients
+                    .Where(candidate => MatchesAccount(candidate, ephemeral.FindAccount(candidate.Id), accountFilter))
+                    .Take(1)
+                    .ToArray();
+                if (clients.Length == 0)
                 {
-                    Console.WriteLine(DiagnosticJson(null, attempts));
+                    throw new ArgumentException($"No {providerId} account matches '{accountFilter}'.");
                 }
-
-                Environment.ExitCode = 1;
             }
-            finally
+
+            var results = new List<string>();
+            var failed = false;
+            foreach (var client in clients)
             {
-                ProviderAttempts.End();
+                var account = clients.Length > 1 || accountFilter is not null ? ephemeral.FindAccount(client.Id) : null;
+                var attempts = ProviderAttempts.Begin();
+                try
+                {
+                    var snapshot = await client.GetUsageAsync();
+                    results.Add(DiagnosticJson(snapshot, attempts, account, client));
+                }
+                catch (Exception exception)
+                {
+                    // The error stays on stderr as before; the attempts that led to it go to stdout.
+                    Console.Error.WriteLine(clients.Length > 1
+                        ? $"{client.Id}: {GetSafeDiagnosticError(exception)}"
+                        : GetSafeDiagnosticError(exception));
+                    if (attempts.Count > 0 || clients.Length > 1)
+                    {
+                        results.Add(DiagnosticJson(null, attempts, account, client));
+                    }
+
+                    failed = true;
+                }
+                finally
+                {
+                    ProviderAttempts.End();
+                }
+            }
+
+            if (results.Count == 1)
+            {
+                Console.WriteLine(results[0]);
+            }
+            else if (results.Count > 1)
+            {
+                Console.WriteLine($"[\n{string.Join(",\n", results)}\n]");
+            }
+
+            if (failed)
+            {
+                Environment.ExitCode = 1;
             }
         }
         catch (Exception exception)
@@ -170,14 +221,38 @@ internal static class Program
     /// The snapshot's diagnostic JSON with an <c>Attempts</c> array added: every source the provider
     /// tried, in order, with a fixed-vocabulary outcome and its duration.
     /// </summary>
-    internal static string DiagnosticJson(UsageAI.Models.UsageSnapshot? snapshot, IReadOnlyList<ProviderAttempt> attempts)
+    internal static string DiagnosticJson(
+        UsageAI.Models.UsageSnapshot? snapshot,
+        IReadOnlyList<ProviderAttempt> attempts,
+        UsageAI.Models.ProviderAccount? account = null,
+        IUsageClient? client = null)
     {
         var root = snapshot is null
             ? new System.Text.Json.Nodes.JsonObject()
             : System.Text.Json.Nodes.JsonNode.Parse(snapshot.ToDiagnosticJson())!.AsObject();
+        if (account is not null || (client is not null && !UsageAI.Models.ProviderKey.IsDefault(client.Id)))
+        {
+            // Where the reading came from: the folder and who is signed in, never a credential.
+            root["Account"] = new System.Text.Json.Nodes.JsonObject
+            {
+                ["Id"] = client is null ? account?.Id : UsageAI.Models.ProviderKey.AccountOf(client.Id),
+                ["Source"] = (account?.Source ?? UsageAI.Models.AccountSource.Default).ToString(),
+                ["Path"] = account?.Path ?? (client as IAccountUsageClient)?.LoginFolder,
+                ["Label"] = account?.DisplayLabel,
+            };
+        }
+
         root["Attempts"] = System.Text.Json.JsonSerializer.SerializeToNode(attempts.ToArray());
         return root.ToJsonString(new System.Text.Json.JsonSerializerOptions { WriteIndented = true });
     }
+
+    private static bool MatchesAccount(IUsageClient client, UsageAI.Models.ProviderAccount? account, string filter) =>
+        UsageAI.Models.ProviderKey.AccountOf(client.Id).Equals(filter, StringComparison.OrdinalIgnoreCase) ||
+        client.Id.Equals(filter, StringComparison.OrdinalIgnoreCase) ||
+        (account is not null &&
+         (string.Equals(account.Label, filter, StringComparison.OrdinalIgnoreCase) ||
+          string.Equals(account.Email, filter, StringComparison.OrdinalIgnoreCase) ||
+          string.Equals(account.DisplayLabel, filter, StringComparison.OrdinalIgnoreCase)));
 
     private static string GetSafeDiagnosticError(Exception exception) => exception switch
     {
@@ -190,7 +265,8 @@ internal static class Program
         _ => "UsageAI could not complete the diagnostic request.",
     };
 
-    private static IUsageClient[] CreateUsageClients() =>
+    /// <summary>The default login of every provider; <see cref="AccountManager"/> adds the extra accounts.</summary>
+    internal static IUsageClient[] CreateUsageClients() =>
         new IUsageClient[]
         {
             new CodexUsageClient(),

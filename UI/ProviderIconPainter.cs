@@ -20,6 +20,8 @@ internal static class ProviderIconPainter
     /// </summary>
     public static void Draw(Graphics graphics, Rectangle bounds, string providerId)
     {
+        // An account's key (claude@1a2b3c4d) draws its provider's mark.
+        providerId = Models.ProviderKey.ProviderOf(providerId);
         graphics.SmoothingMode = SmoothingMode.AntiAlias;
         var color = Theme.ForProvider(providerId);
 

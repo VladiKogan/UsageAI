@@ -29,6 +29,25 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
   in `config.toml`, or any rejection or unexpected answer leaves usage to the official
   `codex app-server`, started with a read-only sandbox and no approval prompts, which renews the
   login itself.
+- Extra Claude Code and Codex accounts are read from their own login folders under the same rules:
+  the folder's `.credentials.json` or `auth.json` is read only, and its token goes only to the hosts
+  the default login's token goes to (`api.anthropic.com`, `chatgpt.com`). An extra account never
+  uses `USAGEAI_CLAUDE_OAUTH_TOKEN`, a Claude web session key, or the Windows Credential Manager
+  fallback, which all belong to the default login. Its CLI children (`claude auth status`,
+  `claude mcp list`, `codex app-server`) receive `CLAUDE_CONFIG_DIR` / `CODEX_HOME` set explicitly to
+  that folder rather than inherited. Folders are found by one non-recursive listing of
+  `%USERPROFILE%` for `.claude-*` / `.codex-*` names, or chosen by the user, and must be absolute and
+  local (no UNC). Who is signed in is read from local files only (`.claude.json`'s `oauthAccount`, the
+  email in Codex's `id_token`) and kept as a hash plus the email, for labels.
+- "Sign in to another account" starts the provider's official login, `claude auth login --claudeai`
+  or `codex login`, with `CLAUDE_CONFIG_DIR` / `CODEX_HOME` pointing at a new or empty folder the user
+  confirmed. The CLI performs the whole OAuth sign-in in the browser and writes its own credential
+  file there; UsageAI reads only the sign-in link it prints (to offer it if the browser did not open)
+  and waits, at most two minutes, for that file to appear. UsageAI never reads a password, runs an
+  OAuth exchange, refreshes or writes a token, or changes which account a CLI uses by default. A
+  sign-in that does not finish removes the folder only when that attempt created it. UsageAI deletes
+  a login folder only when the user removes an account UsageAI created, after a confirmation that
+  names the path, or answers yes to the uninstaller's question listing those folders.
 - GitHub Copilot tokens are sent only to the GitHub service that issued them: `api.github.com` for
   github.com and `api.<host>` for a GitHub Enterprise Cloud host (`*.ghe.com`), as named by the
   credential file the token came from. A token for any other host, such as a self-hosted GitHub
@@ -88,4 +107,4 @@ reduced to ordinary quota metadata.
 
 ## Local state
 
-UsageAI writes preferences, recorded usage history, and a cached copy of the last reading to `%LOCALAPPDATA%\UsageAI` (or to `USAGEAI_DATA_DIR` when set). These files hold plan names, the account identity a provider reports, metric names, timestamps, and usage percentages. They never hold tokens, cookies, or refresh credentials, they are written with the account's default file protection, and history can be deleted from the settings window. Beyond provider usage endpoints, UsageAI contacts the pinned GitHub repository automatically at most once per day while running, plus whenever the user selects **Check for updates** in Settings. It never downloads or installs an update without the user's approval.
+UsageAI writes preferences, recorded usage history, and a cached copy of the last reading to `%LOCALAPPDATA%\UsageAI` (or to `USAGEAI_DATA_DIR` when set). These files hold plan names, the account identity a provider reports, the paths of extra login folders (and, in `created-logins.txt`, the ones UsageAI created), metric names, timestamps, and usage percentages. They never hold tokens, cookies, or refresh credentials, they are written with the account's default file protection, and history can be deleted from the settings window. Beyond provider usage endpoints, UsageAI contacts the pinned GitHub repository automatically at most once per day while running, plus whenever the user selects **Check for updates** in Settings. It never downloads or installs an update without the user's approval.

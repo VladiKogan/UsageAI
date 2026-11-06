@@ -15,7 +15,7 @@ internal sealed record CodexHttpCredentials(string AccessToken, string? AccountI
     public override string ToString() => "CodexHttpCredentials { AccessToken = <redacted> }";
 }
 
-internal sealed class CodexUsageClient : IUsageClient
+internal sealed class CodexUsageClient : IAccountUsageClient
 {
     private static readonly TimeSpan RequestTimeout = TimeSpan.FromSeconds(20);
 
@@ -31,29 +31,54 @@ internal sealed class CodexUsageClient : IUsageClient
     private readonly Func<CodexHttpCredentials?> _loadCredentials;
     private readonly Func<CancellationToken, Task<(JsonElement RateLimits, JsonElement? Account)>> _appServer;
 
+    /// <summary>The <c>CODEX_HOME</c> of an extra account, or null for the default login.</summary>
+    private readonly string? _codexHome;
+
     public CodexUsageClient()
         : this(SharedClient, LoadHttpCredentials, GetRawUsageAsync)
+    {
+    }
+
+    /// <summary>
+    /// A client for the login in <paramref name="codexHome"/>, an extra account. Its HTTP path reads
+    /// that folder's <c>auth.json</c>, and its <c>app-server</c> runs with <c>CODEX_HOME</c> set to it.
+    /// </summary>
+    public CodexUsageClient(string codexHome)
+        : this(
+            SharedClient,
+            () => ReadHttpCredentials(ProviderKey.NormalizeFolder(codexHome), DateTimeOffset.UtcNow),
+            cancellationToken => GetRawUsageAsync(ProviderKey.NormalizeFolder(codexHome), cancellationToken),
+            codexHome)
     {
     }
 
     internal CodexUsageClient(
         HttpClient http,
         Func<CodexHttpCredentials?> loadCredentials,
-        Func<CancellationToken, Task<(JsonElement RateLimits, JsonElement? Account)>>? appServer = null)
+        Func<CancellationToken, Task<(JsonElement RateLimits, JsonElement? Account)>>? appServer = null,
+        string? codexHome = null)
     {
         _http = http;
         _loadCredentials = loadCredentials;
-        _appServer = appServer ?? GetRawUsageAsync;
+        _appServer = appServer ?? (cancellationToken => GetRawUsageAsync(cancellationToken));
+        _codexHome = codexHome is null ? null : ProviderKey.NormalizeFolder(codexHome);
+        AccountId = _codexHome is null ? ProviderKey.DefaultAccountId : ProviderKey.AccountIdFor(_codexHome);
     }
+
+    public string ProviderId => "codex";
+
+    public string AccountId { get; }
+
+    public string LoginFolder => _codexHome ?? AccountDiscovery.DefaultFolder(ProviderId);
     private const int MaxProtocolLineCharacters = 131_072;
     private const int MaxProtocolMessagesPerResponse = 512;
     private const int MaxRetainedStandardErrorCharacters = 16_384;
 
-    public string Id => "codex";
+    public string Id => ProviderKey.Compose(ProviderId, AccountId);
 
     public string DisplayName => "Codex";
 
-    public string SignInCommand => "codex login";
+    public string SignInCommand => _codexHome is null ? "codex login" : AccountCommands.SignIn(ProviderId, _codexHome);
 
     public Uri AccountUrl { get; } = new("https://chatgpt.com/codex/settings/usage");
 
@@ -71,6 +96,18 @@ internal sealed class CodexUsageClient : IUsageClient
     /// the login itself. UsageAI never refreshes or writes the token.
     /// </summary>
     public async Task<UsageSnapshot> GetUsageAsync(CancellationToken cancellationToken = default)
+    {
+        if (_codexHome is not null && !Directory.Exists(_codexHome))
+        {
+            throw new CodexUsageException(
+                $"Codex login not found at {_codexHome}. Forget it or locate it in Settings → Accounts.");
+        }
+
+        var snapshot = await GetUsageCoreAsync(cancellationToken);
+        return _codexHome is null ? snapshot : snapshot with { ProviderId = Id };
+    }
+
+    private async Task<UsageSnapshot> GetUsageCoreAsync(CancellationToken cancellationToken)
     {
         if (_loadCredentials() is { } credentials)
         {
@@ -289,13 +326,18 @@ internal sealed class CodexUsageClient : IUsageClient
         }
     }
 
-    private static async Task<(JsonElement RateLimits, JsonElement? Account)> GetRawUsageAsync(CancellationToken cancellationToken = default)
+    private static Task<(JsonElement RateLimits, JsonElement? Account)> GetRawUsageAsync(CancellationToken cancellationToken = default) =>
+        GetRawUsageAsync(codexHome: null, cancellationToken);
+
+    private static async Task<(JsonElement RateLimits, JsonElement? Account)> GetRawUsageAsync(
+        string? codexHome,
+        CancellationToken cancellationToken)
     {
         var codexLaunch = FindCodexLaunch();
         using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         timeout.CancelAfter(RequestTimeout);
 
-        using var process = StartAppServer(codexLaunch);
+        using var process = StartAppServer(codexLaunch, codexHome);
         var stderrTask = ProcessSecurity.DrainTextAsync(
             process.StandardError,
             MaxRetainedStandardErrorCharacters,
@@ -388,7 +430,7 @@ internal sealed class CodexUsageClient : IUsageClient
     internal static readonly string[] AppServerArguments =
         ["app-server", "-c", "sandbox_mode=\"read-only\"", "-c", "approval_policy=\"never\"", "--listen", "stdio://"];
 
-    private static Process StartAppServer(CodexLaunch launch)
+    private static Process StartAppServer(CodexLaunch launch, string? codexHome)
     {
         var startInfo = new ProcessStartInfo
         {
@@ -406,6 +448,11 @@ internal sealed class CodexUsageClient : IUsageClient
             "NODE_EXTRA_CA_CERTS",
             "SSL_CERT_DIR",
             "SSL_CERT_FILE");
+        if (codexHome is not null)
+        {
+            // Given explicitly rather than inherited, so the child reads exactly this login.
+            startInfo.Environment["CODEX_HOME"] = codexHome;
+        }
 
         if (launch.Script is not null)
         {
@@ -894,6 +941,34 @@ internal sealed class CodexUsageClient : IUsageClient
                message.Contains("auth", StringComparison.OrdinalIgnoreCase)
             ? "Codex is not signed in. Run `codex login` or sign in through the Codex extension, then refresh."
             : "Codex could not read the account rate limits.";
+    }
+
+    /// <summary>
+    /// The official login, <c>codex login</c>, with <c>CODEX_HOME</c> pointed at <paramref name="codexHome"/>.
+    /// The CLI writes its own <c>auth.json</c> there; UsageAI only starts it.
+    /// </summary>
+    internal static ProcessStartInfo CreateLoginStartInfo(string codexHome)
+    {
+        var launch = FindCodexLaunch();
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = launch.Executable,
+            UseShellExecute = false,
+            CreateNoWindow = true,
+            RedirectStandardInput = true,
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
+            WorkingDirectory = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+        };
+        ProcessSecurity.ApplyMinimalEnvironment(startInfo, "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR", "SSL_CERT_FILE");
+        startInfo.Environment["CODEX_HOME"] = codexHome;
+        if (launch.Script is not null)
+        {
+            startInfo.ArgumentList.Add(launch.Script);
+        }
+
+        startInfo.ArgumentList.Add("login");
+        return startInfo;
     }
 
     private static CodexLaunch FindCodexLaunch()

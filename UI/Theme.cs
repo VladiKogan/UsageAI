@@ -215,7 +215,7 @@ internal static class Theme
         usedPercent >= _warningPercent ? WarningText :
         Text;
 
-    public static Color ForProvider(string providerId) => providerId.ToLowerInvariant() switch
+    public static Color ForProvider(string providerId) => Models.ProviderKey.ProviderOf(providerId).ToLowerInvariant() switch
     {
         "claude" => Claude,
         "copilot" => Copilot,

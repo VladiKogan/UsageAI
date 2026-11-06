@@ -119,6 +119,16 @@
         "title": "Open Settings",
         "category": "UsageAI",
         "icon": "$(gear)"
+      },
+      {
+        "command": "usageai.addAccount",
+        "title": "Add Account…",
+        "category": "UsageAI"
+      },
+      {
+        "command": "usageai.rescanAccounts",
+        "title": "Rescan Accounts",
+        "category": "UsageAI"
       }
     ],
     "menus": {
@@ -132,6 +142,16 @@
           "command": "usageai.openSettings",
           "when": "view == usageai.dashboard",
           "group": "navigation@2"
+        },
+        {
+          "command": "usageai.addAccount",
+          "when": "view == usageai.dashboard",
+          "group": "accounts@1"
+        },
+        {
+          "command": "usageai.rescanAccounts",
+          "when": "view == usageai.dashboard",
+          "group": "accounts@2"
         }
       ]
     },
@@ -160,6 +180,46 @@
             },
             "order": 10,
             "description": "Providers to display, in dashboard and Status Bar order."
+          },
+          "usageai.accounts": {
+            "type": "array",
+            "default": [],
+            "maxItems": 16,
+            "scope": "application",
+            "order": 15,
+            "items": {
+              "type": "object",
+              "required": [
+                "provider",
+                "path"
+              ],
+              "additionalProperties": false,
+              "properties": {
+                "provider": {
+                  "type": "string",
+                  "enum": [
+                    "claude",
+                    "codex"
+                  ],
+                  "description": "Which provider the login belongs to."
+                },
+                "path": {
+                  "type": "string",
+                  "description": "Absolute path of a local login folder: a CLAUDE_CONFIG_DIR holding .credentials.json, or a CODEX_HOME holding auth.json."
+                },
+                "label": {
+                  "type": "string",
+                  "maxLength": 64,
+                  "description": "The name shown on the account's card. Without one, its email or folder name is used."
+                },
+                "hidden": {
+                  "type": "boolean",
+                  "default": false,
+                  "description": "Keep this login out of the dashboard and Status Bar."
+                }
+              }
+            },
+            "markdownDescription": "Other Claude Code and Codex logins to show, each a login folder of its own. Folders named `.claude-*` or `.codex-*` in your home folder are found automatically; add others here or with **UsageAI: Add Account…**. A `label` or `hidden` flag also applies to a found folder or the default one. Each folder must be an absolute local path that holds the provider's credential file."
           },
           "usageai.refreshIntervalMinutes": {
             "type": "number",
@@ -257,6 +317,18 @@
             "default": false,
             "order": 50,
             "description": "Show Gemini in the Status Bar."
+          },
+          "usageai.statusBarProviders.accounts": {
+            "type": "array",
+            "default": [],
+            "uniqueItems": true,
+            "maxItems": 16,
+            "items": {
+              "type": "string"
+            },
+            "order": 60,
+            "scope": "application",
+            "markdownDescription": "Other accounts to show in the Status Bar, each named by its label or email (or its id, such as `claude@1a2b3c4d`). A provider's own checkbox follows its primary account."
           },
           "usageai.statusBarProvider": {
             "default": [

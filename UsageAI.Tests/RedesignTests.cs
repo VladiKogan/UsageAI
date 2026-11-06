@@ -924,7 +924,7 @@ internal static class RedesignTests
         Application.DoEvents();
         var sectionNav = Field<SectionNav>(dialog, "_nav");
         var scrollHost = Field<Panel>(dialog, "_scrollHost");
-        Equal("General|Alerts|Appearance|Providers|History|About", string.Join('|', sectionNav.Sections));
+        Equal("General|Alerts|Appearance|Providers|Accounts|History|About", string.Join('|', sectionNav.Sections));
         var appearance = 2;
         sectionNav.SelectedIndex = appearance;
         typeof(SettingsForm).GetMethod("ScrollToSection", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dialog, new object[] { appearance });

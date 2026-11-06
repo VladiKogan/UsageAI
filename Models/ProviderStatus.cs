@@ -26,6 +26,15 @@ internal sealed record ProviderStatus(
     /// <summary>True when <see cref="IncidentSummary"/> describes an outage rather than degraded service.</summary>
     public bool IncidentIsOutage { get; init; }
 
+    /// <summary>
+    /// The account's label when its provider shows more than one account (then also part of
+    /// <see cref="ProviderName"/>), else null.
+    /// </summary>
+    public string? AccountLabel { get; init; }
+
+    /// <summary>The provider part of <see cref="ProviderId"/>, which may name an account (<c>claude@1a2b3c4d</c>).</summary>
+    public string Kind => ProviderKey.ProviderOf(ProviderId);
+
     public bool IsConnected => Snapshot is not null;
 
     /// <summary>Connected, but the most recent refresh failed and the values are old.</summary>

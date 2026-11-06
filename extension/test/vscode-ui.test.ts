@@ -1,8 +1,12 @@
 import assert from "node:assert/strict";
+import { mkdtempSync, rmSync } from "node:fs";
 import { createRequire } from "node:module";
+import * as os from "node:os";
+import * as path from "node:path";
 import test, { mock } from "node:test";
 import vm from "node:vm";
-import type { ProviderState, UsageSnapshot } from "../src/model";
+import type { AccountEntry } from "../src/accounts";
+import type { ProviderState, UsageClient, UsageSnapshot } from "../src/model";
 
 const localRequire = createRequire(__filename);
 const moduleLoader = localRequire("node:module") as {
@@ -141,7 +145,9 @@ const vscodeStub = {
       return { dispose() {} };
     },
     withProgress<T>(_options: unknown, task: () => T): T { return task(); },
-    showInformationMessage(message: string) { informationMessages.push(message); },
+    showInformationMessage(message: string) { informationMessages.push(message); return Promise.resolve(undefined); },
+    showWarningMessage(message: string) { informationMessages.push(message); return Promise.resolve(undefined); },
+    showErrorMessage(message: string) { informationMessages.push(message); return Promise.resolve(undefined); },
   },
   extensions: {
     getExtension: (id: string) => installedExtensions.get(id),
@@ -607,6 +613,11 @@ test("activation helpers sanitize configuration and activation registers its sur
 
   const subscriptions: Array<{ dispose(): unknown }> = [];
   const updates: unknown[] = [];
+  // Activation lists the home folder for other logins; point it at an empty one.
+  const previousHome = { USERPROFILE: process.env.USERPROFILE, HOME: process.env.HOME };
+  const emptyHome = mkdtempSync(path.join(os.tmpdir(), "usageai-activation-home-"));
+  process.env.USERPROFILE = emptyHome;
+  process.env.HOME = emptyHome;
   const context = {
     subscriptions,
     globalState: {
@@ -620,8 +631,10 @@ test("activation helpers sanitize configuration and activation registers its sur
   try {
     extensionModule.activate(context as never);
     assert.deepEqual([...registeredCommands.keys()].sort(), [
+      "usageai.addAccount",
       "usageai.openSettings",
       "usageai.refresh",
+      "usageai.rescanAccounts",
       "usageai.show",
     ]);
     assert.ok(registeredDashboard instanceof UsageDashboardViewProvider);
@@ -654,9 +667,16 @@ test("activation helpers sanitize configuration and activation registers its sur
     await dashboardMessage?.({ type: "setMetricDisplayMode", mode: "important" });
     assert.ok(updates.some((value) => Array.isArray(value) && value.length === 0));
     assert.deepEqual(configurationUpdates, [{ key: "metricDisplayMode", value: "important", target: 1 }]);
+    await registeredCommands.get("usageai.rescanAccounts")?.();
+    assert.ok(informationMessages.includes("UsageAI found no new accounts."));
   } finally {
     mock.restoreAll();
     for (const subscription of subscriptions) subscription.dispose();
+    for (const [name, value] of Object.entries(previousHome)) {
+      if (value === undefined) delete process.env[name];
+      else process.env[name] = value;
+    }
+    rmSync(emptyHome, { recursive: true, force: true });
   }
 });
 
@@ -715,4 +735,142 @@ test("the bundled-CLI resolver lends local extension folders and knows a remote 
     remoteName = undefined;
     installedExtensions.clear();
   }
+});
+
+test("expansion state moves from v1 provider ids to v2 unit keys once", () => {
+  const stored = new Map<string, unknown>([[dashboardModule.legacyDashboardExpandedProvidersKey, ["claude", "bogus", "codex"]]]);
+  const writes: Array<[string, readonly string[]]> = [];
+  const get = (key: string) => stored.get(key);
+  const update = (key: string, value: readonly string[]) => { writes.push([key, value]); stored.set(key, value); };
+  assert.equal(dashboardModule.dashboardExpandedProvidersKey, "usageai.dashboard.expandedProviders.v2");
+  assert.deepEqual(dashboardModule.loadExpandedProviders(get, update), ["claude", "codex"]);
+  assert.deepEqual(writes, [[dashboardModule.dashboardExpandedProvidersKey, ["claude", "codex"]]]);
+  // Once migrated, the v2 value is read as it is and v1 is never consulted again.
+  stored.set(dashboardModule.dashboardExpandedProvidersKey, ["claude@1a2b3c4d"]);
+  assert.deepEqual(dashboardModule.loadExpandedProviders(get, update), ["claude@1a2b3c4d"]);
+  assert.equal(writes.length, 1);
+  assert.equal(dashboardModule.loadExpandedProviders(() => undefined, update), undefined);
+  assert.deepEqual(
+    dashboardModule.sanitizeExpandedProviderIds(["claude@1a2b3c4d", "gemini@1a2b3c4d", "claude@nothex!", "codex"]),
+    ["claude@1a2b3c4d", "codex"],
+  );
+});
+
+test("account cards keep their own expansion and Status Bar entries name the account", async () => {
+  const state = (id: string, usedPercent: number, accountLabel?: string): ProviderState => ({
+    id,
+    displayName: accountLabel ? `Claude Code · ${accountLabel}` : "Claude Code",
+    ...(accountLabel ? { accountLabel } : {}),
+    signInCommand: "claude",
+    accountUrl: "https://example.com/claude",
+    snapshot: snapshot("claude", usedPercent),
+    stale: false,
+    refreshing: false,
+  });
+  let states = [state("claude", 30, "me@example.com"), state("claude@1a2b3c4d", 64, "Team")];
+  const service = {
+    onDidUpdate() { return () => {}; },
+    getStates: () => states,
+    setVisible() {},
+  } as unknown as InstanceType<typeof UsageRefreshService>;
+  const saved: Array<readonly string[]> = [];
+  const posted: Array<{ expandedProviders: string[] }> = [];
+  let handler: ((message: unknown) => Promise<void>) | undefined;
+  const dashboard = new UsageDashboardViewProvider(service, () => 72, () => 90, {
+    loadExpandedProviders: () => undefined,
+    saveExpandedProviders: (ids) => { saved.push(ids); },
+  });
+  dashboard.resolveWebviewView({
+    visible: true,
+    webview: {
+      options: {},
+      html: "",
+      postMessage(message: { expandedProviders: string[] }) { posted.push(message); return Promise.resolve(true); },
+      onDidReceiveMessage(next: (message: unknown) => Promise<void>) { handler = next; return { dispose() {} }; },
+    },
+    onDidChangeVisibility() { return { dispose() {} }; },
+    onDidDispose() { return { dispose() {} }; },
+  } as never);
+  // Nothing saved yet: every card, accounts included, starts expanded.
+  assert.ok(posted.at(-1)?.expandedProviders.includes("claude@1a2b3c4d"));
+  await handler?.({ type: "setProviderExpanded", providerId: "claude@1a2b3c4d", expanded: false });
+  assert.ok(saved.at(-1)?.includes("claude"));
+  assert.ok(!saved.at(-1)?.includes("claude@1a2b3c4d"));
+  await handler?.({ type: "setProviderExpanded", providerId: "gemini@1a2b3c4d", expanded: true });
+  await handler?.({ type: "setProviderExpanded", providerId: "<img>", expanded: true });
+  assert.equal(saved.length, 1);
+  await handler?.({ type: "setAllExpanded", expanded: true });
+  assert.ok(saved.at(-1)?.includes("claude@1a2b3c4d"));
+  dashboard.dispose();
+
+  statusItems.length = 0;
+  const controller = new StatusBarController();
+  controller.update(states, ["claude", "claude@1a2b3c4d"]);
+  assert.match(statusItems[0]?.text ?? "", /usageai-claude\) Claude · me@example\.com 30%/);
+  assert.match(statusItems[1]?.text ?? "", /usageai-claude\) Claude · Team 64%/);
+  assert.equal(statusItems[1]?.name, "UsageAI: Claude account");
+  controller.update(states, ["hottest"]);
+  assert.match(statusItems.at(-1)?.text ?? "", /Claude · Team 64%/);
+  states = [state("claude", 30)];
+  controller.update(states, ["claude@1a2b3c4d"]);
+  assert.match(statusItems.at(-1)?.text ?? "", /Claude —/);
+  controller.dispose();
+});
+
+test("account clients, Status Bar account names, and cached readings are keyed by unit", () => {
+  const client = (id: string): UsageClient => ({
+    id,
+    displayName: id,
+    signInCommand: id,
+    accountUrl: "https://example.com",
+    async getUsage() { return snapshot(id, 1); },
+  });
+  const base = { codex: client("codex"), claude: client("claude"), copilot: client("copilot"), gemini: client("gemini") };
+  const account = (provider: "claude" | "codex", id: string, source: AccountEntry["source"], label: string): AccountEntry => ({
+    provider,
+    id,
+    unitKey: id === "default" ? provider : `${provider}@${id}`,
+    path: `/home/dev/.${provider}-${id}`,
+    source,
+    identity: { email: `${label}@example.com` },
+    label,
+    hidden: false,
+  });
+  const accounts = [
+    account("claude", "default", "default", "me"),
+    account("claude", "1a2b3c4d", "found", "team"),
+    account("codex", "5e6f7a8b", "added", "work"),
+  ];
+  let created = 0;
+  const cache = new Map<string, UsageClient>();
+  const create = (entry: AccountEntry) => { created += 1; return client(entry.unitKey); };
+  assert.deepEqual(extensionModule.buildUsageClients(base, undefined, create, cache).map((entry) => entry.id), ["codex", "claude", "copilot", "gemini"]);
+  // A hidden default Codex login leaves only its other account.
+  const built = extensionModule.buildUsageClients(base, accounts, create, cache);
+  assert.deepEqual(built.map((entry) => entry.id), ["codex@5e6f7a8b", "claude", "claude@1a2b3c4d", "copilot", "gemini"]);
+  extensionModule.buildUsageClients(base, accounts, create, cache);
+  assert.equal(created, 2);
+  extensionModule.buildUsageClients(base, accounts.slice(0, 1), create, cache);
+  assert.equal(cache.size, 0);
+
+  assert.deepEqual(extensionModule.resolveStatusBarAccounts(["TEAM", "work@example.com", "claude@0a0b0c0d", "nobody", 4, "TEAM"], accounts), [
+    "claude@1a2b3c4d",
+    "codex@5e6f7a8b",
+    "claude@0a0b0c0d",
+  ]);
+  assert.deepEqual(extensionModule.resolveStatusBarAccounts("team", accounts), []);
+
+  configurationValues.clear();
+  inspectedConfiguration.clear();
+  configurationValues.set("statusBarProvider", "claude");
+  configurationValues.set("statusBarProviders.accounts", ["team", "work"]);
+  assert.deepEqual(extensionModule.getStatusBarProviderSelection(configuration as never, ["claude"], accounts), ["claude", "claude@1a2b3c4d"]);
+  configurationValues.clear();
+
+  assert.deepEqual(Object.keys(extensionModule.sanitizeCachedSnapshots({
+    "claude@1a2b3c4d": snapshot("claude", 5),
+    "claude@nothex!": snapshot("claude", 5),
+    "gemini@1a2b3c4d": snapshot("gemini", 5),
+    "codex@1a2b3c4d": snapshot("claude", 5),
+  })), ["claude@1a2b3c4d"]);
 });

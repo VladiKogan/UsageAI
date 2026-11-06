@@ -4,6 +4,39 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## Unreleased
+
+### Added
+
+- **Claude Code and Codex can show several accounts, each on its own tile.** Login folders in your
+  user folder named `.claude-*` or `.codex-*` are found at startup, once a day and with **Rescan**
+  in Settings. Logins already there when you install or upgrade show at once, with one banner that
+  names them; one found later waits in a banner for **Show** or **Ignore**, so an account never
+  appears unannounced. A provider with one account keeps its plain tile; with several, each reads
+  "Claude Code · label" in the popup and dashboard, "Claude · label" in the tray tooltip and alerts.
+- **Add account… signs in to another account or adds a login folder you already have.** It is in
+  the popup header, the tray menu and Settings → Accounts. Signing in runs the provider's own
+  `claude auth login --claudeai` or `codex login` with `CLAUDE_CONFIG_DIR` or `CODEX_HOME` set to a
+  new folder, by default `%USERPROFILE%\.claude-<name>`, which your own CLI can use too. The dialog
+  shows the sign-in link in case the browser did not open, gives up after two minutes, and removes
+  the folder again if the sign-in did not finish.
+- **Settings has an Accounts page for every Claude and Codex login.** Each account can be shown or
+  hidden, renamed, moved, given its own alerts switch, re-authenticated, opened in Explorer,
+  located after a move, and removed. Removing an account UsageAI created deletes its folder after a
+  confirmation that names it; any other folder is only forgotten and never touched.
+- **`--diagnose` lists every account of a provider.** With more than one it prints an array,
+  default login first, each with its folder and label; `--account <label|email|id>` picks one.
+
+### Changed
+
+- **The tray icon keeps following your default logins.** Its automatic choice ignores extra
+  accounts, so adding one never moves the tray; pick an account under Providers → Tray icon
+  provider to follow it instead.
+- **A login folder now signed in to someone else starts fresh.** UsageAI notices at the next
+  refresh, clears that account's history and alert memory, and says who is signed in now.
+- **The uninstaller offers to delete the login folders UsageAI created.** It lists them by path and
+  defaults to keeping them; other `.claude-*` and `.codex-*` folders are never offered.
+
 ## [0.15.1] - 2026-11-05
 
 ### Changed

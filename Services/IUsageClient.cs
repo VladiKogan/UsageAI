@@ -34,3 +34,18 @@ internal interface IThrottledUsageException
 {
     TimeSpan RetryAfter { get; }
 }
+
+/// <summary>
+/// A client that reads one login of a provider that can have several (Claude Code, Codex). Its
+/// <see cref="IUsageClient.Id"/> is the provider key: the bare provider id for the default login,
+/// else <c>provider@account</c>.
+/// </summary>
+internal interface IAccountUsageClient : IUsageClient
+{
+    string ProviderId { get; }
+
+    string AccountId { get; }
+
+    /// <summary>The folder the login lives in, read for who is signed in.</summary>
+    string LoginFolder { get; }
+}

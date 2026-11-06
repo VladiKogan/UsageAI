@@ -6,6 +6,9 @@ internal enum IconGlyph
 {
     Refresh,
     Settings,
+
+    /// <summary>A person with a plus: add an account.</summary>
+    AddAccount,
 }
 
 /// <summary>
@@ -192,6 +195,12 @@ internal sealed class IconButton : Button
                     graphics.DrawLine(stroke, box.Left + U(6.5F), box.Top + U(11.5F), box.Left + U(13.5F), box.Top + U(11.5F));
                     graphics.DrawEllipse(stroke, box.Left + U(9.5F), box.Top + U(3), U(3), U(3));
                     graphics.DrawEllipse(stroke, box.Left + U(3.5F), box.Top + U(10), U(3), U(3));
+                    break;
+                case IconGlyph.AddAccount:
+                    graphics.DrawEllipse(stroke, box.Left + U(3.5F), box.Top + U(2.5F), U(5), U(5));
+                    graphics.DrawArc(stroke, box.Left + U(1.5F), box.Top + U(9.5F), U(9), U(8), 180F, 180F);
+                    graphics.DrawLine(stroke, box.Left + U(10.5F), box.Top + U(7.5F), box.Left + U(14.5F), box.Top + U(7.5F));
+                    graphics.DrawLine(stroke, box.Left + U(12.5F), box.Top + U(5.5F), box.Left + U(12.5F), box.Top + U(9.5F));
                     break;
             }
         }

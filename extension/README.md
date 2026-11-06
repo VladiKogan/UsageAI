@@ -92,6 +92,34 @@ Open **UsageAI: Open Settings** to personalize the extension:
 
 For GitHub Copilot, **Enable GitHub CLI Fallback** lets UsageAI run `gh auth token` only when it cannot use a supported local credential file. This option is off by default.
 
+## Multiple accounts
+
+Claude Code and Codex can show more than one account, each on a card of its own titled
+"Claude Code · team". A login is a folder of its own, the one the CLI uses through
+`CLAUDE_CONFIG_DIR` or `CODEX_HOME`:
+
+- **Found automatically.** Folders in your home folder named `.claude-*` or `.claude_*` that
+  hold a `.credentials.json`, and `.codex-*` or `.codex_*` that hold an `auth.json`, are found
+  when the extension starts, once a day, and when you run **UsageAI: Rescan Accounts**. This is
+  one listing of the home folder, never a search. On the first run the logins already there are
+  shown at once; one found later is shown only after you answer **Show** (or **Ignore**).
+- **Added by you.** **UsageAI: Add Account…** (also in the dashboard's **…** menu) either signs in
+  to another account with the provider's own CLI (`claude auth login --claudeai` or `codex login`)
+  in an editor terminal, into a new folder such as `~/.claude-team` that your own CLI can use
+  too, or adds a login folder you already have. Added folders are saved in `usageai.accounts`,
+  where you can also give any account a `label` or hide it with `"hidden": true`. Each folder must
+  be an absolute, local path that holds the credential file.
+
+Your default login stays the primary account: the **UsageAI: Status Bar** checkboxes follow it.
+To put another account in the Status Bar, name it by its label or email in
+`usageai.statusBarProviders.accounts`. A login whose email and organization match an account
+already shown is not added twice. Each account refreshes on its own, so an expired login goes
+stale on its own card only. UsageAI reads another account's folder only: it sends that login's
+token to the same Anthropic or ChatGPT endpoint as the default login's, and gives the folder to
+the Claude Code and Codex commands it runs as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. Environment
+overrides such as `USAGEAI_CLAUDE_OAUTH_TOKEN` and the Claude web session key apply to the
+default login alone.
+
 ## Reading the dashboard
 
 - Percentages and meter fill show how much quota has been **used**, or how much is **left** when

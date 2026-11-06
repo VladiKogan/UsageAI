@@ -1,5 +1,6 @@
 import { access } from "node:fs/promises";
 import * as path from "node:path";
+import { commandWithEnvironment } from "../accounts";
 import { claudeBundledPaths, findBundledExecutable, noExtensions, type ExtensionPathResolver } from "../bundled-cli";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
@@ -47,19 +48,40 @@ export interface ClaudeLaunch {
   readonly argsPrefix: readonly string[];
 }
 
+/** A Claude login other than the default one: its own config folder, read directly. */
+export interface ClaudeAccount {
+  /** The account id; the client's id becomes the unit key `claude@<id>`. */
+  readonly id: string;
+  /** The folder holding that login's `.credentials.json`, used as its `CLAUDE_CONFIG_DIR`. */
+  readonly configDirectory: string;
+}
+
 export class ClaudeUsageClient implements UsageClient {
-  public readonly id = "claude";
+  public readonly id: string;
   public readonly displayName = "Claude Code";
-  public readonly signInCommand = "claude";
+  public readonly signInCommand: string;
   public readonly accountUrl = "https://claude.ai/settings/usage";
 
   /** Until when the opt-in web path is skipped after claude.ai asked for a browser check. */
   private webRetryAfter = 0;
 
-  public constructor(private readonly claudeAuthProbe: ClaudeAuthProbe = runClaudeAuthRecovery) {}
+  /**
+   * Without `account` this is the default login, exactly as before. With one, only that folder's
+   * `.credentials.json` is read: the environment token override, the web session key and any other
+   * fallback belong to the default login alone, and the CLI recovery runs with that folder.
+   */
+  public constructor(
+    private readonly claudeAuthProbe: ClaudeAuthProbe = runClaudeAuthRecovery,
+    private readonly account?: ClaudeAccount,
+  ) {
+    this.id = account ? `claude@${account.id}` : "claude";
+    this.signInCommand = account
+      ? commandWithEnvironment("CLAUDE_CONFIG_DIR", account.configDirectory, "claude auth login --claudeai")
+      : "claude";
+  }
 
   public async getUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
-    if (getClaudeSessionKey() && Date.now() >= this.webRetryAfter) {
+    if (!this.account && getClaudeSessionKey() && Date.now() >= this.webRetryAfter) {
       try {
         return await getClaudeWebUsage(signal);
       } catch (error) {
@@ -112,6 +134,9 @@ export class ClaudeUsageClient implements UsageClient {
   }
 
   private async loadCredentials(): Promise<ClaudeCredentials> {
+    if (this.account) {
+      return readClaudeCredentialFile(claudeCredentialPath(this.account.configDirectory));
+    }
     const environmentToken = normalizeToken(process.env.USAGEAI_CLAUDE_OAUTH_TOKEN);
     if (environmentToken) {
       return {
@@ -126,18 +151,20 @@ export class ClaudeUsageClient implements UsageClient {
       };
     }
 
-    const credentialPath = claudeCredentialPath();
-    try {
-      return parseClaudeCredentials(await readBoundedText(credentialPath));
-    } catch (error) {
-      throw new UsageProviderError(
-        "Claude Code is not signed in, or its saved login could not be read. Run `claude` or sign in through the Claude Code extension, then refresh.",
-        0,
-        { cause: error },
-      );
-    }
+    return readClaudeCredentialFile(claudeCredentialPath());
   }
+}
 
+async function readClaudeCredentialFile(credentialPath: string): Promise<ClaudeCredentials> {
+  try {
+    return parseClaudeCredentials(await readBoundedText(credentialPath));
+  } catch (error) {
+    throw new UsageProviderError(
+      "Claude Code is not signed in, or its saved login could not be read. Run `claude` or sign in through the Claude Code extension, then refresh.",
+      0,
+      { cause: error },
+    );
+  }
 }
 
 export async function refreshExpiredClaudeCredentials(
@@ -251,7 +278,11 @@ class RecoverableClaudeUsageError extends UsageProviderError {
   }
 }
 
-function claudeCredentialPath(): string {
+/** The credential file of `configDirectory`, else of the default login. */
+function claudeCredentialPath(configDirectory?: string): string {
+  if (configDirectory) {
+    return path.join(configDirectory, ".credentials.json");
+  }
   const configuredDirectory = process.env.CLAUDE_CONFIG_DIR?.trim().replace(/^"|"$/g, "");
   if (configuredDirectory && !path.isAbsolute(configuredDirectory)) {
     throw new UsageProviderError("CLAUDE_CONFIG_DIR must be an absolute path.");
@@ -259,9 +290,9 @@ function claudeCredentialPath(): string {
   return path.join(configuredDirectory || path.join(userHome(), ".claude"), ".credentials.json");
 }
 
-async function hasFreshStoredClaudeCredential(): Promise<boolean> {
+async function hasFreshStoredClaudeCredential(configDirectory?: string): Promise<boolean> {
   try {
-    const credentials = parseClaudeCredentials(await readBoundedText(claudeCredentialPath()));
+    const credentials = parseClaudeCredentials(await readBoundedText(claudeCredentialPath(configDirectory)));
     return credentials.expiresAt === undefined || credentials.expiresAt > Date.now();
   } catch {
     return false;
@@ -273,24 +304,31 @@ async function hasFreshStoredClaudeCredential(): Promise<boolean> {
  * only reports whether a login exists and never refreshes an expired access token, so while the
  * stored token is still expired a command that needs a live token (`mcp list`) makes the CLI
  * refresh it through its own credential store. UsageAI never touches the refresh token itself.
+ * With `configDirectory` (an account other than the default) both children get exactly that
+ * `CLAUDE_CONFIG_DIR`, set explicitly rather than inherited.
  */
 export async function runClaudeAuthRecovery(
   signal?: AbortSignal,
   resolveExtensionPath: ExtensionPathResolver = noExtensions,
+  configDirectory?: string,
 ): Promise<boolean> {
   // Resolved once: both commands below run the same CLI.
   const launch = await findClaudeLaunch(resolveExtensionPath);
-  if (!launch || !await claudeAuthStatus(launch, signal)) {
+  if (!launch || !await claudeAuthStatus(launch, signal, configDirectory)) {
     return false;
   }
-  if (!await hasFreshStoredClaudeCredential()) {
-    await nudgeClaudeCredentialRefresh(launch, signal);
+  if (!await hasFreshStoredClaudeCredential(configDirectory)) {
+    await nudgeClaudeCredentialRefresh(launch, signal, configDirectory);
   }
   return true;
 }
 
-async function nudgeClaudeCredentialRefresh(launch: ClaudeLaunch, signal: AbortSignal | undefined): Promise<void> {
-  const child = spawnClaudeCli(launch, ["mcp", "list"]);
+async function nudgeClaudeCredentialRefresh(
+  launch: ClaudeLaunch,
+  signal: AbortSignal | undefined,
+  configDirectory: string | undefined,
+): Promise<void> {
+  const child = spawnClaudeCli(launch, ["mcp", "list"], configDirectory);
   child.stdin.end();
   // Output is discarded; the child keeps running its MCP health checks after the refresh lands
   // and exits on its own, with this bound as the backstop.
@@ -299,7 +337,7 @@ async function nudgeClaudeCredentialRefresh(launch: ClaudeLaunch, signal: AbortS
   signal?.addEventListener("abort", abort, { once: true });
   try {
     const deadline = Date.now() + refreshNudgeTimeoutMs;
-    while (Date.now() < deadline && !await hasFreshStoredClaudeCredential()) {
+    while (Date.now() < deadline && !await hasFreshStoredClaudeCredential(configDirectory)) {
       if (await Promise.race([exited, abortableDelay(100, signal).then(() => false)])) {
         return;
       }
@@ -309,19 +347,29 @@ async function nudgeClaudeCredentialRefresh(launch: ClaudeLaunch, signal: AbortS
   }
 }
 
-function spawnClaudeCli(launch: ClaudeLaunch, args: readonly string[]) {
-  return spawnSecure(
-    launch.executable,
-    [...launch.argsPrefix, ...args],
-    [
-      "CLAUDE_CONFIG_DIR",
+/**
+ * The environment a Claude CLI child gets: the default login inherits `CLAUDE_CONFIG_DIR`, while an
+ * account's folder is set explicitly and never inherited.
+ */
+export function claudeCliEnvironment(configDirectory?: string): {
+  readonly inherited: readonly string[];
+  readonly overrides: NodeJS.ProcessEnv;
+} {
+  return {
+    inherited: [
+      ...(configDirectory ? [] : ["CLAUDE_CONFIG_DIR"]),
       "CLAUDE_CODE_GIT_BASH_PATH",
       "NODE_EXTRA_CA_CERTS",
       "SSL_CERT_DIR",
       "SSL_CERT_FILE",
     ],
-    { DISABLE_AUTOUPDATER: "1" },
-  );
+    overrides: { DISABLE_AUTOUPDATER: "1", ...(configDirectory ? { CLAUDE_CONFIG_DIR: configDirectory } : {}) },
+  };
+}
+
+function spawnClaudeCli(launch: ClaudeLaunch, args: readonly string[], configDirectory?: string) {
+  const environment = claudeCliEnvironment(configDirectory);
+  return spawnSecure(launch.executable, [...launch.argsPrefix, ...args], environment.inherited, environment.overrides);
 }
 
 export async function runClaudeAuthStatus(
@@ -332,8 +380,12 @@ export async function runClaudeAuthStatus(
   return launch ? claudeAuthStatus(launch, signal) : false;
 }
 
-async function claudeAuthStatus(launch: ClaudeLaunch, signal: AbortSignal | undefined): Promise<boolean> {
-  const child = spawnClaudeCli(launch, ["auth", "status", "--json"]);
+async function claudeAuthStatus(
+  launch: ClaudeLaunch,
+  signal: AbortSignal | undefined,
+  configDirectory?: string,
+): Promise<boolean> {
+  const child = spawnClaudeCli(launch, ["auth", "status", "--json"], configDirectory);
   child.stdin.end();
   const abort = () => child.kill();
   signal?.addEventListener("abort", abort, { once: true });
