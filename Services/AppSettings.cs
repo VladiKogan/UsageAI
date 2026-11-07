@@ -203,7 +203,7 @@ internal sealed class AppSettings
     /// </summary>
     public bool AccountsInitialized { get; set; }
 
-    /// <summary>Lists <c>%USERPROFILE%\.claude-*</c> / <c>.codex-*</c> at startup and once a day.</summary>
+    /// <summary>Lists <c>%USERPROFILE%\.claude…</c> / <c>.codex…</c> at startup and once a day.</summary>
     public bool FindAccountsAutomatically { get; set; } = true;
 
     /// <summary>A login found after the first scan waits for Show or Ignore before it is shown.</summary>

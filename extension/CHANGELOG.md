@@ -4,6 +4,11 @@
 
 ### Changed
 
+- **Any login folder whose name starts with `.claude` or `.codex` is found now.** Names such as
+  `.claude2`, `.claudework` or `.codex.work` are found as well as `.claude-*` and `.claude_*`. Only
+  a folder that holds the provider's own login file counts, so the wider rule picks up nothing
+  else. The bare `.claude` and `.codex` remain the default logins.
+
 - **The extension is listed under the AI category and found by more search words.** Both
   marketplaces now list it under AI, Machine Learning and Visualization instead of Other, and its
   keywords follow the repository's GitHub topics: `claude-code`, `github-copilot`, `rate-limit`,
@@ -20,7 +25,7 @@
   off on its own, and a login of someone already shown is never added twice.
 - **UsageAI: Add Account… signs in to another account or adds a login folder you already have.**
   Signing in runs the provider's own `claude auth login --claudeai` or `codex login` in an editor
-  terminal with `CLAUDE_CONFIG_DIR` or `CODEX_HOME` set to a new folder such as `~/.claude-team`,
+  terminal with `CLAUDE_CONFIG_DIR` or `CODEX_HOME` set to a new folder such as `~/.claude-work`,
   which your own CLI can use too. UsageAI still never writes or refreshes a token itself.
 - **The `usageai.accounts` setting lists added login folders, with an optional label or hidden
   flag.** Each entry must be an absolute, local folder that holds the provider's credential file;

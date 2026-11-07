@@ -21,6 +21,7 @@ import {
   commandWithEnvironment,
   defaultLoginFolder,
   discoverAccountFolders,
+  discoveredProvider,
   distinctAccountLabels,
   identityKey,
   isAccountUnitKey,
@@ -84,13 +85,13 @@ async function writeLogin(folder: string, provider: "claude" | "codex", identity
 }
 
 test("account ids hash the normalised folder path and unit keys keep the default plain", () => {
-  const expected = createHash("sha256").update("c:\\users\\dev\\.claude-team", "utf8").digest("hex").slice(0, 8);
-  assert.equal(accountIdForPath("C:\\Users\\Dev\\.claude-team\\", "win32"), expected);
-  assert.equal(accountIdForPath("c:\\USERS\\dev\\.claude-team", "win32"), expected);
+  const expected = createHash("sha256").update("c:\\users\\dev\\.claude-lab", "utf8").digest("hex").slice(0, 8);
+  assert.equal(accountIdForPath("C:\\Users\\Dev\\.claude-lab\\", "win32"), expected);
+  assert.equal(accountIdForPath("c:\\USERS\\dev\\.claude-lab", "win32"), expected);
   assert.equal(normalizeAccountPath("C:\\", "win32"), "c:\\");
   // Only Windows folds case.
-  assert.equal(normalizeAccountPath("/home/Dev/.claude-team/", "linux"), "/home/Dev/.claude-team");
-  assert.notEqual(accountIdForPath("/home/Dev/.claude-team", "linux"), accountIdForPath("/home/dev/.claude-team", "linux"));
+  assert.equal(normalizeAccountPath("/home/Dev/.claude-lab/", "linux"), "/home/Dev/.claude-lab");
+  assert.notEqual(accountIdForPath("/home/Dev/.claude-lab", "linux"), accountIdForPath("/home/dev/.claude-lab", "linux"));
   assert.match(accountIdForPath("/home/dev/.codex-x", "linux"), /^[0-9a-f]{8}$/);
 
   assert.equal(unitKey("claude", "default"), "claude");
@@ -108,10 +109,14 @@ test("account ids hash the normalised folder path and unit keys keep the default
 
 test("discovery lists the home folder once and keeps only provider folders with a login", async () => {
   await withTemporaryFolder("usageai-accounts-home-", async (home) => {
-    await writeLogin(path.join(home, ".claude-team"), "claude");
+    await writeLogin(path.join(home, ".claude-lab"), "claude");
     await writeLogin(path.join(home, ".CLAUDE_work"), "claude");
     await mkdir(path.join(home, ".claude-empty"));
     await writeLogin(path.join(home, ".claudex"), "claude");
+    await writeLogin(path.join(home, ".claude2"), "claude");
+    await writeLogin(path.join(home, ".codex.work"), "codex");
+    await writeLogin(path.join(home, ".claudx"), "claude");
+    // The bare .claude is a default login, never a found one, even when it is not the default here.
     await writeLogin(path.join(home, ".claude"), "claude");
     await writeLogin(path.join(home, ".codex-alt"), "codex");
     await mkdir(path.join(home, ".codex_nologin"));
@@ -126,13 +131,27 @@ test("discovery lists the home folder once and keeps only provider folders with 
       codex: path.join(home, ".codex"),
     });
     assert.deepEqual(found.map((entry) => [entry.provider, path.basename(entry.path)]), [
-      ["claude", ".claude-team"],
+      ["claude", ".claude-lab"],
       ["codex", ".codex-alt"],
       ["claude", ".CLAUDE_work"],
+      ["claude", ".claudex"],
+      ["claude", ".claude2"],
+      ["codex", ".codex.work"],
     ].sort((left, right) => left[1]!.localeCompare(right[1]!)));
     assert.equal(found[0]?.id, accountIdForPath(found[0]!.path));
   });
   assert.deepEqual(await discoverAccountFolders(path.join(os.tmpdir(), `usageai-missing-${Date.now()}`), {}), []);
+});
+
+test("a folder name counts when it starts with .claude or .codex and goes on", () => {
+  assert.equal(discoveredProvider(".claude-work"), "claude");
+  assert.equal(discoveredProvider(".ClaudeWork"), "claude");
+  assert.equal(discoveredProvider(".claude2"), "claude");
+  assert.equal(discoveredProvider(".CODEX.work"), "codex");
+  assert.equal(discoveredProvider(".claude"), undefined);
+  assert.equal(discoveredProvider(".Codex"), undefined);
+  assert.equal(discoveredProvider(".claudx"), undefined);
+  assert.equal(discoveredProvider("claude-work"), undefined);
 });
 
 test("usageai.accounts keeps absolute local folders and names every rejected entry", async () => {
@@ -186,13 +205,13 @@ test("identity comes from local files only, and labels fall back from name to em
   });
 
   assert.equal(claudeProfilePath("/x/.claude", true, "/home/dev"), path.join("/home/dev", ".claude.json"));
-  assert.equal(claudeProfilePath("/x/.claude-team", false, "/home/dev"), path.join("/x/.claude-team", ".claude.json"));
+  assert.equal(claudeProfilePath("/x/.claude-lab", false, "/home/dev"), path.join("/x/.claude-lab", ".claude.json"));
   assert.equal(identityKey({ email: "A@Example.com", organizationId: "ORG" }), "a@example.com|org");
   assert.equal(identityKey({ organizationId: "org" }), undefined);
 
-  assert.equal(accountLabel("Team", { email: "a@example.com" }, "/home/dev/.claude-team"), "Team");
-  assert.equal(accountLabel(undefined, { email: "a@example.com" }, "/home/dev/.claude-team"), "a@example.com");
-  assert.equal(accountLabel(undefined, {}, "/home/dev/.claude-team"), ".claude-team");
+  assert.equal(accountLabel("Team", { email: "a@example.com" }, "/home/dev/.claude-lab"), "Team");
+  assert.equal(accountLabel(undefined, { email: "a@example.com" }, "/home/dev/.claude-lab"), "a@example.com");
+  assert.equal(accountLabel(undefined, {}, "/home/dev/.claude-lab"), ".claude-lab");
   assert.equal(accountCardTitle("Claude Code", "team", 1), "Claude Code");
   assert.equal(accountCardTitle("Claude Code", "team", 2), "Claude Code · team");
 
@@ -221,7 +240,7 @@ test("resolving accounts keeps defaults first, never shows a duplicate, and hold
     path: folder(name),
     id: accountIdForPath(folder(name)),
   });
-  const state: AccountState = { shown: [found(".claude-team").id], ignored: [found(".claude-ignored").id] };
+  const state: AccountState = { shown: [found(".claude-lab").id], ignored: [found(".claude-ignored").id] };
   const resolved = resolveAccounts({
     defaults: [
       { source: { provider: "claude", path: folder(".claude") }, identity: { email: "me@example.com", organizationId: "personal" } },
@@ -233,7 +252,7 @@ test("resolving accounts keeps defaults first, never shows a duplicate, and hold
       { source: { provider: "codex", path: folder(".codex-hidden"), hidden: true }, identity: {} },
     ],
     discovered: [
-      { source: found(".claude-team"), identity: { email: "team@example.com", organizationId: "team" } },
+      { source: found(".claude-lab"), identity: { email: "team@example.com", organizationId: "team" } },
       { source: found(".claude-copy"), identity: { email: "ME@example.com", organizationId: "personal" } },
       { source: found(".claude-ignored"), identity: {} },
       { source: found(".claude-new"), identity: { email: "new@example.com" } },
@@ -248,7 +267,7 @@ test("resolving accounts keeps defaults first, never shows a duplicate, and hold
     ["codex", "Work", "added"],
   ]);
   assert.equal(resolved.shown[0]?.unitKey, "claude");
-  assert.equal(resolved.shown[1]?.unitKey, `claude@${found(".claude-team").id}`);
+  assert.equal(resolved.shown[1]?.unitKey, `claude@${found(".claude-lab").id}`);
   assert.deepEqual(resolved.pending.map((account) => account.label), ["new@example.com"]);
   assert.deepEqual(resolved.duplicates.map((duplicate) => [path.basename(duplicate.account.path), duplicate.shownAs]), [[".claude-copy", "Personal"]]);
 
@@ -256,7 +275,7 @@ test("resolving accounts keeps defaults first, never shows a duplicate, and hold
   const hiddenDefault = resolveAccounts({
     defaults: [{ source: { provider: "claude", path: folder(".claude") }, identity: {} }],
     configured: [{ source: { provider: "claude", path: folder(".claude"), hidden: true }, identity: {} }],
-    discovered: [{ source: found(".claude-team"), identity: {} }],
+    discovered: [{ source: found(".claude-lab"), identity: {} }],
     state,
   });
   assert.deepEqual(hiddenDefault.shown.map((account) => account.source), ["found"]);
@@ -270,7 +289,7 @@ test("the account service shows first-run finds at once and asks about later one
   await withTemporaryFolder("usageai-accounts-service-", async (home) => {
     await writeLogin(path.join(home, ".claude"), "claude");
     await writeFile(path.join(home, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "me@example.com" } }), "utf8");
-    await writeLogin(path.join(home, ".claude-team"), "claude", { email: "team@example.com" });
+    await writeLogin(path.join(home, ".claude-lab"), "claude", { email: "team@example.com" });
     let saved: unknown;
     let settings: unknown = [];
     let now = 1_000_000;
@@ -313,7 +332,7 @@ test("the account service shows first-run finds at once and asks about later one
     await service.answer(service.pending.find((account) => account.provider === "claude")!.id, "show");
     await service.answer(service.pending.find((account) => account.provider === "codex")!.id, "ignore");
     // Found accounts keep folder-name order.
-    assert.deepEqual(service.accounts.map((account) => account.label), ["me@example.com", "later@example.com", "team@example.com", ".codex"]);
+    assert.deepEqual(service.accounts.map((account) => account.label), ["me@example.com", "team@example.com", "later@example.com", ".codex"]);
     assert.equal(service.pending.length, 0);
     assert.equal((saved as AccountState).ignored.length, 1);
     assert.equal(announcements.length, 1);
@@ -329,7 +348,7 @@ test("the account service shows first-run finds at once and asks about later one
 
     // A label from the setting renames an account; a bad entry is named once.
     settings = [
-      { provider: "claude", path: path.join(home, ".claude-team"), label: "Team" },
+      { provider: "claude", path: path.join(home, ".claude-lab"), label: "Team" },
       { provider: "codex", path: "relative" },
       { provider: "codex", path: path.join(home, ".codex-none") },
     ];
@@ -348,7 +367,7 @@ test("an extra Claude account reads only its own folder and gives it to the CLI 
   const previous = new Map(names.map((name) => [name, process.env[name]]));
   await withTemporaryFolder("usageai-claude-account-", async (directory) => {
     try {
-      const accountFolder = path.join(directory, ".claude-team");
+      const accountFolder = path.join(directory, ".claude-lab");
       await mkdir(accountFolder);
       await writeFile(path.join(accountFolder, ".credentials.json"), JSON.stringify({
         claudeAiOauth: { accessToken: "account-access", expiresAt: Date.now() + 3_600_000, scopes: ["user:profile"], subscriptionType: "max" },
@@ -364,7 +383,7 @@ test("an extra Claude account reads only its own folder and gives it to the CLI 
       }) as typeof security.requestJson);
       const client = new ClaudeUsageClient(async () => false, { id: "1a2b3c4d", configDirectory: accountFolder });
       assert.equal(client.id, "claude@1a2b3c4d");
-      assert.match(client.signInCommand, /CLAUDE_CONFIG_DIR.*\.claude-team.*claude auth login --claudeai/);
+      assert.match(client.signInCommand, /CLAUDE_CONFIG_DIR.*\.claude-lab.*claude auth login --claudeai/);
       const snapshot = await client.getUsage();
       assert.equal(snapshot.providerId, "claude");
       assert.equal(snapshot.metrics[0]?.usedPercent, 12);
@@ -527,7 +546,7 @@ function fakeUi(script: FakeUiScript, log: string[], onLogin?: (environment: Rea
 
 test("Add Account signs in to a new folder with the official CLI, or adds a folder already there", async () => {
   await withTemporaryFolder("usageai-add-account-", async (home) => {
-    await writeLogin(path.join(home, ".claude-team"), "claude");
+    await writeLogin(path.join(home, ".claude-lab"), "claude");
     let settings: unknown[] = [{ provider: "codex", path: path.join(home, ".codex-x") }];
     const added: string[] = [];
     const shown: AccountEntry[] = [entry({ provider: "claude", id: "default", source: "default", path: path.join(home, ".claude"), label: "me@example.com", identity: { email: "me@example.com", organizationId: "org-1" } })];
@@ -546,9 +565,9 @@ test("Add Account signs in to a new folder with the official CLI, or adds a fold
 
     // The proposed folder comes from the name; the login runs with CLAUDE_CONFIG_DIR set to it.
     assert.equal(await addAccount(dependencies(
-      { picks: ["Claude Code", "Sign in to another account"], inputs: ["Team", undefined] },
+      { picks: ["Claude Code", "Sign in to another account"], inputs: ["Lab", undefined] },
     )), "cancelled");
-    assert.ok(log.includes(`input ${path.join(home, ".claude-team-2")} -> -`));
+    assert.ok(log.includes(`input ${path.join(home, ".claude-lab-2")} -> -`));
     log.length = 0;
     const result = await addAccount(dependencies(
       { picks: ["Claude Code", "Sign in to another account"], inputs: ["Work", async (validate) => {
@@ -581,11 +600,11 @@ test("Add Account signs in to a new folder with the official CLI, or adds a fold
     log.length = 0;
     assert.equal(await addAccount(dependencies({
       picks: ["Claude Code", "Sign in to another account"],
-      inputs: ["", path.join(home, ".claude-team")],
+      inputs: ["", path.join(home, ".claude-lab")],
       infoChoice: "Use this login instead",
     })), "added");
     assert.ok(log.some((line) => line.includes("already holds a Claude login")));
-    assert.deepEqual(settings.at(-1), { provider: "claude", path: path.join(home, ".claude-team") });
+    assert.deepEqual(settings.at(-1), { provider: "claude", path: path.join(home, ".claude-lab") });
 
     // Existing folders: the default login, the same person, and a folder without a login are refused.
     log.length = 0;

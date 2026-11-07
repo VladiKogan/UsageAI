@@ -170,7 +170,7 @@ internal sealed partial class SettingsForm
 
         _findAccounts = CreateCheckBox("Find logins in my user folder automatically");
         AddSpan(_findAccounts);
-        AddSpan(CreateHint("Looks for .claude-* and .codex-* folders at startup and once a day. No other folder is searched."));
+        AddSpan(CreateHint("Looks for folders whose name starts with .claude or .codex, at startup and once a day. No other folder is searched."));
         _askBeforeShowing = CreateCheckBox("Ask before showing newly found accounts");
         AddSpan(_askBeforeShowing);
     }

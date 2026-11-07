@@ -98,14 +98,15 @@ Claude Code and Codex can show more than one account, each on a card of its own 
 "Claude Code · team". A login is a folder of its own, the one the CLI uses through
 `CLAUDE_CONFIG_DIR` or `CODEX_HOME`:
 
-- **Found automatically.** Folders in your home folder named `.claude-*` or `.claude_*` that
-  hold a `.credentials.json`, and `.codex-*` or `.codex_*` that hold an `auth.json`, are found
+- **Found automatically.** Folders in your home folder whose name starts with `.claude` (such as
+  `.claude-work` or `.claude2`) that hold a `.credentials.json`, and `.codex…` folders that hold an
+  `auth.json`, are found
   when the extension starts, once a day, and when you run **UsageAI: Rescan Accounts**. This is
   one listing of the home folder, never a search. On the first run the logins already there are
   shown at once; one found later is shown only after you answer **Show** (or **Ignore**).
 - **Added by you.** **UsageAI: Add Account…** (also in the dashboard's **…** menu) either signs in
   to another account with the provider's own CLI (`claude auth login --claudeai` or `codex login`)
-  in an editor terminal, into a new folder such as `~/.claude-team` that your own CLI can use
+  in an editor terminal, into a new folder such as `~/.claude-work` that your own CLI can use
   too, or adds a login folder you already have. Added folders are saved in `usageai.accounts`,
   where you can also give any account a `label` or hide it with `"hidden": true`. Each folder must
   be an absolute, local path that holds the credential file.

@@ -170,7 +170,7 @@ begin
   end;
 end;
 
-{ "Sign in to another account" makes login folders such as %USERPROFILE%\.claude-team, and the app
+{ "Sign in to another account" makes login folders such as %USERPROFILE%\.claude-work, and the app
   lists them in created-logins.txt. Only those are offered, by path, defaulting to keep: they hold
   logins the user's own CLI may still use. No other .claude-* or .codex-* folder is ever touched. }
 procedure RemoveCreatedLoginsIfAsked();
@@ -209,7 +209,7 @@ begin
   end;
 end;
 
-{ Terminal commands such as claude-team live in the data folder's bin, which the app put on the
+{ Terminal commands such as claude-work live in the data folder's bin, which the app put on the
   user's PATH. They keep working without UsageAI, so the entry goes only with the data folder, and
   every other entry is written back exactly as it was. }
 const

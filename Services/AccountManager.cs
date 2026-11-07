@@ -105,7 +105,7 @@ internal sealed class AccountManager
     }
 
     /// <summary>
-    /// Lists the profile once for <c>.claude-*</c> / <c>.codex-*</c> login folders and adds the new
+    /// Lists the profile once for <c>.claude…</c> / <c>.codex…</c> login folders and adds the new
     /// ones. The first scan shows them all (they are the user's own) with one banner per provider
     /// that has several; later ones wait for Show / Ignore unless the user turned that off.
     /// With automatic scanning off, only the first-run bookkeeping happens.
@@ -422,7 +422,7 @@ internal sealed class AccountManager
     }
 
     /// <summary>
-    /// Gives a login folder a terminal command, such as <c>claude-team</c>, replacing the one it had;
+    /// Gives a login folder a terminal command, such as <c>claude-work</c>, replacing the one it had;
     /// an empty name removes it. Applies at once, like adding or removing an account.
     /// </summary>
     public TerminalCommandResult SetTerminalCommand(string unitKey, string? name)

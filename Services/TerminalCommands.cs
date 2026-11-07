@@ -17,7 +17,7 @@ internal sealed record TerminalCommandResult(
 }
 
 /// <summary>
-/// Terminal commands such as <c>claude-team</c>: a small <c>.cmd</c> file that sets
+/// Terminal commands such as <c>claude-work</c>: a small <c>.cmd</c> file that sets
 /// <c>CLAUDE_CONFIG_DIR</c> / <c>CODEX_HOME</c> to one login folder and starts the provider's CLI,
 /// so an account's folder never has to be typed. The files live in UsageAI's own <c>bin</c> folder,
 /// which is added to the user's PATH once. Only files that carry <see cref="Marker"/> are ever
@@ -77,7 +77,7 @@ internal sealed partial class TerminalCommands
 
     /// <summary>
     /// The name a command is offered under: the provider's CLI name and the account's label, such as
-    /// <c>claude-team</c>, else the folder's own suffix (<c>.claude-work</c> gives <c>claude-work</c>).
+    /// <c>claude-work</c>, else the folder's own suffix (<c>.claude-lab</c> gives <c>claude-lab</c>).
     /// </summary>
     public static string Suggest(string providerId, string? label, string? folder)
     {
@@ -239,6 +239,16 @@ internal sealed partial class TerminalCommands
     /// cmd from running a <c>claude.bat</c> or <c>codex.cmd</c> that sits in the current folder,
     /// such as a cloned repository, instead of the CLI on the PATH. Null when no CLI is found or a
     /// path cannot be written.
+    /// <para>
+    /// The CLI runs in a child <c>cmd /d /c</c>, never straight from this file. An npm install's
+    /// <c>codex.cmd</c> or <c>claude.cmd</c> is itself a batch file, and one batch file starting
+    /// another without <c>call</c> ends the first, which undoes its <c>setlocal</c>: the login
+    /// folder was gone before the CLI started, so the default login answered instead. <c>call</c>
+    /// fails too, since the npm launcher's own <c>goto</c> trick unwinds every batch level and
+    /// <c>call</c> expands <c>%</c> in arguments a second time. The child inherits the variables
+    /// as its starting environment, which nothing in it can undo. The outer quotes keep
+    /// <c>cmd /c</c> from stripping the quotes of an absolute CLI path.
+    /// </para>
     /// </summary>
     private string? Contents(string providerId, string loginFolder)
     {
@@ -255,7 +265,7 @@ internal sealed partial class TerminalCommands
             .Append("setlocal\r\n")
             .Append("set \"NoDefaultCurrentDirectoryInExePath=1\"\r\n")
             .Append("set \"").Append(AccountDiscovery.FolderVariable(providerId)).Append('=').Append(folderText).Append("\"\r\n")
-            .Append(cliText).Append(" %*\r\n")
+            .Append("cmd /d /c \"").Append(cliText).Append(" %*\"\r\n")
             .ToString();
     }
 

@@ -86,9 +86,9 @@ internal static class AccountDiscovery
         string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR"));
 
     /// <summary>
-    /// Immediate children of <paramref name="userProfile"/> named <c>.claude-*</c>, <c>.claude_*</c>,
-    /// <c>.codex-*</c> or <c>.codex_*</c> that hold their provider's credential file. One listing,
-    /// no recursion; the default login folders are left out.
+    /// Immediate children of <paramref name="userProfile"/> whose name starts with <c>.claude</c> or
+    /// <c>.codex</c> (see <see cref="ProviderForFolderName"/>) and that hold their provider's
+    /// credential file. One listing, no recursion; the default login folders are left out.
     /// </summary>
     public static IReadOnlyList<FoundLogin> Scan(string userProfile, IEnumerable<string> excludedFolders)
     {
@@ -134,14 +134,16 @@ internal static class AccountDiscovery
         return found;
     }
 
-    /// <summary>The provider a folder name belongs to, by the <c>.claude-</c> / <c>.codex-</c> naming rule.</summary>
+    /// <summary>
+    /// The provider a folder name belongs to: anything that starts with <c>.claude</c> or
+    /// <c>.codex</c> and goes on, so <c>.claude-work</c>, <c>.claude_work</c>, <c>.claude2</c> and
+    /// <c>.codex.work</c> all count. The bare <c>.claude</c> / <c>.codex</c> is the default login,
+    /// never a found one. A wide rule is safe because only a folder holding the provider's own
+    /// credential file is taken, and a copy of a login already shown is marked a duplicate.
+    /// </summary>
     internal static string? ProviderForFolderName(string name)
     {
-        foreach (var (prefix, providerId) in new[]
-                 {
-                     (".claude-", ClaudeProviderId), (".claude_", ClaudeProviderId),
-                     (".codex-", CodexProviderId), (".codex_", CodexProviderId),
-                 })
+        foreach (var (prefix, providerId) in new[] { (".claude", ClaudeProviderId), (".codex", CodexProviderId) })
         {
             if (name.Length > prefix.Length && name.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
             {

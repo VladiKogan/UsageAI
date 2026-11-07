@@ -133,18 +133,30 @@ internal static class AccountTests
             var codexTeam = Login(profile, ".codex-team", "auth.json");
             File.WriteAllText(Path.Combine(codexTeam, "auth.json"), CodexAuth("team@example.com", "ws-1"));
             Login(profile, ".codex_two", "auth.json");
+            Login(profile, ".claude2", ".credentials.json");
+            Login(profile, ".codex.work", "auth.json");
+            Login(profile, ".claudx", ".credentials.json");
+            Login(profile, ".codex-wrongfile", ".credentials.json");
             var defaultClaude = Login(profile, ".claude", ".credentials.json");
+            Login(profile, ".codex", "auth.json");
             File.WriteAllText(Path.Combine(profile, ".claude.json"), ClaudeJson("me@example.com", "org-0", "Personal"));
 
-            // One listing: the naming rule, a credential file, and never the default folder.
+            // One listing: any name that starts with .claude or .codex and goes on, holding that
+            // provider's own credential file, and never the default folders.
             var found = AccountDiscovery.Scan(profile, new[] { defaultClaude, Path.Combine(profile, ".codex") });
-            Equal(".claude-work|.claude_side|.codex-team|.codex_two", string.Join('|', found
+            Equal(".claude-|.claude-work|.claude2|.claude_side|.clauder|.codex-team|.codex.work|.codex_two", string.Join('|', found
                 .Select(login => Path.GetFileName(login.Folder))
                 .Order(StringComparer.Ordinal)));
             Equal("codex", found.Single(login => login.Folder.EndsWith(".codex-team", StringComparison.Ordinal)).ProviderId);
+            Equal("codex", found.Single(login => login.Folder.EndsWith(".codex.work", StringComparison.Ordinal)).ProviderId);
+            Equal("claude", found.Single(login => login.Folder.EndsWith(".claude2", StringComparison.Ordinal)).ProviderId);
             Equal(0, AccountDiscovery.Scan(Path.Combine(profile, "missing"), Array.Empty<string>()).Count);
             Equal(null, AccountDiscovery.ProviderForFolderName(".claude"));
+            Equal(null, AccountDiscovery.ProviderForFolderName(".CODEX"));
+            Equal(null, AccountDiscovery.ProviderForFolderName(".claudx"));
+            Equal(null, AccountDiscovery.ProviderForFolderName("claude-work"));
             Equal("codex", AccountDiscovery.ProviderForFolderName(".CODEX-Work"));
+            Equal("claude", AccountDiscovery.ProviderForFolderName(".ClaudeWork"));
 
             // Who is signed in, from local files only.
             var work = AccountDiscovery.ReadIdentity("claude", claudeWork, profile)!;
@@ -369,7 +381,7 @@ internal static class AccountTests
         {
             var defaultFolder = Path.Combine(root, "default");
             Directory.CreateDirectory(defaultFolder);
-            var account = Path.Combine(root, ".claude-team");
+            var account = Path.Combine(root, ".claude-lab");
             Directory.CreateDirectory(account);
             Environment.SetEnvironmentVariable("USAGEAI_CLAUDE_OAUTH_TOKEN", "default-only-token");
             Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", defaultFolder);
@@ -472,7 +484,7 @@ internal static class AccountTests
         var root = NewDirectory("service");
         try
         {
-            var folder = Path.Combine(root, ".claude-team");
+            var folder = Path.Combine(root, ".claude-lab");
             Directory.CreateDirectory(folder);
             File.WriteAllText(Path.Combine(folder, ".claude.json"), ClaudeJson("team@example.com", "org-1", "Acme"));
             var defaultFolder = Path.Combine(root, ".claude");
@@ -993,10 +1005,10 @@ internal static class AccountTests
     public static Task TestTerminalCommandsAsync()
     {
         // Names: the CLI and the account's label, else the folder's own suffix.
-        Equal("claude-team", TerminalCommands.Suggest("claude", "Team", null));
+        Equal("claude-lab", TerminalCommands.Suggest("claude", "Lab", null));
         Equal("codex-work", TerminalCommands.Suggest("codex", null, @"C:\Users\me\.codex-work"));
         Equal("claude-account-2", TerminalCommands.Suggest("claude", "Claude", null));
-        Equal(null, TerminalCommands.NameProblem("claude-team"));
+        Equal(null, TerminalCommands.NameProblem("claude-lab"));
         True(TerminalCommands.NameProblem("claude")!.Contains("default login", StringComparison.Ordinal));
         NotNull(TerminalCommands.NameProblem("bad name"));
         NotNull(TerminalCommands.NameProblem("-x"));
@@ -1011,7 +1023,7 @@ internal static class AccountTests
         {
             var profile = Path.Combine(root, "profile");
             var bin = Path.Combine(root, "bin");
-            var team = Login(profile, ".claude-team", ".credentials.json");
+            var team = Login(profile, ".claude-lab", ".credentials.json");
             string? userPath = @"C:\Tools;%SystemRoot%";
             var writes = 0;
             string? cli = "claude";
@@ -1024,21 +1036,21 @@ internal static class AccountTests
                 profile);
 
             // The file sets the folder (the profile written as %USERPROFILE%) and starts the CLI.
-            var made = terminal.Create("claude", team, "claude-team", previous: null);
+            var made = terminal.Create("claude", team, "claude-lab", previous: null);
             True(made.Succeeded);
             True(made.PathChanged);
             Equal(@$"C:\Tools;%SystemRoot%;{terminal.Folder}", userPath);
-            var text = File.ReadAllText(terminal.FilePath("claude-team"));
+            var text = File.ReadAllText(terminal.FilePath("claude-lab"));
             True(text.StartsWith(TerminalCommands.Marker + "\r\n", StringComparison.Ordinal));
-            True(text.Contains("set \"CLAUDE_CONFIG_DIR=%USERPROFILE%\\.claude-team\"\r\n", StringComparison.Ordinal));
-            True(text.Contains("\r\nclaude %*\r\n", StringComparison.Ordinal));
+            True(text.Contains("set \"CLAUDE_CONFIG_DIR=%USERPROFILE%\\.claude-lab\"\r\n", StringComparison.Ordinal));
+            True(text.Contains("\r\ncmd /d /c \"claude %*\"\r\n", StringComparison.Ordinal));
 
             // cmd never runs a claude.bat sitting in the current folder (a cloned repository) in
             // place of the CLI on the PATH; the setting stays inside setlocal.
             True(text.Contains("setlocal\r\nset \"NoDefaultCurrentDirectoryInExePath=1\"\r\n", StringComparison.Ordinal));
 
             // The PATH is written once; writing the same command again is fine.
-            True(terminal.Create("claude", team, "claude-team", previous: "claude-team").Succeeded);
+            True(terminal.Create("claude", team, "claude-lab", previous: "claude-lab").Succeeded);
             Equal(1, writes);
             True(terminal.IsOnUserPath());
 
@@ -1050,8 +1062,8 @@ internal static class AccountTests
             True(File.Exists(terminal.FilePath("mine")));
 
             // Renaming writes the new file and deletes the old one; a rename onto another file is refused.
-            True(terminal.Create("claude", team, "claude-work", previous: "claude-team").Succeeded);
-            False(File.Exists(terminal.FilePath("claude-team")));
+            True(terminal.Create("claude", team, "claude-work", previous: "claude-lab").Succeeded);
+            False(File.Exists(terminal.FilePath("claude-lab")));
             True(terminal.Create("claude", team, "claude-other", previous: null).Succeeded);
             NotNull(terminal.Create("claude", team, "claude-other", previous: "claude-work").Problem);
 
@@ -1063,9 +1075,37 @@ internal static class AccountTests
             True(terminal.Create("codex", Path.Combine(root, ".codex-x"), "codex-x", null).Succeeded);
             var codexText = File.ReadAllText(terminal.FilePath("codex-x"));
             True(codexText.Contains("set \"CODEX_HOME=", StringComparison.Ordinal));
-            True(codexText.Contains("\r\n\"C:\\Program Files\\codex\\codex.exe\" %*\r\n", StringComparison.Ordinal));
+            True(codexText.Contains("\r\ncmd /d /c \"\"C:\\Program Files\\codex\\codex.exe\" %*\"\r\n", StringComparison.Ordinal));
             cli = null;
             True(terminal.Create("claude", team, "claude-none", null).Problem!.Contains("CLI was not found", StringComparison.Ordinal));
+
+            // End to end: the file hands the login folder to an npm-style launcher. That launcher is
+            // a batch file whose goto trick ends every batch level, which once dropped the folder
+            // before the CLI started, so the default login answered. Arguments arrive untouched.
+            var launcher = Path.Combine(root, "npm dir", "zzcli.cmd");
+            Directory.CreateDirectory(Path.GetDirectoryName(launcher)!);
+            // Like npm's, it starts the CLI (a child cmd here) only after the goto has unwound the batch levels.
+            File.WriteAllText(launcher, "@ECHO off\r\nSETLOCAL\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & cmd /d /c echo HOME=[%%CODEX_HOME%%] ARGS=[%*]\r\n");
+            cli = $"\"{launcher}\"";
+            var endToEndHome = Path.Combine(profile, ".codex-e2e");
+            True(terminal.Create("codex", endToEndHome, "codex-e2e", null).Succeeded);
+            var run = new ProcessStartInfo("cmd.exe")
+            {
+                Arguments = $"/d /c \"\"{terminal.FilePath("codex-e2e")}\" exec \"two words\"\"",
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+            };
+            run.Environment["USERPROFILE"] = profile;
+            run.Environment.Remove("CODEX_HOME");
+            using (var process = Process.Start(run)!)
+            {
+                var output = process.StandardOutput.ReadToEnd();
+                True(process.WaitForExit(15_000));
+                True(output.Contains($"HOME=[{endToEndHome}]", StringComparison.OrdinalIgnoreCase), output);
+                True(output.Contains("ARGS=[exec \"two words\"]", StringComparison.Ordinal), output);
+            }
+
             cli = "claude";
 
             // A PATH that cannot be written still leaves a working file and says so.
@@ -1081,12 +1121,12 @@ internal static class AccountTests
                 Terminal = terminal,
             };
             var other = Login(profile, ".claude-side", ".credentials.json");
-            var teamKey = manager.AddFolder("claude", team, AccountSource.Added, "Team").UnitKey!;
+            var teamKey = manager.AddFolder("claude", team, AccountSource.Added, "Lab").UnitKey!;
             var sideKey = manager.AddFolder("claude", other, AccountSource.Found, null).UnitKey!;
             NotNull(manager.SetTerminalCommand("claude", "claude-x").Problem);
-            True(manager.SetTerminalCommand(teamKey, "claude-team").Succeeded);
-            Equal("claude-team", settings.FindAccount(teamKey)!.Command);
-            True(manager.SetTerminalCommand(sideKey, "CLAUDE-TEAM").Problem!.Contains("Team already uses", StringComparison.Ordinal));
+            True(manager.SetTerminalCommand(teamKey, "claude-lab").Succeeded);
+            Equal("claude-lab", settings.FindAccount(teamKey)!.Command);
+            True(manager.SetTerminalCommand(sideKey, "CLAUDE-LAB").Problem!.Contains("Lab already uses", StringComparison.Ordinal));
             True(manager.SetTerminalCommand(sideKey, "claude-side").Succeeded);
             True(manager.SetTerminalCommand(sideKey, " ").Succeeded);
             Equal(null, settings.FindAccount(sideKey)!.Command);
@@ -1095,20 +1135,20 @@ internal static class AccountTests
             // Locating the folder elsewhere rewrites the command for the new path.
             var moved = Login(root, ".claude-moved", ".credentials.json");
             var movedKey = manager.Locate(teamKey, moved).UnitKey!;
-            Equal("claude-team", settings.FindAccount(movedKey)!.Command);
-            True(File.ReadAllText(terminal.FilePath("claude-team")).Contains(moved, StringComparison.Ordinal));
+            Equal("claude-lab", settings.FindAccount(movedKey)!.Command);
+            True(File.ReadAllText(terminal.FilePath("claude-lab")).Contains(moved, StringComparison.Ordinal));
 
             // A command that cannot follow the folder is deleted, and the move says so.
             cli = null;
             var again = Login(root, ".claude-again", ".credentials.json");
             var relocated = manager.Locate(movedKey, again);
             cli = "claude";
-            True(relocated.Problem!.Contains("claude-team was deleted", StringComparison.Ordinal));
+            True(relocated.Problem!.Contains("claude-lab was deleted", StringComparison.Ordinal));
             Equal(null, settings.FindAccount(relocated.UnitKey!)!.Command);
-            False(File.Exists(terminal.FilePath("claude-team")));
-            True(manager.SetTerminalCommand(relocated.UnitKey!, "claude-team").Succeeded);
+            False(File.Exists(terminal.FilePath("claude-lab")));
+            True(manager.SetTerminalCommand(relocated.UnitKey!, "claude-lab").Succeeded);
             Equal(null, manager.Remove(relocated.UnitKey!, deleteCreatedFolder: false));
-            False(File.Exists(terminal.FilePath("claude-team")));
+            False(File.Exists(terminal.FilePath("claude-lab")));
             Equal("Terminal commands are not available here.", new AccountManager(settings, profile).SetTerminalCommand(sideKey, "x").Problem);
 
             // A command whose CLI moved (an editor extension's version folder after an update) is
@@ -1129,15 +1169,15 @@ internal static class AccountTests
             False(terminal.Refresh("claude", other, "claude-missing"));
             False(terminal.Refresh("claude", other, "claude"));
             Equal(1, manager.RefreshTerminalCommands());
-            True(File.ReadAllText(terminal.FilePath("claude-side")).Contains("\r\nclaude %*\r\n", StringComparison.Ordinal));
+            True(File.ReadAllText(terminal.FilePath("claude-side")).Contains("\r\ncmd /d /c \"claude %*\"\r\n", StringComparison.Ordinal));
 
             // The popup's names are decided by provider: Claude Code reads as Claude, GitHub
             // Copilot as Copilot only in the headline, and every other name is left as it is.
             Equal("Claude", ProviderNames.Popup(new ProviderStatus("claude", "Claude Code", null, null, false)));
-            Equal("Claude · Team", ProviderNames.Popup(new ProviderStatus("claude@1a2b3c4d", "Claude Code · Team", null, null, false) { AccountLabel = "Team" }));
+            Equal("Claude · Lab", ProviderNames.Popup(new ProviderStatus("claude@1a2b3c4d", "Claude Code · Lab", null, null, false) { AccountLabel = "Lab" }));
             Equal("GitHub Copilot", ProviderNames.Popup(new ProviderStatus("copilot", "GitHub Copilot", null, null, false)));
             Equal("Copilot", ProviderNames.Popup(new ProviderStatus("copilot", "GitHub Copilot", null, null, false), headline: true));
-            Equal("Codex · Mom", ProviderNames.Popup(new ProviderStatus("codex@1a2b3c4d", "Codex · Mom", null, null, false) { AccountLabel = "Mom" }, headline: true));
+            Equal("Codex · Work", ProviderNames.Popup(new ProviderStatus("codex@1a2b3c4d", "Codex · Work", null, null, false) { AccountLabel = "Work" }, headline: true));
 
             // The real lookups: a command on the PATH (outside UsageAI's own folder) and the CLI to start.
             var environment = SaveEnvironment("PATH", "PATHEXT", "CLAUDE_PATH", "CODEX_PATH");

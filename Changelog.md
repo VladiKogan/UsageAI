@@ -4,11 +4,30 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Any login folder whose name starts with `.claude` or `.codex` is found now.** Names such as
+  `.claude2`, `.claudework` or `.codex.work` are found as well as `.claude-*` and `.claude_*`. Only
+  a folder that holds the provider's own login file counts, so the wider rule picks up nothing
+  else. A backup copy of a login already shown is marked as a duplicate and stays hidden. The bare
+  `.claude` and `.codex` remain the default logins.
+
+### Fixed
+
+- **A Codex account's terminal command now starts that account, not the default login.** The npm
+  install of Codex is a batch file (`codex.cmd`). When the command started it directly, cmd ended
+  the command first and dropped its `CODEX_HOME`, so Codex fell back to your default `~\.codex`
+  login. The command now starts the CLI in a child `cmd`, which inherits the folder and passes
+  arguments through unchanged. A Claude Code installed through npm had the same problem. Commands
+  you already made are rewritten at the next start of UsageAI.
+
 ## [0.17.0] - 2026-11-06
 
 ### Added
 
-- **An account can have its own terminal command, such as `claude-team`.** Choose **Terminal
+- **An account can have its own terminal command, such as `claude-work`.** Choose **Terminal
   command…** under Settings → Accounts. UsageAI suggests a name from the account's label and writes
   a small `.cmd` file that sets `CLAUDE_CONFIG_DIR` or `CODEX_HOME` to that login folder and starts
   the CLI. The files go in `%LOCALAPPDATA%\UsageAI\bin`, which is added to your user PATH once.

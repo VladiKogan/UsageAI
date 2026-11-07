@@ -132,12 +132,13 @@ One is enough to get going. Connect the rest whenever you like — each provider
 Got a personal Claude Pro and a team plan, or two ChatGPT logins? Claude Code and Codex can each
 show several accounts, side by side:
 
-- **Already have the logins?** UsageAI finds folders in your user folder named `.claude-*` or
-  `.codex-*` (the folders `CLAUDE_CONFIG_DIR` / `CODEX_HOME` point your CLI at) at startup and once
-  a day. Anywhere else, use **Add account… → Use a login folder I already have**.
+- **Already have the logins?** UsageAI finds folders in your user folder whose name starts with
+  `.claude` or `.codex`, such as `.claude-work` or `.codex2` (the folders `CLAUDE_CONFIG_DIR` /
+  `CODEX_HOME` point your CLI at), at startup and once a day. Anywhere else, use
+  **Add account… → Use a login folder I already have**.
 - **New subscription?** **Add account… → Sign in to another account** runs the official
-  `claude auth login` or `codex login` into a new folder such as `%USERPROFILE%\.claude-team`, so
-  your terminal can use it too: `$env:CLAUDE_CONFIG_DIR='C:\Users\you\.claude-team'; claude`.
+  `claude auth login` or `codex login` into a new folder such as `%USERPROFILE%\.claude-work`, so
+  your terminal can use it too: `$env:CLAUDE_CONFIG_DIR='C:\Users\you\.claude-work'; claude`.
 - **Settings → Accounts** shows, hides, renames, reorders, re-authenticates and removes them, and
   sets alerts per account. The tray keeps following your default login unless you pick another.
 
