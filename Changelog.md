@@ -4,6 +4,17 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **A Codex account's terminal command now starts that account, not the default login.** The npm
+  install of Codex is a batch file (`codex.cmd`). When the command started it directly, cmd ended
+  the command first and dropped its `CODEX_HOME`, so Codex fell back to your default `~\.codex`
+  login. The command now starts the CLI in a child `cmd`, which inherits the folder and passes
+  arguments through unchanged. A Claude Code installed through npm had the same problem. Commands
+  you already made are rewritten at the next start of UsageAI.
+
 ## [0.17.0] - 2026-11-06
 
 ### Added

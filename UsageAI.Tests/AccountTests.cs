@@ -1031,7 +1031,7 @@ internal static class AccountTests
             var text = File.ReadAllText(terminal.FilePath("claude-team"));
             True(text.StartsWith(TerminalCommands.Marker + "\r\n", StringComparison.Ordinal));
             True(text.Contains("set \"CLAUDE_CONFIG_DIR=%USERPROFILE%\\.claude-team\"\r\n", StringComparison.Ordinal));
-            True(text.Contains("\r\nclaude %*\r\n", StringComparison.Ordinal));
+            True(text.Contains("\r\ncmd /d /c \"claude %*\"\r\n", StringComparison.Ordinal));
 
             // cmd never runs a claude.bat sitting in the current folder (a cloned repository) in
             // place of the CLI on the PATH; the setting stays inside setlocal.
@@ -1063,9 +1063,37 @@ internal static class AccountTests
             True(terminal.Create("codex", Path.Combine(root, ".codex-x"), "codex-x", null).Succeeded);
             var codexText = File.ReadAllText(terminal.FilePath("codex-x"));
             True(codexText.Contains("set \"CODEX_HOME=", StringComparison.Ordinal));
-            True(codexText.Contains("\r\n\"C:\\Program Files\\codex\\codex.exe\" %*\r\n", StringComparison.Ordinal));
+            True(codexText.Contains("\r\ncmd /d /c \"\"C:\\Program Files\\codex\\codex.exe\" %*\"\r\n", StringComparison.Ordinal));
             cli = null;
             True(terminal.Create("claude", team, "claude-none", null).Problem!.Contains("CLI was not found", StringComparison.Ordinal));
+
+            // End to end: the file hands the login folder to an npm-style launcher. That launcher is
+            // a batch file whose goto trick ends every batch level, which once dropped the folder
+            // before the CLI started, so the default login answered. Arguments arrive untouched.
+            var launcher = Path.Combine(root, "npm dir", "zzcli.cmd");
+            Directory.CreateDirectory(Path.GetDirectoryName(launcher)!);
+            // Like npm's, it starts the CLI (a child cmd here) only after the goto has unwound the batch levels.
+            File.WriteAllText(launcher, "@ECHO off\r\nSETLOCAL\r\nendLocal & goto #_undefined_# 2>NUL || title %COMSPEC% & cmd /d /c echo HOME=[%%CODEX_HOME%%] ARGS=[%*]\r\n");
+            cli = $"\"{launcher}\"";
+            var endToEndHome = Path.Combine(profile, ".codex-e2e");
+            True(terminal.Create("codex", endToEndHome, "codex-e2e", null).Succeeded);
+            var run = new ProcessStartInfo("cmd.exe")
+            {
+                Arguments = $"/d /c \"\"{terminal.FilePath("codex-e2e")}\" exec \"two words\"\"",
+                CreateNoWindow = true,
+                RedirectStandardOutput = true,
+                UseShellExecute = false,
+            };
+            run.Environment["USERPROFILE"] = profile;
+            run.Environment.Remove("CODEX_HOME");
+            using (var process = Process.Start(run)!)
+            {
+                var output = process.StandardOutput.ReadToEnd();
+                True(process.WaitForExit(15_000));
+                True(output.Contains($"HOME=[{endToEndHome}]", StringComparison.OrdinalIgnoreCase), output);
+                True(output.Contains("ARGS=[exec \"two words\"]", StringComparison.Ordinal), output);
+            }
+
             cli = "claude";
 
             // A PATH that cannot be written still leaves a working file and says so.
@@ -1129,7 +1157,7 @@ internal static class AccountTests
             False(terminal.Refresh("claude", other, "claude-missing"));
             False(terminal.Refresh("claude", other, "claude"));
             Equal(1, manager.RefreshTerminalCommands());
-            True(File.ReadAllText(terminal.FilePath("claude-side")).Contains("\r\nclaude %*\r\n", StringComparison.Ordinal));
+            True(File.ReadAllText(terminal.FilePath("claude-side")).Contains("\r\ncmd /d /c \"claude %*\"\r\n", StringComparison.Ordinal));
 
             // The popup's names are decided by provider: Claude Code reads as Claude, GitHub
             // Copilot as Copilot only in the headline, and every other name is left as it is.
@@ -1137,7 +1165,7 @@ internal static class AccountTests
             Equal("Claude · Team", ProviderNames.Popup(new ProviderStatus("claude@1a2b3c4d", "Claude Code · Team", null, null, false) { AccountLabel = "Team" }));
             Equal("GitHub Copilot", ProviderNames.Popup(new ProviderStatus("copilot", "GitHub Copilot", null, null, false)));
             Equal("Copilot", ProviderNames.Popup(new ProviderStatus("copilot", "GitHub Copilot", null, null, false), headline: true));
-            Equal("Codex · Mom", ProviderNames.Popup(new ProviderStatus("codex@1a2b3c4d", "Codex · Mom", null, null, false) { AccountLabel = "Mom" }, headline: true));
+            Equal("Codex · Work", ProviderNames.Popup(new ProviderStatus("codex@1a2b3c4d", "Codex · Work", null, null, false) { AccountLabel = "Work" }, headline: true));
 
             // The real lookups: a command on the PATH (outside UsageAI's own folder) and the CLI to start.
             var environment = SaveEnvironment("PATH", "PATHEXT", "CLAUDE_PATH", "CODEX_PATH");
