@@ -20,7 +20,7 @@
   off on its own, and a login of someone already shown is never added twice.
 - **UsageAI: Add Account… signs in to another account or adds a login folder you already have.**
   Signing in runs the provider's own `claude auth login --claudeai` or `codex login` in an editor
-  terminal with `CLAUDE_CONFIG_DIR` or `CODEX_HOME` set to a new folder such as `~/.claude-team`,
+  terminal with `CLAUDE_CONFIG_DIR` or `CODEX_HOME` set to a new folder such as `~/.claude-work`,
   which your own CLI can use too. UsageAI still never writes or refreshes a token itself.
 - **The `usageai.accounts` setting lists added login folders, with an optional label or hidden
   flag.** Each entry must be an absolute, local folder that holds the provider's credential file;

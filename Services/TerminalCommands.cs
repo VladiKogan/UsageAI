@@ -17,7 +17,7 @@ internal sealed record TerminalCommandResult(
 }
 
 /// <summary>
-/// Terminal commands such as <c>claude-team</c>: a small <c>.cmd</c> file that sets
+/// Terminal commands such as <c>claude-work</c>: a small <c>.cmd</c> file that sets
 /// <c>CLAUDE_CONFIG_DIR</c> / <c>CODEX_HOME</c> to one login folder and starts the provider's CLI,
 /// so an account's folder never has to be typed. The files live in UsageAI's own <c>bin</c> folder,
 /// which is added to the user's PATH once. Only files that carry <see cref="Marker"/> are ever
@@ -77,7 +77,7 @@ internal sealed partial class TerminalCommands
 
     /// <summary>
     /// The name a command is offered under: the provider's CLI name and the account's label, such as
-    /// <c>claude-team</c>, else the folder's own suffix (<c>.claude-work</c> gives <c>claude-work</c>).
+    /// <c>claude-work</c>, else the folder's own suffix (<c>.claude-lab</c> gives <c>claude-lab</c>).
     /// </summary>
     public static string Suggest(string providerId, string? label, string? folder)
     {

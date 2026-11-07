@@ -105,7 +105,7 @@ Claude Code and Codex can show more than one account, each on a card of its own 
   shown at once; one found later is shown only after you answer **Show** (or **Ignore**).
 - **Added by you.** **UsageAI: Add Account…** (also in the dashboard's **…** menu) either signs in
   to another account with the provider's own CLI (`claude auth login --claudeai` or `codex login`)
-  in an editor terminal, into a new folder such as `~/.claude-team` that your own CLI can use
+  in an editor terminal, into a new folder such as `~/.claude-work` that your own CLI can use
   too, or adds a login folder you already have. Added folders are saved in `usageai.accounts`,
   where you can also give any account a `label` or hide it with `"hidden": true`. Each folder must
   be an absolute, local path that holds the credential file.

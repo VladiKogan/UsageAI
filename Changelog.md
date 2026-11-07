@@ -19,7 +19,7 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **An account can have its own terminal command, such as `claude-team`.** Choose **Terminal
+- **An account can have its own terminal command, such as `claude-work`.** Choose **Terminal
   command…** under Settings → Accounts. UsageAI suggests a name from the account's label and writes
   a small `.cmd` file that sets `CLAUDE_CONFIG_DIR` or `CODEX_HOME` to that login folder and starts
   the CLI. The files go in `%LOCALAPPDATA%\UsageAI\bin`, which is added to your user PATH once.

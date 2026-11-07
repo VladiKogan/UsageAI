@@ -422,7 +422,7 @@ internal sealed class AccountManager
     }
 
     /// <summary>
-    /// Gives a login folder a terminal command, such as <c>claude-team</c>, replacing the one it had;
+    /// Gives a login folder a terminal command, such as <c>claude-work</c>, replacing the one it had;
     /// an empty name removes it. Applies at once, like adding or removing an account.
     /// </summary>
     public TerminalCommandResult SetTerminalCommand(string unitKey, string? name)

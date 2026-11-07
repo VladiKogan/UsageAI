@@ -63,7 +63,7 @@ internal sealed class ProviderAccount
     /// <summary>The label of the account already showing the same person, when this one repeats it.</summary>
     public string? DuplicateOf { get; set; }
 
-    /// <summary>The terminal command UsageAI wrote for this login folder, such as <c>claude-team</c>.</summary>
+    /// <summary>The terminal command UsageAI wrote for this login folder, such as <c>claude-work</c>.</summary>
     public string? Command { get; set; }
 
     [JsonIgnore]
