@@ -278,16 +278,12 @@ class RecoverableClaudeUsageError extends UsageProviderError {
   }
 }
 
-/** The credential file of `configDirectory`, else of the default login. */
+/**
+ * The credential file of `configDirectory`, else of the main login in the standard `~/.claude`. An
+ * inherited `CLAUDE_CONFIG_DIR` never moves the main login; that folder is found as an account.
+ */
 function claudeCredentialPath(configDirectory?: string): string {
-  if (configDirectory) {
-    return path.join(configDirectory, ".credentials.json");
-  }
-  const configuredDirectory = process.env.CLAUDE_CONFIG_DIR?.trim().replace(/^"|"$/g, "");
-  if (configuredDirectory && !path.isAbsolute(configuredDirectory)) {
-    throw new UsageProviderError("CLAUDE_CONFIG_DIR must be an absolute path.");
-  }
-  return path.join(configuredDirectory || path.join(userHome(), ".claude"), ".credentials.json");
+  return path.join(configDirectory || path.join(userHome(), ".claude"), ".credentials.json");
 }
 
 async function hasFreshStoredClaudeCredential(configDirectory?: string): Promise<boolean> {
@@ -348,8 +344,10 @@ async function nudgeClaudeCredentialRefresh(
 }
 
 /**
- * The environment a Claude CLI child gets: the default login inherits `CLAUDE_CONFIG_DIR`, while an
- * account's folder is set explicitly and never inherited.
+ * The environment a Claude CLI child gets: an account's folder set explicitly, and for the main
+ * login no `CLAUDE_CONFIG_DIR` at all, so the child uses the standard `~/.claude` UsageAI reads.
+ * Never inherited: an inherited one would point the child at another folder, and setting it to
+ * `~/.claude` would move the CLI's profile from `~/.claude.json` into the folder.
  */
 export function claudeCliEnvironment(configDirectory?: string): {
   readonly inherited: readonly string[];
@@ -357,7 +355,6 @@ export function claudeCliEnvironment(configDirectory?: string): {
 } {
   return {
     inherited: [
-      ...(configDirectory ? [] : ["CLAUDE_CONFIG_DIR"]),
       "CLAUDE_CODE_GIT_BASH_PATH",
       "NODE_EXTRA_CA_CERTS",
       "SSL_CERT_DIR",

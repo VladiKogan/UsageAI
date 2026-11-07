@@ -150,6 +150,7 @@ internal static class Program
         ("add account dialog signs in, adds a folder or re-authenticates", AccountTests.TestAddAccountDialogAsync),
         ("forgotten and duplicate accounts stay right, and retries wait their turn", AccountTests.TestAccountReviewFixesAsync),
         ("terminal commands start a CLI on one login folder", AccountTests.TestTerminalCommandsAsync),
+        ("the main login is the standard folder; an inherited one is found and migrated", AccountTests.TestStandardFolderAndMigrationAsync),
         ("settings account list selects on click, passes the wheel on and shows live status", AccountTests.TestAccountListClicksWheelAndLiveStatusAsync),
         ("an in-app update leaves a note for the copy that starts after it", UpdateFlowTests.TestUpdateHandoffAsync),
         ("the update progress window steps through each stage", UpdateFlowTests.TestUpdateProgressWindowAsync),
@@ -157,6 +158,40 @@ internal static class Program
         ("Windows closing the app exits it even behind a modal dialog", UpdateFlowTests.TestEndSessionExitsFromModalAsync),
         ("an in-app update shows its progress and the installer's outcome", UpdateFlowTests.TestInstallUpdateFlowAsync),
     };
+
+    /// <summary>
+    /// The login folder the Claude CLI stand-ins act on, as the real CLI picks it: CLAUDE_CONFIG_DIR
+    /// when set, else ~\.claude under the (test-redirected) USERPROFILE.
+    /// </summary>
+    private static string? FakeClaudeFolder()
+    {
+        var configured = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
+        if (!string.IsNullOrWhiteSpace(configured))
+        {
+            return Path.IsPathFullyQualified(configured) ? configured : null;
+        }
+
+        var profile = Environment.GetEnvironmentVariable("USERPROFILE");
+        return string.IsNullOrWhiteSpace(profile) ? null : Path.Combine(profile, ".claude");
+    }
+
+    /// <summary>The Codex app-server stand-in's scenario for the main login, from ~\.codex.</summary>
+    private static string? ReadCodexScenario()
+    {
+        var profile = Environment.GetEnvironmentVariable("USERPROFILE");
+        var file = string.IsNullOrWhiteSpace(profile) ? null : Path.Combine(profile, ".codex", CodexScenarioFileName);
+        return file is not null && File.Exists(file) ? File.ReadAllText(file).Trim() : null;
+    }
+
+    internal const string CodexScenarioFileName = "usageai-test-scenario";
+
+    /// <summary>Tells the Codex app-server stand-in which scenario the main login's server plays.</summary>
+    internal static void SetCodexScenario(string scenario)
+    {
+        var folder = Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE")!, ".codex");
+        Directory.CreateDirectory(folder);
+        File.WriteAllText(Path.Combine(folder, CodexScenarioFileName), scenario);
+    }
 
     private static async Task<int> Main(string[] args)
     {
@@ -175,8 +210,8 @@ internal static class Program
             args[0] == "auth" &&
             args[1] == "status")
         {
-            var configDirectory = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
-            var loggedIn = !string.IsNullOrWhiteSpace(configDirectory) && Path.IsPathFullyQualified(configDirectory);
+            var configDirectory = FakeClaudeFolder();
+            var loggedIn = configDirectory is not null && File.Exists(Path.Combine(configDirectory, ".credentials.json"));
             await Console.Out.WriteLineAsync(loggedIn
                 ? "{\"loggedIn\":true,\"authMethod\":\"claude.ai\"}"
                 : "{\"loggedIn\":false}");
@@ -187,8 +222,8 @@ internal static class Program
             args[0] == "mcp" &&
             args[1] == "list")
         {
-            var configDirectory = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
-            if (string.IsNullOrWhiteSpace(configDirectory) || !Path.IsPathFullyQualified(configDirectory))
+            var configDirectory = FakeClaudeFolder();
+            if (configDirectory is null)
             {
                 return 1;
             }
@@ -257,6 +292,23 @@ internal static class Program
             "USAGEAI_DATA_DIR",
             Path.Combine(Path.GetTempPath(), "UsageAI.SecurityTests", $"data-{Guid.NewGuid():N}"));
 
+        // The main Claude and Codex logins are read from the standard folders under USERPROFILE,
+        // whatever CLAUDE_CONFIG_DIR / CODEX_HOME say, so the profile itself is redirected: no check
+        // can ever read this machine's real ~\.claude or ~\.codex, or an inherited folder (an agent
+        // session running the suite may have CLAUDE_CONFIG_DIR set to a real login). A check that
+        // needs either variable sets it itself.
+        var testProfile = Path.Combine(Path.GetTempPath(), "UsageAI.SecurityTests", $"profile-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(testProfile);
+        Environment.SetEnvironmentVariable("USERPROFILE", testProfile);
+        Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", null);
+        Environment.SetEnvironmentVariable("CODEX_HOME", null);
+        if (!AccountDiscovery.DefaultFolder("claude").StartsWith(testProfile + "\\", StringComparison.OrdinalIgnoreCase) ||
+            !AccountDiscovery.DefaultFolder("codex").StartsWith(testProfile + "\\", StringComparison.OrdinalIgnoreCase))
+        {
+            Console.Error.WriteLine("The test profile redirect did not take: refusing to run against the real profile.");
+            return 3;
+        }
+
         // Same idea for the registry: a settings dialog driven end to end saves the startup
         // preference, and that must never reach this machine's real Run key.
         var startupRoot = $@"Software\UsageAI-Tests-{Guid.NewGuid():N}";
@@ -321,7 +373,9 @@ internal static class Program
 
     private static async Task<int> RunFakeCodexAppServerAsync()
     {
-        var scenario = Environment.GetEnvironmentVariable("CODEX_HOME") ?? "success";
+        // An account's app-server gets its CODEX_HOME; the main login's gets none and, like the real
+        // CLI, falls back to ~\.codex, where a check leaves the scenario it wants.
+        var scenario = Environment.GetEnvironmentVariable("CODEX_HOME") ?? ReadCodexScenario() ?? "success";
         if (scenario.EndsWith("premature-exit", StringComparison.Ordinal))
         {
             return 0;

@@ -4,6 +4,29 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Your main Claude Code and Codex login is always `%USERPROFILE%\.claude` and `.codex`.** It used
+  to follow `CLAUDE_CONFIG_DIR` or `CODEX_HOME` whenever UsageAI was started with either variable
+  set. Starting it from a terminal set up for another login quietly swapped the main tile to that
+  login and hid the real account behind it as a duplicate. The account's usage history was cleared
+  in the process. Now the folder such a variable names appears as one more account, found like a
+  `.claude-*` folder, and the main tile always reads the standard folder. The Claude Code and Codex
+  commands UsageAI runs for the main login get neither variable, so they read the same folder.
+- **Settings and banners name the folder instead of saying "default login".** The main login reads
+  as `.claude`, and its details as "Standard folder: %USERPROFILE%\.claude". A change of person
+  reads as "The Claude login in %USERPROFILE%\.claude is now …".
+
+### Fixed
+
+- **A login that was the main one only because of `CLAUDE_CONFIG_DIR` or `CODEX_HOME` keeps its
+  history.** If you had set the variable permanently, the first start after this update moves that
+  login to an account of its own. Its usage history, alert memory, label, alert switch, tray choice
+  and popup-ring choice move with it, so it doesn't start over as if it were someone new. If the
+  standard folder has no login, its tile stays hidden until one appears.
+
 ## [0.17.1] - 2026-11-07
 
 ### Changed

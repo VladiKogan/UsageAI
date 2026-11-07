@@ -737,7 +737,8 @@ internal static class CoverageExpansionTests
             "CLAUDE_WEB_SESSION_KEY",
             "CLAUDE_CONFIG_DIR",
             "CLAUDE_PATH");
-        var directory = Path.Combine(AppPaths.DataDirectory, $"claude-read-only-{Guid.NewGuid():N}");
+        // The main login is the standard ~\.claude under the test-redirected profile.
+        var directory = Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE")!, ".claude");
         Directory.CreateDirectory(directory);
         try
         {
@@ -745,7 +746,7 @@ internal static class CoverageExpansionTests
             Environment.SetEnvironmentVariable("USAGEAI_CLAUDE_SESSION_KEY", null);
             Environment.SetEnvironmentVariable("CLAUDE_AI_SESSION_KEY", null);
             Environment.SetEnvironmentVariable("CLAUDE_WEB_SESSION_KEY", null);
-            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", directory);
+            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", null);
             Environment.SetEnvironmentVariable(
                 "CLAUDE_PATH",
                 Environment.ProcessPath ?? throw new InvalidOperationException("The test executable path is unavailable."));
@@ -2108,8 +2109,11 @@ internal static class CoverageExpansionTests
             True(executable.EndsWith(".exe", StringComparison.OrdinalIgnoreCase));
             Environment.SetEnvironmentVariable("CODEX_PATH", executable);
 
-            Environment.SetEnvironmentVariable("CODEX_HOME", "usageai-test-success");
+            UsageAI.Tests.Program.SetCodexScenario("usageai-test-success");
+            // An inherited CODEX_HOME never reaches the main login's app-server: it reads ~\.codex.
+            Environment.SetEnvironmentVariable("CODEX_HOME", "usageai-test-auth-error");
             var snapshot = await new CodexUsageClient().GetUsageAsync();
+            Environment.SetEnvironmentVariable("CODEX_HOME", null);
             Equal("Pro", snapshot.Plan);
             Equal(44, snapshot.Metrics[0].UsedPercent);
             Equal(61, snapshot.Metrics[1].UsedPercent);
@@ -2118,34 +2122,34 @@ internal static class CoverageExpansionTests
             Equal("app-server -c sandbox_mode=\"read-only\" -c approval_policy=\"never\" --listen stdio://", string.Join(' ', CodexUsageClient.AppServerArguments));
 
             // An older CLI without account/read still returns usage, just without the account.
-            Environment.SetEnvironmentVariable("CODEX_HOME", "usageai-test-account-error");
+            UsageAI.Tests.Program.SetCodexScenario("usageai-test-account-error");
             var unnamed = await new CodexUsageClient().GetUsageAsync();
             Equal(44, unnamed.Metrics[0].UsedPercent);
             Null(unnamed.AccountName);
             Equal("Codex", new CodexUsageClient().DisplayName);
             Equal("codex login", new CodexUsageClient().SignInCommand);
 
-            Environment.SetEnvironmentVariable("CODEX_HOME", "usageai-test-auth-error");
+            UsageAI.Tests.Program.SetCodexScenario("usageai-test-auth-error");
             var authentication = await ThrowsAsync<CodexUsageException>(
                 () => new CodexUsageClient().GetUsageAsync());
             True(authentication.Message.Contains("codex login", StringComparison.OrdinalIgnoreCase));
 
-            Environment.SetEnvironmentVariable("CODEX_HOME", "usageai-test-missing-result");
+            UsageAI.Tests.Program.SetCodexScenario("usageai-test-missing-result");
             var missing = await ThrowsAsync<CodexUsageException>(
                 () => new CodexUsageClient().GetUsageAsync());
             True(missing.Message.Contains("without usage data", StringComparison.Ordinal));
 
-            Environment.SetEnvironmentVariable("CODEX_HOME", "usageai-test-premature-exit");
+            UsageAI.Tests.Program.SetCodexScenario("usageai-test-premature-exit");
             var stopped = await ThrowsAsync<CodexUsageException>(
                 () => new CodexUsageClient().GetUsageAsync());
             True(stopped.Message.Contains("stopped", StringComparison.OrdinalIgnoreCase));
 
-            Environment.SetEnvironmentVariable("CODEX_HOME", "usageai-test-generic-error");
+            UsageAI.Tests.Program.SetCodexScenario("usageai-test-generic-error");
             var generic = await ThrowsAsync<CodexUsageException>(
                 () => new CodexUsageClient().GetUsageAsync());
             True(generic.Message.Contains("could not read", StringComparison.OrdinalIgnoreCase));
 
-            Environment.SetEnvironmentVariable("CODEX_HOME", "usageai-test-too-many");
+            UsageAI.Tests.Program.SetCodexScenario("usageai-test-too-many");
             var excessive = await ThrowsAsync<CodexUsageException>(
                 () => new CodexUsageClient().GetUsageAsync());
             True(excessive.Message.Contains("too many", StringComparison.OrdinalIgnoreCase));
@@ -2240,6 +2244,7 @@ internal static class CoverageExpansionTests
         finally
         {
             RestoreEnvironment(environment);
+            File.Delete(Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE")!, ".codex", UsageAI.Tests.Program.CodexScenarioFileName));
         }
     }
 
@@ -4291,7 +4296,7 @@ internal static class CoverageExpansionTests
             "CLAUDE_WEB_SESSION_KEY",
             "CLAUDE_CONFIG_DIR",
             "USAGEAI_ENABLE_GH_TOKEN_FALLBACK");
-        var directory = Path.Combine(AppPaths.DataDirectory, $"provider-credentials-{Guid.NewGuid():N}");
+        var directory = Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE")!, ".claude");
         Directory.CreateDirectory(directory);
         try
         {
@@ -4300,7 +4305,7 @@ internal static class CoverageExpansionTests
             Environment.SetEnvironmentVariable("USAGEAI_CLAUDE_SESSION_KEY", null);
             Environment.SetEnvironmentVariable("CLAUDE_AI_SESSION_KEY", null);
             Environment.SetEnvironmentVariable("CLAUDE_WEB_SESSION_KEY", null);
-            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", directory);
+            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", null);
 
             File.WriteAllText(
                 Path.Combine(directory, ".credentials.json"),
@@ -4350,16 +4355,21 @@ internal static class CoverageExpansionTests
                     "ParseCredentials",
                     """{"refreshToken":"only-refresh"}"""));
 
-            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", "relative-config");
-            using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
-                       throw new InvalidOperationException("HTTP should not be reached."))))
+            // An inherited CLAUDE_CONFIG_DIR, relative or naming another login, never moves the main
+            // login: it still reads ~\.claude (that other folder is found as an account instead).
+            var elsewhere = Path.Combine(AppPaths.DataDirectory, $"claude-elsewhere-{Guid.NewGuid():N}");
+            Directory.CreateDirectory(elsewhere);
+            File.WriteAllText(Path.Combine(elsewhere, ".credentials.json"), "{invalid");
+            foreach (var inherited in new[] { "relative-config", elsewhere })
             {
-                var exception = await ThrowsAsync<ClaudeCodeUsageException>(
-                    () => new ClaudeCodeUsageClient(http).GetUsageAsync());
-                True(exception.Message.Contains("absolute path", StringComparison.OrdinalIgnoreCase));
+                Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", inherited);
+                using var http = new HttpClient(new StubHttpHandler((_, _, _) =>
+                    Task.FromResult(JsonResponse(HttpStatusCode.OK, """{"five_hour":{"utilization":21}}"""))));
+                Equal("Claude Team", (await new ClaudeCodeUsageClient(http, () => Array.Empty<string>()).GetUsageAsync()).Plan);
             }
 
-            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", directory);
+            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", null);
+            Directory.Delete(elsewhere, recursive: true);
             File.WriteAllText(Path.Combine(directory, ".credentials.json"), "{invalid");
             using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
                        throw new InvalidOperationException("HTTP should not be reached."))))

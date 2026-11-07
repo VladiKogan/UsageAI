@@ -12,6 +12,7 @@ import {
   discoverAccountFolders,
   distinctAccountLabels,
   identityKey,
+  inheritedLoginFolder,
   nodeAccountFileSystem,
   providerTitle,
   readClaudeIdentity,
@@ -264,9 +265,11 @@ export class AccountService {
   /** One listing of the home folder, then the found accounts not answered yet are offered. */
   public async scan(): Promise<{ readonly pending: number }> {
     const defaults = this.defaultFolders();
-    this.discovered = await discoverAccountFolders(this.dependencies.home(), Object.fromEntries(
+    const listed = await discoverAccountFolders(this.dependencies.home(), Object.fromEntries(
       defaults.map((entry) => [entry.provider, entry.path]),
     ), this.fileSystem());
+    const inherited = (await this.inheritedFolders()).filter((folder) => !listed.some((entry) => entry.id === folder.id));
+    this.discovered = [...listed, ...inherited];
     await this.readInputs();
     const firstRun = this.state === undefined;
     if (firstRun) {
@@ -320,21 +323,33 @@ export class AccountService {
     return this.dependencies.environment?.() ?? process.env;
   }
 
+  /** The main logins: always the standard folders, whatever the editor's environment. */
   private defaultFolders(): Array<{ readonly provider: AccountProviderId; readonly path: string }> {
     const home = this.dependencies.home();
-    return accountProviderIds.map((provider) => ({
-      provider,
-      path: defaultLoginFolder(provider, this.environment(), home)
-        ?? path.join(home, provider === "claude" ? ".claude" : ".codex"),
-    }));
+    return accountProviderIds.map((provider) => ({ provider, path: defaultLoginFolder(provider, home) }));
+  }
+
+  /**
+   * A folder an inherited `CLAUDE_CONFIG_DIR` / `CODEX_HOME` names, found like any other login
+   * folder when it holds that provider's credential file.
+   */
+  private async inheritedFolders(): Promise<DiscoveredFolder[]> {
+    const found: DiscoveredFolder[] = [];
+    for (const provider of accountProviderIds) {
+      const folder = inheritedLoginFolder(provider, this.environment(), this.dependencies.home());
+      if (folder && await this.fileSystem().isFile(path.join(folder, credentialFileName(provider)))) {
+        found.push({ provider, path: folder, id: accountIdForPath(folder) });
+      }
+    }
+    return found;
   }
 
   private async identityOf(provider: AccountProviderId, folder: string, isDefault: boolean): Promise<AccountIdentity> {
     if (provider === "codex") {
       return readCodexIdentity(folder);
     }
-    const withoutConfigDirectory = isDefault && !this.environment().CLAUDE_CONFIG_DIR?.trim();
-    return readClaudeIdentity(claudeProfilePath(folder, withoutConfigDirectory, this.dependencies.home()));
+    // The main login is the standard ~/.claude, whose profile the CLI keeps beside it.
+    return readClaudeIdentity(claudeProfilePath(folder, isDefault, this.dependencies.home()));
   }
 
   private async readInputs(): Promise<void> {

@@ -21,8 +21,8 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
   still expired, `claude mcp list`, which makes the CLI refresh the login. Claude Code remains the sole
   owner of any resulting token exchange and credential update; UsageAI waits briefly and rereads the
   access token afterward.
-- Codex credentials are read-only to UsageAI. When `auth.json` in `CODEX_HOME` (an absolute path) or
-  `~\.codex` holds a ChatGPT login whose access token has not expired, UsageAI sends that access
+- Codex credentials are read-only to UsageAI. When `auth.json` in the standard `~\.codex` (or an
+  account's own folder) holds a ChatGPT login whose access token has not expired, UsageAI sends that access
   token, with the login's account id, to `https://chatgpt.com/backend-api/wham/usage` only, the
   endpoint the Codex CLI itself uses. It never reads the refresh token for use, never refreshes the
   login, and never writes the file. An API-key login, an expired token, a `chatgpt_base_url` override
@@ -31,15 +31,17 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
   login itself.
 - Extra Claude Code and Codex accounts are read from their own login folders under the same rules:
   the folder's `.credentials.json` or `auth.json` is read only, and its token goes only to the hosts
-  the default login's token goes to (`api.anthropic.com`, `chatgpt.com`). An extra account never
-  uses `USAGEAI_CLAUDE_OAUTH_TOKEN`, a Claude web session key, or the Windows Credential Manager
-  fallback, which all belong to the default login. Its CLI children (`claude auth status`,
-  `claude mcp list`, `codex app-server`) receive `CLAUDE_CONFIG_DIR` / `CODEX_HOME` set explicitly to
-  that folder rather than inherited. Folders are found by one non-recursive listing of
-  `%USERPROFILE%` for names that start with `.claude` / `.codex` and that hold that provider's
-  credential file, or chosen by the user, and must be absolute and local (no UNC). Who is signed
-  in is read from local files only (`.claude.json`'s `oauthAccount`, the email in Codex's
-  `id_token`) and kept as a hash plus the email, for labels.
+  the main login's token goes to (`api.anthropic.com`, `chatgpt.com`). The main login is always the
+  standard `~\.claude` / `~\.codex`; an inherited `CLAUDE_CONFIG_DIR` / `CODEX_HOME` never redirects
+  it. An extra account never uses `USAGEAI_CLAUDE_OAUTH_TOKEN`, a Claude web session key, or the
+  Windows Credential Manager fallback, which all belong to the main login. Its CLI children
+  (`claude auth status`, `claude mcp list`, `codex app-server`) receive `CLAUDE_CONFIG_DIR` /
+  `CODEX_HOME` set explicitly to that folder; the main login's children receive neither, never an
+  inherited one. Folders are found by one non-recursive listing of `%USERPROFILE%` for names that
+  start with `.claude` / `.codex` and that hold that provider's credential file, from an inherited
+  `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, or chosen by the user, and must be absolute and local (no
+  UNC). Who is signed in is read from local files only (`.claude.json`'s `oauthAccount`, the email
+  in Codex's `id_token`) and kept as a hash plus the email, for labels.
 - "Sign in to another account" starts the provider's official login, `claude auth login --claudeai`
   or `codex login`, with `CLAUDE_CONFIG_DIR` / `CODEX_HOME` pointing at a new or empty folder the user
   confirmed. The CLI performs the whole OAuth sign-in in the browser and writes its own credential

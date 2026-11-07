@@ -15,6 +15,7 @@ import {
   runClaudeAuthStatus,
 } from "../src/providers/claude";
 import { CodexUsageClient, jwtExpiryMs, parseCodexHttpSnapshot, readCodexHttpCredentials } from "../src/providers/codex";
+import { userHome } from "../src/security";
 import { addTokensFromValue, CopilotUsageClient, hostFromKey, subscriptionEndedMessage, userEndpointFor } from "../src/providers/copilot";
 import {
   agyHubArguments,
@@ -1242,7 +1243,8 @@ test("Claude auth-status probe accepts valid CLI output and contains failures", 
 
 test("Claude recovery makes the CLI refresh an expired login that auth status only reports", async () => {
   const directory = await mkdtemp(path.join(os.tmpdir(), "usageai-claude-refresh-"));
-  const configDirectory = path.join(directory, "config");
+  // The main login is the standard ~/.claude under the test-redirected home.
+  const configDirectory = path.join(userHome(), ".claude");
   const credentialPath = path.join(configDirectory, ".credentials.json");
   const mcpMarker = path.join(directory, "mcp-ran");
   const names = ["CLAUDE_PATH", "PATH", "CLAUDE_CONFIG_DIR"];
@@ -1264,7 +1266,8 @@ test("Claude recovery makes the CLI refresh an expired login that auth status on
       scriptPath = path.join(directory, "claude");
       process.env.CLAUDE_PATH = scriptPath;
     }
-    process.env.CLAUDE_CONFIG_DIR = configDirectory;
+    // An inherited CLAUDE_CONFIG_DIR elsewhere must not move the main login's recovery.
+    process.env.CLAUDE_CONFIG_DIR = path.join(directory, "elsewhere");
     // Mirrors the real CLI: `auth status` never refreshes, `mcp list` needs a live token and does.
     const source = `
       const fs = require("node:fs");
@@ -1293,6 +1296,7 @@ test("Claude recovery makes the CLI refresh an expired login that auth status on
   } finally {
     for (const name of names) restoreEnvironment(name, previous.get(name));
     await rm(directory, { recursive: true, force: true });
+    await rm(configDirectory, { recursive: true, force: true });
   }
 });
 

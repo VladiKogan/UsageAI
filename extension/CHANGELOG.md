@@ -4,10 +4,15 @@
 
 ### Changed
 
+- **Your main Claude Code and Codex login is always `~/.claude` and `~/.codex`.** It used to follow
+  `CLAUDE_CONFIG_DIR` or `CODEX_HOME` whenever the editor was started with either variable set, so
+  opening it from a terminal set up for another login swapped the main card to that login. Now the
+  folder such a variable names is found as one more account, and the main card always reads the
+  standard folder. The Claude Code and Codex commands UsageAI runs for it get neither variable.
 - **Any login folder whose name starts with `.claude` or `.codex` is found now.** Names such as
   `.claude2`, `.claudework` or `.codex.work` are found as well as `.claude-*` and `.claude_*`. Only
   a folder that holds the provider's own login file counts, so the wider rule picks up nothing
-  else. The bare `.claude` and `.codex` remain the default logins.
+  else. The bare `.claude` and `.codex` remain the main logins.
 
 - **The extension is listed under the AI category and found by more search words.** Both
   marketplaces now list it under AI, Machine Learning and Visualization instead of Other, and its

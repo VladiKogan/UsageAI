@@ -145,15 +145,15 @@ export class CodexUsageClient implements UsageClient {
 }
 
 /**
- * The environment the app-server gets: the default login inherits `CODEX_HOME`, while an account's
- * folder is set explicitly and never inherited.
+ * The environment the app-server gets: an account's folder set explicitly, and for the main login
+ * no `CODEX_HOME`, so it uses the standard `~/.codex` UsageAI reads. Never inherited.
  */
 export function codexAppServerEnvironment(home?: string): {
   readonly inherited: readonly string[];
   readonly overrides: NodeJS.ProcessEnv;
 } {
   return {
-    inherited: [...(home ? [] : ["CODEX_HOME"]), "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR", "SSL_CERT_FILE"],
+    inherited: ["NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR", "SSL_CERT_FILE"],
     overrides: home ? { CODEX_HOME: home } : {},
   };
 }
@@ -193,16 +193,12 @@ async function tryHttpUsage(credentials: CodexHttpCredentials, signal?: AbortSig
 }
 
 /**
- * The Codex login's token when the HTTP path may use it. Only a ChatGPT login in a `CODEX_HOME`
- * given as an absolute path (or the default `~/.codex`) qualifies, and never one pointed at a custom
- * `chatgpt_base_url`: the token goes to chatgpt.com alone.
+ * The main login's token when the HTTP path may use it: a ChatGPT login in the standard `~/.codex`,
+ * never one pointed at a custom `chatgpt_base_url`, since the token goes to chatgpt.com alone. An
+ * inherited `CODEX_HOME` never moves the main login; that folder is found as an account.
  */
 export async function loadCodexHttpCredentials(now = Date.now()): Promise<CodexHttpCredentials | undefined> {
-  const configured = process.env.CODEX_HOME?.trim().replace(/^"|"$/g, "");
-  if (configured && !path.isAbsolute(configured)) {
-    return undefined;
-  }
-  return readCodexHttpCredentials(configured ? path.resolve(configured) : path.join(userHome(), ".codex"), now);
+  return readCodexHttpCredentials(path.join(userHome(), ".codex"), now);
 }
 
 export async function readCodexHttpCredentials(home: string, now = Date.now()): Promise<CodexHttpCredentials | undefined> {

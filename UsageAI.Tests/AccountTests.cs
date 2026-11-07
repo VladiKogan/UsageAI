@@ -171,12 +171,38 @@ internal static class AccountTests
                 Equal("me@example.com", AccountDiscovery.ReadIdentity("claude", defaultClaude, profile)!.Email);
                 Equal(Path.Combine(profile, ".claude.json"), AccountDiscovery.ClaudeIdentityFile(defaultClaude, profile));
                 Equal(ProviderKey.NormalizeFolder(Path.Combine(profile, ".codex")), AccountDiscovery.DefaultFolder("codex", profile));
+                Equal(null, AccountDiscovery.InheritedFolder("claude", profile));
+                Equal(0, AccountDiscovery.InheritedLogins(profile).Count);
+
+                // An inherited variable never moves the main login: it stays the standard folder,
+                // and the folder the variable names is offered as a login of its own.
                 Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", claudeWork);
-                Equal(claudeWork, AccountDiscovery.DefaultFolder("claude", profile));
-                // Pointed elsewhere, ~\.claude reads its own profile when it has one, else the one beside it.
+                Environment.SetEnvironmentVariable("CODEX_HOME", $"\"{codexTeam}\"");
+                Equal(ProviderKey.NormalizeFolder(Path.Combine(profile, ".claude")), AccountDiscovery.DefaultFolder("claude", profile));
+                Equal(claudeWork, AccountDiscovery.InheritedFolder("claude", profile));
+                Equal(codexTeam, AccountDiscovery.InheritedFolder("codex", profile));
+                Equal("claude|codex", string.Join('|', AccountDiscovery.InheritedLogins(profile).Select(login => login.ProviderId)));
+                // The variable naming the standard folder itself, a relative path, a share, or a
+                // folder without a login is no extra login.
+                Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", defaultClaude + "\\");
+                Equal(null, AccountDiscovery.InheritedFolder("claude", profile));
+                Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", "relative");
+                Equal(null, AccountDiscovery.InheritedFolder("claude", profile));
+                Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", @"\\server\share\.claude");
+                Equal(null, AccountDiscovery.InheritedFolder("claude", profile));
+                Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", Path.Combine(profile, ".claude-empty"));
+                Equal(Path.Combine(profile, ".claude-empty"), AccountDiscovery.InheritedFolder("claude", profile));
+                Equal("codex", AccountDiscovery.InheritedLogins(profile).Single().ProviderId);
+
+                // ~\.claude reads the profile beside it (~\.claude.json), or one inside it when that is the only one.
                 Equal(Path.Combine(profile, ".claude.json"), AccountDiscovery.ClaudeIdentityFile(defaultClaude, profile));
                 File.WriteAllText(Path.Combine(defaultClaude, ".claude.json"), "{}");
+                Equal(Path.Combine(profile, ".claude.json"), AccountDiscovery.ClaudeIdentityFile(defaultClaude, profile));
+                File.Move(Path.Combine(profile, ".claude.json"), Path.Combine(profile, ".claude.json.moved"));
                 Equal(Path.Combine(defaultClaude, ".claude.json"), AccountDiscovery.ClaudeIdentityFile(defaultClaude, profile));
+                File.Move(Path.Combine(profile, ".claude.json.moved"), Path.Combine(profile, ".claude.json"));
+                Equal(@"%USERPROFILE%\.claude", AccountDiscovery.DisplayFolder(defaultClaude, profile));
+                Equal(@"D:\elsewhere\.claude", AccountDiscovery.DisplayFolder(@"D:\elsewhere\.claude", profile));
             }
             finally
             {
@@ -317,7 +343,7 @@ internal static class AccountTests
             Equal("Only an account read from its own folder can be located.", manager.Locate("claude", elsewhere).Problem);
 
             // Remove deletes only a folder UsageAI created; forgetting a found one leaves it and is remembered.
-            Equal("The default login cannot be removed; hide it instead.", manager.Remove("claude", deleteCreatedFolder: true));
+            Equal(@"The login in %USERPROFILE%\.claude is always read; hide it instead.", manager.Remove("claude", deleteCreatedFolder: true));
             Equal(null, manager.Remove(added.UnitKey!, deleteCreatedFolder: true));
             False(Directory.Exists(elsewhere));
             Equal(null, manager.Remove(workKey, deleteCreatedFolder: true));
@@ -328,7 +354,7 @@ internal static class AccountTests
 
             // A folder now signed in to someone else gets its own banner.
             manager.NotifyIdentityChanged("claude", "me@example.com", "team@example.com");
-            Equal("Your default Claude login is now team@example.com (was me@example.com).", manager.Notices.Single().Message);
+            Equal(@"The Claude login in %USERPROFILE%\.claude is now team@example.com (was me@example.com).", manager.Notices.Single().Message);
             manager.NotifyIdentityChanged(sideKey, null, "x@example.com");
             True(manager.Notices[^1].Message.EndsWith("is now x@example.com.", StringComparison.Ordinal));
             manager.Dismiss(manager.Notices[0]);
@@ -379,12 +405,16 @@ internal static class AccountTests
         var root = NewDirectory("clients");
         try
         {
-            var defaultFolder = Path.Combine(root, "default");
+            // The main login is the standard ~\.claude under the test-redirected profile; an
+            // inherited CLAUDE_CONFIG_DIR (set below to another folder) must not move it.
+            var defaultFolder = Path.Combine(Environment.GetEnvironmentVariable("USERPROFILE")!, ".claude");
             Directory.CreateDirectory(defaultFolder);
+            var inheritedFolder = Path.Combine(root, "inherited");
+            Directory.CreateDirectory(inheritedFolder);
             var account = Path.Combine(root, ".claude-lab");
             Directory.CreateDirectory(account);
             Environment.SetEnvironmentVariable("USAGEAI_CLAUDE_OAUTH_TOKEN", "default-only-token");
-            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", defaultFolder);
+            Environment.SetEnvironmentVariable("CLAUDE_CONFIG_DIR", inheritedFolder);
             Environment.SetEnvironmentVariable("CLAUDE_PATH", Environment.ProcessPath);
 
             var credentials =
@@ -425,6 +455,7 @@ internal static class AccountTests
             Equal("api.anthropic.com Bearer owner-refreshed-access", tokens.Single());
             False(keyringRead);
             False(File.Exists(Path.Combine(defaultFolder, ".credentials.json")));
+            False(File.Exists(Path.Combine(inheritedFolder, ".credentials.json")));
 
             // A folder with no login, or one that is gone, says where it looked.
             File.Delete(Path.Combine(account, ".credentials.json"));
@@ -663,7 +694,7 @@ internal static class AccountTests
             Equal(4, items.Length);
             True(items.Any(item => item.StartsWith("Claude · work@example.com — Expired", StringComparison.Ordinal)));
             True(items.Any(item => item.StartsWith("Codex · lab — New", StringComparison.Ordinal)));
-            True(items.Any(item => item.StartsWith("Claude · Default login", StringComparison.Ordinal)));
+            True(items.Any(item => item.StartsWith("Claude · .claude", StringComparison.Ordinal)));
             var tray = Field<ComboBox>(dialog, "_trayProvider");
             True(tray.Items.Cast<object>().Any(item => item.ToString() == "Claude Code · work@example.com"));
 
@@ -1009,7 +1040,7 @@ internal static class AccountTests
         Equal("codex-work", TerminalCommands.Suggest("codex", null, @"C:\Users\me\.codex-work"));
         Equal("claude-account-2", TerminalCommands.Suggest("claude", "Claude", null));
         Equal(null, TerminalCommands.NameProblem("claude-lab"));
-        True(TerminalCommands.NameProblem("claude")!.Contains("default login", StringComparison.Ordinal));
+        True(TerminalCommands.NameProblem("claude")!.Contains("standard folder", StringComparison.Ordinal));
         NotNull(TerminalCommands.NameProblem("bad name"));
         NotNull(TerminalCommands.NameProblem("-x"));
         NotNull(TerminalCommands.NameProblem("con"));
@@ -1302,6 +1333,149 @@ internal static class AccountTests
         {
             TryDelete(profile);
         }
+    }
+
+    public static Task TestStandardFolderAndMigrationAsync()
+    {
+        var profile = NewDirectory("standard");
+        try
+        {
+            var standard = Login(profile, ".claude", ".credentials.json");
+            File.WriteAllText(Path.Combine(profile, ".claude.json"), ClaudeJson("me@example.com", "org-0", "Personal"));
+            var inherited = Login(profile, "elsewhere-claude", ".credentials.json");
+            File.WriteAllText(Path.Combine(inherited, ".claude.json"), ClaudeJson("team@example.com", "org-1", "Acme"));
+            var teamHash = AccountDiscovery.ReadIdentity("claude", inherited, profile)!.Hash;
+            var meHash = AccountDiscovery.ReadIdentity("claude", standard, profile)!.Hash;
+            var inheritedKey = ProviderKey.Compose("claude", ProviderKey.AccountIdFor(inherited));
+            IReadOnlyList<FoundLogin> inheritedLogins = new[] { new FoundLogin("claude", ProviderKey.NormalizeFolder(inherited)) };
+            AccountManager Manager(AppSettings settings) => new(
+                settings,
+                profile,
+                providerId => ProviderKey.NormalizeFolder(Path.Combine(profile, "." + providerId)),
+                account => new StubClient(account.UnitKey),
+                () => inheritedLogins);
+
+            // The main slot held the inherited folder's person (UsageAI was started with the variable):
+            // the folder becomes its own account and takes the slot's records and choices.
+            var moves = new List<string>();
+            var settings = new AppSettings { IsEphemeral = true, AccountsInitialized = true, TrayProviderId = "claude" };
+            var main = settings.EnsureAccount("claude");
+            main.Identity = teamHash;
+            main.Email = "team@example.com";
+            main.Label = "Work";
+            main.Alerts = false;
+            settings.PopupMetricGroups["claude"] = "Opus";
+            var manager = Manager(settings);
+            Equal(inheritedKey, manager.MigrateInheritedMainLogins((from, to) => moves.Add($"{from}->{to ?? "drop"}")).Single());
+            Equal($"claude->{inheritedKey}", moves.Single());
+            var moved = settings.FindAccount(inheritedKey)!;
+            Equal(AccountSource.Found, moved.Source);
+            Equal("Work", moved.Label);
+            False(moved.Alerts);
+            Equal(teamHash, moved.Identity);
+            Equal(inheritedKey, settings.TrayProviderId);
+            Equal("Opus", settings.PopupMetricGroup(inheritedKey));
+            Equal(null, settings.PopupMetricGroup("claude"));
+            Equal(null, main.Identity);
+            Equal(null, main.Label);
+            False(main.Hidden);
+
+            // Once moved, nothing is left to move; the next scan sees the folder as already known.
+            moves.Clear();
+            Equal(0, manager.MigrateInheritedMainLogins((from, to) => moves.Add(from)).Count);
+            Equal(0, moves.Count);
+            Equal(0, manager.Scan(DateTimeOffset.UtcNow));
+
+            // Nothing moves when the slot holds the standard folder's own person, holds no one yet,
+            // or the same person is signed in to both folders.
+            foreach (var savedHash in new string?[] { meHash, null })
+            {
+                var untouched = new AppSettings { IsEphemeral = true, AccountsInitialized = true };
+                untouched.EnsureAccount("claude").Identity = savedHash;
+                Equal(0, Manager(untouched).MigrateInheritedMainLogins((_, _) => throw new InvalidOperationException("no move expected")).Count);
+                Equal(savedHash, untouched.FindAccount("claude")!.Identity);
+            }
+
+            File.Copy(Path.Combine(inherited, ".claude.json"), Path.Combine(profile, ".claude.json"), overwrite: true);
+            var same = new AppSettings { IsEphemeral = true, AccountsInitialized = true };
+            same.EnsureAccount("claude").Identity = teamHash;
+            Equal(0, Manager(same).MigrateInheritedMainLogins((_, _) => throw new InvalidOperationException("no move expected")).Count);
+            File.WriteAllText(Path.Combine(profile, ".claude.json"), ClaudeJson("me@example.com", "org-0", "Personal"));
+
+            // A folder already shown as an account keeps its own records; the slot's copies are dropped.
+            var known = new AppSettings { IsEphemeral = true, AccountsInitialized = true };
+            known.EnsureAccount("claude").Identity = teamHash;
+            known.Accounts.Add(new ProviderAccount
+            {
+                Id = ProviderKey.AccountIdFor(inherited),
+                ProviderId = "claude",
+                Source = AccountSource.Added,
+                Path = ProviderKey.NormalizeFolder(inherited),
+                Label = "Team",
+                Identity = teamHash,
+            });
+            var knownManager = Manager(known);
+            moves.Clear();
+            Equal(0, knownManager.MigrateInheritedMainLogins((from, to) => moves.Add($"{from}->{to ?? "drop"}")).Count);
+            Equal("claude->drop", moves.Single());
+            Equal(null, known.FindAccount("claude")!.Identity);
+
+            // With no login in the standard folder the reset slot stays out of view until one appears.
+            File.Delete(Path.Combine(standard, ".credentials.json"));
+            var empty = new AppSettings { IsEphemeral = true, AccountsInitialized = true };
+            empty.EnsureAccount("claude").Identity = teamHash;
+            Equal(1, Manager(empty).MigrateInheritedMainLogins((_, _) => { }).Count);
+            True(empty.FindAccount("claude")!.Hidden);
+            File.WriteAllText(Path.Combine(standard, ".credentials.json"), "{}");
+
+            // A scan offers an inherited folder like a found one, even with the profile listing off:
+            // shown at once on the first run, waiting for Show / Ignore after that.
+            var fresh = new AppSettings { IsEphemeral = true, FindAccountsAutomatically = false };
+            Equal(1, Manager(fresh).Scan(DateTimeOffset.UtcNow));
+            False(fresh.FindAccount(inheritedKey)!.Pending);
+            var later = new AppSettings { IsEphemeral = true, AccountsInitialized = true, FindAccountsAutomatically = false };
+            var laterManager = Manager(later);
+            Equal(1, laterManager.Scan(DateTimeOffset.UtcNow));
+            True(later.FindAccount(inheritedKey)!.Pending);
+            Equal(AccountNoticeKind.NewAccount, laterManager.Notices.Single().Kind);
+
+            // The tray app's record mover: history, alert memory and the cached reading follow the key.
+            var now = DateTimeOffset.Now;
+            UsageHistoryStore.Clear();
+            UsageHistoryStore.Append(new[]
+            {
+                new UsageSample(now.AddMinutes(-5), "claude", "Session:5-hour", 30),
+                new UsageSample(now.AddMinutes(-5), "codex", "Session:5-hour", 10),
+            });
+            File.WriteAllText(AppPaths.AlertStateFile, """{"claude|Session:5-hour":{"Used":30,"ResetsAt":null},"codex|Session:5-hour":{"Used":10,"ResetsAt":null}}""");
+            SnapshotCache.Save(new[] { Snapshot("claude", 30), Snapshot("codex", 10) with { ProviderName = "Codex" } });
+            AccountManager.MoveStoredRecords("claude", inheritedKey);
+            var history = UsageHistoryStore.Load(TimeSpan.FromDays(1));
+            Equal($"{inheritedKey}|codex", string.Join('|', history.Select(sample => sample.ProviderId).Order(StringComparer.Ordinal)));
+            Equal(30, history.Single(sample => sample.ProviderId == inheritedKey).UsedPercent);
+            var alertState = File.ReadAllText(AppPaths.AlertStateFile);
+            True(alertState.Contains($"\"{inheritedKey}|Session:5-hour\"", StringComparison.Ordinal));
+            False(alertState.Contains("\"claude|", StringComparison.Ordinal));
+            True(alertState.Contains("\"codex|Session:5-hour\"", StringComparison.Ordinal));
+            Equal($"{inheritedKey}|codex", string.Join('|', SnapshotCache.Load().Select(snapshot => snapshot.ProviderId).Order(StringComparer.Ordinal)));
+
+            // Dropping instead removes the key's records; moving a key with nothing stored changes nothing.
+            AccountManager.MoveStoredRecords(inheritedKey, null);
+            Equal("codex", string.Join('|', UsageHistoryStore.Load(TimeSpan.FromDays(1)).Select(sample => sample.ProviderId)));
+            False(File.ReadAllText(AppPaths.AlertStateFile).Contains(inheritedKey, StringComparison.Ordinal));
+            Equal("codex", string.Join('|', SnapshotCache.Load().Select(snapshot => snapshot.ProviderId)));
+            AccountManager.MoveStoredRecords("gemini", "gemini@00000000");
+            Equal("codex", string.Join('|', SnapshotCache.Load().Select(snapshot => snapshot.ProviderId)));
+            UsageHistoryStore.Clear();
+            SnapshotCache.Clear();
+            File.Delete(AppPaths.AlertStateFile);
+        }
+        finally
+        {
+            TryDelete(profile);
+        }
+
+        return Task.CompletedTask;
     }
 
     private static void Click(CheckedListBox list, Point point)

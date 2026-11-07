@@ -137,6 +137,58 @@ internal static class UsageHistoryStore
         }
     }
 
+    /// <summary>
+    /// Moves every sample of one provider key to another, for a login whose records belong under a
+    /// different key now (see <see cref="AccountManager.MigrateInheritedMainLogins"/>).
+    /// </summary>
+    public static void RenameProvider(string providerId, string newProviderId)
+    {
+        try
+        {
+            var path = AppPaths.HistoryFile;
+            if (!File.Exists(path) || new FileInfo(path).Length > MaxReadBytes)
+            {
+                return;
+            }
+
+            var kept = new StringBuilder();
+            var renamed = false;
+            foreach (var line in File.ReadLines(path))
+            {
+                if (TryParse(line) is not { } sample)
+                {
+                    continue;
+                }
+
+                if (!sample.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase))
+                {
+                    kept.Append(line).Append('\n');
+                    continue;
+                }
+
+                renamed = true;
+                kept.Append("{\"t\":")
+                    .Append(JsonSerializer.Serialize(sample.At.ToString("O", CultureInfo.InvariantCulture)))
+                    .Append(",\"p\":")
+                    .Append(JsonSerializer.Serialize(newProviderId))
+                    .Append(",\"m\":")
+                    .Append(JsonSerializer.Serialize(sample.MetricKey))
+                    .Append(",\"u\":")
+                    .Append(sample.UsedPercent.ToString(CultureInfo.InvariantCulture))
+                    .Append("}\n");
+            }
+
+            if (renamed)
+            {
+                AppPaths.WriteAllTextAtomic(path, kept.ToString());
+            }
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // History is optional; a failed move leaves the samples where they were.
+        }
+    }
+
     /// <summary>Extracts the metered samples worth recording from a snapshot.</summary>
     public static IReadOnlyList<UsageSample> SamplesFrom(UsageSnapshot snapshot) => snapshot.Metrics
         .Where(metric => metric.HasQuota)

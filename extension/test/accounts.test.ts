@@ -19,11 +19,13 @@ import {
   accountLabel,
   claudeProfilePath,
   commandWithEnvironment,
+  defaultAccountId,
   defaultLoginFolder,
   discoverAccountFolders,
   discoveredProvider,
   distinctAccountLabels,
   identityKey,
+  inheritedLoginFolder,
   isAccountUnitKey,
   isKnownUnitKey,
   normalizeAccountPath,
@@ -38,6 +40,7 @@ import {
 } from "../src/accounts";
 import { addAccount, useExistingFolder, type AddAccountDependencies, type AddAccountUi } from "../src/add-account";
 import { noExtensions } from "../src/bundled-cli";
+import { userHome } from "../src/security";
 import type { UsageClient, UsageSnapshot } from "../src/model";
 import { claudeCliEnvironment, ClaudeUsageClient, runClaudeAuthRecovery } from "../src/providers/claude";
 import { codexAppServerEnvironment, CodexUsageClient } from "../src/providers/codex";
@@ -143,6 +146,12 @@ test("discovery lists the home folder once and keeps only provider folders with 
   assert.deepEqual(await discoverAccountFolders(path.join(os.tmpdir(), `usageai-missing-${Date.now()}`), {}), []);
 });
 
+test("every test runs with a temporary home folder and no inherited login folders", () => {
+  assert.match(path.basename(userHome()), /^usageai-test-home-/);
+  assert.equal(process.env.CLAUDE_CONFIG_DIR, undefined);
+  assert.equal(process.env.CODEX_HOME, undefined);
+});
+
 test("a folder name counts when it starts with .claude or .codex and goes on", () => {
   assert.equal(discoveredProvider(".claude-work"), "claude");
   assert.equal(discoveredProvider(".ClaudeWork"), "claude");
@@ -215,9 +224,14 @@ test("identity comes from local files only, and labels fall back from name to em
   assert.equal(accountCardTitle("Claude Code", "team", 1), "Claude Code");
   assert.equal(accountCardTitle("Claude Code", "team", 2), "Claude Code · team");
 
-  assert.equal(defaultLoginFolder("claude", {}, "/home/dev"), path.join("/home/dev", ".claude"));
-  assert.equal(defaultLoginFolder("codex", { CODEX_HOME: "relative" }, "/home/dev"), undefined);
-  assert.equal(defaultLoginFolder("codex", { CODEX_HOME: `"${path.resolve("/srv/codex")}"` }, "/home/dev"), path.resolve("/srv/codex"));
+  // The main login is always the standard folder; an inherited variable names a found login instead.
+  assert.equal(defaultLoginFolder("claude", "/home/dev"), path.join("/home/dev", ".claude"));
+  assert.equal(defaultLoginFolder("codex", "/home/dev"), path.join("/home/dev", ".codex"));
+  assert.equal(inheritedLoginFolder("codex", {}, "/home/dev"), undefined);
+  assert.equal(inheritedLoginFolder("codex", { CODEX_HOME: "relative" }, "/home/dev"), undefined);
+  assert.equal(inheritedLoginFolder("codex", { CODEX_HOME: "\\\\server\\share\\.codex" }, "/home/dev", "win32"), undefined);
+  assert.equal(inheritedLoginFolder("codex", { CODEX_HOME: path.join("/home/dev", ".codex") }, "/home/dev"), undefined);
+  assert.equal(inheritedLoginFolder("codex", { CODEX_HOME: `"${path.resolve("/srv/codex")}"` }, "/home/dev"), path.resolve("/srv/codex"));
   assert.equal(commandWithEnvironment("CODEX_HOME", "C:\\it's", "codex login", "win32"), "$env:CODEX_HOME='C:\\it''s'; codex login");
   assert.equal(commandWithEnvironment("CODEX_HOME", "/it's", "codex login", "linux"), "CODEX_HOME='/it'\\''s' codex login");
 });
@@ -283,6 +297,55 @@ test("resolving accounts keeps defaults first, never shows a duplicate, and hold
   assert.equal(sanitizeAccountState(undefined), undefined);
   assert.deepEqual(sanitizeAccountState({ lastScanAt: -1, shown: ["1a2b3c4d", "1a2b3c4d", "bad", 3], ignored: "x" }), { shown: ["1a2b3c4d"], ignored: [] });
   assert.deepEqual(sanitizeAccountState({ lastScanAt: 5, shown: [], ignored: [] }), { lastScanAt: 5, shown: [], ignored: [] });
+});
+
+test("the account service keeps ~/.claude as the main login and finds an inherited folder", async () => {
+  await withTemporaryFolder("usageai-accounts-inherited-", async (home) => {
+    await writeLogin(path.join(home, ".claude"), "claude");
+    await writeFile(path.join(home, ".claude.json"), JSON.stringify({ oauthAccount: { emailAddress: "me@example.com" } }), "utf8");
+    const team = path.join(home, "profiles", "team");
+    await writeLogin(team, "claude", { email: "team@example.com" });
+    const empty = path.join(home, "profiles", "empty");
+    await mkdir(empty, { recursive: true });
+    let environment: NodeJS.ProcessEnv = { CLAUDE_CONFIG_DIR: team, CODEX_HOME: empty };
+    const service = new AccountService({
+      home: () => home,
+      environment: () => environment,
+      settings: () => [],
+      loadState: () => undefined,
+      saveState: () => undefined,
+      announce: () => undefined,
+      askToShow: async () => "show",
+      warn: () => undefined,
+    });
+
+    // The editor was started with CLAUDE_CONFIG_DIR pointing at another login: the main Claude login
+    // still reads ~/.claude, and that folder is offered as an account of its own. A CODEX_HOME
+    // folder without a login offers nothing.
+    await service.scan();
+    const claude = service.accounts.filter((account) => account.provider === "claude");
+    assert.deepEqual(claude.map((account) => [account.id === defaultAccountId ? "main" : "found", account.label]), [
+      ["main", "me@example.com"],
+      ["found", "team@example.com"],
+    ]);
+    assert.equal(claude[1]?.path, team);
+    assert.equal(service.accounts.filter((account) => account.provider === "codex").length, 1);
+
+    // Pointed at the standard folder itself, the variable adds nothing.
+    environment = { CLAUDE_CONFIG_DIR: path.join(home, ".claude") };
+    const plain = new AccountService({
+      home: () => home,
+      environment: () => environment,
+      settings: () => [],
+      loadState: () => undefined,
+      saveState: () => undefined,
+      announce: () => undefined,
+      askToShow: async () => "show",
+      warn: () => undefined,
+    });
+    await plain.scan();
+    assert.equal(plain.accounts.filter((account) => account.provider === "claude").length, 1);
+  });
 });
 
 test("the account service shows first-run finds at once and asks about later ones", async () => {
@@ -395,7 +458,9 @@ test("an extra Claude account reads only its own folder and gives it to the CLI 
         inherited: ["CLAUDE_CODE_GIT_BASH_PATH", "NODE_EXTRA_CA_CERTS", "SSL_CERT_DIR", "SSL_CERT_FILE"],
         overrides: { DISABLE_AUTOUPDATER: "1", CLAUDE_CONFIG_DIR: accountFolder },
       });
-      assert.ok(claudeCliEnvironment().inherited.includes("CLAUDE_CONFIG_DIR"));
+      // The main login's CLI never inherits CLAUDE_CONFIG_DIR: it uses the standard ~/.claude.
+    assert.ok(!claudeCliEnvironment().inherited.includes("CLAUDE_CONFIG_DIR"));
+    assert.equal(claudeCliEnvironment().overrides.CLAUDE_CONFIG_DIR, undefined);
 
       // The recovery child sees the account's folder, not the inherited one.
       const marker = path.join(directory, "config-dir-seen");
@@ -455,7 +520,9 @@ test("an extra Codex account reads its own auth.json and starts the app-server i
         overrides: { CODEX_HOME: account },
       });
       assert.deepEqual(codexAppServerEnvironment().overrides, {});
-      assert.ok(codexAppServerEnvironment().inherited.includes("CODEX_HOME"));
+      // The main login's app-server never inherits CODEX_HOME: it uses the standard ~/.codex.
+    assert.ok(!codexAppServerEnvironment().inherited.includes("CODEX_HOME"));
+    assert.equal(codexAppServerEnvironment().overrides.CODEX_HOME, undefined);
     } finally {
       mock.restoreAll();
       restoreEnvironment("CODEX_HOME", previous);

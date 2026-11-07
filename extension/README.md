@@ -111,15 +111,18 @@ Claude Code and Codex can show more than one account, each on a card of its own 
   where you can also give any account a `label` or hide it with `"hidden": true`. Each folder must
   be an absolute, local path that holds the credential file.
 
-Your default login stays the primary account: the **UsageAI: Status Bar** checkboxes follow it.
+Your main login is always the standard `~/.claude` / `~/.codex`, however the editor was started.
+If it inherits `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, the folder the variable names is found as one more
+account instead of replacing the main one. The main login stays the primary account: the
+**UsageAI: Status Bar** checkboxes follow it.
 To put another account in the Status Bar, name it by its label or email in
 `usageai.statusBarProviders.accounts`. A login whose email and organization match an account
 already shown is not added twice. Each account refreshes on its own, so an expired login goes
 stale on its own card only. UsageAI reads another account's folder only: it sends that login's
-token to the same Anthropic or ChatGPT endpoint as the default login's, and gives the folder to
+token to the same Anthropic or ChatGPT endpoint as the main login's, and gives the folder to
 the Claude Code and Codex commands it runs as `CLAUDE_CONFIG_DIR` or `CODEX_HOME`. Environment
 overrides such as `USAGEAI_CLAUDE_OAUTH_TOKEN` and the Claude web session key apply to the
-default login alone.
+main login alone.
 
 ## Reading the dashboard
 
