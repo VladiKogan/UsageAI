@@ -6,6 +6,14 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Changed
+
+- **Any login folder whose name starts with `.claude` or `.codex` is found now.** Names such as
+  `.claude2`, `.claudework` or `.codex.work` are found as well as `.claude-*` and `.claude_*`. Only
+  a folder that holds the provider's own login file counts, so the wider rule picks up nothing
+  else. A backup copy of a login already shown is marked as a duplicate and stays hidden. The bare
+  `.claude` and `.codex` remain the default logins.
+
 ### Fixed
 
 - **A Codex account's terminal command now starts that account, not the default login.** The npm

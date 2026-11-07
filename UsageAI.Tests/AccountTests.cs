@@ -133,18 +133,30 @@ internal static class AccountTests
             var codexTeam = Login(profile, ".codex-team", "auth.json");
             File.WriteAllText(Path.Combine(codexTeam, "auth.json"), CodexAuth("team@example.com", "ws-1"));
             Login(profile, ".codex_two", "auth.json");
+            Login(profile, ".claude2", ".credentials.json");
+            Login(profile, ".codex.work", "auth.json");
+            Login(profile, ".claudx", ".credentials.json");
+            Login(profile, ".codex-wrongfile", ".credentials.json");
             var defaultClaude = Login(profile, ".claude", ".credentials.json");
+            Login(profile, ".codex", "auth.json");
             File.WriteAllText(Path.Combine(profile, ".claude.json"), ClaudeJson("me@example.com", "org-0", "Personal"));
 
-            // One listing: the naming rule, a credential file, and never the default folder.
+            // One listing: any name that starts with .claude or .codex and goes on, holding that
+            // provider's own credential file, and never the default folders.
             var found = AccountDiscovery.Scan(profile, new[] { defaultClaude, Path.Combine(profile, ".codex") });
-            Equal(".claude-work|.claude_side|.codex-team|.codex_two", string.Join('|', found
+            Equal(".claude-|.claude-work|.claude2|.claude_side|.clauder|.codex-team|.codex.work|.codex_two", string.Join('|', found
                 .Select(login => Path.GetFileName(login.Folder))
                 .Order(StringComparer.Ordinal)));
             Equal("codex", found.Single(login => login.Folder.EndsWith(".codex-team", StringComparison.Ordinal)).ProviderId);
+            Equal("codex", found.Single(login => login.Folder.EndsWith(".codex.work", StringComparison.Ordinal)).ProviderId);
+            Equal("claude", found.Single(login => login.Folder.EndsWith(".claude2", StringComparison.Ordinal)).ProviderId);
             Equal(0, AccountDiscovery.Scan(Path.Combine(profile, "missing"), Array.Empty<string>()).Count);
             Equal(null, AccountDiscovery.ProviderForFolderName(".claude"));
+            Equal(null, AccountDiscovery.ProviderForFolderName(".CODEX"));
+            Equal(null, AccountDiscovery.ProviderForFolderName(".claudx"));
+            Equal(null, AccountDiscovery.ProviderForFolderName("claude-work"));
             Equal("codex", AccountDiscovery.ProviderForFolderName(".CODEX-Work"));
+            Equal("claude", AccountDiscovery.ProviderForFolderName(".ClaudeWork"));
 
             // Who is signed in, from local files only.
             var work = AccountDiscovery.ReadIdentity("claude", claudeWork, profile)!;

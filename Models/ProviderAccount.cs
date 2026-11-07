@@ -10,7 +10,7 @@ internal enum AccountSource
     /// <summary>The provider's own default login, read exactly as before accounts existed.</summary>
     Default,
 
-    /// <summary>A <c>%USERPROFILE%\.claude-*</c> / <c>.codex-*</c> folder the scan found.</summary>
+    /// <summary>A <c>%USERPROFILE%\.claude…</c> / <c>.codex…</c> folder the scan found.</summary>
     Found,
 
     /// <summary>A login folder the user pointed UsageAI at.</summary>

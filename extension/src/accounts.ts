@@ -165,21 +165,27 @@ export const nodeAccountFileSystem: AccountFileSystem = {
   },
 };
 
+/**
+ * The provider a folder name belongs to: anything that starts with `.claude` or `.codex` and goes
+ * on, so `.claude-work`, `.claude_work`, `.claude2` and `.codex.work` all count. The bare `.claude`
+ * / `.codex` is the default login, never a found one. A wide rule is safe because only a folder
+ * holding the provider's own credential file is taken. Mirrors the desktop's ProviderForFolderName.
+ */
 export function discoveredProvider(name: string): AccountProviderId | undefined {
   const lower = name.toLowerCase();
-  if (lower.startsWith(".claude-") || lower.startsWith(".claude_")) {
+  if (lower.length > ".claude".length && lower.startsWith(".claude")) {
     return "claude";
   }
-  if (lower.startsWith(".codex-") || lower.startsWith(".codex_")) {
+  if (lower.length > ".codex".length && lower.startsWith(".codex")) {
     return "codex";
   }
   return undefined;
 }
 
 /**
- * One non-recursive listing of the home folder: children named `.claude-*` / `.claude_*` holding
- * `.credentials.json` are Claude logins, `.codex-*` / `.codex_*` holding `auth.json` Codex logins.
- * The default login's own folder is skipped. Never a search beyond that one listing.
+ * One non-recursive listing of the home folder: children whose name starts with `.claude` and that
+ * hold `.credentials.json` are Claude logins, `.codex…` holding `auth.json` Codex logins. The
+ * default login's own folder is skipped. Never a search beyond that one listing.
  */
 export async function discoverAccountFolders(
   home: string,

@@ -21,6 +21,7 @@ import {
   commandWithEnvironment,
   defaultLoginFolder,
   discoverAccountFolders,
+  discoveredProvider,
   distinctAccountLabels,
   identityKey,
   isAccountUnitKey,
@@ -112,6 +113,10 @@ test("discovery lists the home folder once and keeps only provider folders with 
     await writeLogin(path.join(home, ".CLAUDE_work"), "claude");
     await mkdir(path.join(home, ".claude-empty"));
     await writeLogin(path.join(home, ".claudex"), "claude");
+    await writeLogin(path.join(home, ".claude2"), "claude");
+    await writeLogin(path.join(home, ".codex.work"), "codex");
+    await writeLogin(path.join(home, ".claudx"), "claude");
+    // The bare .claude is a default login, never a found one, even when it is not the default here.
     await writeLogin(path.join(home, ".claude"), "claude");
     await writeLogin(path.join(home, ".codex-alt"), "codex");
     await mkdir(path.join(home, ".codex_nologin"));
@@ -129,10 +134,24 @@ test("discovery lists the home folder once and keeps only provider folders with 
       ["claude", ".claude-lab"],
       ["codex", ".codex-alt"],
       ["claude", ".CLAUDE_work"],
+      ["claude", ".claudex"],
+      ["claude", ".claude2"],
+      ["codex", ".codex.work"],
     ].sort((left, right) => left[1]!.localeCompare(right[1]!)));
     assert.equal(found[0]?.id, accountIdForPath(found[0]!.path));
   });
   assert.deepEqual(await discoverAccountFolders(path.join(os.tmpdir(), `usageai-missing-${Date.now()}`), {}), []);
+});
+
+test("a folder name counts when it starts with .claude or .codex and goes on", () => {
+  assert.equal(discoveredProvider(".claude-work"), "claude");
+  assert.equal(discoveredProvider(".ClaudeWork"), "claude");
+  assert.equal(discoveredProvider(".claude2"), "claude");
+  assert.equal(discoveredProvider(".CODEX.work"), "codex");
+  assert.equal(discoveredProvider(".claude"), undefined);
+  assert.equal(discoveredProvider(".Codex"), undefined);
+  assert.equal(discoveredProvider(".claudx"), undefined);
+  assert.equal(discoveredProvider("claude-work"), undefined);
 });
 
 test("usageai.accounts keeps absolute local folders and names every rejected entry", async () => {

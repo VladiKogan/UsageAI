@@ -36,9 +36,10 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
   fallback, which all belong to the default login. Its CLI children (`claude auth status`,
   `claude mcp list`, `codex app-server`) receive `CLAUDE_CONFIG_DIR` / `CODEX_HOME` set explicitly to
   that folder rather than inherited. Folders are found by one non-recursive listing of
-  `%USERPROFILE%` for `.claude-*` / `.codex-*` names, or chosen by the user, and must be absolute and
-  local (no UNC). Who is signed in is read from local files only (`.claude.json`'s `oauthAccount`, the
-  email in Codex's `id_token`) and kept as a hash plus the email, for labels.
+  `%USERPROFILE%` for names that start with `.claude` / `.codex` and that hold that provider's
+  credential file, or chosen by the user, and must be absolute and local (no UNC). Who is signed
+  in is read from local files only (`.claude.json`'s `oauthAccount`, the email in Codex's
+  `id_token`) and kept as a hash plus the email, for labels.
 - "Sign in to another account" starts the provider's official login, `claude auth login --claudeai`
   or `codex login`, with `CLAUDE_CONFIG_DIR` / `CODEX_HOME` pointing at a new or empty folder the user
   confirmed. The CLI performs the whole OAuth sign-in in the browser and writes its own credential
