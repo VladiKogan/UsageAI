@@ -325,6 +325,96 @@ export function sanitizeAccountSettings(value: unknown): AccountSettingsResult {
   return { entries, rejected };
 }
 
+/** A change to one login's `usageai.accounts` entry. */
+export type AccountSettingChange =
+  | "remove"
+  | {
+    /** A new name; `null` or an empty one clears it. Left out keeps the current one. */
+    readonly label?: string | null;
+    readonly hidden?: boolean;
+    /** Drop the entry when it ends up with neither a label nor the hidden flag. */
+    readonly dropWhenPlain?: boolean;
+  };
+
+/** Whether a raw `usageai.accounts` entry names this provider's folder, read as the setting reads it. */
+function settingNamesFolder(entry: unknown, provider: AccountProviderId, id: string): boolean {
+  if (typeof entry !== "object" || entry === null || Array.isArray(entry)) {
+    return false;
+  }
+  const record = entry as { provider?: unknown; path?: unknown };
+  if (record.provider !== provider || typeof record.path !== "string") {
+    return false;
+  }
+  const folder = record.path.trim().replace(/^"|"$/g, "");
+  return path.isAbsolute(folder) && accountIdForPath(folder) === id;
+}
+
+/** Whether the raw `usageai.accounts` value has an entry for this provider's folder. */
+export function hasAccountSetting(value: unknown, provider: AccountProviderId, folder: string): boolean {
+  const id = accountIdForPath(folder);
+  return Array.isArray(value) && (value as unknown[]).some((entry) => settingNamesFolder(entry, provider, id));
+}
+
+/**
+ * The `usageai.accounts` value after changing one login's entry. Every other entry is kept as the
+ * user wrote it, in place; the changed entry keeps its position, and a new one goes last.
+ */
+export function changeAccountSetting(
+  current: unknown,
+  provider: AccountProviderId,
+  folder: string,
+  change: AccountSettingChange,
+): unknown[] {
+  const list: unknown[] = Array.isArray(current) ? [...current as unknown[]] : [];
+  const id = accountIdForPath(folder);
+  const index = list.findIndex((entry) => settingNamesFolder(entry, provider, id));
+  const rest = list.filter((entry) => !settingNamesFolder(entry, provider, id));
+  if (change === "remove") {
+    return rest;
+  }
+  const existing = index >= 0 ? list[index] as { path: string; label?: unknown; hidden?: unknown } : undefined;
+  const label = change.label === undefined ? cleanLabel(existing?.label) : cleanLabel(change.label ?? undefined);
+  const hidden = change.hidden ?? existing?.hidden === true;
+  if (!label && !hidden && change.dropWhenPlain) {
+    return rest;
+  }
+  const next = {
+    provider,
+    path: existing?.path ?? folder,
+    ...(label ? { label } : {}),
+    ...(hidden ? { hidden: true } : {}),
+  };
+  if (index < 0) {
+    return [...rest, next];
+  }
+  rest.splice(index, 0, next);
+  return rest;
+}
+
+/**
+ * True when writing `next` would need a folder beyond `maxConfiguredAccounts`. Only entries the
+ * setting actually reads count, so a malformed entry never takes a slot.
+ */
+export function exceedsConfiguredAccounts(current: unknown, next: unknown): boolean {
+  const after = configuredFolderCount(next);
+  return after > maxConfiguredAccounts && after > configuredFolderCount(current);
+}
+
+/** Distinct folders the setting names with a valid shape, without the cap the setting applies. */
+function configuredFolderCount(value: unknown): number {
+  if (!Array.isArray(value)) {
+    return 0;
+  }
+  const folders = new Set<string>();
+  for (const candidate of value as unknown[]) {
+    const setting = sanitizeAccountSettings([candidate]).entries[0];
+    if (setting) {
+      folders.add(`${setting.provider}:${accountIdForPath(setting.path)}`);
+    }
+  }
+  return folders.size;
+}
+
 /** Why a folder cannot be used as a login folder, or nothing when it can. */
 export async function accountFolderProblem(
   provider: AccountProviderId,

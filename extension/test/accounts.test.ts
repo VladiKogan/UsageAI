@@ -11,12 +11,14 @@ import {
   resolveAccounts,
   sanitizeAccountState,
   type AccountState,
+  type ManagedAccount,
 } from "../src/account-service";
 import {
   accountCardTitle,
   accountFolderProblem,
   accountIdForPath,
   accountLabel,
+  changeAccountSetting,
   claudeProfilePath,
   commandWithEnvironment,
   defaultAccountId,
@@ -24,6 +26,8 @@ import {
   discoverAccountFolders,
   discoveredProvider,
   distinctAccountLabels,
+  exceedsConfiguredAccounts,
+  hasAccountSetting,
   identityKey,
   inheritedLoginFolder,
   mainSignInCommand,
@@ -39,7 +43,15 @@ import {
   unitKey,
   type AccountEntry,
 } from "../src/accounts";
-import { addAccount, useExistingFolder, type AddAccountDependencies, type AddAccountUi } from "../src/add-account";
+import {
+  addAccount,
+  describeSettingsWriteError,
+  SettingNotRegisteredError,
+  useExistingFolder,
+  type AddAccountDependencies,
+  type AddAccountUi,
+} from "../src/add-account";
+import { manageAccounts, type ManageAccountsDependencies } from "../src/manage-accounts";
 import { noExtensions } from "../src/bundled-cli";
 import { userHome } from "../src/security";
 import type { UsageClient, UsageSnapshot } from "../src/model";
@@ -293,6 +305,9 @@ test("resolving accounts keeps defaults first, never shows a duplicate, and hold
   assert.equal(resolved.shown[1]?.unitKey, `claude@${found(".claude-lab").id}`);
   assert.deepEqual(resolved.pending.map((account) => account.label), ["new@example.com"]);
   assert.deepEqual(resolved.duplicates.map((duplicate) => [path.basename(duplicate.account.path), duplicate.shownAs]), [[".claude-copy", "Personal"]]);
+  // Hidden and ignored logins are kept apart for Manage Accounts rather than dropped.
+  assert.deepEqual(resolved.hidden.map((account) => [path.basename(account.path), account.source]), [[".codex-hidden", "added"]]);
+  assert.deepEqual(resolved.ignored.map((account) => path.basename(account.path)), [".claude-ignored"]);
 
   // A hidden default leaves the provider's other accounts in place.
   const hiddenDefault = resolveAccounts({
@@ -302,6 +317,7 @@ test("resolving accounts keeps defaults first, never shows a duplicate, and hold
     state,
   });
   assert.deepEqual(hiddenDefault.shown.map((account) => account.source), ["found"]);
+  assert.deepEqual(hiddenDefault.hidden.map((account) => account.source), ["default"]);
 
   assert.equal(sanitizeAccountState(undefined), undefined);
   assert.deepEqual(sanitizeAccountState({ lastScanAt: -1, shown: ["1a2b3c4d", "1a2b3c4d", "bad", 3], ignored: "x" }), { shown: ["1a2b3c4d"], ignored: [] });
@@ -669,6 +685,7 @@ test("Add Account signs in to a new folder with the official CLI, or adds a fold
     const log: string[] = [];
     const dependencies = (script: FakeUiScript, onLogin?: (environment: Readonly<Record<string, string>>) => Promise<void>): AddAccountDependencies => ({
       ui: fakeUi(script, log, onLogin),
+      providerName: (provider) => provider === "claude" ? "Claude Code" : "Codex",
       home: () => home,
       accounts: () => shown,
       configuredAccounts: () => settings,
@@ -764,4 +781,309 @@ test("two accounts with one label are told apart by organisation, else by number
     { label: "me@x.com", identity: { email: "me@x.com", organizationName: "Acme" } },
   ]);
   assert.deepEqual(numbered.map((account) => account.label), ["me@x.com", "me@x.com · Account 2"]);
+});
+
+test("a usageai.accounts write the window has not registered asks for a reload instead of failing raw", async () => {
+  // VS Code updates an extension in place and restarts only the extension host: the new code runs,
+  // but the window keeps the old version's settings, so a setting new in this version is refused.
+  const unregistered = new Error("Unable to write to User Settings because usageai.accounts is not a registered configuration.");
+  assert.equal(describeSettingsWriteError(unregistered).reload, true);
+  assert.match(describeSettingsWriteError(unregistered).message, /Reload the window/);
+  assert.deepEqual(describeSettingsWriteError("disk full"), { message: "UsageAI could not save usageai.accounts: disk full", reload: false });
+  // In another display language VS Code's text differs; the host's own check still says reload.
+  const localised = new SettingNotRegisteredError(new Error("Impossible d'écrire dans les paramètres utilisateur."));
+  assert.equal(describeSettingsWriteError(localised).reload, true);
+
+  await withTemporaryFolder("usageai-add-account-unregistered-", async (home) => {
+    await writeLogin(path.join(home, ".claude-team"), "claude", { email: "team@example.com" });
+    const log: string[] = [];
+    const reloads: string[] = [];
+    let added = 0;
+    const dependencies = (offerReload: boolean, failure: unknown): AddAccountDependencies => ({
+      ui: { ...fakeUi({ picks: [], inputs: ["Team"] }, log), ...(offerReload ? { offerReload: (message: string) => { reloads.push(message); } } : {}) },
+      providerName: (provider) => provider === "claude" ? "Claude Code" : "Codex",
+      home: () => home,
+      accounts: () => [],
+      configuredAccounts: () => [],
+      saveConfiguredAccounts: async () => { throw failure; },
+      findLogin: async () => undefined,
+      afterAdd: async () => { added += 1; },
+    });
+    assert.equal(await useExistingFolder(dependencies(true, unregistered), "claude", path.join(home, ".claude-team")), "failed");
+    assert.equal(reloads.length, 1);
+    assert.match(reloads[0] ?? "", /Reload the window/);
+    // Without a reload button the same words arrive as a plain error; nothing claims it was added.
+    assert.equal(await useExistingFolder(dependencies(false, unregistered), "claude", path.join(home, ".claude-team")), "failed");
+    assert.ok(log.some((line) => line.startsWith("error VS Code has not loaded")));
+    assert.equal(added, 0);
+    assert.ok(!log.some((line) => line.startsWith("info Added")));
+
+    // Adding a folder whose entry is hidden updates that entry in place and shows it again.
+    let settings: unknown[] = ["junk", { provider: "claude", path: path.join(home, ".claude-team"), label: "Old", hidden: true }];
+    const readd = (): AddAccountDependencies => ({ ...dependencies(false, undefined), configuredAccounts: () => settings, saveConfiguredAccounts: async (value: readonly unknown[]) => { settings = [...value]; } });
+    assert.equal(await useExistingFolder(readd(), "claude", path.join(home, ".claude-team")), "added");
+    assert.deepEqual(settings, ["junk", { provider: "claude", path: path.join(home, ".claude-team"), label: "Team" }]);
+    settings = Array.from({ length: 16 }, (_, index) => ({ provider: "codex", path: path.join(home, `.codex-${index}`) }));
+    log.length = 0;
+    assert.equal(await useExistingFolder(readd(), "claude", path.join(home, ".claude-team")), "failed");
+    assert.ok(log.some((line) => /already lists 16 folders/.test(line)));
+  });
+});
+
+test("changing one account's usageai.accounts entry keeps every other entry as written", () => {
+  const home = path.resolve(os.tmpdir(), "usageai-manage-home");
+  const main = path.join(home, ".claude");
+  const work = path.join(home, ".claude-work");
+  const other = { provider: "codex", path: path.join(home, ".codex-x"), label: "X" };
+  const sameFolderOtherProvider = { provider: "codex", path: work };
+  const current = ["junk", { provider: "claude", path: `${work}${path.sep}`, label: "Old" }, other, sameFolderOtherProvider];
+
+  // Renamed in place, the user's own spelling of the path kept.
+  assert.deepEqual(changeAccountSetting(current, "claude", work, { label: " New " }), [
+    "junk", { provider: "claude", path: `${work}${path.sep}`, label: "New" }, other, sameFolderOtherProvider,
+  ]);
+  assert.deepEqual(changeAccountSetting(current, "claude", work, { hidden: true }), [
+    "junk", { provider: "claude", path: `${work}${path.sep}`, label: "Old", hidden: true }, other, sameFolderOtherProvider,
+  ]);
+  assert.deepEqual(changeAccountSetting(current, "claude", work, { label: null }), [
+    "junk", { provider: "claude", path: `${work}${path.sep}` }, other, sameFolderOtherProvider,
+  ]);
+  assert.deepEqual(changeAccountSetting(current, "claude", work, "remove"), ["junk", other, sameFolderOtherProvider]);
+  // A new entry goes last; the main login's entry goes once it says nothing.
+  assert.deepEqual(changeAccountSetting(undefined, "claude", main, { label: "Me" }), [{ provider: "claude", path: main, label: "Me" }]);
+  assert.deepEqual(changeAccountSetting([{ provider: "claude", path: main, label: "Me" }], "claude", main, { label: "", dropWhenPlain: true }), []);
+  assert.deepEqual(changeAccountSetting([{ provider: "claude", path: main, hidden: true }], "claude", main, { hidden: false, dropWhenPlain: true }), []);
+  // A quoted path is read the way the setting reads it.
+  assert.equal(hasAccountSetting([{ provider: "claude", path: `"${work}"` }], "claude", work), true);
+  assert.equal(hasAccountSetting([{ provider: "codex", path: work }], "claude", work), false);
+  assert.equal(hasAccountSetting(undefined, "claude", work), false);
+  // The limit counts distinct, well-formed folders only, and never blocks a list already over it.
+  const folders = (count: number) => Array.from({ length: count }, (_, index) => ({ provider: "codex", path: path.join(home, `.codex-${index}`) }));
+  assert.equal(exceedsConfiguredAccounts([...folders(16), "junk"], [...folders(16), "junk", { provider: "codex", path: "relative" }]), false);
+  assert.equal(exceedsConfiguredAccounts(folders(16), [...folders(16), { provider: "claude", path: work }]), true);
+  assert.equal(exceedsConfiguredAccounts(folders(17), folders(17)), false);
+  assert.equal(exceedsConfiguredAccounts(undefined, folders(15)), false);
+});
+
+test("Manage Accounts renames, hides, shows and removes logins without touching their folders", async () => {
+  const home = path.resolve(os.tmpdir(), "usageai-manage-flow");
+  const mainPath = path.join(home, ".claude");
+  const workPath = path.join(home, ".claude-work");
+  const labPath = path.join(home, ".claude-lab");
+  const newPath = path.join(home, ".codex-new");
+  const copyPath = path.join(home, ".claude-copy");
+  const gonePath = path.join(home, ".claude-gone");
+  const main = entry({ provider: "claude", id: "default", source: "default", path: mainPath, label: "me@example.com", identity: { email: "me@example.com" } });
+  const work = entry({ provider: "claude", id: accountIdForPath(workPath), source: "added", path: workPath, label: "Work", userLabel: "Work", identity: { email: "work@example.com" } });
+  const lab = entry({ provider: "claude", id: accountIdForPath(labPath), source: "found", path: labPath, label: "lab@example.com" });
+  const fresh = entry({ provider: "codex", id: accountIdForPath(newPath), source: "found", path: newPath, label: "new@example.com" });
+  const copy = entry({ provider: "claude", id: accountIdForPath(copyPath), source: "found", path: copyPath, label: "me@example.com · copy" });
+  const gone = entry({ provider: "claude", id: accountIdForPath(gonePath), source: "added", path: gonePath, label: "Old" });
+
+  let settings: unknown = [{ provider: "claude", path: workPath, label: "Work" }];
+  let catalog: ManagedAccount[] = [
+    { account: main, status: "shown", found: false },
+    { account: work, status: "shown", found: true },
+    { account: lab, status: "shown", found: true },
+    { account: fresh, status: "pending", found: true },
+    { account: copy, status: "duplicate", shownAs: "me@example.com", found: true },
+  ];
+  const decisions = new Map<string, "show" | "ignore">([[work.id, "show"], [lab.id, "show"]]);
+  const log: string[] = [];
+  const offered: string[][] = [];
+  const run = async (
+    script: { picks: Array<string | undefined>; inputs?: Array<string | undefined>; confirm?: boolean; remote?: boolean },
+    save?: (value: readonly unknown[]) => Promise<void>,
+  ) => {
+    log.length = 0;
+    offered.length = 0;
+    const dependencies: ManageAccountsDependencies = {
+      ui: {
+        async pick(items) {
+          offered.push(items.map((item) => item.label));
+          const wanted = script.picks.shift();
+          return items.find((item) => item.label === wanted);
+        },
+        async input(options) {
+          log.push(`input ${options.value ?? ""}|${options.placeHolder ?? ""}`);
+          return script.inputs?.shift();
+        },
+        async info(message) { log.push(`info ${message}`); return undefined; },
+        error(message) { log.push(`error ${message}`); },
+        offerReload(message) { log.push(`reload ${message}`); },
+        async copy(text) { log.push(`copy ${text}`); },
+        async confirm(message) { log.push(`confirm ${message}`); return script.confirm ?? false; },
+        ...(script.remote ? {} : { reveal: (folder: string) => { log.push(`reveal ${folder}`); } }),
+      },
+      providerName: (provider) => provider === "claude" ? "Claude Code" : "Codex",
+      catalog: () => catalog,
+      configuredAccounts: () => settings,
+      saveConfiguredAccounts: save ?? (async (value) => { settings = [...value]; log.push("saved"); }),
+      decisionFor: (id) => decisions.get(id),
+      answer: async (id, decision) => {
+        log.push(`answer ${id} ${decision ?? "none"}`);
+        if (decision) decisions.set(id, decision);
+        else decisions.delete(id);
+      },
+      folderExists: async (folder) => folder !== gonePath,
+      addAccount: async () => { log.push("add"); },
+    };
+    return manageAccounts(dependencies);
+  };
+
+  assert.equal(await run({ picks: [undefined] }), "cancelled");
+  assert.deepEqual(offered[0], ["me@example.com", "Work", "lab@example.com", "new@example.com", "me@example.com · copy", "$(add) Add Account…"]);
+  assert.equal(await run({ picks: ["$(add) Add Account…"] }), "unchanged");
+  assert.deepEqual(log, ["add"]);
+
+  // The main login: renamed through its own entry, which goes again once the name is cleared.
+  // Saving re-reads the accounts through the settings event, never a second time from here.
+  assert.equal(await run({ picks: ["me@example.com", "Rename…"], inputs: ["Personal"] }), "changed");
+  assert.deepEqual(offered[1], ["Rename…", "Hide", "Open Folder", "Copy Folder Path"]);
+  assert.deepEqual(log, ["input |me@example.com", "saved"]);
+  assert.deepEqual(settings, [{ provider: "claude", path: workPath, label: "Work" }, { provider: "claude", path: mainPath, label: "Personal" }]);
+  catalog = [{ account: { ...main, userLabel: "Personal", label: "Personal" }, status: "shown", found: false }, ...catalog.slice(1)];
+  assert.equal(await run({ picks: ["Personal", "Rename…"], inputs: ["Personal "] }), "unchanged");
+  assert.equal(await run({ picks: ["Personal", "Rename…"], inputs: [""] }), "changed");
+  assert.deepEqual(settings, [{ provider: "claude", path: workPath, label: "Work" }]);
+  assert.equal(await run({ picks: ["Personal", "Rename…"], inputs: [undefined] }), "cancelled");
+  assert.equal(await run({ picks: ["Personal", "Hide"] }), "changed");
+  assert.deepEqual(settings, [{ provider: "claude", path: workPath, label: "Work" }, { provider: "claude", path: mainPath, hidden: true }]);
+
+  // A found login is hidden by ignoring it, not by writing an entry for it.
+  assert.equal(await run({ picks: ["lab@example.com", "Hide"] }), "changed");
+  assert.deepEqual(offered[1], ["Rename…", "Hide", "Open Folder", "Copy Folder Path"]);
+  assert.deepEqual(log, [`answer ${lab.id} ignore`]);
+  assert.equal(await run({ picks: ["new@example.com", "Show"] }), "changed");
+  assert.deepEqual(offered[1], ["Show", "Hide", "Open Folder", "Copy Folder Path"]);
+  assert.deepEqual(log, [`answer ${fresh.id} show`]);
+
+  // A renamed found login loses its entry once the name is cleared, shown as found again.
+  decisions.delete(lab.id);
+  settings = [{ provider: "claude", path: labPath, label: "Lab" }];
+  catalog = [{ account: { ...lab, source: "added", userLabel: "Lab", label: "Lab" }, status: "shown", found: true }];
+  assert.equal(await run({ picks: ["Lab", "Rename…"], inputs: [""] }), "changed");
+  assert.deepEqual(log.slice(1), [`answer ${lab.id} show`, "saved"]);
+  assert.deepEqual(settings, []);
+  // A refused write puts the earlier answer back.
+  settings = [{ provider: "claude", path: labPath, label: "Lab" }];
+  decisions.delete(lab.id);
+  const refused = async () => { throw new Error("Unable to write to User Settings because usageai.accounts is not a registered configuration."); };
+  assert.equal(await run({ picks: ["Lab", "Rename…"], inputs: [""] }, refused), "failed");
+  assert.deepEqual(log.slice(1, 2), [`answer ${lab.id} show`]);
+  assert.ok(log.some((line) => line.startsWith("reload VS Code has not loaded")));
+  assert.equal(log.at(-1), `answer ${lab.id} none`);
+  assert.equal(decisions.has(lab.id), false);
+
+  // Removing an added login asks first. A found folder is ignored before its entry goes, so it is
+  // never shown in between, and a refused write puts the earlier answer back.
+  settings = [{ provider: "claude", path: workPath, label: "Work" }, { provider: "claude", path: mainPath, hidden: true }];
+  catalog = [{ account: work, status: "shown", found: true }];
+  assert.equal(await run({ picks: ["Work", "Remove"], confirm: false }), "cancelled");
+  assert.deepEqual(offered[1], ["Rename…", "Hide", "Remove", "Open Folder", "Copy Folder Path"]);
+  assert.equal(await run({ picks: ["Work", "Remove"], confirm: true }, refused), "failed");
+  assert.deepEqual(log.filter((line) => line.startsWith("answer")), [`answer ${work.id} ignore`, `answer ${work.id} show`]);
+  assert.equal(await run({ picks: ["Work", "Remove"], confirm: true }), "changed");
+  assert.deepEqual(log.slice(1), [`answer ${work.id} ignore`, "saved"]);
+  assert.deepEqual(settings, [{ provider: "claude", path: mainPath, hidden: true }]);
+
+  // A duplicate can only be looked at; its folder can be opened or copied, but opened only where
+  // the file manager is on this computer.
+  catalog = [{ account: copy, status: "duplicate", shownAs: "me@example.com", found: true }];
+  assert.equal(await run({ picks: ["me@example.com · copy", "Open Folder"] }), "unchanged");
+  assert.deepEqual(offered[1], ["Open Folder", "Copy Folder Path"]);
+  assert.deepEqual(log, [`reveal ${copyPath}`]);
+  assert.equal(await run({ picks: ["me@example.com · copy", "Copy Folder Path"] }), "unchanged");
+  assert.deepEqual(log, [`copy ${copyPath}`, `info Copied ${copyPath}`]);
+  assert.equal(await run({ picks: ["me@example.com · copy", undefined], remote: true }), "cancelled");
+  assert.deepEqual(offered[1], ["Copy Folder Path"]);
+
+  // An entry whose folder is gone is listed so it can be removed; it has no folder to open.
+  settings = [{ provider: "claude", path: gonePath, label: "Old" }, { provider: "claude", path: mainPath, hidden: true }];
+  catalog = [{ account: gone, status: "unavailable", problem: "it holds no .credentials.json", found: false }];
+  assert.equal(await run({ picks: [undefined] }), "cancelled");
+  assert.match(offered[0]?.[0] ?? "", /^Old$/);
+  assert.equal(await run({ picks: ["Old", "Remove"], confirm: true }), "changed");
+  assert.deepEqual(offered[1], ["Remove", "Copy Folder Path"]);
+  assert.deepEqual(log.slice(1), ["saved"]);
+  assert.deepEqual(settings, [{ provider: "claude", path: mainPath, hidden: true }]);
+
+  // A hidden main login is shown again by clearing the flag.
+  catalog = [{ account: { ...main, hidden: true }, status: "hidden", found: false }];
+  assert.equal(await run({ picks: ["me@example.com", "Show"] }), "changed");
+  assert.deepEqual(offered[1], ["Rename…", "Show", "Open Folder", "Copy Folder Path"]);
+  assert.deepEqual(settings, []);
+
+  // Only folders the setting reads take a slot: malformed entries never block a rename.
+  catalog = [{ account: lab, status: "shown", found: true }];
+  const junk = ["junk", { provider: "other", path: workPath }, { provider: "codex", path: "relative" }, { provider: "codex" }];
+  settings = [...junk, ...Array.from({ length: 12 }, (_, index) => ({ provider: "codex", path: path.join(home, `.codex-${index}`) }))];
+  assert.equal(await run({ picks: ["lab@example.com", "Rename…"], inputs: ["Lab"] }), "changed");
+  assert.equal((settings as unknown[]).length, 17);
+  settings = Array.from({ length: 16 }, (_, index) => ({ provider: "codex", path: path.join(home, `.codex-${index}`) }));
+  assert.equal(await run({ picks: ["lab@example.com", "Rename…"], inputs: ["Lab"] }), "failed");
+  assert.ok(log.some((line) => /already lists 16 folders/.test(line)));
+  assert.equal((settings as unknown[]).length, 16);
+});
+
+test("the account service lists every login for Manage Accounts, shown or not", async () => {
+  await withTemporaryFolder("usageai-accounts-catalog-", async (home) => {
+    await writeLogin(path.join(home, ".claude"), "claude");
+    await writeLogin(path.join(home, ".claude-lab"), "claude", { email: "lab@example.com" });
+    await writeLogin(path.join(home, ".claude-skip"), "claude", { email: "skip@example.com", org: "skip" });
+    await writeLogin(path.join(home, "elsewhere"), "codex", { email: "c@example.com" });
+    let saved: unknown;
+    const service = new AccountService({
+      home: () => home,
+      environment: () => ({}),
+      settings: () => [
+        { provider: "codex", path: path.join(home, "elsewhere"), hidden: true },
+        { provider: "claude", path: path.join(home, "gone"), label: "Old" },
+      ],
+      loadState: () => saved,
+      saveState: (state) => { saved = state; },
+    });
+    await service.scan();
+    await service.answer(accountIdForPath(path.join(home, ".claude-skip")), "ignore");
+    assert.deepEqual(service.catalog().map((managed) => [managed.account.label, managed.status, managed.found]), [
+      [".claude", "shown", false],
+      ["lab@example.com", "shown", true],
+      ["skip@example.com", "ignored", true],
+      ["Old", "unavailable", false],
+      [".codex", "shown", false],
+      ["c@example.com", "hidden", false],
+    ]);
+    assert.match(service.catalog()[3]?.problem ?? "", /credentials\.json/);
+    assert.equal(service.decisionFor(accountIdForPath(path.join(home, ".claude-skip"))), "ignore");
+    assert.equal(service.decisionFor(accountIdForPath(path.join(home, ".claude-lab"))), "show");
+    await service.answer(accountIdForPath(path.join(home, ".claude-lab")), undefined);
+    assert.equal(service.decisionFor(accountIdForPath(path.join(home, ".claude-lab"))), undefined);
+    service.dispose();
+  });
+});
+
+test("a found login answered in Manage Accounts ignores a late click on its notification", async () => {
+  await withTemporaryFolder("usageai-accounts-late-answer-", async (home) => {
+    await writeLogin(path.join(home, ".claude"), "claude");
+    let saved: unknown = { shown: [], ignored: [], lastScanAt: 1, standardMain: true };
+    let click: ((decision: "show" | "ignore" | undefined) => void) | undefined;
+    const service = new AccountService({
+      home: () => home,
+      environment: () => ({}),
+      settings: () => [],
+      loadState: () => saved,
+      saveState: (state) => { saved = state; },
+      askToShow: () => new Promise((resolve) => { click = resolve; }),
+    });
+    await writeLogin(path.join(home, ".claude-new"), "claude", { email: "new@example.com" });
+    await service.scan();
+    const id = accountIdForPath(path.join(home, ".claude-new"));
+    assert.equal(service.pending[0]?.id, id);
+    await service.answer(id, "ignore");
+    click?.("show");
+    for (let index = 0; index < 5; index += 1) await new Promise((resolve) => setImmediate(resolve));
+    assert.equal(service.decisionFor(id), "ignore");
+    assert.ok(!service.accounts.some((account) => account.id === id));
+    service.dispose();
+  });
 });

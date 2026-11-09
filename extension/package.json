@@ -137,8 +137,18 @@
         "category": "UsageAI"
       },
       {
+        "command": "usageai.manageAccounts",
+        "title": "Manage Accounts…",
+        "category": "UsageAI"
+      },
+      {
         "command": "usageai.rescanAccounts",
         "title": "Rescan Accounts",
+        "category": "UsageAI"
+      },
+      {
+        "command": "usageai.chooseStatusBarItems",
+        "title": "Choose Status Bar Items…",
         "category": "UsageAI"
       }
     ],
@@ -160,9 +170,19 @@
           "group": "accounts@1"
         },
         {
-          "command": "usageai.rescanAccounts",
+          "command": "usageai.manageAccounts",
           "when": "view == usageai.dashboard",
           "group": "accounts@2"
+        },
+        {
+          "command": "usageai.rescanAccounts",
+          "when": "view == usageai.dashboard",
+          "group": "accounts@3"
+        },
+        {
+          "command": "usageai.chooseStatusBarItems",
+          "when": "view == usageai.dashboard",
+          "group": "statusbar@1"
         }
       ]
     },
@@ -230,7 +250,7 @@
                 }
               }
             },
-            "markdownDescription": "Other Claude Code and Codex logins to show, each a login folder of its own. Folders named `.claude-*` or `.codex-*` in your home folder are found automatically; add others here or with **UsageAI: Add Account…**. A `label` or `hidden` flag also applies to a found folder or the default one. Each folder must be an absolute local path that holds the provider's credential file."
+            "markdownDescription": "Other Claude Code and Codex logins to show, each a login folder of its own. Folders named `.claude-*` or `.codex-*` in your home folder are found automatically; add others here or with **UsageAI: Add Account…**. A `label` or `hidden` flag also applies to a found folder or the default one. Each folder must be an absolute local path that holds the provider's credential file.\n\n[Manage Accounts…](command:usageai.manageAccounts) renames, hides, shows or removes any account without editing this list by hand."
           },
           "usageai.refreshIntervalMinutes": {
             "type": "number",
@@ -303,31 +323,31 @@
             "type": "boolean",
             "default": true,
             "order": 10,
-            "description": "Show the connected provider with the highest usage when no individual provider is checked."
+            "markdownDescription": "When no provider or account is chosen here, show whichever one has the highest usage right now. [Choose Status Bar Items…](command:usageai.chooseStatusBarItems) sets every Status Bar item, including extra Claude Code and Codex accounts, in one list."
           },
           "usageai.statusBarProviders.codex": {
             "type": "boolean",
             "default": false,
             "order": 20,
-            "description": "Show Codex in the Status Bar."
+            "markdownDescription": "Show your main Codex login (`~/.codex`) in the Status Bar. Other Codex accounts are chosen under **Accounts** below, or with [Choose Status Bar Items…](command:usageai.chooseStatusBarItems)."
           },
           "usageai.statusBarProviders.claude": {
             "type": "boolean",
             "default": false,
             "order": 30,
-            "description": "Show Claude in the Status Bar."
+            "markdownDescription": "Show your main Claude Code login (`~/.claude`) in the Status Bar. Other Claude Code accounts are chosen under **Accounts** below, or with [Choose Status Bar Items…](command:usageai.chooseStatusBarItems)."
           },
           "usageai.statusBarProviders.copilot": {
             "type": "boolean",
             "default": false,
             "order": 40,
-            "description": "Show GitHub Copilot in the Status Bar."
+            "markdownDescription": "Show GitHub Copilot in the Status Bar."
           },
           "usageai.statusBarProviders.gemini": {
             "type": "boolean",
             "default": false,
             "order": 50,
-            "description": "Show Gemini in the Status Bar."
+            "markdownDescription": "Show Gemini in the Status Bar."
           },
           "usageai.statusBarProviders.accounts": {
             "type": "array",
@@ -339,7 +359,7 @@
             },
             "order": 60,
             "scope": "application",
-            "markdownDescription": "Other accounts to show in the Status Bar, each named by its label or email (or its id, such as `claude@1a2b3c4d`). A provider's own checkbox follows its primary account."
+            "markdownDescription": "Claude Code and Codex accounts other than the main logins to show in the Status Bar, each beside the others. The easy way is [Choose Status Bar Items…](command:usageai.chooseStatusBarItems): it lists every account with a checkbox and fills this in for you. By hand, name each account by its label or email, or by the id the command writes (such as `claude@1a2b3c4d`)."
           },
           "usageai.statusBarProvider": {
             "default": [

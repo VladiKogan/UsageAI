@@ -57,6 +57,9 @@ const informationMessages: string[] = [];
 const openedUris: string[] = [];
 const clipboardWrites: string[] = [];
 const configurationUpdates: Array<{ readonly key: string; readonly value: unknown; readonly target: unknown }> = [];
+/** A setting whose update the fake window refuses, as one it has not registered. */
+let unregisteredConfigurationKey: string | undefined;
+let quickPickAnswer: ((items: ReadonlyArray<{ readonly label: string; readonly picked?: boolean }>) => unknown) | undefined;
 let configurationListener: ((event: { affectsConfiguration(section: string): boolean }) => void) | undefined;
 let registeredDashboard: unknown;
 
@@ -71,6 +74,9 @@ const configuration = {
   },
   async update(key: string, value: unknown, target: unknown): Promise<void> {
     configurationValues.set(key, value);
+    if (key === unregisteredConfigurationKey) {
+      throw new Error(`Unable to write to User Settings because usageai.${key} is not a registered configuration.`);
+    }
     configurationUpdates.push({ key, value, target });
   },
 };
@@ -110,7 +116,8 @@ let remoteName: string | undefined;
 const vscodeStub = {
   StatusBarAlignment: { Left: 1 },
   ProgressLocation: { Window: 1 },
-  ConfigurationTarget: { Global: 1 },
+  ConfigurationTarget: { Global: 1, Workspace: 2 },
+  QuickPickItemKind: { Separator: -1 },
   MarkdownString: FakeMarkdownString,
   Uri: { parse: (value: string) => ({ value, toString: () => value }) },
   commands: {
@@ -148,6 +155,9 @@ const vscodeStub = {
     showInformationMessage(message: string) { informationMessages.push(message); return Promise.resolve(undefined); },
     showWarningMessage(message: string) { informationMessages.push(message); return Promise.resolve(undefined); },
     showErrorMessage(message: string) { informationMessages.push(message); return Promise.resolve(undefined); },
+    async showQuickPick(items: ReadonlyArray<{ readonly label: string; readonly picked?: boolean }>) {
+      return quickPickAnswer?.(items);
+    },
   },
   extensions: {
     getExtension: (id: string) => installedExtensions.get(id),
@@ -632,6 +642,8 @@ test("activation helpers sanitize configuration and activation registers its sur
     extensionModule.activate(context as never);
     assert.deepEqual([...registeredCommands.keys()].sort(), [
       "usageai.addAccount",
+      "usageai.chooseStatusBarItems",
+      "usageai.manageAccounts",
       "usageai.openSettings",
       "usageai.refresh",
       "usageai.rescanAccounts",
@@ -669,6 +681,30 @@ test("activation helpers sanitize configuration and activation registers its sur
     assert.deepEqual(configurationUpdates, [{ key: "metricDisplayMode", value: "important", target: 1 }]);
     await registeredCommands.get("usageai.rescanAccounts")?.();
     assert.ok(informationMessages.includes("UsageAI found no new accounts."));
+
+    // The Status Bar picker ticks from what is shown, writes the account list first, skips a
+    // checkbox already holding its value (Codex), and sets the fallback so the checkboxes take
+    // over from the legacy setting.
+    configurationUpdates.length = 0;
+    const offered: string[] = [];
+    quickPickAnswer = (items) => {
+      offered.push(...items.map((item) => `${item.label}${item.picked ? " ✓" : ""}`));
+      return items.filter((item) => item.label === "Codex");
+    };
+    await registeredCommands.get("usageai.chooseStatusBarItems")?.();
+    assert.deepEqual(offered, ["Codex ✓", "When nothing above is chosen", "Show the account with the highest usage ✓"]);
+    assert.deepEqual(configurationUpdates.map((update) => [update.key, update.value]), [
+      ["statusBarProviders.accounts", undefined],
+      ["statusBarProviders.hottestWhenNoneSelected", false],
+    ]);
+    // A window that has not registered the account list refuses it before any checkbox changes.
+    configurationUpdates.length = 0;
+    unregisteredConfigurationKey = "statusBarProviders.accounts";
+    await registeredCommands.get("usageai.chooseStatusBarItems")?.();
+    assert.deepEqual(configurationUpdates, []);
+    assert.ok(informationMessages.some((message) => message.startsWith("VS Code has not loaded UsageAI's newest settings")));
+    unregisteredConfigurationKey = undefined;
+    quickPickAnswer = undefined;
   } finally {
     mock.restoreAll();
     for (const subscription of subscriptions) subscription.dispose();

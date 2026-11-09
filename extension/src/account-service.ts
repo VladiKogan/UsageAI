@@ -66,6 +66,23 @@ export function sanitizeAccountState(value: unknown): AccountState | undefined {
   };
 }
 
+export type ManagedAccountStatus = "shown" | "hidden" | "pending" | "ignored" | "duplicate" | "unavailable";
+
+/** What the user answered for a found login: shown, ignored, or not answered yet. */
+export type AccountDecision = "show" | "ignore" | undefined;
+
+/** One login as Manage Accounts lists it. */
+export interface ManagedAccount {
+  readonly account: AccountEntry;
+  readonly status: ManagedAccountStatus;
+  /** For a duplicate: the label of the account it repeats. */
+  readonly shownAs?: string;
+  /** For an unavailable `usageai.accounts` entry: why its folder cannot be read. */
+  readonly problem?: string;
+  /** The folder is found by the home-folder listing, so it needs no `usageai.accounts` entry. */
+  readonly found: boolean;
+}
+
 export interface AccountCandidate<T> {
   readonly source: T;
   readonly identity: AccountIdentity;
@@ -87,6 +104,10 @@ export interface ResolvedAccounts {
   readonly pending: readonly AccountEntry[];
   /** Found or added logins of someone already shown, left out. */
   readonly duplicates: readonly { readonly account: AccountEntry; readonly shownAs: string }[];
+  /** Default and added logins the user hid with `"hidden": true`. */
+  readonly hidden: readonly AccountEntry[];
+  /** Found logins the user answered with Ignore (or removed). */
+  readonly ignored: readonly AccountEntry[];
 }
 
 /**
@@ -98,6 +119,8 @@ export function resolveAccounts(input: ResolveAccountsInput): ResolvedAccounts {
   const shown: AccountEntry[] = [];
   const pending: AccountEntry[] = [];
   const duplicates: { account: AccountEntry; shownAs: string }[] = [];
+  const hidden: AccountEntry[] = [];
+  const ignored: AccountEntry[] = [];
   const shownIdentities = new Map<string, string>();
   const shownIds = new Set(input.state.shown);
   const ignoredIds = new Set(input.state.ignored);
@@ -139,6 +162,8 @@ export function resolveAccounts(input: ResolveAccountsInput): ResolvedAccounts {
       if (!entry.hidden) {
         claim(entry);
         group.push(entry);
+      } else {
+        hidden.push(entry);
       }
     }
 
@@ -159,7 +184,9 @@ export function resolveAccounts(input: ResolveAccountsInput): ResolvedAccounts {
         label: accountLabel(candidate.source.label, candidate.identity, candidate.source.path),
         hidden: candidate.source.hidden,
       };
-      if (!entry.hidden && claim(entry)) {
+      if (entry.hidden) {
+        hidden.push(entry);
+      } else if (claim(entry)) {
         group.push(entry);
       }
     }
@@ -180,6 +207,7 @@ export function resolveAccounts(input: ResolveAccountsInput): ResolvedAccounts {
         hidden: false,
       };
       if (ignoredIds.has(entry.id)) {
+        ignored.push(entry);
         continue;
       }
       if (!claim(entry)) {
@@ -196,7 +224,7 @@ export function resolveAccounts(input: ResolveAccountsInput): ResolvedAccounts {
     }
     shown.push(...distinctAccountLabels(group));
   }
-  return { shown, pending, duplicates };
+  return { shown, pending, duplicates, hidden, ignored };
 }
 
 export interface AccountServiceDependencies {
@@ -224,7 +252,9 @@ export class AccountService {
   private discovered: readonly DiscoveredFolder[] = [];
   private input: Omit<ResolveAccountsInput, "state"> = { defaults: [], configured: [], discovered: [] };
   private state: AccountState | undefined;
-  private resolved: ResolvedAccounts = { shown: [], pending: [], duplicates: [] };
+  /** `usageai.accounts` entries whose folder holds no login, so Manage Accounts can remove them. */
+  private unavailable: readonly { readonly setting: AccountSetting; readonly problem: string }[] = [];
+  private resolved: ResolvedAccounts = { shown: [], pending: [], duplicates: [], hidden: [], ignored: [] };
   private readonly asking = new Set<string>();
   private lastWarning = "";
   private signature = "";
@@ -247,6 +277,39 @@ export class AccountService {
 
   public get duplicates(): ResolvedAccounts["duplicates"] {
     return this.resolved.duplicates;
+  }
+
+  /**
+   * Every login UsageAI knows about, for Manage Accounts: per provider the shown ones first, then
+   * hidden, waiting, ignored and duplicate ones. `found` says whether the folder came from the home
+   * folder listing (or an inherited variable), so it would come back as a found login on its own.
+   */
+  public catalog(): readonly ManagedAccount[] {
+    const found = new Set(this.discovered.map((folder) => `${folder.provider}:${folder.id}`));
+    const isFound = (account: AccountEntry): boolean => found.has(`${account.provider}:${accountIdForPath(account.path)}`);
+    const all: ManagedAccount[] = [
+      ...this.resolved.shown.map((account) => ({ account, status: "shown" as const })),
+      ...this.resolved.hidden.map((account) => ({ account, status: "hidden" as const })),
+      ...this.resolved.pending.map((account) => ({ account, status: "pending" as const })),
+      ...this.resolved.ignored.map((account) => ({ account, status: "ignored" as const })),
+      ...this.resolved.duplicates.map(({ account, shownAs }) => ({ account, status: "duplicate" as const, shownAs })),
+      ...this.unavailable.map(({ setting, problem }) => {
+        const id = accountIdForPath(setting.path);
+        const account: AccountEntry = {
+          provider: setting.provider,
+          id,
+          unitKey: unitKey(setting.provider, id),
+          path: setting.path,
+          source: "added",
+          identity: {},
+          ...(setting.label ? { userLabel: setting.label } : {}),
+          label: accountLabel(setting.label, {}, setting.path),
+          hidden: setting.hidden,
+        };
+        return { account, status: "unavailable" as const, problem };
+      }),
+    ].map((managed) => ({ ...managed, found: isFound(managed.account) }));
+    return accountProviderIds.flatMap((provider) => all.filter((managed) => managed.account.provider === provider));
   }
 
   public get lastScanAt(): number | undefined {
@@ -311,8 +374,14 @@ export class AccountService {
     this.apply();
   }
 
-  /** Shows a pending found account, as its Show button does. */
-  public async answer(id: string, decision: "show" | "ignore"): Promise<void> {
+  /** What the user answered for a found login, so a change can be undone exactly. */
+  public decisionFor(id: string): AccountDecision {
+    const state = this.currentState();
+    return state.shown.includes(id) ? "show" : state.ignored.includes(id) ? "ignore" : undefined;
+  }
+
+  /** Shows or ignores a found account, as its notification's buttons do; nothing clears the answer. */
+  public async answer(id: string, decision: AccountDecision): Promise<void> {
     const state = this.currentState();
     this.state = {
       ...state,
@@ -373,12 +442,14 @@ export class AccountService {
     const settings = sanitizeAccountSettings(this.dependencies.settings());
     const rejected = [...settings.rejected];
     const configured: AccountCandidate<AccountSetting>[] = [];
+    const unavailable: { setting: AccountSetting; problem: string }[] = [];
     for (const setting of settings.entries) {
       const isDefault = defaultIds.has(`${setting.provider}:${accountIdForPath(setting.path)}`);
       // A label or hidden flag for the default folder needs no login check of its own.
       const problem = isDefault ? undefined : await accountFolderProblem(setting.provider, setting.path, this.fileSystem());
       if (problem) {
         rejected.push(`${setting.path}: ${problem}`);
+        unavailable.push({ setting, problem });
         continue;
       }
       configured.push({ source: setting, identity: await this.identityOf(setting.provider, setting.path) });
@@ -390,6 +461,7 @@ export class AccountService {
       }
     }
     this.defaultLogins = defaultLogins;
+    this.unavailable = unavailable;
     this.input = {
       defaults: await Promise.all(defaults.map(async (entry) => ({
         source: entry,
@@ -444,7 +516,8 @@ export class AccountService {
       this.asking.add(account.id);
       void Promise.resolve(this.dependencies.askToShow(account, `New ${providerTitle(account.provider)} account found: ${account.label}`))
         .then(async (decision) => {
-          if (decision && !this.disposed) {
+          // Manage Accounts may have answered first; a late click on this notification must not undo that.
+          if (decision && !this.disposed && this.resolved.pending.some((entry) => entry.id === account.id)) {
             await this.answer(account.id, decision);
           }
         }, () => undefined)
