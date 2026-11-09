@@ -60,8 +60,6 @@ the desktop app, and 70% line, 65% branch and 75% function for the extension.
 - Provider error messages are shown to users as written, so keep them clear and free of internals.
   A new desktop provider's exception type must be added to `Program.GetSafeDiagnosticError` and
   `UsageRefreshService.FetchAsync`.
-- [nesszer/Win-CodexBar](https://github.com/nesszer/Win-CodexBar) is a useful reference for provider
-  endpoints, credential locations and limit semantics.
 
 ## Changelog, commits and pull requests
 

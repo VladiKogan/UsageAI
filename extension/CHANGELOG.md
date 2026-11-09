@@ -2,6 +2,22 @@
 
 ## Unreleased
 
+### Fixed
+
+- **Claude's saved limit resets show up again, each kind on its own row.** Claude now reports
+  resets only to its own CLI. Every other client gets an empty list marked `ineligible_reason:
+  "surface"`, so the "Reset credits" row had quietly disappeared. The one usage request that asks
+  for resets now names itself as the CLI does (`claude-cli/<version> (external, cli)`). The version
+  is read from the installed CLI's files, never by running it:
+  npm's `package.json` (also through the `claude` link on macOS and Linux), the native install's
+  version folder (on Windows, the kept copy that matches the installed one), or the Claude Code
+  extension's folder name. `2.1.0` is used when none is found. If Claude refuses that request with
+  a 400, 401 or 403, it is sent once more as a plain request, so your limits never depend on the
+  CLI name. The plain retry and every other request keep UsageAI's own agent. Each kind of reset
+  gets its own row, named the way the Claude CLI names it: "Fable reset", "5-hour reset", "Weekly
+  reset" or "Full reset". Each row shows how many you have and the earliest use-by date, with the
+  year only when it isn't this year.
+
 ### Security
 
 - **The packaging tools use `minimatch` 11.0.5, clearing a moderate-severity advisory.**

@@ -13,7 +13,7 @@ import {
   type UsageClient,
   type UsageSnapshot,
 } from "./model";
-import { ClaudeUsageClient, findClaudeLaunch, runClaudeAuthRecovery } from "./providers/claude";
+import { ClaudeUsageClient, findClaudeLaunch, installedClaudeCliVersion, runClaudeAuthRecovery } from "./providers/claude";
 import { CodexUsageClient, findCodexLaunch } from "./providers/codex";
 import { CopilotUsageClient } from "./providers/copilot";
 import { disposeAgyHub, GeminiUsageClient } from "./providers/gemini";
@@ -104,9 +104,10 @@ export function resolveStatusBarAccounts(value: unknown, accounts: readonly Acco
 export function activate(context: vscode.ExtensionContext): void {
   const extensionPath = bundledCliResolver(context);
   const configuration = () => vscode.workspace.getConfiguration("usageai");
+  const claudeCliVersion = () => installedClaudeCliVersion(extensionPath);
   const baseClients: Record<UsageProviderId, UsageClient> = {
     codex: new CodexUsageClient(extensionPath),
-    claude: new ClaudeUsageClient((signal) => runClaudeAuthRecovery(signal, extensionPath)),
+    claude: new ClaudeUsageClient((signal) => runClaudeAuthRecovery(signal, extensionPath), undefined, claudeCliVersion),
     copilot: new CopilotUsageClient(() => configuration().get("enableGitHubCliFallback", false)),
     gemini: new GeminiUsageClient(),
   };
@@ -115,6 +116,7 @@ export function activate(context: vscode.ExtensionContext): void {
     ? new ClaudeUsageClient(
       (signal) => runClaudeAuthRecovery(signal, extensionPath, account.path),
       { id: account.id, configDirectory: account.path },
+      claudeCliVersion,
     )
     : new CodexUsageClient(extensionPath, {}, { id: account.id, home: account.path });
   const accountClients = new Map<string, UsageClient>();

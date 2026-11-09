@@ -199,7 +199,7 @@ UsageAI tries Claude authentication in this order:
 1. An explicitly supplied Claude web session key from `USAGEAI_CLAUDE_SESSION_KEY` (the compatible `CLAUDE_AI_SESSION_KEY` and `CLAUDE_WEB_SESSION_KEY` names also work).
 2. Claude Code's saved OAuth login from its normal credential store.
 
-The first option follows [Win-CodexBar](https://github.com/nesszer/Win-CodexBar)'s web-usage approach, but UsageAI deliberately does not extract cookies from browsers. A Claude session cookie is more privileged than a usage-only token: supply it only to the UsageAI process, keep it out of source control and scripts, and rotate it immediately if it's exposed.
+UsageAI deliberately does not extract cookies from browsers. A Claude session cookie is more privileged than a usage-only token: supply it only to the UsageAI process, keep it out of source control and scripts, and rotate it immediately if it's exposed.
 
 For a process-scoped PowerShell session:
 
