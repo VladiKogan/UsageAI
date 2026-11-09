@@ -812,7 +812,8 @@ internal static class CoverageExpansionTests
             using (var recoveryHttp = new HttpClient(new StubHttpHandler((_, _, _) =>
                    {
                        recoveryRequests++;
-                       return Task.FromResult(recoveryRequests == 1
+                       // An expired login refuses the reset request and its plain retry alike.
+                       return Task.FromResult(recoveryRequests <= 2
                            ? new HttpResponseMessage(HttpStatusCode.Unauthorized)
                            : JsonResponse(HttpStatusCode.OK, """{"five_hour":{"utilization":27}}"""));
                    })))
@@ -826,7 +827,7 @@ internal static class CoverageExpansionTests
                         return Task.FromResult(true);
                     }).GetUsageAsync();
                 Equal(27, recovered.Primary!.UsedPercent);
-                Equal(2, recoveryRequests);
+                Equal(3, recoveryRequests);
                 Equal(1, recoveryProbes);
                 Equal(freshCredentials, File.ReadAllText(credentialPath));
             }
@@ -836,7 +837,7 @@ internal static class CoverageExpansionTests
             using (var freshProbeHttp = new HttpClient(new StubHttpHandler((_, _, _) =>
                    {
                        freshProbeRequests++;
-                       return Task.FromResult(freshProbeRequests == 1
+                       return Task.FromResult(freshProbeRequests <= 2
                            ? new HttpResponseMessage(HttpStatusCode.Unauthorized)
                            : JsonResponse(HttpStatusCode.OK, """{"five_hour":{"utilization":33}}"""));
                    })))
@@ -846,7 +847,7 @@ internal static class CoverageExpansionTests
                     () => Array.Empty<string>(),
                     ClaudeCodeUsageClient.RunClaudeAuthRecoveryAsync).GetUsageAsync();
                 Equal(33, recovered.Primary!.UsedPercent);
-                Equal(2, freshProbeRequests);
+                Equal(3, freshProbeRequests);
                 Equal(freshCredentials, File.ReadAllText(credentialPath));
             }
 
@@ -903,7 +904,8 @@ internal static class CoverageExpansionTests
                             return Task.FromResult(true);
                         }).GetUsageAsync());
                 True(boundedException.Message.Contains("expired", StringComparison.OrdinalIgnoreCase));
-                Equal(2, boundedRetryRequests);
+                // Each attempt is the reset request and its plain retry; recovery runs once between them.
+                Equal(4, boundedRetryRequests);
                 Equal(1, boundedRetryProbes);
             }
         }
@@ -1823,10 +1825,103 @@ internal static class CoverageExpansionTests
         Equal("3", snapshot.Metrics[5].RemainingText);
         Equal(UsageMetricKind.Balance, snapshot.Metrics[5].Kind);
 
+        Equal("Free limit resets · use by " + ClaudeCodeUsageClient.UseByText(DateTimeOffset.Parse("2026-12-01T00:00:00Z", CultureInfo.InvariantCulture), now), snapshot.Metrics[5].UsageText);
+
         // An implausible total is treated as malformed rather than shown.
-        Equal(0, ClaudeCodeUsageClient.CountResetGrants(
-            Json("""{"cedar_ember":{"grants":[{"resets_left":40,"paused":false},{"resets_left":20,"paused":false}]}}"""), now));
-        Equal(0, ClaudeCodeUsageClient.CountResetGrants(Json("""{"cedar_ember":null}"""), now));
+        Equal(0, ClaudeCodeUsageClient.ParseResetGrants(
+            Json("""{"cedar_ember":{"grants":[{"resets_left":40,"paused":false},{"resets_left":20,"paused":false}]}}"""), now).Count);
+        Equal(0, ClaudeCodeUsageClient.ParseResetGrants(Json("""{"cedar_ember":null}"""), now).Count);
+
+        // Each kind of reset is its own row, named as the Claude CLI names it: one that gives back
+        // weekly use is a Fable reset whatever its type, else the type decides, else what it clears.
+        var kinds = ClaudeCodeUsageClient.ParseResetGrants(
+            Json(
+                """
+                {"cedar_ember":{"eligible":true,"grants":[
+                  {"resets_left":1,"paused":false,"type":"full","gives_back_weekly":true,"clears":["five_hour"],"ends_at":"2026-11-17T07:59:00Z"},
+                  {"resets_left":1,"paused":false,"type":"full","ends_at":"2026-11-20T00:00:00Z"},
+                  {"resets_left":2,"paused":false,"clears":["five_hour"]},
+                  {"resets_left":1,"paused":false,"clears":["seven_day"]},
+                  {"resets_left":1,"paused":false,"type":"session","ends_at":"2026-11-12T00:00:00Z"},
+                  {"resets_left":1,"paused":false,"clears":["five_hour","seven_day"],"ends_at":"2026-11-18T00:00:00Z"}
+                ]}}
+                """),
+            now);
+        Equal(
+            "Fable reset=1|5-hour reset=3|Weekly reset=1|Full reset=2",
+            string.Join('|', kinds.Select(metric => $"{metric.Name}={metric.RemainingText}")));
+        Equal(
+            "Gives back what Fable used this week · use by " + ClaudeCodeUsageClient.UseByText(DateTimeOffset.Parse("2026-11-17T07:59:00Z", CultureInfo.InvariantCulture), now),
+            kinds[0].UsageText);
+        // A kind's earliest deadline is the one shown; a grant without one adds no date.
+        Equal(
+            "Clears the 5-hour limit · use by " + ClaudeCodeUsageClient.UseByText(DateTimeOffset.Parse("2026-11-12T00:00:00Z", CultureInfo.InvariantCulture), now),
+            kinds[1].UsageText);
+        Equal("Clears the weekly limit", kinds[2].UsageText);
+        Equal(
+            "Clears the 5-hour and weekly limits · use by " + ClaudeCodeUsageClient.UseByText(DateTimeOffset.Parse("2026-11-18T00:00:00Z", CultureInfo.InvariantCulture), now),
+            kinds[3].UsageText);
+        True(kinds.All(metric => metric.Kind == UsageMetricKind.Balance && !metric.HasQuota));
+
+        // A use-by date names its year only when it is not this one.
+        var midYear = new DateTimeOffset(2026, 6, 15, 12, 0, 0, TimeZoneInfo.Local.GetUtcOffset(new DateTime(2026, 6, 15, 12, 0, 0)));
+        Equal("17 Nov", ClaudeCodeUsageClient.UseByText(midYear.AddDays(155), midYear));
+        Equal("5 Jan 2027", ClaudeCodeUsageClient.UseByText(new DateTimeOffset(2027, 1, 5, 12, 0, 0, TimeZoneInfo.Local.GetUtcOffset(new DateTime(2027, 1, 5, 12, 0, 0))), midYear));
+
+        // The reset request names itself as the CLI, with a version only when it is a plain x.y.z.
+        Equal("claude-cli/2.1.321 (external, cli)", ClaudeCodeUsageClient.ClaudeCliUserAgent("2.1.321"));
+        Equal("claude-cli/2.1.0 (external, cli)", ClaudeCodeUsageClient.ClaudeCliUserAgent(null));
+        Equal("claude-cli/2.1.0 (external, cli)", ClaudeCodeUsageClient.ClaudeCliUserAgent("2.1.321\r\nX: y"));
+        Equal("claude-cli/2.1.0 (external, cli)", ClaudeCodeUsageClient.ClaudeCliUserAgent("2.1"));
+
+        // The installed version is read from the CLI's files, never by running it: npm's package.json,
+        // or a native executable's file version.
+        var cliFolder = Path.Combine(Path.GetTempPath(), "usageai-claude-cli-" + Guid.NewGuid().ToString("N"));
+        var claudePath = Environment.GetEnvironmentVariable("CLAUDE_PATH");
+        try
+        {
+            var package = Path.Combine(cliFolder, "node_modules", "@anthropic-ai", "claude-code");
+            Directory.CreateDirectory(package);
+            await File.WriteAllTextAsync(Path.Combine(package, "cli.js"), string.Empty);
+            await File.WriteAllTextAsync(Path.Combine(package, "package.json"), """{"name":"@anthropic-ai/claude-code","version":"9.8.7-beta.1"}""");
+            await File.WriteAllTextAsync(Path.Combine(cliFolder, "node.exe"), string.Empty);
+            await File.WriteAllTextAsync(Path.Combine(cliFolder, "claude.cmd"), "@echo off");
+            Environment.SetEnvironmentVariable("CLAUDE_PATH", Path.Combine(cliFolder, "claude.cmd"));
+            ClaudeCodeUsageClient.ForgetInstalledClaudeCliVersion();
+            Equal("9.8.7", ClaudeCodeUsageClient.InstalledClaudeCliVersion());
+
+            // Kept for a while: a changed install is read again only once the cached answer ages out.
+            Environment.SetEnvironmentVariable("CLAUDE_PATH", Environment.ProcessPath);
+            Equal("9.8.7", ClaudeCodeUsageClient.InstalledClaudeCliVersion());
+            ClaudeCodeUsageClient.ForgetInstalledClaudeCliVersion();
+            var info = System.Diagnostics.FileVersionInfo.GetVersionInfo(Environment.ProcessPath!);
+            Equal(
+                info.FileMajorPart + info.FileMinorPart + info.FileBuildPart > 0 ? $"{info.FileMajorPart}.{info.FileMinorPart}.{info.FileBuildPart}" : null,
+                ClaudeCodeUsageClient.InstalledClaudeCliVersion());
+
+            // The Claude Code editor extension's copy is read by its folder's version, as the extension reads it.
+            var bundled = Path.Combine(cliFolder, "anthropic.claude-code-2.1.400-win32-x64", "resources", "native-binary");
+            Directory.CreateDirectory(bundled);
+            await File.WriteAllTextAsync(Path.Combine(bundled, "claude.exe"), string.Empty);
+            Environment.SetEnvironmentVariable("CLAUDE_PATH", Path.Combine(bundled, "claude.exe"));
+            ClaudeCodeUsageClient.ForgetInstalledClaudeCliVersion();
+            Equal("2.1.400", ClaudeCodeUsageClient.InstalledClaudeCliVersion());
+
+            // A malformed package.json costs only the version, never an exception into the usage request.
+            foreach (var malformed in new[] { "[]", "\"2.1.321\"", """{"version":["2.1.321"]}""", """{"version":"2.1"}""", "{" })
+            {
+                await File.WriteAllTextAsync(Path.Combine(package, "package.json"), malformed);
+                Environment.SetEnvironmentVariable("CLAUDE_PATH", Path.Combine(cliFolder, "claude.cmd"));
+                ClaudeCodeUsageClient.ForgetInstalledClaudeCliVersion();
+                Null(ClaudeCodeUsageClient.InstalledClaudeCliVersion());
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("CLAUDE_PATH", claudePath);
+            ClaudeCodeUsageClient.ForgetInstalledClaudeCliVersion();
+            Directory.Delete(cliFolder, recursive: true);
+        }
 
         // A plan Claude meters nothing for reads as such, never as 0% used or as a failure.
         var free = ClaudeCodeUsageClient.ParseSnapshot(
@@ -1851,20 +1946,38 @@ internal static class CoverageExpansionTests
             Environment.SetEnvironmentVariable("USAGEAI_CLAUDE_SESSION_KEY", null);
             Environment.SetEnvironmentVariable("CLAUDE_AI_SESSION_KEY", null);
             Environment.SetEnvironmentVariable("CLAUDE_WEB_SESSION_KEY", null);
+            // Only the reset request carries the Claude CLI's agent; the plain retry is UsageAI's own.
             var urls = new List<string>();
             using (var http = new HttpClient(new StubHttpHandler((request, _, _) =>
                    {
-                       urls.Add(request.RequestUri!.AbsoluteUri);
+                       urls.Add($"{request.RequestUri!.AbsoluteUri} {request.Headers.UserAgent}");
                        return Task.FromResult(request.RequestUri.Query.Contains("cedar_ember", StringComparison.Ordinal)
                            ? new HttpResponseMessage(HttpStatusCode.BadRequest)
                            : JsonResponse(HttpStatusCode.OK, """{"five_hour":{"utilization":7}}"""));
                    })))
             {
-                var retried = await new ClaudeCodeUsageClient(http, () => Array.Empty<string>()).GetUsageAsync();
+                var retried = await new ClaudeCodeUsageClient(http, () => Array.Empty<string>(), claudeCliVersion: () => "2.1.321").GetUsageAsync();
                 Equal(7, retried.Primary!.UsedPercent);
                 Equal(
-                    "https://api.anthropic.com/api/oauth/usage?cedar_ember=1|https://api.anthropic.com/api/oauth/usage",
+                    "https://api.anthropic.com/api/oauth/usage?cedar_ember=1 claude-cli/2.1.321 (external, cli)|" +
+                    $"https://api.anthropic.com/api/oauth/usage {AppIdentity.UserAgent}",
                     string.Join('|', urls));
+            }
+
+            // Usage never depends on the CLI's agent: a 401 to that request is asked again plainly too.
+            var refusedAgent = 0;
+            using (var http = new HttpClient(new StubHttpHandler((request, _, _) =>
+                   {
+                       var asCli = request.Headers.UserAgent.ToString().StartsWith("claude-cli/", StringComparison.Ordinal);
+                       refusedAgent += asCli ? 1 : 0;
+                       return Task.FromResult(asCli
+                           ? new HttpResponseMessage(HttpStatusCode.Unauthorized)
+                           : JsonResponse(HttpStatusCode.OK, """{"five_hour":{"utilization":11}}"""));
+                   })))
+            {
+                var plain = await new ClaudeCodeUsageClient(http, () => Array.Empty<string>(), claudeCliVersion: () => null).GetUsageAsync();
+                Equal(11, plain.Primary!.UsedPercent);
+                Equal(1, refusedAgent);
             }
 
             // The web path asks for reset credits too, and its overage refresh keeps them.

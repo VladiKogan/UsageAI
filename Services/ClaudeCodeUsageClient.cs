@@ -25,6 +25,7 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
     private readonly HttpClient _client;
     private readonly Func<IReadOnlyList<string>> _keyringPasswords;
     private readonly Func<CancellationToken, Task<bool>> _claudeAuthProbe;
+    private readonly Func<string?> _claudeCliVersion;
 
     /// <summary>Until when the opt-in web path is skipped after claude.ai asked for a browser check.</summary>
     private DateTimeOffset _webRetryAfterUtc;
@@ -55,9 +56,11 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
         HttpClient client,
         Func<IReadOnlyList<string>>? keyringPasswords = null,
         Func<CancellationToken, Task<bool>>? claudeAuthProbe = null,
-        string? configDirectory = null)
+        string? configDirectory = null,
+        Func<string?>? claudeCliVersion = null)
     {
         _client = client ?? throw new ArgumentNullException(nameof(client));
+        _claudeCliVersion = claudeCliVersion ?? InstalledClaudeCliVersion;
         _configDirectory = configDirectory is null ? null : ProviderKey.NormalizeFolder(configDirectory);
         _keyringPasswords = _configDirectory is not null
             ? static () => Array.Empty<string>()
@@ -195,13 +198,19 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
     {
         try
         {
-            // Saved limit-reset credits are reported only when asked for. An account or API that
-            // rejects the parameter is asked once more without it, so usage never depends on it.
-            var response = await SendUsageRequestAsync(UsageWithResetCreditsEndpoint, credentials, cancellationToken);
-            if (response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Forbidden)
+            // Saved limit resets are reported only when asked for, and only to the Claude CLI, so
+            // this one request carries the CLI's agent. A refusal of it (400, 401 or 403) is asked
+            // once more without the parameter, as UsageAI, so usage never depends on either; an
+            // expired login is refused again there and handled below as before.
+            var response = await SendUsageRequestAsync(
+                UsageWithResetCreditsEndpoint,
+                credentials,
+                ClaudeCliUserAgent(_claudeCliVersion()),
+                cancellationToken);
+            if (response.StatusCode is HttpStatusCode.BadRequest or HttpStatusCode.Unauthorized or HttpStatusCode.Forbidden)
             {
                 response.Dispose();
-                response = await SendUsageRequestAsync(UsageEndpoint, credentials, cancellationToken);
+                response = await SendUsageRequestAsync(UsageEndpoint, credentials, AppIdentity.UserAgent, cancellationToken);
             }
 
             using var _ = response;
@@ -267,13 +276,14 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
     private async Task<HttpResponseMessage> SendUsageRequestAsync(
         Uri endpoint,
         ClaudeCredentials credentials,
+        string userAgent,
         CancellationToken cancellationToken)
     {
         using var request = new HttpRequestMessage(HttpMethod.Get, endpoint);
         request.Headers.Authorization = new AuthenticationHeaderValue("Bearer", credentials.AccessToken);
         request.Headers.Accept.Add(new MediaTypeWithQualityHeaderValue("application/json"));
         request.Headers.Add("anthropic-beta", OAuthBeta);
-        request.Headers.UserAgent.ParseAdd(AppIdentity.UserAgent);
+        request.Headers.UserAgent.ParseAdd(userAgent);
         return await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
     }
 
@@ -332,16 +342,7 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
             metrics.Add(extraUsage);
         }
 
-        var resetGrants = CountResetGrants(root, now);
-        if (resetGrants > 0)
-        {
-            metrics.Add(new UsageMetric(
-                "Reset credits",
-                UsageMetricKind.Balance,
-                null,
-                RemainingText: resetGrants.ToString(CultureInfo.CurrentCulture),
-                UsageText: $"Free limit reset{(resetGrants == 1 ? string.Empty : "s")} available"));
-        }
+        metrics.AddRange(ParseResetGrants(root, now));
 
         return new UsageSnapshot(
             plan,
@@ -751,6 +752,109 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
         return node is null ? null : new ClaudeLaunch(Path.GetFullPath(node), Path.GetFullPath(script));
     }
 
+    /// <summary>The CLI version sent when the installed one cannot be read.</summary>
+    internal const string FallbackClaudeCliVersion = "2.1.0";
+
+    private static readonly TimeSpan CliVersionLifetime = TimeSpan.FromMinutes(30);
+    private static readonly object CliVersionLock = new();
+    private static (DateTimeOffset ReadAt, string? Version)? _cliVersion;
+
+    /// <summary>
+    /// The User-Agent of the request that asks for saved resets. Claude reports them only to its
+    /// own CLI (<c>ineligible_reason: "surface"</c> otherwise), so that one request names itself as
+    /// the CLI does, with the installed version; every other request keeps UsageAI's own agent.
+    /// </summary>
+    internal static string ClaudeCliUserAgent(string? version) =>
+        $"claude-cli/{(IsCliVersion(version) ? version : FallbackClaudeCliVersion)} (external, cli)";
+
+    private static bool IsCliVersion(string? version) =>
+        version is { Length: > 0 and <= 32 } &&
+        version.Split('.') is { Length: 3 } parts &&
+        parts.All(part => part.Length is > 0 and <= 9 && part.All(char.IsAsciiDigit));
+
+    internal static void ForgetInstalledClaudeCliVersion()
+    {
+        lock (CliVersionLock)
+        {
+            _cliVersion = null;
+        }
+    }
+
+    /// <summary>
+    /// The installed Claude CLI's version, read from its files and never by running it: npm's
+    /// <c>package.json</c>, the version in the Claude Code editor extension's folder name, or the
+    /// executable's file version. Kept for 30 minutes; the lock makes concurrent account refreshes
+    /// share one read. It never throws: the version only decorates a header, so no unreadable or
+    /// malformed file may cost the usage request.
+    /// </summary>
+    internal static string? InstalledClaudeCliVersion()
+    {
+        lock (CliVersionLock)
+        {
+            var now = DateTimeOffset.UtcNow;
+            if (_cliVersion is { } cached && now - cached.ReadAt < CliVersionLifetime)
+            {
+                return cached.Version;
+            }
+
+            string? version = null;
+            try
+            {
+                version = FindClaudeLaunch() is { } launch ? ReadClaudeCliVersion(launch) : null;
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or JsonException or
+                                                  InvalidDataException or InvalidOperationException or ArgumentException or
+                                                  NotSupportedException or System.Security.SecurityException)
+            {
+            }
+
+            _cliVersion = (now, version);
+            return version;
+        }
+    }
+
+    private static string? ReadClaudeCliVersion(ClaudeLaunch launch)
+    {
+        if (launch.Script is { } script)
+        {
+            var package = Path.Combine(Path.GetDirectoryName(script) ?? string.Empty, "package.json");
+            if (!File.Exists(package))
+            {
+                return null;
+            }
+
+            using var document = JsonDocument.Parse(SecureLocalFile.ReadAllText(package));
+            return document.RootElement.ValueKind == JsonValueKind.Object
+                ? CliVersionOf(GetString(document.RootElement, "version"))
+                : null;
+        }
+
+        // The editor extension's copy sits in a folder named for its version, as the extension reads it.
+        var folder = System.Text.RegularExpressions.Regex.Match(
+            launch.Executable,
+            @"anthropic\.claude-code-(\d+\.\d+\.\d+)",
+            System.Text.RegularExpressions.RegexOptions.IgnoreCase | System.Text.RegularExpressions.RegexOptions.CultureInvariant);
+        if (folder.Success)
+        {
+            return CliVersionOf(folder.Groups[1].Value);
+        }
+
+        var info = FileVersionInfo.GetVersionInfo(launch.Executable);
+        return info.FileMajorPart + info.FileMinorPart + info.FileBuildPart > 0
+            ? CliVersionOf($"{info.FileMajorPart}.{info.FileMinorPart}.{info.FileBuildPart}")
+            : null;
+    }
+
+    /// <summary>"2.1.321" from "2.1.321", "2.1.321-beta.1" or a four-part version; null for anything else.</summary>
+    private static string? CliVersionOf(string? raw) =>
+        raw is not null &&
+        Version.TryParse(raw.Split('-', '+')[0], out var parsed) &&
+        parsed.Build >= 0 &&
+        $"{parsed.Major}.{parsed.Minor}.{parsed.Build}" is var version &&
+        IsCliVersion(version)
+            ? version
+            : null;
+
     private static bool IsUsableClaudeCommand(string? path) =>
         !string.IsNullOrWhiteSpace(path) &&
         !path.Contains('"') &&
@@ -956,23 +1060,34 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
         };
     }
 
+    /// <summary>The kinds of saved reset, named as the Claude CLI names them, in display order.</summary>
+    private static readonly (string Kind, string Name, string Effect)[] ResetKinds =
+    [
+        ("fable", "Fable reset", "Gives back what Fable used this week"),
+        ("session", "5-hour reset", "Clears the 5-hour limit"),
+        ("weekly", "Weekly reset", "Clears the weekly limit"),
+        ("full", "Full reset", "Clears the 5-hour and weekly limits"),
+        (string.Empty, "Reset credits", "Free limit reset"),
+    ];
+
     /// <summary>
-    /// Saved "reset for free" grants that can be used now: each grant counts once per reset it has
-    /// left, a paused or not-yet-started or expired grant not at all. Grant ids are redemption handles
-    /// and are never read. A grant without its <c>paused</c> flag is skipped, and an implausible total
-    /// is treated as malformed.
+    /// Saved "reset for free" grants that can be used now, one balance row per kind of reset: each
+    /// grant counts once per reset it has left, a paused or not-yet-started or expired grant not at
+    /// all. Grant ids are redemption handles and are never read. A grant without its <c>paused</c>
+    /// flag is skipped, and an implausible total is treated as malformed.
     /// </summary>
-    internal static int CountResetGrants(JsonElement root, DateTimeOffset now)
+    internal static IReadOnlyList<UsageMetric> ParseResetGrants(JsonElement root, DateTimeOffset now)
     {
         if (root.ValueKind != JsonValueKind.Object ||
             !TryGetObject(root, "cedar_ember", out var resets) ||
             !resets.TryGetProperty("grants", out var grants) ||
             grants.ValueKind != JsonValueKind.Array)
         {
-            return 0;
+            return Array.Empty<UsageMetric>();
         }
 
         var total = 0;
+        var byKind = new Dictionary<string, (int Count, DateTimeOffset? UseBy)>(StringComparer.Ordinal);
         foreach (var grant in grants.EnumerateArray())
         {
             if (grant.ValueKind != JsonValueKind.Object ||
@@ -985,8 +1100,9 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
                 continue;
             }
 
+            var endsAt = ParseTimestamp(GetString(grant, "ends_at"));
             if ((ParseTimestamp(GetString(grant, "starts_at")) is { } startsAt && startsAt > now) ||
-                (ParseTimestamp(GetString(grant, "ends_at")) is { } endsAt && endsAt <= now))
+                endsAt <= now)
             {
                 continue;
             }
@@ -994,11 +1110,74 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
             total += (int)left;
             if (total > MaxResetGrants)
             {
-                return 0;
+                return Array.Empty<UsageMetric>();
             }
+
+            var kind = ResetGrantKind(grant);
+            var (count, useBy) = byKind.GetValueOrDefault(kind);
+            byKind[kind] = (count + (int)left, endsAt is { } end && (useBy is null || end < useBy) ? end : useBy);
         }
 
-        return total;
+        return ResetKinds
+            .Where(entry => byKind.ContainsKey(entry.Kind))
+            .Select(entry =>
+            {
+                var (count, useBy) = byKind[entry.Kind];
+                var effect = entry.Kind.Length == 0 && count != 1 ? entry.Effect + "s" : entry.Effect;
+                return new UsageMetric(
+                    entry.Name,
+                    UsageMetricKind.Balance,
+                    null,
+                    RemainingText: count.ToString(CultureInfo.CurrentCulture),
+                    UsageText: useBy is { } date ? $"{effect} · use by {UseByText(date, now)}" : effect);
+            })
+            .ToArray();
+    }
+
+    /// <summary>
+    /// Which reset a grant is, by the Claude CLI's rule: one that gives back weekly use is a Fable
+    /// reset; otherwise its <c>type</c>, else what its <c>clears</c> list names. Empty when unknown.
+    /// </summary>
+    private static string ResetGrantKind(JsonElement grant)
+    {
+        if (grant.TryGetProperty("gives_back_weekly", out var givesBack) && givesBack.ValueKind == JsonValueKind.True)
+        {
+            return "fable";
+        }
+
+        if (GetString(grant, "type") is { } type && type is "session" or "weekly" or "full")
+        {
+            return type;
+        }
+
+        if (!grant.TryGetProperty("clears", out var clears) || clears.ValueKind != JsonValueKind.Array)
+        {
+            return string.Empty;
+        }
+
+        var limits = clears.EnumerateArray()
+            .Where(item => item.ValueKind == JsonValueKind.String)
+            .Select(item => item.GetString())
+            .ToArray();
+        var session = limits.Contains("five_hour", StringComparer.Ordinal);
+        var other = limits.Any(limit => !string.Equals(limit, "five_hour", StringComparison.Ordinal));
+        return (session, other) switch
+        {
+            (true, true) => "full",
+            (true, false) => "session",
+            (false, true) => "weekly",
+            _ => string.Empty,
+        };
+    }
+
+    /// <summary>
+    /// A use-by date as "17 Nov" in local time, with the year ("5 Jan 2027") only when it is not the
+    /// current one. English month names, like every other label; the same in the editor extension.
+    /// </summary>
+    internal static string UseByText(DateTimeOffset date, DateTimeOffset now)
+    {
+        var local = date.ToLocalTime();
+        return local.ToString(local.Year == now.ToLocalTime().Year ? "d MMM" : "d MMM yyyy", CultureInfo.InvariantCulture);
     }
 
     private static UsageMetric? FindLimit(

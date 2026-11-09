@@ -1,18 +1,22 @@
 import assert from "node:assert/strict";
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, utimes, writeFile } from "node:fs/promises";
 import { createRequire } from "node:module";
 import * as os from "node:os";
 import * as path from "node:path";
 import test, { mock } from "node:test";
 import { UsageProviderError } from "../src/errors";
 import {
+  claudeCliUserAgent,
   ClaudeUsageClient,
-  countResetGrants,
+  forgetInstalledClaudeCliVersion,
+  installedClaudeCliVersion,
   isCloudflareChallenge,
   noLimitsReportedText,
   parseClaudeSnapshot,
+  parseResetGrants,
   runClaudeAuthRecovery,
   runClaudeAuthStatus,
+  useByText,
 } from "../src/providers/claude";
 import { CodexUsageClient, jwtExpiryMs, parseCodexHttpSnapshot, readCodexHttpCredentials } from "../src/providers/codex";
 import { userHome } from "../src/security";
@@ -119,7 +123,8 @@ test("Claude client validates through the CLI and retries one unexpected usage f
     let probes = 0;
     mock.method(security, "requestJson", (async () => {
       requests += 1;
-      return requests === 1
+      // An expired login refuses the reset request and its plain retry alike.
+      return requests <= 2
         ? { status: 401, headers: {}, data: {} }
         : {
             status: 200,
@@ -132,7 +137,7 @@ test("Claude client validates through the CLI and retries one unexpected usage f
       return true;
     }).getUsage();
     assert.equal(recovered.metrics[0]?.usedPercent, 26);
-    assert.equal(requests, 2);
+    assert.equal(requests, 3);
     assert.equal(probes, 1);
 
     mock.restoreAll();
@@ -185,7 +190,8 @@ test("Claude client validates through the CLI and retries one unexpected usage f
       }).getUsage(),
       /login has expired/i,
     );
-    assert.equal(requests, 2);
+    // Each attempt is the reset request and its plain retry; recovery runs once between them.
+    assert.equal(requests, 4);
     assert.equal(probes, 1);
   } finally {
     mock.restoreAll();
@@ -226,8 +232,43 @@ test("Claude reads model-scoped weekly limits, reset credits and plans without l
   assert.equal(snapshot.metrics[2]?.usedPercent, 61);
   assert.equal(snapshot.metrics[2]?.kind, "rolling");
   assert.equal(snapshot.metrics[5]?.remainingText, "3");
-  assert.equal(countResetGrants({ cedar_ember: { grants: [{ resets_left: 40, paused: false }, { resets_left: 20, paused: false }] } }, now), 0);
-  assert.equal(countResetGrants({ cedar_ember: null }, now), 0);
+  assert.equal(snapshot.metrics[5]?.usageText, `Free limit resets · use by ${useByText(Date.parse("2026-12-01T00:00:00Z"), now)}`);
+  assert.deepEqual(parseResetGrants({ cedar_ember: { grants: [{ resets_left: 40, paused: false }, { resets_left: 20, paused: false }] } }, now), []);
+  assert.deepEqual(parseResetGrants({ cedar_ember: null }, now), []);
+
+  // Each kind of reset is its own row, named as the Claude CLI names it: one that gives back weekly
+  // use is a Fable reset whatever its type, else the type decides, else what it clears.
+  const kinds = parseResetGrants({
+    cedar_ember: {
+      eligible: true,
+      grants: [
+        { resets_left: 1, paused: false, type: "full", gives_back_weekly: true, clears: ["five_hour"], ends_at: "2026-11-17T07:59:00Z" },
+        { resets_left: 1, paused: false, type: "full", ends_at: "2026-11-20T00:00:00Z" },
+        { resets_left: 2, paused: false, clears: ["five_hour"] },
+        { resets_left: 1, paused: false, clears: ["seven_day"] },
+        { resets_left: 1, paused: false, type: "session", ends_at: "2026-11-12T00:00:00Z" },
+        { resets_left: 1, paused: false, clears: ["five_hour", "seven_day"], ends_at: "2026-11-18T00:00:00Z" },
+      ],
+    },
+  }, now);
+  assert.deepEqual(kinds.map((metric) => `${metric.name}=${metric.remainingText}`), [
+    "Fable reset=1", "5-hour reset=3", "Weekly reset=1", "Full reset=2",
+  ]);
+  assert.deepEqual(kinds.map((metric) => metric.usageText), [
+    `Gives back what Fable used this week · use by ${useByText(Date.parse("2026-11-17T07:59:00Z"), now)}`,
+    `Clears the 5-hour limit · use by ${useByText(Date.parse("2026-11-12T00:00:00Z"), now)}`,
+    "Clears the weekly limit",
+    `Clears the 5-hour and weekly limits · use by ${useByText(Date.parse("2026-11-18T00:00:00Z"), now)}`,
+  ]);
+  assert.ok(kinds.every((metric) => metric.kind === "balance" && metric.usedPercent === null));
+  assert.equal(useByText(new Date(2026, 10, 17, 9).getTime(), new Date(2026, 5, 15).getTime()), "17 Nov");
+  assert.equal(useByText(new Date(2027, 0, 5, 9).getTime(), new Date(2026, 5, 15).getTime()), "5 Jan 2027");
+
+  // The reset request names itself as the CLI, with a version only when it is a plain x.y.z.
+  assert.equal(claudeCliUserAgent("2.1.321"), "claude-cli/2.1.321 (external, cli)");
+  assert.equal(claudeCliUserAgent(undefined), "claude-cli/2.1.0 (external, cli)");
+  assert.equal(claudeCliUserAgent("2.1.321\r\nX: y"), "claude-cli/2.1.0 (external, cli)");
+  assert.equal(claudeCliUserAgent("2.1"), "claude-cli/2.1.0 (external, cli)");
 
   // A plan Claude meters nothing for reads as such, never as 0% used or as a failure.
   const free = parseClaudeSnapshot({ five_hour: null, seven_day: null, limits: [] }, "Free", now);
@@ -246,16 +287,33 @@ test("Claude reads model-scoped weekly limits, reset credits and plans without l
     process.env.USAGEAI_CLAUDE_OAUTH_SCOPES = "user:profile";
     for (const name of names.slice(2)) delete process.env[name];
 
-    // Reset credits are asked for; an API that rejects the parameter is asked again without it.
+    // Reset credits are asked for, as the Claude CLI; an API that rejects the parameter is asked
+    // again without it, with UsageAI's own agent.
     const urls: string[] = [];
-    mock.method(security, "requestJson", (async (url) => {
-      urls.push(String(url));
+    mock.method(security, "requestJson", (async (url, options) => {
+      urls.push(`${String(url)} ${options.headers?.["User-Agent"] ?? "(default agent)"}`);
       return String(url).includes("cedar_ember")
         ? { status: 400, headers: {}, data: {} }
         : { status: 200, headers: {}, data: { five_hour: { utilization: 7 } } };
     }) as typeof security.requestJson);
-    assert.equal((await new ClaudeUsageClient(async () => false).getUsage()).metrics[0]?.usedPercent, 7);
-    assert.deepEqual(urls, ["https://api.anthropic.com/api/oauth/usage?cedar_ember=1", "https://api.anthropic.com/api/oauth/usage"]);
+    assert.equal((await new ClaudeUsageClient(async () => false, undefined, async () => "2.1.321").getUsage()).metrics[0]?.usedPercent, 7);
+    assert.deepEqual(urls, [
+      "https://api.anthropic.com/api/oauth/usage?cedar_ember=1 claude-cli/2.1.321 (external, cli)",
+      "https://api.anthropic.com/api/oauth/usage (default agent)",
+    ]);
+    mock.restoreAll();
+
+    // Usage never depends on the CLI's agent: a 401 to that request is asked again plainly too.
+    let refusedAgent = 0;
+    mock.method(security, "requestJson", (async (_url, options) => {
+      const asCli = options.headers?.["User-Agent"]?.startsWith("claude-cli/") === true;
+      refusedAgent += asCli ? 1 : 0;
+      return asCli
+        ? { status: 401, headers: {}, data: {} }
+        : { status: 200, headers: {}, data: { five_hour: { utilization: 11 } } };
+    }) as typeof security.requestJson);
+    assert.equal((await new ClaudeUsageClient(async () => false, undefined, async () => undefined).getUsage()).metrics[0]?.usedPercent, 11);
+    assert.equal(refusedAgent, 1);
     mock.restoreAll();
 
     // A Cloudflare challenge on the opt-in web path pauses that path and falls back to OAuth, without
@@ -276,6 +334,88 @@ test("Claude reads model-scoped weekly limits, reset credits and plans without l
   } finally {
     mock.restoreAll();
     for (const name of names) restoreEnvironment(name, previous.get(name));
+  }
+});
+
+test("Claude CLI version for the reset request is read from the CLI's files", async () => {
+  const oldPath = process.env.CLAUDE_PATH;
+  const root = await mkdtemp(path.join(os.tmpdir(), "usageai-claude-version-"));
+  const executable = process.platform === "win32" ? "claude.exe" : "claude";
+  const versionOf = async (command: string) => {
+    process.env.CLAUDE_PATH = command;
+    forgetInstalledClaudeCliVersion();
+    return installedClaudeCliVersion();
+  };
+  try {
+    // The Claude Code editor extension's copy carries its version in the folder name.
+    const bundled = path.join(root, "anthropic.claude-code-2.1.400-win32-x64", "resources", "native-binary");
+    await mkdir(bundled, { recursive: true });
+    await writeFile(path.join(bundled, executable), "");
+    assert.equal(await versionOf(path.join(bundled, executable)), "2.1.400");
+
+    // A native install in ~/.local/bin is the kept copy it matches, not simply the newest one kept
+    // (a rollback, or an update downloaded but not yet swapped in).
+    const localBin = path.join(userHome(), ".local", "bin");
+    const versions = path.join(userHome(), ".local", "share", "claude", "versions");
+    await mkdir(localBin, { recursive: true });
+    await mkdir(versions, { recursive: true });
+    await mkdir(path.join(versions, "not-a-version"));
+    const stamp = new Date("2026-11-09T19:49:24Z");
+    for (const [kept, content] of [["2.1.9", "installed build"], ["2.1.10", "newer build, not installed"]] as const) {
+      await writeFile(path.join(versions, kept), content);
+      await utimes(path.join(versions, kept), stamp, stamp);
+    }
+    await writeFile(path.join(localBin, executable), "installed build");
+    await utimes(path.join(localBin, executable), stamp, stamp);
+    assert.equal(await versionOf(path.join(localBin, executable)), "2.1.9");
+
+    // Kept for a while, so a refresh does not look again, and accounts refreshing together share one read.
+    process.env.CLAUDE_PATH = path.join(bundled, executable);
+    assert.equal(await installedClaudeCliVersion(), "2.1.9");
+    forgetInstalledClaudeCliVersion();
+    assert.equal(installedClaudeCliVersion(), installedClaudeCliVersion());
+
+    // A copy that matches no kept version is not guessed at.
+    await writeFile(path.join(localBin, executable), "a build nothing kept");
+    assert.equal(await versionOf(path.join(localBin, executable)), undefined);
+
+    // Anywhere else nothing is guessed, and the request sends the fallback version.
+    const elsewhere = path.join(root, "elsewhere");
+    await mkdir(elsewhere);
+    await writeFile(path.join(elsewhere, executable), "");
+    assert.equal(await versionOf(path.join(elsewhere, executable)), undefined);
+
+    if (process.platform === "win32") {
+      // An npm install's own package.json, prerelease tag dropped.
+      const npm = path.join(root, "npm");
+      const pkg = path.join(npm, "node_modules", "@anthropic-ai", "claude-code");
+      await mkdir(pkg, { recursive: true });
+      await writeFile(path.join(pkg, "cli.js"), "");
+      await writeFile(path.join(pkg, "package.json"), JSON.stringify({ version: "9.8.7-beta.1" }));
+      await writeFile(path.join(npm, "node.exe"), "");
+      await writeFile(path.join(npm, "claude.cmd"), "@echo off");
+      assert.equal(await versionOf(path.join(npm, "claude.cmd")), "9.8.7");
+
+      // A malformed package.json costs only the version, never the usage request.
+      for (const malformed of ["[]", "\"2.1.321\"", "{\"version\":[\"2.1.321\"]}", "{\"version\":\"2.1\"}", "{"]) {
+        await writeFile(path.join(pkg, "package.json"), malformed);
+        assert.equal(await versionOf(path.join(npm, "claude.cmd")), undefined);
+      }
+    } else {
+      // Elsewhere npm's `claude` is a link straight to the package's cli.js.
+      const pkg = path.join(root, "lib", "node_modules", "@anthropic-ai", "claude-code");
+      await mkdir(pkg, { recursive: true });
+      await writeFile(path.join(pkg, "cli.js"), "");
+      await writeFile(path.join(pkg, "package.json"), JSON.stringify({ version: "9.8.7" }));
+      await mkdir(path.join(root, "bin"));
+      await symlink(path.join(pkg, "cli.js"), path.join(root, "bin", "claude"));
+      assert.equal(await versionOf(path.join(root, "bin", "claude")), "9.8.7");
+    }
+  } finally {
+    restoreEnvironment("CLAUDE_PATH", oldPath);
+    forgetInstalledClaudeCliVersion();
+    await rm(path.join(userHome(), ".local"), { recursive: true, force: true });
+    await rm(root, { recursive: true, force: true });
   }
 });
 

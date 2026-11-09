@@ -1,4 +1,4 @@
-import { access } from "node:fs/promises";
+import { access, readdir, realpath, stat } from "node:fs/promises";
 import * as path from "node:path";
 import { commandWithEnvironment, defaultLoginFolder, mainSignInCommand } from "../accounts";
 import { claudeBundledPaths, findBundledExecutable, noExtensions, type ExtensionPathResolver } from "../bundled-cli";
@@ -73,6 +73,7 @@ export class ClaudeUsageClient implements UsageClient {
   public constructor(
     private readonly claudeAuthProbe: ClaudeAuthProbe = runClaudeAuthRecovery,
     private readonly account?: ClaudeAccount,
+    private readonly claudeCliVersion: () => Promise<string | undefined> = () => installedClaudeCliVersion(),
   ) {
     this.id = account ? `claude@${account.id}` : "claude";
     this.signInCommand = account
@@ -108,7 +109,7 @@ export class ClaudeUsageClient implements UsageClient {
     }
 
     try {
-      return await requestClaudeUsage(credentials, signal);
+      return await requestClaudeUsage(credentials, this.claudeCliVersion, signal);
     } catch (error) {
       if (!(error instanceof RecoverableClaudeUsageError) || credentials.isEnvironmentOverride) {
         throw error;
@@ -129,7 +130,7 @@ export class ClaudeUsageClient implements UsageClient {
           "Claude Code's OAuth token is missing the user:profile scope. Run `claude` or use the Claude Code extension to sign in again.",
         );
       }
-      return requestClaudeUsage(recovered, signal);
+      return requestClaudeUsage(recovered, this.claudeCliVersion, signal);
     }
   }
 
@@ -223,21 +224,25 @@ export async function recoverClaudeCredentialsThroughCli(
 
 async function requestClaudeUsage(
   credentials: ClaudeCredentials,
+  claudeCliVersion: () => Promise<string | undefined>,
   signal?: AbortSignal,
 ): Promise<UsageSnapshot> {
   try {
-    const request = (url: string) => requestJson(url, {
+    const request = (url: string, userAgent?: string) => requestJson(url, {
       allowedHosts: ["api.anthropic.com"],
       headers: {
         Authorization: `Bearer ${credentials.accessToken}`,
         "anthropic-beta": oauthBeta,
+        ...(userAgent ? { "User-Agent": userAgent } : {}),
       },
       ...(signal ? { signal } : {}),
     });
-    // Saved limit-reset credits are reported only when asked for. An account or API that rejects
-    // the parameter is asked once more without it, so usage never depends on it.
-    let response = await request(usageWithResetCreditsEndpoint);
-    if (response.status === 400 || response.status === 403) {
+    // Saved limit resets are reported only when asked for, and only to the Claude CLI, so this one
+    // request carries the CLI's agent. A refusal of it (400, 401 or 403) is asked once more without
+    // the parameter, as UsageAI, so usage never depends on either; an expired login is refused again
+    // there and handled below as before. Mirrors the desktop.
+    let response = await request(usageWithResetCreditsEndpoint, claudeCliUserAgent(await claudeCliVersion().catch(() => undefined)));
+    if (response.status === 400 || response.status === 401 || response.status === 403) {
       response = await request(usageEndpoint);
     }
     if (response.status === 401) {
@@ -458,6 +463,92 @@ export async function findClaudeLaunch(
   return bundled ? createClaudeLaunch(bundled) : undefined;
 }
 
+/** The CLI version sent when the installed one cannot be read. */
+export const fallbackClaudeCliVersion = "2.1.0";
+const cliVersionLifetimeMs = 30 * 60_000;
+let cachedCliVersion: { readonly readAt: number; readonly version: Promise<string | undefined> } | undefined;
+
+function isCliVersion(version: string | undefined): version is string {
+  return version !== undefined && version.length <= 32 && /^\d{1,9}\.\d{1,9}\.\d{1,9}$/.test(version);
+}
+
+/**
+ * The User-Agent of the request that asks for saved resets. Claude reports them only to its own CLI
+ * (`ineligible_reason: "surface"` otherwise), so that one request names itself as the CLI does, with
+ * the installed version; every other request keeps UsageAI's own agent. Mirrors the desktop.
+ */
+export function claudeCliUserAgent(version: string | undefined): string {
+  return `claude-cli/${isCliVersion(version) ? version : fallbackClaudeCliVersion} (external, cli)`;
+}
+
+export function forgetInstalledClaudeCliVersion(): void {
+  cachedCliVersion = undefined;
+}
+
+/**
+ * The installed Claude CLI's version, read from its files and never by running it: npm's
+ * `package.json`, the version folder a native install links to or copies, or the version in the
+ * Claude Code editor extension's folder name. Kept for 30 minutes, and the read in progress is
+ * shared, so accounts refreshing together look once. Never rejects.
+ */
+export function installedClaudeCliVersion(
+  resolveExtensionPath: ExtensionPathResolver = noExtensions,
+): Promise<string | undefined> {
+  if (!cachedCliVersion || Date.now() - cachedCliVersion.readAt >= cliVersionLifetimeMs) {
+    cachedCliVersion = {
+      readAt: Date.now(),
+      version: findClaudeLaunch(resolveExtensionPath)
+        .then((launch) => launch ? readClaudeCliVersion(launch) : undefined)
+        .catch(() => undefined),
+    };
+  }
+  return cachedCliVersion.version;
+}
+
+/** "2.1.321" from "2.1.321" or "2.1.321-beta.1"; undefined for anything else. */
+function cliVersionOf(raw: unknown): string | undefined {
+  const core = typeof raw === "string" ? raw.split(/[-+]/)[0] : undefined;
+  return isCliVersion(core) ? core : undefined;
+}
+
+async function packageVersion(folder: string): Promise<string | undefined> {
+  return cliVersionOf(getString(JSON.parse(await readBoundedText(path.join(folder, "package.json"))), "version"));
+}
+
+async function readClaudeCliVersion(launch: ClaudeLaunch): Promise<string | undefined> {
+  const script = launch.argsPrefix[0];
+  if (script) {
+    return packageVersion(path.dirname(script));
+  }
+  const resolved = await realpath(launch.executable).catch(() => launch.executable);
+  // An npm install outside Windows is a link straight to the package's cli.js.
+  if (path.extname(resolved).toLowerCase() === ".js") {
+    return packageVersion(path.dirname(resolved));
+  }
+  const linked = /[\\/]versions[\\/](\d+\.\d+\.\d+)(?:[\\/]|$)/.exec(resolved)?.[1]
+    ?? /anthropic\.claude-code-(\d+\.\d+\.\d+)/i.exec(resolved)?.[1];
+  if (linked) {
+    return cliVersionOf(linked);
+  }
+  // The Windows native install copies the version it runs into ~/.local/bin, keeping that copy and
+  // earlier ones in ~/.local/share/claude/versions/<x.y.z>. The kept copy with the same size and
+  // modification time is the one installed; with no such copy nothing is guessed.
+  // Both sides resolved alike, so a home reached through a short (8.3) or linked path still matches.
+  const localBin = await realpath(path.join(userHome(), ".local", "bin")).catch(() => path.join(userHome(), ".local", "bin"));
+  if (path.dirname(resolved).toLowerCase() !== localBin.toLowerCase()) {
+    return undefined;
+  }
+  const installed = await stat(resolved);
+  const versions = path.join(userHome(), ".local", "share", "claude", "versions");
+  for (const kept of (await readdir(versions).catch((): string[] => [])).filter(isCliVersion)) {
+    const copy = await stat(path.join(versions, kept)).catch(() => undefined);
+    if (copy?.isFile() && copy.size === installed.size && Math.abs(copy.mtimeMs - installed.mtimeMs) < 2_000) {
+      return kept;
+    }
+  }
+  return undefined;
+}
+
 async function createClaudeLaunch(command: string): Promise<ClaudeLaunch | undefined> {
   if (process.platform !== "win32" || path.extname(command).toLowerCase() !== ".cmd") {
     return { executable: command, argsPrefix: [] };
@@ -554,16 +645,7 @@ export function parseClaudeSnapshot(root: unknown, plan = "Claude", now = Date.n
   if (extra) {
     metrics.push(extra);
   }
-  const resetGrants = countResetGrants(root, now);
-  if (resetGrants > 0) {
-    metrics.push({
-      name: "Reset credits",
-      kind: "balance",
-      usedPercent: null,
-      remainingText: String(resetGrants),
-      usageText: `Free limit reset${resetGrants === 1 ? "" : "s"} available`,
-    });
-  }
+  metrics.push(...parseResetGrants(root, now));
   return {
     plan,
     metrics,
@@ -681,13 +763,24 @@ function modelLabel(name: string | undefined): string | undefined {
   return cleaned.length > 40 ? cleaned.slice(0, 40).trimEnd() : cleaned;
 }
 
+/** The kinds of saved reset, named as the Claude CLI names them, in display order. */
+const resetKinds: readonly { readonly kind: string; readonly name: string; readonly effect: string }[] = [
+  { kind: "fable", name: "Fable reset", effect: "Gives back what Fable used this week" },
+  { kind: "session", name: "5-hour reset", effect: "Clears the 5-hour limit" },
+  { kind: "weekly", name: "Weekly reset", effect: "Clears the weekly limit" },
+  { kind: "full", name: "Full reset", effect: "Clears the 5-hour and weekly limits" },
+  { kind: "", name: "Reset credits", effect: "Free limit reset" },
+];
+
 /**
- * Saved "reset for free" grants usable now: each counts once per reset it has left; a paused, not yet
- * started, expired, or unflagged grant not at all. Grant ids are redemption handles and are never
- * read; an implausible total is treated as malformed. Mirrors the desktop `CountResetGrants`.
+ * Saved "reset for free" grants usable now, one balance row per kind of reset: each counts once per
+ * reset it has left; a paused, not yet started, expired, or unflagged grant not at all. Grant ids are
+ * redemption handles and are never read; an implausible total is treated as malformed. Mirrors the
+ * desktop `ParseResetGrants`.
  */
-export function countResetGrants(root: unknown, now = Date.now()): number {
+export function parseResetGrants(root: unknown, now = Date.now()): UsageMetric[] {
   let total = 0;
+  const byKind = new Map<string, { count: number; useBy: number | undefined }>();
   for (const grant of getArray(getObject(root, "cedar_ember"), "grants") ?? []) {
     const left = getNumber(grant, "resets_left");
     if (!isObject(grant) || grant.paused !== false || left === undefined || left < 1 || left > maxResetGrants) {
@@ -700,10 +793,59 @@ export function countResetGrants(root: unknown, now = Date.now()): number {
     }
     total += Math.trunc(left);
     if (total > maxResetGrants) {
-      return 0;
+      return [];
     }
+    const kind = resetGrantKind(grant);
+    const current = byKind.get(kind) ?? { count: 0, useBy: undefined };
+    byKind.set(kind, {
+      count: current.count + Math.trunc(left),
+      useBy: Number.isFinite(endsAt) && (current.useBy === undefined || endsAt < current.useBy) ? endsAt : current.useBy,
+    });
   }
-  return total;
+  return resetKinds.flatMap(({ kind, name, effect }) => {
+    const found = byKind.get(kind);
+    if (!found) {
+      return [];
+    }
+    const text = kind === "" && found.count !== 1 ? `${effect}s` : effect;
+    return [{
+      name,
+      kind: "balance" as const,
+      usedPercent: null,
+      remainingText: String(found.count),
+      usageText: found.useBy === undefined ? text : `${text} · use by ${useByText(found.useBy, now)}`,
+    }];
+  });
+}
+
+/**
+ * Which reset a grant is, by the Claude CLI's rule: one that gives back weekly use is a Fable reset;
+ * otherwise its `type`, else what its `clears` list names. Empty when unknown.
+ */
+function resetGrantKind(grant: Record<string, unknown>): string {
+  if (grant.gives_back_weekly === true) {
+    return "fable";
+  }
+  const type = getString(grant, "type");
+  if (type === "session" || type === "weekly" || type === "full") {
+    return type;
+  }
+  const clears = (getArray(grant, "clears") ?? []).filter((item): item is string => typeof item === "string");
+  const session = clears.includes("five_hour");
+  const other = clears.some((limit) => limit !== "five_hour");
+  return session && other ? "full" : session ? "session" : other ? "weekly" : "";
+}
+
+const shortMonths = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * A use-by date as "17 Nov" in local time, with the year ("5 Jan 2027") only when it is not the
+ * current one; English month names, like every other label. The same as the desktop app.
+ */
+export function useByText(time: number, now = Date.now()): string {
+  const date = new Date(time);
+  const day = `${date.getDate()} ${shortMonths[date.getMonth()]}`;
+  return date.getFullYear() === new Date(now).getFullYear() ? day : `${day} ${date.getFullYear()}`;
 }
 
 /**
