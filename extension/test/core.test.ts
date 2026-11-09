@@ -103,7 +103,7 @@ test("extension manifest keeps local hosting and a compact view toolbar", async 
   // The account commands live in the view's "…" menu, never as toolbar buttons.
   assert.deepEqual(
     viewMenu.filter((entry) => !entry.group?.startsWith("navigation")).map((entry) => entry.command),
-    ["usageai.addAccount", "usageai.rescanAccounts"],
+    ["usageai.addAccount", "usageai.manageAccounts", "usageai.rescanAccounts", "usageai.chooseStatusBarItems"],
   );
   for (const entry of toolbar) {
     assert.match(entry.group ?? "", /^navigation/, entry.command);

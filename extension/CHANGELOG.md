@@ -2,7 +2,49 @@
 
 ## Unreleased
 
+### Added
+
+- **UsageAI: Manage Accounts… renames, hides, shows and removes accounts from one list.** Until
+  now the only way to rename or drop an account was to edit `usageai.accounts` by hand in
+  `settings.json`, because the Settings editor cannot edit a list of objects. The command is in
+  the dashboard's **…** menu, the Command Palette, and linked from the setting's description. It
+  lists every Claude Code and Codex login UsageAI knows about, hidden, ignored and waiting ones
+  included, and any entry whose folder is gone or signed out, so that entry can be removed too.
+  Pick one to rename it, hide or show it, remove one you added, or open or copy its folder. A
+  found login is hidden by ignoring it rather than by adding an entry for it, and clearing a found
+  login's name drops its entry again. Removing an added login that also sits in your home folder
+  ignores it first, so it never reappears, even for a moment. Answering a found login here also
+  makes its Show / Ignore notification do nothing. Entries UsageAI cannot read no longer count
+  toward the 16-folder limit. UsageAI never deletes or changes a login folder.
+- **UsageAI: Choose Status Bar Items… puts any account in the Status Bar with a checkbox.** The
+  Status Bar settings offer one checkbox per provider, for its main login only, so a second
+  Claude Code or Codex account meant typing its label or email into
+  `usageai.statusBarProviders.accounts` by hand. The new command, in the dashboard's **…** menu
+  and linked from each Status Bar setting, lists every provider and every account. It ticks
+  whatever the Status Bar shows now and writes both the checkboxes and the account list. Names
+  you typed yourself are kept while they still match a ticked account. A newly ticked account is
+  saved by its id, so renaming it later does not drop it from the Status Bar. A checkbox your
+  workspace settings set is changed there, where it takes effect, and a setting that already
+  holds the chosen value is left alone, so one choice redraws the Status Bar as few times as it
+  can.
+
+### Changed
+
+- **The Status Bar settings say which login each checkbox shows.** The Claude Code and Codex
+  checkboxes now read as your main login (`~/.claude`, `~/.codex`), and point to **Accounts** and
+  the new command for the others. The fallback setting now says it applies when no provider or
+  account is chosen.
+
 ### Fixed
+
+- **Adding an account right after the extension updates asks you to reload instead of failing.**
+  When VS Code updates the extension while a window is open, it restarts only the extension host.
+  The new version's code then runs, but the window keeps the old version's list of settings until
+  it reloads. Saving an account in that state failed with "usageai.accounts is not a registered
+  configuration", which did not say what to do. UsageAI now says the window needs a reload and
+  offers a **Reload Window** button, in any display language. Manage Accounts handles the same case
+  the same way. Adding a folder whose entry was hidden now shows it again instead of keeping it
+  hidden.
 
 - **Claude's saved limit resets show up again, each kind on its own row.** Claude now reports
   resets only to its own CLI. Every other client gets an empty list marked `ineligible_reason:

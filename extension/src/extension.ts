@@ -1,15 +1,18 @@
+import { stat } from "node:fs/promises";
+import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
 import { AccountService, accountsStateKey } from "./account-service";
 import { isAccountUnitKey, providerKindOf, type AccountEntry, type AccountProviderId } from "./accounts";
-import { addAccount, type AddAccountUi, type LoginLaunch } from "./add-account";
+import { addAccount, SettingNotRegisteredError, type AddAccountUi, type LoginLaunch } from "./add-account";
 import { localExtensionPath, type ExtensionPathResolver } from "./bundled-cli";
 import { dashboardExpandedProvidersKey, loadExpandedProviders, UsageDashboardViewProvider } from "./dashboard-view";
 import { incidentSummary, isOutage, ProviderIncidentService } from "./incidents";
+import { manageAccounts, type ManageAccountsUi } from "./manage-accounts";
 import {
   normalizeQuotaDisplay,
+  normalizeStatusBarProviders,
   statusBarProvidersFromCheckboxes,
   type ProviderState,
-  type StatusBarProviderId,
   type UsageClient,
   type UsageSnapshot,
 } from "./model";
@@ -20,9 +23,15 @@ import { disposeAgyHub, GeminiUsageClient } from "./providers/gemini";
 import { UsageRefreshService } from "./refresh-service";
 import { userHome } from "./security";
 import { StatusBarController } from "./status-bar";
+import {
+  chooseStatusBarItems,
+  resolveStatusBarAccounts,
+  type StatusBarPickerUi,
+  type StatusBarPickItem,
+  type UsageProviderId,
+} from "./status-bar-picker";
 
 const cacheKey = "usageai.cachedSnapshots.v1";
-type UsageProviderId = Exclude<StatusBarProviderId, "hottest">;
 const providerOrder: readonly UsageProviderId[] = ["codex", "claude", "copilot", "gemini"];
 /** How often the once-a-day account scan asks whether it is due. */
 const accountScanCheckMs = 60 * 60_000;
@@ -81,25 +90,7 @@ export function buildUsageClients(
   return clients;
 }
 
-/**
- * Extra Status Bar entries from `usageai.statusBarProviders.accounts`: each an account unit key
- * (`claude@1a2b3c4d`) or a shown account's label or email.
- */
-export function resolveStatusBarAccounts(value: unknown, accounts: readonly AccountEntry[]): string[] {
-  const names = Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
-  const resolved: string[] = [];
-  for (const name of names.slice(0, 16)) {
-    const trimmed = name.trim();
-    const lower = trimmed.toLowerCase();
-    const match = isAccountUnitKey(trimmed)
-      ? trimmed
-      : accounts.find((account) => account.label.toLowerCase() === lower || account.identity.email?.toLowerCase() === lower)?.unitKey;
-    if (match && !resolved.includes(match)) {
-      resolved.push(match);
-    }
-  }
-  return resolved;
-}
+export { resolveStatusBarAccounts } from "./status-bar-picker";
 
 export function activate(context: vscode.ExtensionContext): void {
   const extensionPath = bundledCliResolver(context);
@@ -210,6 +201,38 @@ export function activate(context: vscode.ExtensionContext): void {
   void accounts.scan().catch(() => undefined);
   const accountScanTimer = setInterval(() => void accounts.scanIfDue().catch(() => undefined), accountScanCheckMs);
   accountScanTimer.unref();
+  const providerName = (provider: UsageProviderId): string => baseClients[provider].displayName;
+  /**
+   * Writes one setting. A window that has not registered it, as after an update in place, has no
+   * default for it; that is checked rather than VS Code's localised error text.
+   */
+  const updateSetting = async (
+    key: string,
+    value: unknown,
+    target: vscode.ConfigurationTarget = vscode.ConfigurationTarget.Global,
+  ): Promise<void> => {
+    const config = configuration();
+    try {
+      await config.update(key, value, target);
+    } catch (error) {
+      throw config.inspect<unknown>(key)?.defaultValue === undefined ? new SettingNotRegisteredError(error) : error;
+    }
+  };
+  const saveConfiguredAccounts = (value: readonly unknown[]): Promise<void> => updateSetting("accounts", value);
+  /**
+   * Writes a Status Bar setting where it takes effect (a workspace value overrides the user one),
+   * and not at all when it already holds the value, so one choice fires as few changes as it can.
+   * `userValue` is what the user settings get, where an unticked box is cleared rather than false.
+   */
+  const updateStatusBarSetting = async (key: string, value: unknown, userValue: unknown = value): Promise<void> => {
+    const inspected = configuration().inspect<unknown>(key);
+    const inWorkspace = inspected?.workspaceValue !== undefined;
+    const next = inWorkspace ? value : userValue;
+    if (inspected && isDeepStrictEqual(inWorkspace ? inspected.workspaceValue : inspected.globalValue, next)) {
+      return;
+    }
+    await updateSetting(key, next, inWorkspace ? vscode.ConfigurationTarget.Workspace : vscode.ConfigurationTarget.Global);
+  };
   const findLogin = async (provider: AccountProviderId): Promise<LoginLaunch | undefined> => {
     if (provider === "claude") {
       const launch = await findClaudeLaunch(extensionPath);
@@ -242,15 +265,55 @@ export function activate(context: vscode.ExtensionContext): void {
       vscode.commands.executeCommand("workbench.action.openSettings", "@ext:vladikogan.usageai")),
     vscode.commands.registerCommand("usageai.addAccount", () => addAccount({
       ui: vscodeAddAccountUi(),
+      providerName,
       home: userHome,
       accounts: () => accounts.accounts,
       configuredAccounts: () => configuration().get<unknown>("accounts", []),
-      saveConfiguredAccounts: (value) => configuration().update("accounts", value, vscode.ConfigurationTarget.Global),
+      saveConfiguredAccounts,
       findLogin,
       canRunLoginInTerminal: () => !extensionPath.runsLocallyInRemoteWindow,
       afterAdd: async () => {
         await accounts.reload();
         await accounts.scan();
+      },
+    })),
+    vscode.commands.registerCommand("usageai.manageAccounts", () => manageAccounts({
+      // The file manager is on this computer unless UsageAI runs on the remote side of the window.
+      ui: vscodeManageAccountsUi(vscode.env.remoteName === undefined || extensionPath.runsLocallyInRemoteWindow === true),
+      providerName,
+      catalog: () => accounts.catalog(),
+      configuredAccounts: () => configuration().get<unknown>("accounts", []),
+      saveConfiguredAccounts,
+      decisionFor: (id) => accounts.decisionFor(id),
+      answer: (id, decision) => accounts.answer(id, decision),
+      folderExists: async (folder) => {
+        try {
+          return (await stat(folder)).isDirectory();
+        } catch {
+          return false;
+        }
+      },
+      addAccount: () => vscode.commands.executeCommand("usageai.addAccount"),
+    })),
+    vscode.commands.registerCommand("usageai.chooseStatusBarItems", () => chooseStatusBarItems({
+      ui: vscodeStatusBarPickerUi(),
+      providers: enabledProviderIds,
+      accounts: () => accounts.accounts,
+      providerName,
+      selection: () => normalizeStatusBarProviders(
+        getStatusBarProviderSelection(configuration(), enabledProviderIds(), accounts.accounts),
+      ),
+      hottestWhenNoneSelected: () => statusBarHottestFallback(configuration()),
+      configuredAccounts: () => configuration().get<unknown>("statusBarProviders.accounts", []),
+      save: async (change) => {
+        // The account list first: it is the setting a window may not have registered yet, so a
+        // refusal comes before any checkbox has changed.
+        await updateStatusBarSetting("statusBarProviders.accounts", change.accounts.length > 0 ? [...change.accounts] : undefined);
+        for (const [provider, shown] of Object.entries(change.providers)) {
+          await updateStatusBarSetting(`statusBarProviders.${provider}`, shown, shown ? true : undefined);
+        }
+        // Set explicitly, so the checkboxes take over from the legacy statusBarProvider setting.
+        await updateStatusBarSetting("statusBarProviders.hottestWhenNoneSelected", change.hottestWhenNoneSelected);
       },
     })),
     vscode.commands.registerCommand("usageai.rescanAccounts", async () => {
@@ -303,6 +366,7 @@ function vscodeAddAccountUi(): AddAccountUi {
     }))?.[0]?.fsPath,
     info: (message, ...actions) => vscode.window.showInformationMessage(message, ...actions),
     error: (message) => void vscode.window.showErrorMessage(message),
+    offerReload: showReloadError,
     copy: (text) => vscode.env.clipboard.writeText(text),
     runLogin: (options) => {
       const terminal = vscode.window.createTerminal({
@@ -326,6 +390,45 @@ function vscodeAddAccountUi(): AddAccountUi {
       { location: vscode.ProgressLocation.Notification, title, cancellable: true },
       (_progress, token) => task(() => token.isCancellationRequested),
     ),
+  };
+}
+
+/** An error whose Reload Window button reloads the window, for a setting it has not registered yet. */
+function showReloadError(message: string): void {
+  void vscode.window.showErrorMessage(message, "Reload Window").then((choice) => {
+    if (choice === "Reload Window") {
+      void vscode.commands.executeCommand("workbench.action.reloadWindow");
+    }
+  });
+}
+
+/** The Status Bar picker's editor surfaces: one multi-select list. */
+function vscodeStatusBarPickerUi(): StatusBarPickerUi {
+  return {
+    error: (message) => void vscode.window.showErrorMessage(message),
+    offerReload: showReloadError,
+    pickMany: async (items, title, placeHolder) => {
+      const entries = items.map((item): vscode.QuickPickItem & { readonly choice?: StatusBarPickItem } => "separator" in item
+        ? { label: item.separator, kind: vscode.QuickPickItemKind.Separator }
+        : { label: item.label, ...(item.description ? { description: item.description } : {}), picked: item.picked, choice: item });
+      const chosen = await vscode.window.showQuickPick(entries, { canPickMany: true, title, placeHolder, ignoreFocusOut: true });
+      return chosen?.flatMap((entry) => entry.choice ? [entry.choice] : []);
+    },
+  };
+}
+
+/** The Manage Accounts flow's editor surfaces. */
+function vscodeManageAccountsUi(canReveal: boolean): ManageAccountsUi {
+  const { pick, input, info, error, offerReload, copy } = vscodeAddAccountUi();
+  return {
+    pick,
+    input,
+    info,
+    error,
+    ...(offerReload ? { offerReload } : {}),
+    copy,
+    confirm: async (message, action) => await vscode.window.showWarningMessage(message, { modal: true }, action) === action,
+    ...(canReveal ? { reveal: (folder: string) => vscode.commands.executeCommand("revealFileInOS", vscode.Uri.file(folder)) } : {}),
   };
 }
 
@@ -375,6 +478,18 @@ function statusBarProviderSelection(
     copilot: configuration.get(statusBarCheckboxKeys[3], false),
     gemini: configuration.get(statusBarCheckboxKeys[4], false),
   }, providerIds);
+}
+
+/**
+ * The picker's fallback checkbox as the Status Bar applies it now: until a checkbox is set, the
+ * legacy `statusBarProvider` list decides, and its default of true would tick a fallback not shown.
+ */
+function statusBarHottestFallback(configuration: vscode.WorkspaceConfiguration): boolean {
+  if (statusBarCheckboxKeys.some((key) => isExplicitlyConfigured(configuration, key))) {
+    return configuration.get(statusBarCheckboxKeys[0], true);
+  }
+  const legacy = configuration.get<unknown>("statusBarProvider", ["hottest"]);
+  return (typeof legacy === "string" ? [legacy] : Array.isArray(legacy) ? legacy : []).includes("hottest");
 }
 
 function isExplicitlyConfigured(configuration: vscode.WorkspaceConfiguration, key: string): boolean {

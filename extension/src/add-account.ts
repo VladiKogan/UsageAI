@@ -3,11 +3,14 @@ import * as path from "node:path";
 import {
   accountIdForPath,
   accountPathProblem,
+  changeAccountSetting,
   cleanLabel,
   commandWithEnvironment,
   configDirectoryVariable,
   credentialFileName,
+  exceedsConfiguredAccounts,
   identityKey,
+  maxConfiguredAccounts,
   proposeLoginFolder,
   providerTitle,
   readClaudeIdentity,
@@ -29,6 +32,8 @@ export interface AddAccountUi {
   pickFolder(title: string): PromiseLike<string | undefined>;
   info(message: string, ...actions: string[]): PromiseLike<string | undefined>;
   error(message: string): void;
+  /** An error with a Reload Window button, for a setting this window has not registered yet. */
+  offerReload?(message: string): void;
   copy(text: string): PromiseLike<void>;
   /** Starts the CLI login in an editor terminal; `closed` settles when that terminal closes. */
   runLogin(options: {
@@ -104,6 +109,8 @@ export interface NewAccountSetting {
 
 export interface AddAccountDependencies {
   readonly ui: AddAccountUi;
+  /** The provider's card name, "Claude Code" or "Codex", from its usage client. */
+  readonly providerName: (provider: AccountProviderId) => string;
   readonly home: () => string;
   /** The accounts shown now, the default logins included. */
   readonly accounts: () => readonly AccountEntry[];
@@ -123,6 +130,62 @@ export interface AddAccountDependencies {
 
 export type AddAccountResult = "added" | "duplicate" | "cancelled" | "failed";
 
+/**
+ * `usageai.accounts` is not registered in this window. The host raises it after checking the
+ * setting has no default value, which does not depend on VS Code's display language the way the
+ * text of its own error does.
+ */
+export class SettingNotRegisteredError extends Error {
+  public constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause));
+    this.name = "SettingNotRegisteredError";
+  }
+}
+
+/**
+ * What to tell the user when a setting cannot be written. VS Code refuses a setting its window has
+ * not registered, which happens after the extension updates in place: the new code runs once the
+ * extension host restarts, but the window keeps the old version's settings until it reloads.
+ */
+export function describeSettingsWriteError(
+  error: unknown,
+  setting = "usageai.accounts",
+): { readonly message: string; readonly reload: boolean } {
+  const detail = error instanceof Error ? error.message : String(error);
+  if (error instanceof SettingNotRegisteredError || /not a registered configuration/i.test(detail)) {
+    return {
+      message: "VS Code has not loaded UsageAI's newest settings in this window yet, which happens right after the extension updates. Reload the window, then try again.",
+      reload: true,
+    };
+  }
+  return { message: `UsageAI could not save ${setting}: ${detail}`, reload: false };
+}
+
+/** Tells the user why a setting could not be saved, with a Reload Window button when that fixes it. */
+export function reportSettingsWriteError(ui: Pick<AddAccountUi, "error" | "offerReload">, error: unknown, setting?: string): void {
+  const problem = describeSettingsWriteError(error, setting);
+  if (problem.reload && ui.offerReload) {
+    ui.offerReload(problem.message);
+  } else {
+    ui.error(problem.message);
+  }
+}
+
+/** Writes `usageai.accounts`, telling the user why when it cannot; true when saved. */
+export async function saveAccountSettings(
+  ui: Pick<AddAccountUi, "error" | "offerReload">,
+  save: (value: readonly unknown[]) => PromiseLike<void>,
+  value: readonly unknown[],
+): Promise<boolean> {
+  try {
+    await save(value);
+    return true;
+  } catch (error) {
+    reportSettingsWriteError(ui, error);
+    return false;
+  }
+}
+
 const signInTimeoutMs = 120_000;
 
 /** `UsageAI: Add Account…`: a provider, then a new sign-in or a login folder the user already has. */
@@ -130,8 +193,8 @@ export async function addAccount(dependencies: AddAccountDependencies): Promise<
   const { ui } = dependencies;
   const provider = await ui.pick(
     [
-      { label: "Claude Code", provider: "claude" as const },
-      { label: "Codex", provider: "codex" as const },
+      { label: dependencies.providerName("claude"), provider: "claude" as const },
+      { label: dependencies.providerName("codex"), provider: "codex" as const },
     ],
     "Add Account",
     "Which provider is the account for?",
@@ -314,13 +377,16 @@ export async function useExistingFolder(
   }
   const label = cleanLabel(name);
   const current = dependencies.configuredAccounts();
-  const kept = (Array.isArray(current) ? current : []).filter((entry: unknown) => {
-    const record = entry as { provider?: unknown; path?: unknown } | null;
-    return !(record && record.provider === provider && typeof record.path === "string"
-      && path.isAbsolute(record.path) && accountIdForPath(record.path) === id);
-  });
+  // An entry already naming the folder (a hidden one, say) is updated in place and shown again.
+  const next = changeAccountSetting(current, provider, folder, { label: label ?? null, hidden: false });
+  if (exceedsConfiguredAccounts(current, next)) {
+    ui.error(`usageai.accounts already lists ${maxConfiguredAccounts} folders. Remove one with Manage Accounts, then try again.`);
+    return "failed";
+  }
   const setting: NewAccountSetting = { provider, path: folder, ...(label ? { label } : {}) };
-  await dependencies.saveConfiguredAccounts([...kept, setting]);
+  if (!await saveAccountSettings(ui, dependencies.saveConfiguredAccounts, next)) {
+    return "failed";
+  }
   await dependencies.afterAdd(setting);
   void ui.info(`Added ${providerTitle(provider)} account ${label ?? identity.email ?? path.basename(folder)}.`);
   return "added";
