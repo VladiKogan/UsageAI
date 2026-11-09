@@ -81,8 +81,11 @@ internal static class SnapshotCache
             return;
         }
 
+        // The moved reading replaces any the new key already had, so the key keeps one snapshot.
         Save(snapshots
-            .Where(snapshot => newProviderId is not null || !snapshot.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase))
+            .Where(snapshot => newProviderId is null
+                ? !snapshot.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase)
+                : !snapshot.ProviderId.Equals(newProviderId, StringComparison.OrdinalIgnoreCase))
             .Select(snapshot => snapshot.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase)
                 ? snapshot with { ProviderId = newProviderId! }
                 : snapshot)

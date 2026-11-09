@@ -8,7 +8,10 @@
   `CLAUDE_CONFIG_DIR` or `CODEX_HOME` whenever the editor was started with either variable set, so
   opening it from a terminal set up for another login swapped the main card to that login. Now the
   folder such a variable names is found as one more account, and the main card always reads the
-  standard folder. The Claude Code and Codex commands UsageAI runs for it get neither variable.
+  standard folder. The Claude Code and Codex commands UsageAI runs for it get neither variable. The
+  first start after the update shows the variable's login straight away, since it is the one the
+  main card was showing, instead of asking about it. The main card's sign-in hint clears the
+  variable first, so it signs in to the standard folder.
 - **Any login folder whose name starts with `.claude` or `.codex` is found now.** Names such as
   `.claude2`, `.claudework` or `.codex.work` are found as well as `.claude-*` and `.claude_*`. Only
   a folder that holds the provider's own login file counts, so the wider rule picks up nothing

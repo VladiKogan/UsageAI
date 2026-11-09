@@ -464,7 +464,15 @@ internal static class AccountTests
             var gone = await ThrowsAsync<ClaudeCodeUsageException>(() => new ClaudeCodeUsageClient(Path.Combine(root, "gone")).GetUsageAsync());
             True(gone.Message.StartsWith("Claude login not found at", StringComparison.Ordinal));
             Equal("claude", new ClaudeCodeUsageClient().Id);
-            Equal("claude", new ClaudeCodeUsageClient().SignInCommand);
+            // The variable is inherited here, so the main login's sign-in clears it first.
+            Equal("Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction Ignore; claude", new ClaudeCodeUsageClient().SignInCommand);
+            Equal(
+                "Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction Ignore; claude",
+                AccountCommands.SignInMain("claude", new System.Collections.Hashtable { ["CLAUDE_CONFIG_DIR"] = @"C:\elsewhere" }));
+            Equal(
+                "Remove-Item Env:CODEX_HOME -ErrorAction Ignore; codex login",
+                AccountCommands.SignInMain("codex", new System.Collections.Hashtable { ["CODEX_HOME"] = @"C:\elsewhere" }));
+            Equal("codex login", AccountCommands.SignInMain("codex", new System.Collections.Hashtable()));
             Equal(ProviderKey.NormalizeFolder(defaultFolder), new ClaudeCodeUsageClient().LoginFolder);
 
             // Codex: the folder's own auth.json goes to chatgpt.com, and the snapshot carries the key.
@@ -1364,6 +1372,14 @@ internal static class AccountTests
             main.Email = "team@example.com";
             main.Label = "Work";
             main.Alerts = false;
+            settings.Accounts.Add(new ProviderAccount
+            {
+                Id = "11111111",
+                ProviderId = "claude",
+                Source = AccountSource.Added,
+                Path = Path.Combine(profile, "other"),
+                Order = 1,
+            });
             settings.PopupMetricGroups["claude"] = "Opus";
             var manager = Manager(settings);
             Equal(inheritedKey, manager.MigrateInheritedMainLogins((from, to) => moves.Add($"{from}->{to ?? "drop"}")).Single());
@@ -1379,6 +1395,11 @@ internal static class AccountTests
             Equal(null, main.Identity);
             Equal(null, main.Label);
             False(main.Hidden);
+            False(main.HiddenUntilSignedIn);
+
+            // The login keeps the slot's place; the slot, now a different login, goes after the others.
+            Equal(0, moved.Order);
+            Equal(2, main.Order);
 
             // Once moved, nothing is left to move; the next scan sees the folder as already known.
             moves.Clear();
@@ -1402,7 +1423,8 @@ internal static class AccountTests
             Equal(0, Manager(same).MigrateInheritedMainLogins((_, _) => throw new InvalidOperationException("no move expected")).Count);
             File.WriteAllText(Path.Combine(profile, ".claude.json"), ClaudeJson("me@example.com", "org-0", "Personal"));
 
-            // A folder already shown as an account keeps its own records; the slot's copies are dropped.
+            // A folder already an account was the slot's repeat (not polled): the slot's records merge
+            // into it, it is shown again and keeps its own label unless the slot had one.
             var known = new AppSettings { IsEphemeral = true, AccountsInitialized = true };
             known.EnsureAccount("claude").Identity = teamHash;
             known.Accounts.Add(new ProviderAccount
@@ -1413,20 +1435,59 @@ internal static class AccountTests
                 Path = ProviderKey.NormalizeFolder(inherited),
                 Label = "Team",
                 Identity = teamHash,
+                Pending = true,
+                DuplicateOf = "team@example.com",
             });
             var knownManager = Manager(known);
+            True(knownManager.Notices.Any(notice => inheritedKey.Equals(notice.UnitKey, StringComparison.Ordinal)));
             moves.Clear();
             Equal(0, knownManager.MigrateInheritedMainLogins((from, to) => moves.Add($"{from}->{to ?? "drop"}")).Count);
-            Equal("claude->drop", moves.Single());
+            Equal($"claude->{inheritedKey}", moves.Single());
             Equal(null, known.FindAccount("claude")!.Identity);
+            var merged = known.FindAccount(inheritedKey)!;
+            Equal("Team", merged.Label);
+            Equal(AccountSource.Added, merged.Source);
+            False(merged.Pending);
+            Equal(null, merged.DuplicateOf);
+            True(known.IsUnitVisible(inheritedKey));
+            False(knownManager.Notices.Any(notice => inheritedKey.Equals(notice.UnitKey, StringComparison.Ordinal)));
+
+            // A folder the user forgot (typically as the slot's repeat) comes back: the slot is how
+            // they were watching it.
+            var forgotten = new AppSettings { IsEphemeral = true, AccountsInitialized = true, ForgottenAccounts = new[] { inheritedKey } };
+            forgotten.EnsureAccount("claude").Identity = teamHash;
+            var forgottenManager = Manager(forgotten);
+            False(forgottenManager.HasUnknownInheritedLogin());
+            Equal(inheritedKey, forgottenManager.MigrateInheritedMainLogins((_, _) => { }).Single());
+            Equal(0, forgotten.ForgottenAccounts.Length);
 
             // With no login in the standard folder the reset slot stays out of view until one appears.
             File.Delete(Path.Combine(standard, ".credentials.json"));
             var empty = new AppSettings { IsEphemeral = true, AccountsInitialized = true };
             empty.EnsureAccount("claude").Identity = teamHash;
-            Equal(1, Manager(empty).MigrateInheritedMainLogins((_, _) => { }).Count);
-            True(empty.FindAccount("claude")!.Hidden);
+            var emptyManager = Manager(empty);
+            var changes = 0;
+            emptyManager.AccountsChanged += (_, _) => changes++;
+            Equal(1, emptyManager.MigrateInheritedMainLogins((_, _) => { }).Count);
+            var emptyMain = empty.FindAccount("claude")!;
+            True(emptyMain.Hidden);
+            True(emptyMain.HiddenUntilSignedIn);
+            False(emptyManager.RevealSignedInMainLogins());
+            True(emptyMain.Hidden);
             File.WriteAllText(Path.Combine(standard, ".credentials.json"), "{}");
+            True(emptyManager.RevealSignedInMainLogins());
+            False(emptyMain.Hidden);
+            False(emptyMain.HiddenUntilSignedIn);
+            Equal(1, changes);
+            False(emptyManager.RevealSignedInMainLogins());
+
+            // Hidden by the user, it stays hidden whatever appears in the folder.
+            emptyMain.Hidden = true;
+            emptyMain.HiddenUntilSignedIn = true;
+            emptyManager.AnswerNewAccount("claude", show: false);
+            False(emptyMain.HiddenUntilSignedIn);
+            False(emptyManager.RevealSignedInMainLogins());
+            True(emptyMain.Hidden);
 
             // A scan offers an inherited folder like a found one, even with the profile listing off:
             // shown at once on the first run, waiting for Show / Ignore after that.
@@ -1435,7 +1496,9 @@ internal static class AccountTests
             False(fresh.FindAccount(inheritedKey)!.Pending);
             var later = new AppSettings { IsEphemeral = true, AccountsInitialized = true, FindAccountsAutomatically = false };
             var laterManager = Manager(later);
+            True(laterManager.HasUnknownInheritedLogin());
             Equal(1, laterManager.Scan(DateTimeOffset.UtcNow));
+            False(laterManager.HasUnknownInheritedLogin());
             True(later.FindAccount(inheritedKey)!.Pending);
             Equal(AccountNoticeKind.NewAccount, laterManager.Notices.Single().Kind);
 
@@ -1458,6 +1521,16 @@ internal static class AccountTests
             False(alertState.Contains("\"claude|", StringComparison.Ordinal));
             True(alertState.Contains("\"codex|Session:5-hour\"", StringComparison.Ordinal));
             Equal($"{inheritedKey}|codex", string.Join('|', SnapshotCache.Load().Select(snapshot => snapshot.ProviderId).Order(StringComparer.Ordinal)));
+
+            // Moving onto a key that has records merges them: the history keeps both, the moved alert
+            // memory and cached reading win.
+            UsageHistoryStore.Append(new[] { new UsageSample(now.AddMinutes(-1), "claude", "Session:5-hour", 40) });
+            File.WriteAllText(AppPaths.AlertStateFile, $$$"""{"{{{inheritedKey}}}|Session:5-hour":{"Used":30,"ResetsAt":null},"claude|Session:5-hour":{"Used":40,"ResetsAt":null}}""");
+            SnapshotCache.Save(SnapshotCache.Load().Append(Snapshot("claude", 40)).ToArray());
+            AccountManager.MoveStoredRecords("claude", inheritedKey);
+            Equal("30|40", string.Join('|', UsageHistoryStore.Load(TimeSpan.FromDays(1)).Where(sample => sample.ProviderId == inheritedKey).Select(sample => sample.UsedPercent)));
+            True(File.ReadAllText(AppPaths.AlertStateFile).Contains($"\"{inheritedKey}|Session:5-hour\":{{\"Used\":40", StringComparison.Ordinal));
+            Equal(40, SnapshotCache.Load().Single(snapshot => snapshot.ProviderId == inheritedKey).Metrics[0].UsedPercent);
 
             // Dropping instead removes the key's records; moving a key with nothing stored changes nothing.
             AccountManager.MoveStoredRecords(inheritedKey, null);

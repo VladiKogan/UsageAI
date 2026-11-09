@@ -33,16 +33,7 @@ internal static class UsageHistoryStore
             var builder = new StringBuilder();
             foreach (var sample in samples.Take(MaxSamplesPerAppend))
             {
-                builder.Append("{\"t\":")
-                    .Append(JsonSerializer.Serialize(sample.At.ToString("O", CultureInfo.InvariantCulture)))
-                    .Append(",\"p\":")
-                    .Append(JsonSerializer.Serialize(sample.ProviderId))
-                    .Append(",\"m\":")
-                    .Append(JsonSerializer.Serialize(sample.MetricKey))
-                    .Append(",\"u\":")
-                    .Append(sample.UsedPercent.ToString(CultureInfo.InvariantCulture))
-                    .Append('}')
-                    .Append('\n');
+                AppendLine(builder, sample);
             }
 
             File.AppendAllText(AppPaths.HistoryFile, builder.ToString());
@@ -100,48 +91,15 @@ internal static class UsageHistoryStore
     /// Drops every sample of one provider key, for an account now signed in to someone else or one
     /// the user removed.
     /// </summary>
-    public static void RemoveProvider(string providerId)
-    {
-        try
-        {
-            var path = AppPaths.HistoryFile;
-            if (!File.Exists(path) || new FileInfo(path).Length > MaxReadBytes)
-            {
-                return;
-            }
-
-            var kept = new StringBuilder();
-            var removed = false;
-            foreach (var line in File.ReadLines(path))
-            {
-                if (TryParse(line) is { } sample)
-                {
-                    if (sample.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase))
-                    {
-                        removed = true;
-                        continue;
-                    }
-
-                    kept.Append(line).Append('\n');
-                }
-            }
-
-            if (removed)
-            {
-                AppPaths.WriteAllTextAtomic(path, kept.ToString());
-            }
-        }
-        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
-        {
-            // History is optional; the samples age out with the retention window instead.
-        }
-    }
+    public static void RemoveProvider(string providerId) => RenameProvider(providerId, null);
 
     /// <summary>
     /// Moves every sample of one provider key to another, for a login whose records belong under a
-    /// different key now (see <see cref="AccountManager.MigrateInheritedMainLogins"/>).
+    /// different key now (see <see cref="AccountManager.MigrateInheritedMainLogins"/>), or drops them
+    /// when <paramref name="newProviderId"/> is null. Samples already under the new key stay, so the
+    /// two runs merge in file (time) order.
     /// </summary>
-    public static void RenameProvider(string providerId, string newProviderId)
+    public static void RenameProvider(string providerId, string? newProviderId)
     {
         try
         {
@@ -152,7 +110,7 @@ internal static class UsageHistoryStore
             }
 
             var kept = new StringBuilder();
-            var renamed = false;
+            var changed = false;
             foreach (var line in File.ReadLines(path))
             {
                 if (TryParse(line) is not { } sample)
@@ -166,26 +124,22 @@ internal static class UsageHistoryStore
                     continue;
                 }
 
-                renamed = true;
-                kept.Append("{\"t\":")
-                    .Append(JsonSerializer.Serialize(sample.At.ToString("O", CultureInfo.InvariantCulture)))
-                    .Append(",\"p\":")
-                    .Append(JsonSerializer.Serialize(newProviderId))
-                    .Append(",\"m\":")
-                    .Append(JsonSerializer.Serialize(sample.MetricKey))
-                    .Append(",\"u\":")
-                    .Append(sample.UsedPercent.ToString(CultureInfo.InvariantCulture))
-                    .Append("}\n");
+                changed = true;
+                if (newProviderId is not null)
+                {
+                    AppendLine(kept, sample with { ProviderId = newProviderId });
+                }
             }
 
-            if (renamed)
+            if (changed)
             {
                 AppPaths.WriteAllTextAtomic(path, kept.ToString());
             }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // History is optional; a failed move leaves the samples where they were.
+            // History is optional; a failed rewrite leaves the samples where they were, and dropped
+            // ones age out with the retention window instead.
         }
     }
 
@@ -198,6 +152,18 @@ internal static class UsageHistoryStore
             metric.Key,
             metric.UsedPercent!.Value))
         .ToArray();
+
+    /// <summary>Writes one sample as the file's JSON line, newline included.</summary>
+    private static void AppendLine(StringBuilder builder, UsageSample sample) => builder
+        .Append("{\"t\":")
+        .Append(JsonSerializer.Serialize(sample.At.ToString("O", CultureInfo.InvariantCulture)))
+        .Append(",\"p\":")
+        .Append(JsonSerializer.Serialize(sample.ProviderId))
+        .Append(",\"m\":")
+        .Append(JsonSerializer.Serialize(sample.MetricKey))
+        .Append(",\"u\":")
+        .Append(sample.UsedPercent.ToString(CultureInfo.InvariantCulture))
+        .Append("}\n");
 
     private static void PruneIfLarge()
     {

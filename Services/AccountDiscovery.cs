@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -481,7 +482,24 @@ internal static class AccountCommands
 {
     /// <summary>PowerShell, the Windows Terminal default: sets the folder variable, then signs in.</summary>
     public static string SignIn(string providerId, string folder) =>
-        $"{UseFolder(providerId, folder)}; {(providerId.Equals(AccountDiscovery.CodexProviderId, StringComparison.OrdinalIgnoreCase) ? "codex login" : "claude")}";
+        $"{UseFolder(providerId, folder)}; {LoginCommand(providerId)}";
+
+    /// <summary>
+    /// The sign-in for the main login, which reads the standard folder. A terminal that inherits
+    /// <c>CLAUDE_CONFIG_DIR</c> / <c>CODEX_HOME</c> (as UsageAI did) would sign in to that folder
+    /// instead, so the line clears the variable first.
+    /// </summary>
+    public static string SignInMain(string providerId, IDictionary? environment = null)
+    {
+        var variable = AccountDiscovery.FolderVariable(providerId);
+        var inherited = environment is null ? Environment.GetEnvironmentVariable(variable) : environment[variable] as string;
+        return string.IsNullOrWhiteSpace(inherited)
+            ? LoginCommand(providerId)
+            : $"Remove-Item Env:{variable} -ErrorAction Ignore; {LoginCommand(providerId)}";
+    }
+
+    private static string LoginCommand(string providerId) =>
+        providerId.Equals(AccountDiscovery.CodexProviderId, StringComparison.OrdinalIgnoreCase) ? "codex login" : "claude";
 
     /// <summary>The line that makes the CLI in a terminal use <paramref name="folder"/>.</summary>
     public static string UseFolder(string providerId, string folder) =>

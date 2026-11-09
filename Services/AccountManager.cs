@@ -111,7 +111,7 @@ internal sealed class AccountManager
     /// Lists the profile once for <c>.claude…</c> / <c>.codex…</c> login folders and adds the new
     /// ones. The first scan shows them all (they are the user's own) with one banner per provider
     /// that has several; later ones wait for Show / Ignore unless the user turned that off.
-    /// With automatic scanning off, only the first-run bookkeeping happens.
+    /// With automatic scanning off, only an inherited folder is offered, plus the first-run bookkeeping.
     /// </summary>
     public int Scan(DateTimeOffset nowUtc)
     {
@@ -201,12 +201,13 @@ internal sealed class AccountManager
     /// The one-time move for a login that was the main one only because UsageAI inherited
     /// <c>CLAUDE_CONFIG_DIR</c> / <c>CODEX_HOME</c>. The main login now always reads the standard
     /// folder, so when the main slot's saved person is the one in the inherited folder (and not the
-    /// one in the standard folder), that folder becomes an account of its own and takes the slot's
-    /// label, alerts, order, visibility, tray and popup choices, and — through
+    /// one in the standard folder), that folder's account (created here when there is none) takes
+    /// the slot's label, alerts, place, visibility, tray and popup choices, and — through
     /// <paramref name="moveRecords"/> — its history, alert memory and cached reading. Without the
-    /// move the next refresh would see a different person in the slot and clear all of it. When the
-    /// folder is already an account, the slot's records are that folder's duplicates and are
-    /// dropped (a null target). Runs at startup, before any refresh. Returns the keys it created.
+    /// move the next refresh would see a different person in the slot and clear all of it. An
+    /// existing account for the folder was the slot's repeat, so the slot's records merge into it
+    /// and it is shown again; a folder the user forgot comes back too, since the slot is how they
+    /// were watching it. Runs at startup, before any refresh. Returns the keys it created.
     /// </summary>
     public IReadOnlyList<string> MigrateInheritedMainLogins(Action<string, string?> moveRecords)
     {
@@ -222,48 +223,58 @@ internal sealed class AccountManager
                 continue;
             }
 
-            var accountKey = ProviderKey.Compose(login.ProviderId, ProviderKey.AccountIdFor(login.Folder));
-            if (_settings.FindAccount(accountKey) is null)
+            var accountId = ProviderKey.AccountIdFor(login.Folder);
+            var accountKey = ProviderKey.Compose(login.ProviderId, accountId);
+            if (_settings.FindAccount(accountKey) is not { } account)
             {
-                _settings.Accounts.Add(new ProviderAccount
+                account = new ProviderAccount
                 {
-                    Id = ProviderKey.AccountIdFor(login.Folder),
+                    Id = accountId,
                     ProviderId = login.ProviderId,
                     Source = AccountSource.Found,
                     Path = login.Folder,
-                    Label = main.Label,
-                    Hidden = main.Hidden,
-                    Alerts = main.Alerts,
-                    Order = _settings.NextAccountOrder(login.ProviderId),
-                    Identity = main.Identity,
-                    Email = main.Email,
-                    Organization = main.Organization,
-                });
-                if (string.Equals(_settings.TrayProviderId, mainKey, StringComparison.OrdinalIgnoreCase))
-                {
-                    _settings.TrayProviderId = accountKey;
-                }
-
-                if (_settings.PopupMetricGroups.Remove(mainKey, out var group))
-                {
-                    _settings.PopupMetricGroups[accountKey] = group;
-                }
-
-                moveRecords(mainKey, accountKey);
+                };
+                _settings.Accounts.Add(account);
                 created.Add(accountKey);
             }
-            else
+
+            _settings.ForgottenAccounts = _settings.ForgottenAccounts
+                .Where(key => !key.Equals(accountKey, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            _notices.RemoveAll(notice => accountKey.Equals(notice.UnitKey, StringComparison.OrdinalIgnoreCase));
+            account.Label = main.Label ?? account.Label;
+            account.Hidden = main.Hidden;
+            account.Pending = false;
+            account.DuplicateOf = null;
+            account.Alerts = main.Alerts;
+            account.Identity = main.Identity;
+            account.Email = main.Email ?? account.Email;
+            account.Organization = main.Organization ?? account.Organization;
+
+            // The login keeps the slot's place; the slot itself, now a different login, goes last.
+            account.Order = main.Order;
+            main.Order = _settings.NextAccountOrder(login.ProviderId);
+            if (string.Equals(_settings.TrayProviderId, mainKey, StringComparison.OrdinalIgnoreCase))
             {
-                moveRecords(mainKey, null);
+                _settings.TrayProviderId = accountKey;
             }
 
+            if (_settings.PopupMetricGroups.Remove(mainKey, out var group))
+            {
+                _settings.PopupMetricGroups[accountKey] = group;
+            }
+
+            moveRecords(mainKey, accountKey);
+
             // The slot now starts afresh on the standard folder: its first reading is recorded
-            // silently. With no login there it stays out of view until one appears.
+            // silently. With no login there it stays out of view until one appears
+            // (RevealSignedInMainLogins).
             main.Identity = null;
             main.Email = null;
             main.Organization = null;
             main.Label = null;
-            main.Hidden = !File.Exists(Path.Combine(_defaultFolder(login.ProviderId), AccountDiscovery.CredentialFileName(login.ProviderId)));
+            main.Hidden = !DefaultHasLogin(login.ProviderId);
+            main.HiddenUntilSignedIn = main.Hidden;
             changed = true;
         }
 
@@ -276,18 +287,51 @@ internal sealed class AccountManager
         return created;
     }
 
-    /// <summary>The record mover the tray app uses: history, alert memory and the cached reading.</summary>
-    public static void MoveStoredRecords(string providerKey, string? newProviderKey)
+    /// <summary>
+    /// Shows a main login the migration hid for having no login in the standard folder, once one
+    /// appears there. Checked on every tick, but it reads the disk only for such a slot. Returns
+    /// whether any was shown.
+    /// </summary>
+    public bool RevealSignedInMainLogins()
     {
-        if (newProviderKey is null)
+        var revealed = false;
+        foreach (var main in _settings.Accounts.Where(account => account.IsDefault && account.HiddenUntilSignedIn).ToArray())
         {
-            UsageHistoryStore.RemoveProvider(providerKey);
-        }
-        else
-        {
-            UsageHistoryStore.RenameProvider(providerKey, newProviderKey);
+            if (DefaultHasLogin(main.ProviderId))
+            {
+                main.Hidden = false;
+                main.HiddenUntilSignedIn = false;
+                revealed = true;
+            }
         }
 
+        if (revealed)
+        {
+            Commit();
+        }
+
+        return revealed;
+    }
+
+    /// <summary>
+    /// Whether UsageAI inherited a <c>CLAUDE_CONFIG_DIR</c> / <c>CODEX_HOME</c> login it has no
+    /// account for yet. Startup scans for it even with automatic finding off, since the variable
+    /// itself names the folder.
+    /// </summary>
+    public bool HasUnknownInheritedLogin() => _inheritedLogins().Any(login =>
+    {
+        var key = ProviderKey.Compose(login.ProviderId, ProviderKey.AccountIdFor(login.Folder));
+        return _settings.FindAccount(key) is null &&
+               !_settings.ForgottenAccounts.Contains(key, StringComparer.OrdinalIgnoreCase);
+    });
+
+    /// <summary>
+    /// The record mover the tray app uses: history, alert memory and the cached reading move to
+    /// <paramref name="newProviderKey"/>, merging with any it has, or are dropped when it is null.
+    /// </summary>
+    public static void MoveStoredRecords(string providerKey, string? newProviderKey)
+    {
+        UsageHistoryStore.RenameProvider(providerKey, newProviderKey);
         NotificationCoordinator.RenameInFile(AppPaths.AlertStateFile, providerKey, newProviderKey);
         SnapshotCache.RenameProvider(providerKey, newProviderKey);
     }
@@ -578,6 +622,7 @@ internal sealed class AccountManager
         {
             account.Pending = false;
             account.Hidden = !show;
+            account.HiddenUntilSignedIn = false;
         }
 
         _notices.RemoveAll(notice => unitKey.Equals(notice.UnitKey, StringComparison.OrdinalIgnoreCase));

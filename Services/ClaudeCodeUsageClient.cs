@@ -76,7 +76,7 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
 
     public string DisplayName => "Claude Code";
 
-    public string SignInCommand => _configDirectory is null ? "claude" : AccountCommands.SignIn(ProviderId, _configDirectory);
+    public string SignInCommand => _configDirectory is null ? AccountCommands.SignInMain(ProviderId) : AccountCommands.SignIn(ProviderId, _configDirectory);
 
     public Uri AccountUrl { get; } = new("https://claude.ai/settings/usage");
 

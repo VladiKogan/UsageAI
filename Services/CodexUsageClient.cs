@@ -78,7 +78,7 @@ internal sealed class CodexUsageClient : IAccountUsageClient
 
     public string DisplayName => "Codex";
 
-    public string SignInCommand => _codexHome is null ? "codex login" : AccountCommands.SignIn(ProviderId, _codexHome);
+    public string SignInCommand => _codexHome is null ? AccountCommands.SignInMain(ProviderId) : AccountCommands.SignIn(ProviderId, _codexHome);
 
     public Uri AccountUrl { get; } = new("https://chatgpt.com/codex/settings/usage");
 

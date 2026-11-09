@@ -24,8 +24,17 @@ The project follows [Semantic Versioning](https://semver.org/).
 - **A login that was the main one only because of `CLAUDE_CONFIG_DIR` or `CODEX_HOME` keeps its
   history.** If you had set the variable permanently, the first start after this update moves that
   login to an account of its own. Its usage history, alert memory, label, alert switch, tray choice
-  and popup-ring choice move with it, so it doesn't start over as if it were someone new. If the
-  standard folder has no login, its tile stays hidden until one appears.
+  and popup-ring choice move with it, and it keeps the main tile's place in the list, so it doesn't
+  start over as if it were someone new. If UsageAI had already found that folder as a duplicate
+  account, or you had forgotten that duplicate, the records merge into that account and it is shown
+  again. If the standard folder has no login, its tile stays hidden until one appears there, then
+  comes back by itself.
+- **A login folder named by `CLAUDE_CONFIG_DIR` or `CODEX_HOME` is offered even with automatic
+  finding off.** The variable itself names the folder, so startup offers it without listing your
+  profile.
+- **The main login's sign-in hint works in a terminal that has `CLAUDE_CONFIG_DIR` or `CODEX_HOME`
+  set.** When UsageAI inherited either variable, the copied command clears it first, so the sign-in
+  lands in the standard folder the main tile reads instead of the variable's folder.
 
 ## [0.17.1] - 2026-11-07
 

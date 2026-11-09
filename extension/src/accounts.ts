@@ -159,13 +159,24 @@ export function inheritedLoginFolder(
     : folder;
 }
 
-/** Claude keeps its profile next to the folder when no `CLAUDE_CONFIG_DIR` is set, and inside it otherwise. */
-export function claudeProfilePath(
+/**
+ * Where Claude keeps a folder's account profile, `.claude.json`: inside the folder when the CLI runs
+ * with `CLAUDE_CONFIG_DIR`, but beside the standard `~/.claude` (as `~/.claude.json`) when no variable
+ * is set, which is how the main login is read. A profile inside `~/.claude` only answers when it is
+ * the only one there. Mirrors the desktop's `AccountDiscovery.ClaudeIdentityFile`.
+ */
+export async function claudeProfilePath(
   folder: string,
-  isDefaultWithoutConfigDirectory: boolean,
   home: string = userHome(),
-): string {
-  return isDefaultWithoutConfigDirectory ? path.join(home, ".claude.json") : path.join(folder, ".claude.json");
+  isFile: (file: string) => Promise<boolean> = nodeAccountFileSystem.isFile,
+  platform: NodeJS.Platform = process.platform,
+): Promise<string> {
+  const inFolder = path.join(folder, ".claude.json");
+  if (normalizeAccountPath(folder, platform) !== normalizeAccountPath(defaultLoginFolder("claude", home), platform)) {
+    return inFolder;
+  }
+  const inProfile = path.join(home, ".claude.json");
+  return await isFile(inProfile) || !await isFile(inFolder) ? inProfile : inFolder;
 }
 
 export interface AccountFileSystem {
@@ -432,6 +443,26 @@ export function commandWithEnvironment(
   return platform === "win32"
     ? `$env:${name}='${value.replaceAll("'", "''")}'; ${command}`
     : `${name}='${value.replaceAll("'", "'\\''")}' ${command}`;
+}
+
+/**
+ * The sign-in for the main login, which reads the standard folder. A terminal that inherits
+ * `CLAUDE_CONFIG_DIR` / `CODEX_HOME` (as the editor did) would sign in to that folder instead, so
+ * the line clears the variable first.
+ */
+export function mainSignInCommand(
+  provider: AccountProviderId,
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const command = provider === "codex" ? "codex login" : "claude";
+  const variable = configDirectoryVariable(provider);
+  if (!environment[variable]?.trim()) {
+    return command;
+  }
+  return platform === "win32"
+    ? `Remove-Item Env:${variable} -ErrorAction Ignore; ${command}`
+    : `env -u ${variable} ${command}`;
 }
 
 /** Account names become folder suffixes: lower-case letters, digits and single dashes. */

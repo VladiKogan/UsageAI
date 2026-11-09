@@ -26,6 +26,7 @@ import {
   distinctAccountLabels,
   identityKey,
   inheritedLoginFolder,
+  mainSignInCommand,
   isAccountUnitKey,
   isKnownUnitKey,
   normalizeAccountPath,
@@ -213,8 +214,16 @@ test("identity comes from local files only, and labels fall back from name to em
     assert.deepEqual(await readCodexIdentity(path.join(folder, "codex")), {});
   });
 
-  assert.equal(claudeProfilePath("/x/.claude", true, "/home/dev"), path.join("/home/dev", ".claude.json"));
-  assert.equal(claudeProfilePath("/x/.claude-lab", false, "/home/dev"), path.join("/x/.claude-lab", ".claude.json"));
+  // ~/.claude's profile sits beside it; one inside it answers only when it is the only one there.
+  const home = path.resolve("/home/dev");
+  const files = new Set<string>();
+  const isFile = async (file: string): Promise<boolean> => files.has(file);
+  assert.equal(await claudeProfilePath(path.join(home, ".claude"), home, isFile), path.join(home, ".claude.json"));
+  files.add(path.join(home, ".claude", ".claude.json"));
+  assert.equal(await claudeProfilePath(path.join(home, ".claude"), home, isFile), path.join(home, ".claude", ".claude.json"));
+  files.add(path.join(home, ".claude.json"));
+  assert.equal(await claudeProfilePath(path.join(home, ".claude"), home, isFile), path.join(home, ".claude.json"));
+  assert.equal(await claudeProfilePath(path.join(home, ".claude-lab"), home, isFile), path.join(home, ".claude-lab", ".claude.json"));
   assert.equal(identityKey({ email: "A@Example.com", organizationId: "ORG" }), "a@example.com|org");
   assert.equal(identityKey({ organizationId: "org" }), undefined);
 
@@ -345,7 +354,47 @@ test("the account service keeps ~/.claude as the main login and finds an inherit
     });
     await plain.scan();
     assert.equal(plain.accounts.filter((account) => account.provider === "claude").length, 1);
+
+    // The one-time move: state saved before the main login stopped following the variable shows the
+    // inherited login at once, since the main card was showing it. After that a new one is asked about.
+    environment = { CLAUDE_CONFIG_DIR: team };
+    let saved: unknown = { shown: [], ignored: [], lastScanAt: 1 };
+    const asked: string[] = [];
+    const upgraded = (): AccountService => new AccountService({
+      home: () => home,
+      environment: () => environment,
+      settings: () => [],
+      loadState: () => saved,
+      saveState: (state) => { saved = state; },
+      announce: () => undefined,
+      askToShow: async (account) => { asked.push(account.label); return undefined; },
+      warn: () => undefined,
+    });
+    const first = upgraded();
+    await first.scan();
+    assert.deepEqual(first.accounts.filter((account) => account.provider === "claude").map((account) => account.label), ["me@example.com", "team@example.com"]);
+    assert.deepEqual(asked, []);
+    assert.equal((saved as { standardMain?: boolean }).standardMain, true);
+
+    saved = { shown: [], ignored: [accountIdForPath(team)], lastScanAt: 1 };
+    const ignored = upgraded();
+    await ignored.scan();
+    assert.equal(ignored.accounts.filter((account) => account.provider === "claude").length, 1);
+
+    saved = { shown: [], ignored: [], lastScanAt: 1, standardMain: true };
+    const later = upgraded();
+    await later.scan();
+    assert.equal(later.pending.length, 1);
+    assert.deepEqual(asked, ["team@example.com"]);
   });
+});
+
+test("the main login's sign-in clears an inherited folder variable first", () => {
+  assert.equal(mainSignInCommand("claude", {}, "win32"), "claude");
+  assert.equal(mainSignInCommand("codex", { CODEX_HOME: " " }, "linux"), "codex login");
+  assert.equal(mainSignInCommand("claude", { CLAUDE_CONFIG_DIR: "C:\work" }, "win32"), "Remove-Item Env:CLAUDE_CONFIG_DIR -ErrorAction Ignore; claude");
+  assert.equal(mainSignInCommand("codex", { CODEX_HOME: "/srv/codex" }, "darwin"), "env -u CODEX_HOME codex login");
+  assert.equal(new ClaudeUsageClient().signInCommand, "claude");
 });
 
 test("the account service shows first-run finds at once and asks about later ones", async () => {

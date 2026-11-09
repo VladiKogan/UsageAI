@@ -1,6 +1,6 @@
 import { access } from "node:fs/promises";
 import * as path from "node:path";
-import { commandWithEnvironment } from "../accounts";
+import { commandWithEnvironment, defaultLoginFolder, mainSignInCommand } from "../accounts";
 import { claudeBundledPaths, findBundledExecutable, noExtensions, type ExtensionPathResolver } from "../bundled-cli";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
@@ -77,7 +77,7 @@ export class ClaudeUsageClient implements UsageClient {
     this.id = account ? `claude@${account.id}` : "claude";
     this.signInCommand = account
       ? commandWithEnvironment("CLAUDE_CONFIG_DIR", account.configDirectory, "claude auth login --claudeai")
-      : "claude";
+      : mainSignInCommand("claude");
   }
 
   public async getUsage(signal?: AbortSignal): Promise<UsageSnapshot> {
@@ -283,7 +283,7 @@ class RecoverableClaudeUsageError extends UsageProviderError {
  * inherited `CLAUDE_CONFIG_DIR` never moves the main login; that folder is found as an account.
  */
 function claudeCredentialPath(configDirectory?: string): string {
-  return path.join(configDirectory || path.join(userHome(), ".claude"), ".credentials.json");
+  return path.join(configDirectory || defaultLoginFolder("claude"), ".credentials.json");
 }
 
 async function hasFreshStoredClaudeCredential(configDirectory?: string): Promise<boolean> {

@@ -602,7 +602,14 @@ internal sealed partial class SettingsForm
             }
 
             account.Label = draft.Label;
-            account.Hidden = !draft.Shown && !account.Pending;
+            var hidden = !draft.Shown && !account.Pending;
+            if (hidden != account.Hidden)
+            {
+                // The user's own choice now; UsageAI no longer shows it on a login appearing.
+                account.HiddenUntilSignedIn = false;
+            }
+
+            account.Hidden = hidden;
             account.Alerts = draft.Alerts;
             account.Order = Math.Clamp(draft.Order, 0, 1000);
         }

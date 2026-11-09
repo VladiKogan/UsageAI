@@ -1,11 +1,11 @@
 import { access } from "node:fs/promises";
 import * as path from "node:path";
 import * as readline from "node:readline";
-import { commandWithEnvironment } from "../accounts";
+import { commandWithEnvironment, defaultLoginFolder, mainSignInCommand } from "../accounts";
 import { codexBundledPaths, findBundledExecutable, noExtensions, type ExtensionPathResolver } from "../bundled-cli";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
-import { findExecutable, normalizeToken, parseRetryAfter, readBoundedText, requestJson, spawnSecure, userHome } from "../security";
+import { findExecutable, normalizeToken, parseRetryAfter, readBoundedText, requestJson, spawnSecure } from "../security";
 import { getArray, getNumber, getObject, getString, isObject } from "./json";
 
 /** The endpoint the Codex CLI itself reads usage from. */
@@ -59,7 +59,7 @@ export class CodexUsageClient implements UsageClient {
     private readonly account?: CodexAccount,
   ) {
     this.id = account ? `codex@${account.id}` : "codex";
-    this.signInCommand = account ? commandWithEnvironment("CODEX_HOME", account.home, "codex login") : "codex login";
+    this.signInCommand = account ? commandWithEnvironment("CODEX_HOME", account.home, "codex login") : mainSignInCommand("codex");
   }
 
   /**
@@ -198,7 +198,7 @@ async function tryHttpUsage(credentials: CodexHttpCredentials, signal?: AbortSig
  * inherited `CODEX_HOME` never moves the main login; that folder is found as an account.
  */
 export async function loadCodexHttpCredentials(now = Date.now()): Promise<CodexHttpCredentials | undefined> {
-  return readCodexHttpCredentials(path.join(userHome(), ".codex"), now);
+  return readCodexHttpCredentials(defaultLoginFolder("codex"), now);
 }
 
 export async function readCodexHttpCredentials(home: string, now = Date.now()): Promise<CodexHttpCredentials | undefined> {

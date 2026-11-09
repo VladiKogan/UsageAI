@@ -331,7 +331,8 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     /// <summary>
     /// Scans the profile for login folders at startup and then once a day, on the same tick as the
-    /// update check but with its own timestamp, so an offline update check never skips it.
+    /// update check but with its own timestamp, so an offline update check never skips it. Every
+    /// tick also shows a hidden main login whose standard folder now has a login.
     /// </summary>
     private void ScanAccountsIfDue(bool atStartup = false)
     {
@@ -340,9 +341,18 @@ internal sealed class UsageApplicationContext : ApplicationContext
             return;
         }
 
+        // A main login hidden for having no login in its standard folder comes back once it has
+        // one; it was not polled while hidden, so everything is made due.
+        if (_accounts.RevealSignedInMainLogins())
+        {
+            _service.ApplySettings();
+        }
+
         if (atStartup)
         {
-            if (_settings.FindAccountsAutomatically || !_settings.AccountsInitialized)
+            // An inherited CLAUDE_CONFIG_DIR / CODEX_HOME login is offered even with scanning off.
+            if (_settings.FindAccountsAutomatically || !_settings.AccountsInitialized ||
+                _accounts.HasUnknownInheritedLogin())
             {
                 _accounts.Scan(DateTimeOffset.UtcNow);
             }
