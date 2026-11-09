@@ -533,7 +533,8 @@ async function readClaudeCliVersion(launch: ClaudeLaunch): Promise<string | unde
   // The Windows native install copies the version it runs into ~/.local/bin, keeping that copy and
   // earlier ones in ~/.local/share/claude/versions/<x.y.z>. The kept copy with the same size and
   // modification time is the one installed; with no such copy nothing is guessed.
-  const localBin = path.join(userHome(), ".local", "bin");
+  // Both sides resolved alike, so a home reached through a short (8.3) or linked path still matches.
+  const localBin = await realpath(path.join(userHome(), ".local", "bin")).catch(() => path.join(userHome(), ".local", "bin"));
   if (path.dirname(resolved).toLowerCase() !== localBin.toLowerCase()) {
     return undefined;
   }
