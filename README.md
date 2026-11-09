@@ -139,8 +139,12 @@ show several accounts, side by side:
 - **New subscription?** **Add account… → Sign in to another account** runs the official
   `claude auth login` or `codex login` into a new folder such as `%USERPROFILE%\.claude-work`, so
   your terminal can use it too: `$env:CLAUDE_CONFIG_DIR='C:\Users\you\.claude-work'; claude`.
+- **Your main login is always the standard folder**, `%USERPROFILE%\.claude` or `.codex`, however
+  UsageAI was started. If it starts with `CLAUDE_CONFIG_DIR` or `CODEX_HOME` set, for example from a
+  terminal that uses another login, the folder the variable names shows up as one more account
+  instead of replacing the main one.
 - **Settings → Accounts** shows, hides, renames, reorders, re-authenticates and removes them, and
-  sets alerts per account. The tray keeps following your default login unless you pick another.
+  sets alerts per account. The tray keeps following your main login unless you pick another.
 
 Codex and Claude Code don't need a separate CLI install: if only their editor extension is installed in VS Code, VS Code Insiders, VSCodium, Cursor, Windsurf, or Antigravity, UsageAI uses the CLI that extension ships.
 
@@ -162,7 +166,7 @@ UsageAI reads the login your tools already made, and nothing else:
   `codex app-server` instead (read-only sandbox, no approvals), which renews the login itself. UsageAI
   never refreshes or rewrites `auth.json`.
 - 👥 **Extra accounts are read the same way.** Each one is read only from its own folder, and its
-  token goes only where the default login's goes. **Sign in to another account** just starts the
+  token goes only where the main login's goes. **Sign in to another account** just starts the
   official CLI login with that folder set; UsageAI never sees your password and never switches
   which account your CLI uses.
 - 🏠 **No telemetry or tracking.** Network access is limited to provider usage requests,

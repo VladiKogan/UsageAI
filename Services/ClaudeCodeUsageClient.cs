@@ -76,7 +76,7 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
 
     public string DisplayName => "Claude Code";
 
-    public string SignInCommand => _configDirectory is null ? "claude" : AccountCommands.SignIn(ProviderId, _configDirectory);
+    public string SignInCommand => _configDirectory is null ? AccountCommands.SignInMain(ProviderId) : AccountCommands.SignIn(ProviderId, _configDirectory);
 
     public Uri AccountUrl { get; } = new("https://claude.ai/settings/usage");
 
@@ -617,7 +617,10 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
     /// <summary>
     /// How every Claude CLI child starts — the recovery probes and the sign-in alike: no window,
     /// redirected streams, the minimal environment, and a given login folder set explicitly rather
-    /// than inherited, so the child reads exactly that login.
+    /// than inherited, so the child reads exactly that login. The main login's children get no
+    /// <c>CLAUDE_CONFIG_DIR</c> at all: an inherited one would point them at another folder than
+    /// the one UsageAI reads, and setting it to <c>~\.claude</c> would move the CLI's profile from
+    /// <c>~\.claude.json</c> into the folder.
     /// </summary>
     private static ProcessStartInfo CreateCliStartInfo(ClaudeLaunch launch, string? configDirectory, IEnumerable<string> arguments)
     {
@@ -633,7 +636,6 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
         };
         ProcessSecurity.ApplyMinimalEnvironment(
             startInfo,
-            "CLAUDE_CONFIG_DIR",
             "CLAUDE_CODE_GIT_BASH_PATH",
             "NODE_EXTRA_CA_CERTS",
             "SSL_CERT_DIR",
@@ -1143,33 +1145,13 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
             ? value.ToString("C2", CultureInfo.GetCultureInfo("en-US"))
             : $"{value:N2} {currency.ToUpperInvariant()}";
 
-    private static string GetCredentialPath(string? configDirectory)
-    {
-        if (configDirectory is not null)
-        {
-            return Path.Combine(configDirectory, ".credentials.json");
-        }
-
-        var configuredDirectory = Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR");
-        if (!string.IsNullOrWhiteSpace(configuredDirectory))
-        {
-            configuredDirectory = configuredDirectory.Trim().Trim('"');
-            if (!Path.IsPathFullyQualified(configuredDirectory))
-            {
-                throw new ClaudeCodeUsageException("CLAUDE_CONFIG_DIR must be an absolute path.");
-            }
-
-            return Path.Combine(Path.GetFullPath(configuredDirectory), ".credentials.json");
-        }
-
-        var userProfile = Environment.GetEnvironmentVariable("USERPROFILE");
-        if (string.IsNullOrWhiteSpace(userProfile))
-        {
-            userProfile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-        }
-
-        return Path.GetFullPath(Path.Combine(userProfile, ".claude", ".credentials.json"));
-    }
+    /// <summary>
+    /// The credential file of <paramref name="configDirectory"/>, else of the main login in the
+    /// standard <c>~\.claude</c>. An inherited <c>CLAUDE_CONFIG_DIR</c> never moves the main login:
+    /// that folder is found as an account of its own.
+    /// </summary>
+    private static string GetCredentialPath(string? configDirectory) =>
+        Path.Combine(configDirectory ?? AccountDiscovery.DefaultFolder(AccountDiscovery.ClaudeProviderId), ".credentials.json");
 
     private static bool TryGetObject(JsonElement element, string propertyName, out JsonElement value)
     {

@@ -38,18 +38,21 @@ internal sealed class AccountManager
     private readonly string _userProfile;
     private readonly Func<string, string> _defaultFolder;
     private readonly Func<ProviderAccount, IUsageClient> _createClient;
+    private readonly Func<IReadOnlyList<FoundLogin>> _inheritedLogins;
     private readonly List<AccountNotice> _notices = new();
 
     public AccountManager(
         AppSettings settings,
         string? userProfile = null,
         Func<string, string>? defaultFolder = null,
-        Func<ProviderAccount, IUsageClient>? createClient = null)
+        Func<ProviderAccount, IUsageClient>? createClient = null,
+        Func<IReadOnlyList<FoundLogin>>? inheritedLogins = null)
     {
         _settings = settings;
         _userProfile = userProfile ?? AccountDiscovery.UserProfile();
         _defaultFolder = defaultFolder ?? (providerId => AccountDiscovery.DefaultFolder(providerId, _userProfile));
         _createClient = createClient ?? CreateClient;
+        _inheritedLogins = inheritedLogins ?? (() => AccountDiscovery.InheritedLogins(_userProfile));
 
         // Accounts still waiting for an answer get their banner again after a restart.
         foreach (var pending in _settings.Accounts.Where(account => account.Pending))
@@ -108,16 +111,22 @@ internal sealed class AccountManager
     /// Lists the profile once for <c>.claude…</c> / <c>.codex…</c> login folders and adds the new
     /// ones. The first scan shows them all (they are the user's own) with one banner per provider
     /// that has several; later ones wait for Show / Ignore unless the user turned that off.
-    /// With automatic scanning off, only the first-run bookkeeping happens.
+    /// With automatic scanning off, only an inherited folder is offered, plus the first-run bookkeeping.
     /// </summary>
     public int Scan(DateTimeOffset nowUtc)
     {
         var firstRun = !_settings.AccountsInitialized;
         var added = new List<ProviderAccount>();
         var excluded = AccountDiscovery.MultiAccountProviders.Select(_defaultFolder).ToArray();
-        var found = _settings.FindAccountsAutomatically
-            ? AccountDiscovery.Scan(_userProfile, excluded)
-            : Array.Empty<FoundLogin>();
+        // A folder an inherited CLAUDE_CONFIG_DIR / CODEX_HOME names is found like any other login
+        // folder (the main tile always reads the standard folder). It is offered even with the
+        // profile listing off, since the variable itself names it.
+        var found = (_settings.FindAccountsAutomatically
+                ? AccountDiscovery.Scan(_userProfile, excluded)
+                : Array.Empty<FoundLogin>())
+            .Concat(_inheritedLogins())
+            .DistinctBy(login => login.Folder, StringComparer.OrdinalIgnoreCase)
+            .ToArray();
         foreach (var login in found)
         {
             var key = ProviderKey.Compose(login.ProviderId, ProviderKey.AccountIdFor(login.Folder));
@@ -189,6 +198,145 @@ internal sealed class AccountManager
     }
 
     /// <summary>
+    /// The one-time move for a login that was the main one only because UsageAI inherited
+    /// <c>CLAUDE_CONFIG_DIR</c> / <c>CODEX_HOME</c>. The main login now always reads the standard
+    /// folder, so when the main slot's saved person is the one in the inherited folder (and not the
+    /// one in the standard folder), that folder's account (created here when there is none) takes
+    /// the slot's label, alerts, place, visibility, tray and popup choices, and — through
+    /// <paramref name="moveRecords"/> — its history, alert memory and cached reading. Without the
+    /// move the next refresh would see a different person in the slot and clear all of it. An
+    /// existing account for the folder was the slot's repeat, so the slot's records merge into it
+    /// and it is shown again; a folder the user forgot comes back too, since the slot is how they
+    /// were watching it. Runs at startup, before any refresh. Returns the keys it created.
+    /// </summary>
+    public IReadOnlyList<string> MigrateInheritedMainLogins(Action<string, string?> moveRecords)
+    {
+        var created = new List<string>();
+        var changed = false;
+        foreach (var login in _inheritedLogins())
+        {
+            var mainKey = login.ProviderId;
+            if (_settings.FindAccount(mainKey) is not { Identity: { } savedIdentity } main ||
+                AccountDiscovery.ReadIdentity(login.ProviderId, login.Folder, _userProfile)?.Hash != savedIdentity ||
+                AccountDiscovery.ReadIdentity(login.ProviderId, _defaultFolder(login.ProviderId), _userProfile)?.Hash == savedIdentity)
+            {
+                continue;
+            }
+
+            var accountId = ProviderKey.AccountIdFor(login.Folder);
+            var accountKey = ProviderKey.Compose(login.ProviderId, accountId);
+            if (_settings.FindAccount(accountKey) is not { } account)
+            {
+                account = new ProviderAccount
+                {
+                    Id = accountId,
+                    ProviderId = login.ProviderId,
+                    Source = AccountSource.Found,
+                    Path = login.Folder,
+                };
+                _settings.Accounts.Add(account);
+                created.Add(accountKey);
+            }
+
+            _settings.ForgottenAccounts = _settings.ForgottenAccounts
+                .Where(key => !key.Equals(accountKey, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+            _notices.RemoveAll(notice => accountKey.Equals(notice.UnitKey, StringComparison.OrdinalIgnoreCase));
+            account.Label = main.Label ?? account.Label;
+            account.Hidden = main.Hidden;
+            account.Pending = false;
+            account.DuplicateOf = null;
+            account.Alerts = main.Alerts;
+            account.Identity = main.Identity;
+            account.Email = main.Email ?? account.Email;
+            account.Organization = main.Organization ?? account.Organization;
+
+            // The login keeps the slot's place; the slot itself, now a different login, goes last.
+            account.Order = main.Order;
+            main.Order = _settings.NextAccountOrder(login.ProviderId);
+            if (string.Equals(_settings.TrayProviderId, mainKey, StringComparison.OrdinalIgnoreCase))
+            {
+                _settings.TrayProviderId = accountKey;
+            }
+
+            if (_settings.PopupMetricGroups.Remove(mainKey, out var group))
+            {
+                _settings.PopupMetricGroups[accountKey] = group;
+            }
+
+            moveRecords(mainKey, accountKey);
+
+            // The slot now starts afresh on the standard folder: its first reading is recorded
+            // silently. With no login there it stays out of view until one appears
+            // (RevealSignedInMainLogins).
+            main.Identity = null;
+            main.Email = null;
+            main.Organization = null;
+            main.Label = null;
+            main.Hidden = !DefaultHasLogin(login.ProviderId);
+            main.HiddenUntilSignedIn = main.Hidden;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            RecheckDuplicates();
+            _settings.Save();
+        }
+
+        return created;
+    }
+
+    /// <summary>
+    /// Shows a main login the migration hid for having no login in the standard folder, once one
+    /// appears there. Checked on every tick, but it reads the disk only for such a slot. Returns
+    /// whether any was shown.
+    /// </summary>
+    public bool RevealSignedInMainLogins()
+    {
+        var revealed = false;
+        foreach (var main in _settings.Accounts.Where(account => account.IsDefault && account.HiddenUntilSignedIn).ToArray())
+        {
+            if (DefaultHasLogin(main.ProviderId))
+            {
+                main.Hidden = false;
+                main.HiddenUntilSignedIn = false;
+                revealed = true;
+            }
+        }
+
+        if (revealed)
+        {
+            Commit();
+        }
+
+        return revealed;
+    }
+
+    /// <summary>
+    /// Whether UsageAI inherited a <c>CLAUDE_CONFIG_DIR</c> / <c>CODEX_HOME</c> login it has no
+    /// account for yet. Startup scans for it even with automatic finding off, since the variable
+    /// itself names the folder.
+    /// </summary>
+    public bool HasUnknownInheritedLogin() => _inheritedLogins().Any(login =>
+    {
+        var key = ProviderKey.Compose(login.ProviderId, ProviderKey.AccountIdFor(login.Folder));
+        return _settings.FindAccount(key) is null &&
+               !_settings.ForgottenAccounts.Contains(key, StringComparer.OrdinalIgnoreCase);
+    });
+
+    /// <summary>
+    /// The record mover the tray app uses: history, alert memory and the cached reading move to
+    /// <paramref name="newProviderKey"/>, merging with any it has, or are dropped when it is null.
+    /// </summary>
+    public static void MoveStoredRecords(string providerKey, string? newProviderKey)
+    {
+        UsageHistoryStore.RenameProvider(providerKey, newProviderKey);
+        NotificationCoordinator.RenameInFile(AppPaths.AlertStateFile, providerKey, newProviderKey);
+        SnapshotCache.RenameProvider(providerKey, newProviderKey);
+    }
+
+    /// <summary>
     /// Brings every account's terminal command up to date, on the same startup and daily tick as the
     /// scan. A command that starts the CLI bundled in an editor extension names that extension's
     /// version folder, which an update deletes; this points it at the copy installed now.
@@ -219,7 +367,7 @@ internal sealed class AccountManager
         var path = ProviderKey.NormalizeFolder(folder);
         if (path.Equals(_defaultFolder(providerId), StringComparison.OrdinalIgnoreCase))
         {
-            return new AccountAddResult(null, $"Already shown as {DefaultLabel(providerId)}: that is the default {AccountDiscovery.ProviderName(providerId)} login.");
+            return new AccountAddResult(null, $"Already shown as {DefaultLabel(providerId)}: that is {AccountDiscovery.ProviderName(providerId)}'s standard folder.");
         }
 
         var key = ProviderKey.Compose(providerId, ProviderKey.AccountIdFor(path));
@@ -277,7 +425,7 @@ internal sealed class AccountManager
     {
         if (_settings.FindAccount(unitKey) is not { IsDefault: false } account)
         {
-            return "The default login cannot be removed; hide it instead.";
+            return $"The login in {AccountDiscovery.DisplayFolder(_defaultFolder(ProviderKey.ProviderOf(unitKey)), _userProfile)} is always read; hide it instead.";
         }
 
         if (account.Source == AccountSource.Created && deleteCreatedFolder && account.Path is { } path && Directory.Exists(path))
@@ -434,7 +582,7 @@ internal sealed class AccountManager
 
         if (_settings.FindAccount(unitKey) is not { IsDefault: false, Path: { } folder } account)
         {
-            return new TerminalCommandResult(null, "The default login already starts with the provider's own command.");
+            return new TerminalCommandResult(null, "The standard folder's login already starts with the provider's own command (claude or codex).");
         }
 
         if (string.IsNullOrWhiteSpace(name))
@@ -474,6 +622,7 @@ internal sealed class AccountManager
         {
             account.Pending = false;
             account.Hidden = !show;
+            account.HiddenUntilSignedIn = false;
         }
 
         _notices.RemoveAll(notice => unitKey.Equals(notice.UnitKey, StringComparison.OrdinalIgnoreCase));
@@ -497,7 +646,8 @@ internal sealed class AccountManager
     {
         var providerId = ProviderKey.ProviderOf(unitKey);
         var name = AccountDiscovery.ProviderName(providerId);
-        var which = ProviderKey.IsDefault(unitKey) ? $"Your default {name} login" : $"The {name} login in {_settings.FindAccount(unitKey)?.Path}";
+        var folder = ProviderKey.IsDefault(unitKey) ? _defaultFolder(providerId) : _settings.FindAccount(unitKey)?.Path;
+        var which = $"The {name} login in {(folder is null ? "its folder" : AccountDiscovery.DisplayFolder(folder, _userProfile))}";
         _notices.RemoveAll(notice => notice.Kind == AccountNoticeKind.IdentityChanged && unitKey.Equals(notice.UnitKey, StringComparison.OrdinalIgnoreCase));
         _notices.Add(new AccountNotice(
             AccountNoticeKind.IdentityChanged,
@@ -591,7 +741,8 @@ internal sealed class AccountManager
     private string DefaultLabel(string providerId) =>
         _settings.FindAccount(providerId) is { } account && (account.Label ?? account.Email) is { } known
             ? known
-            : AccountDiscovery.ReadIdentity(providerId, _defaultFolder(providerId), _userProfile)?.Email ?? "the default login";
+            : AccountDiscovery.ReadIdentity(providerId, _defaultFolder(providerId), _userProfile)?.Email
+              ?? $"the login in {AccountDiscovery.DisplayFolder(_defaultFolder(providerId), _userProfile)}";
 
     private bool DefaultHasLogin(string providerId) =>
         File.Exists(Path.Combine(_defaultFolder(providerId), AccountDiscovery.CredentialFileName(providerId)));

@@ -90,6 +90,9 @@ internal static class Program
         var updateResult = UpdateHandoffStore.Take(AppIdentity.Version);
         UpdateHandoffStore.CleanUpInstallers();
         var accounts = new AccountManager(settings) { Terminal = TerminalCommands.CreateDefault() };
+        // Before any refresh: a main login that only followed an inherited CLAUDE_CONFIG_DIR /
+        // CODEX_HOME moves to an account of its own, records and all, instead of being cleared.
+        accounts.MigrateInheritedMainLogins(AccountManager.MoveStoredRecords);
         try
         {
             Application.Run(new UsageApplicationContext(accounts, settings, profileExisted, updateResult));

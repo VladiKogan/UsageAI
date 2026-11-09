@@ -42,6 +42,12 @@ internal sealed class ProviderAccount
     /// <summary>Kept out of the popup and dashboard.</summary>
     public bool Hidden { get; set; }
 
+    /// <summary>
+    /// Hidden by UsageAI, not the user, because the standard folder had no login when the main
+    /// login moved there; shown again once one appears. Any choice the user makes clears it.
+    /// </summary>
+    public bool HiddenUntilSignedIn { get; set; }
+
     /// <summary>Whether usage alerts are raised for this account.</summary>
     public bool Alerts { get; set; } = true;
 

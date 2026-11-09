@@ -78,7 +78,7 @@ internal sealed class CodexUsageClient : IAccountUsageClient
 
     public string DisplayName => "Codex";
 
-    public string SignInCommand => _codexHome is null ? "codex login" : AccountCommands.SignIn(ProviderId, _codexHome);
+    public string SignInCommand => _codexHome is null ? AccountCommands.SignInMain(ProviderId) : AccountCommands.SignIn(ProviderId, _codexHome);
 
     public Uri AccountUrl { get; } = new("https://chatgpt.com/codex/settings/usage");
 
@@ -212,30 +212,13 @@ internal sealed class CodexUsageClient : IAccountUsageClient
     }
 
     /// <summary>
-    /// The Codex login's token when the HTTP path may use it, else null. Only a ChatGPT login in a
-    /// <c>CODEX_HOME</c> given as an absolute path (or the default <c>~\.codex</c>) qualifies, and
-    /// never one pointed at a custom <c>chatgpt_base_url</c>: the token goes to chatgpt.com alone.
+    /// The main login's token when the HTTP path may use it, else null: a ChatGPT login in the
+    /// standard <c>~\.codex</c>, never one pointed at a custom <c>chatgpt_base_url</c>, since the
+    /// token goes to chatgpt.com alone. An inherited <c>CODEX_HOME</c> never moves the main login;
+    /// that folder is found as an account of its own.
     /// </summary>
-    internal static CodexHttpCredentials? LoadHttpCredentials()
-    {
-        var home = Environment.GetEnvironmentVariable("CODEX_HOME")?.Trim().Trim('"');
-        if (string.IsNullOrEmpty(home))
-        {
-            var profile = Environment.GetEnvironmentVariable("USERPROFILE");
-            if (string.IsNullOrWhiteSpace(profile))
-            {
-                profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
-            }
-
-            home = Path.Combine(profile, ".codex");
-        }
-        else if (!Path.IsPathFullyQualified(home))
-        {
-            return null;
-        }
-
-        return ReadHttpCredentials(Path.GetFullPath(home), DateTimeOffset.UtcNow);
-    }
+    internal static CodexHttpCredentials? LoadHttpCredentials() =>
+        ReadHttpCredentials(AccountDiscovery.DefaultFolder(AccountDiscovery.CodexProviderId), DateTimeOffset.UtcNow);
 
     internal static CodexHttpCredentials? ReadHttpCredentials(string codexHome, DateTimeOffset now)
     {
@@ -437,7 +420,9 @@ internal sealed class CodexUsageClient : IAccountUsageClient
     /// <summary>
     /// How every Codex CLI child starts — the app-server and the sign-in alike: no window, redirected
     /// streams, the minimal environment, and a given <c>CODEX_HOME</c> set explicitly rather than
-    /// inherited, so the child reads exactly that login.
+    /// inherited, so the child reads exactly that login. The main login's children get no
+    /// <c>CODEX_HOME</c>, so they use the standard <c>~\.codex</c> UsageAI reads, never a folder an
+    /// inherited variable points at.
     /// </summary>
     private static ProcessStartInfo CreateCliStartInfo(CodexLaunch launch, string? codexHome, IEnumerable<string> arguments)
     {
@@ -453,7 +438,6 @@ internal sealed class CodexUsageClient : IAccountUsageClient
         };
         ProcessSecurity.ApplyMinimalEnvironment(
             startInfo,
-            "CODEX_HOME",
             "NODE_EXTRA_CA_CERTS",
             "SSL_CERT_DIR",
             "SSL_CERT_FILE");

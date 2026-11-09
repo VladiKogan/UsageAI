@@ -12,6 +12,7 @@ import {
   discoverAccountFolders,
   distinctAccountLabels,
   identityKey,
+  inheritedLoginFolder,
   nodeAccountFileSystem,
   providerTitle,
   readClaudeIdentity,
@@ -37,6 +38,12 @@ export interface AccountState {
   /** Found accounts the user chose to show (or that were shown on the first run). */
   readonly shown: readonly string[];
   readonly ignored: readonly string[];
+  /**
+   * Set once the main login always reads the standard folder. Before that it followed an inherited
+   * `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, so the first scan after the upgrade shows that folder's login
+   * at once instead of asking: it is the one the main card was showing.
+   */
+  readonly standardMain?: true;
 }
 
 /** The stored state, or nothing when it is absent: a fresh install or an upgrade. */
@@ -51,7 +58,12 @@ export function sanitizeAccountState(value: unknown): AccountState | undefined {
   const lastScanAt = typeof record.lastScanAt === "number" && Number.isFinite(record.lastScanAt) && record.lastScanAt > 0
     ? record.lastScanAt
     : undefined;
-  return { ...(lastScanAt !== undefined ? { lastScanAt } : {}), shown: ids(record.shown), ignored: ids(record.ignored) };
+  return {
+    ...(lastScanAt !== undefined ? { lastScanAt } : {}),
+    shown: ids(record.shown),
+    ignored: ids(record.ignored),
+    ...(record.standardMain === true ? { standardMain: true as const } : {}),
+  };
 }
 
 export interface AccountCandidate<T> {
@@ -264,18 +276,25 @@ export class AccountService {
   /** One listing of the home folder, then the found accounts not answered yet are offered. */
   public async scan(): Promise<{ readonly pending: number }> {
     const defaults = this.defaultFolders();
-    this.discovered = await discoverAccountFolders(this.dependencies.home(), Object.fromEntries(
+    const listed = await discoverAccountFolders(this.dependencies.home(), Object.fromEntries(
       defaults.map((entry) => [entry.provider, entry.path]),
     ), this.fileSystem());
+    const inherited = await this.inheritedFolders();
+    this.discovered = [...listed, ...inherited.filter((folder) => !listed.some((entry) => entry.id === folder.id))];
     await this.readInputs();
     const firstRun = this.state === undefined;
     if (firstRun) {
       // A fresh install or an upgrade: the logins already here are the user's own, so they show at
       // once with one message instead of a question each.
       const preview = resolveAccounts({ ...this.input, state: { shown: [], ignored: [] } });
-      this.state = { shown: preview.pending.map((entry) => entry.id), ignored: [], lastScanAt: this.now() };
+      this.state = { shown: preview.pending.map((entry) => entry.id), ignored: [], lastScanAt: this.now(), standardMain: true };
     } else {
-      this.state = { ...this.currentState(), lastScanAt: this.now() };
+      const state = this.currentState();
+      // The one-time move: the login the main card showed through an inherited variable stays shown.
+      const moved = state.standardMain
+        ? []
+        : inherited.map((folder) => folder.id).filter((id) => !state.ignored.includes(id) && !state.shown.includes(id));
+      this.state = { ...state, shown: [...state.shown, ...moved], lastScanAt: this.now(), standardMain: true };
     }
     await this.dependencies.saveState(this.currentState());
     this.apply();
@@ -320,21 +339,32 @@ export class AccountService {
     return this.dependencies.environment?.() ?? process.env;
   }
 
+  /** The main logins: always the standard folders, whatever the editor's environment. */
   private defaultFolders(): Array<{ readonly provider: AccountProviderId; readonly path: string }> {
     const home = this.dependencies.home();
-    return accountProviderIds.map((provider) => ({
-      provider,
-      path: defaultLoginFolder(provider, this.environment(), home)
-        ?? path.join(home, provider === "claude" ? ".claude" : ".codex"),
-    }));
+    return accountProviderIds.map((provider) => ({ provider, path: defaultLoginFolder(provider, home) }));
   }
 
-  private async identityOf(provider: AccountProviderId, folder: string, isDefault: boolean): Promise<AccountIdentity> {
+  /**
+   * A folder an inherited `CLAUDE_CONFIG_DIR` / `CODEX_HOME` names, found like any other login
+   * folder when it holds that provider's credential file.
+   */
+  private async inheritedFolders(): Promise<DiscoveredFolder[]> {
+    const found: DiscoveredFolder[] = [];
+    for (const provider of accountProviderIds) {
+      const folder = inheritedLoginFolder(provider, this.environment(), this.dependencies.home());
+      if (folder && await this.fileSystem().isFile(path.join(folder, credentialFileName(provider)))) {
+        found.push({ provider, path: folder, id: accountIdForPath(folder) });
+      }
+    }
+    return found;
+  }
+
+  private async identityOf(provider: AccountProviderId, folder: string): Promise<AccountIdentity> {
     if (provider === "codex") {
       return readCodexIdentity(folder);
     }
-    const withoutConfigDirectory = isDefault && !this.environment().CLAUDE_CONFIG_DIR?.trim();
-    return readClaudeIdentity(claudeProfilePath(folder, withoutConfigDirectory, this.dependencies.home()));
+    return readClaudeIdentity(await claudeProfilePath(folder, this.dependencies.home(), (file) => this.fileSystem().isFile(file)));
   }
 
   private async readInputs(): Promise<void> {
@@ -351,7 +381,7 @@ export class AccountService {
         rejected.push(`${setting.path}: ${problem}`);
         continue;
       }
-      configured.push({ source: setting, identity: await this.identityOf(setting.provider, setting.path, isDefault) });
+      configured.push({ source: setting, identity: await this.identityOf(setting.provider, setting.path) });
     }
     const defaultLogins = new Set<AccountProviderId>();
     for (const entry of defaults) {
@@ -363,12 +393,12 @@ export class AccountService {
     this.input = {
       defaults: await Promise.all(defaults.map(async (entry) => ({
         source: entry,
-        identity: await this.identityOf(entry.provider, entry.path, true),
+        identity: await this.identityOf(entry.provider, entry.path),
       }))),
       configured,
       discovered: await Promise.all(this.discovered.map(async (folder) => ({
         source: folder,
-        identity: await this.identityOf(folder.provider, folder.path, false),
+        identity: await this.identityOf(folder.provider, folder.path),
       }))),
     };
     const warning = rejected.length > 0

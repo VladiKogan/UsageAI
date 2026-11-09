@@ -69,6 +69,29 @@ internal static class SnapshotCache
         }
     }
 
+    /// <summary>
+    /// Files one provider key's cached reading under another key, or drops it when
+    /// <paramref name="newProviderId"/> is null.
+    /// </summary>
+    public static void RenameProvider(string providerId, string? newProviderId)
+    {
+        var snapshots = Load();
+        if (!snapshots.Any(snapshot => snapshot.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase)))
+        {
+            return;
+        }
+
+        // The moved reading replaces any the new key already had, so the key keeps one snapshot.
+        Save(snapshots
+            .Where(snapshot => newProviderId is null
+                ? !snapshot.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase)
+                : !snapshot.ProviderId.Equals(newProviderId, StringComparison.OrdinalIgnoreCase))
+            .Select(snapshot => snapshot.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase)
+                ? snapshot with { ProviderId = newProviderId! }
+                : snapshot)
+            .ToArray());
+    }
+
     public static void Clear()
     {
         try

@@ -262,7 +262,7 @@ internal sealed partial class SettingsForm
         var draft = _accountDrafts[key];
         var name = AccountDiscovery.ProviderName(ProviderKey.ProviderOf(key));
         var label = !string.IsNullOrWhiteSpace(draft.Label) ? draft.Label
-            : account?.Email ?? (account?.Path is { } path ? Path.GetFileName(path) : "Default login");
+            : account?.Email ?? Path.GetFileName(account?.Path ?? AccountDiscovery.DefaultFolder(ProviderKey.ProviderOf(key)));
         var state = account?.DuplicateOf is { } duplicate ? $"Duplicate of {duplicate}"
             : account?.Pending == true ? "New — not shown yet"
             : StatusText(key);
@@ -307,7 +307,7 @@ internal sealed partial class SettingsForm
             AccountSource.Found => $"Found in {ShortenProfile(folder)}",
             AccountSource.Added => $"Added by you: {folder}",
             AccountSource.Created => $"Created by UsageAI: {folder}",
-            _ => $"Default login ({ShortenProfile(folder)})",
+            _ => $"Standard folder: {ShortenProfile(folder)}",
         };
         var status = _accountStatuses.FirstOrDefault(candidate => candidate.ProviderId.Equals(key, StringComparison.OrdinalIgnoreCase));
         var plan = status?.Snapshot?.Plan is { Length: > 0 } planName ? $" · {planName}" : string.Empty;
@@ -407,13 +407,7 @@ internal sealed partial class SettingsForm
         ShowSelectedAccount();
     }
 
-    private static string ShortenProfile(string folder)
-    {
-        var profile = AccountDiscovery.UserProfile();
-        return folder.StartsWith(profile, StringComparison.OrdinalIgnoreCase)
-            ? "%USERPROFILE%" + folder[profile.Length..]
-            : folder;
-    }
+    private static string ShortenProfile(string folder) => AccountDiscovery.DisplayFolder(folder);
 
     private void RenameSelectedAccount()
     {
@@ -608,7 +602,14 @@ internal sealed partial class SettingsForm
             }
 
             account.Label = draft.Label;
-            account.Hidden = !draft.Shown && !account.Pending;
+            var hidden = !draft.Shown && !account.Pending;
+            if (hidden != account.Hidden)
+            {
+                // The user's own choice now; UsageAI no longer shows it on a login appearing.
+                account.HiddenUntilSignedIn = false;
+            }
+
+            account.Hidden = hidden;
             account.Alerts = draft.Alerts;
             account.Order = Math.Clamp(draft.Order, 0, 1000);
         }

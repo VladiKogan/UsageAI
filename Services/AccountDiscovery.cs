@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
@@ -62,28 +63,50 @@ internal static class AccountDiscovery
     }
 
     /// <summary>
-    /// The default login's folder: an inherited absolute <c>CLAUDE_CONFIG_DIR</c> / <c>CODEX_HOME</c>,
-    /// else <c>~\.claude</c> / <c>~\.codex</c>.
+    /// The main login's folder, the one keyed by the bare provider id: always the provider's standard
+    /// <c>~\.claude</c> / <c>~\.codex</c>, the folder its CLI uses when no variable is set. It never
+    /// follows an inherited <c>CLAUDE_CONFIG_DIR</c> / <c>CODEX_HOME</c>, so the main tile reads the
+    /// same login however UsageAI was started; a folder such a variable names is found as an
+    /// account of its own instead (<see cref="InheritedFolder"/>).
     /// </summary>
     public static string DefaultFolder(string providerId, string? userProfile = null)
     {
-        var configured = Environment.GetEnvironmentVariable(FolderVariable(providerId))?.Trim().Trim('"');
-        if (!string.IsNullOrEmpty(configured) && Path.IsPathFullyQualified(configured))
-        {
-            return ProviderKey.NormalizeFolder(configured);
-        }
-
         var name = providerId.Equals(ClaudeProviderId, StringComparison.OrdinalIgnoreCase) ? ".claude" : ".codex";
         return ProviderKey.NormalizeFolder(Path.Combine(userProfile ?? UserProfile(), name));
     }
 
-    /// <summary>True when the default login is the plain <c>~\.claude</c> rather than an inherited <c>CLAUDE_CONFIG_DIR</c>.</summary>
-    private static bool UsesProfileClaudeJson(string folder, string? userProfile) =>
-        string.Equals(
-            ProviderKey.NormalizeFolder(folder),
-            ProviderKey.NormalizeFolder(Path.Combine(userProfile ?? UserProfile(), ".claude")),
-            StringComparison.OrdinalIgnoreCase) &&
-        string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("CLAUDE_CONFIG_DIR"));
+    /// <summary>A folder as the UI shows it: under the user profile as <c>%USERPROFILE%\…</c>.</summary>
+    public static string DisplayFolder(string folder, string? userProfile = null)
+    {
+        var profile = (userProfile ?? UserProfile()).TrimEnd('\\', '/');
+        return profile.Length > 0 && folder.StartsWith(profile + "\\", StringComparison.OrdinalIgnoreCase)
+            ? "%USERPROFILE%" + folder[profile.Length..]
+            : folder;
+    }
+
+    /// <summary>
+    /// The folder an inherited <c>CLAUDE_CONFIG_DIR</c> / <c>CODEX_HOME</c> names, when it is an
+    /// absolute local path other than the standard folder; null otherwise.
+    /// </summary>
+    public static string? InheritedFolder(string providerId, string? userProfile = null)
+    {
+        var configured = Environment.GetEnvironmentVariable(FolderVariable(providerId))?.Trim().Trim('"');
+        if (string.IsNullOrEmpty(configured) || PathProblem(configured) is not null)
+        {
+            return null;
+        }
+
+        var folder = ProviderKey.NormalizeFolder(configured);
+        return folder.Equals(DefaultFolder(providerId, userProfile), StringComparison.OrdinalIgnoreCase) ? null : folder;
+    }
+
+    /// <summary>The login an inherited variable points at, when its folder holds the provider's credential file.</summary>
+    public static IReadOnlyList<FoundLogin> InheritedLogins(string? userProfile = null) =>
+        MultiAccountProviders
+            .Select(providerId => (providerId, folder: InheritedFolder(providerId, userProfile)))
+            .Where(entry => entry.folder is not null && File.Exists(Path.Combine(entry.folder, CredentialFileName(entry.providerId))))
+            .Select(entry => new FoundLogin(entry.providerId, entry.folder!))
+            .ToArray();
 
     /// <summary>
     /// Immediate children of <paramref name="userProfile"/> whose name starts with <c>.claude</c> or
@@ -332,10 +355,10 @@ internal static class AccountDiscovery
             return inFolder;
         }
 
-        // ~\.claude itself: the CLI keeps the profile beside it unless CLAUDE_CONFIG_DIR names it.
-        var preferred = UsesProfileClaudeJson(folder, userProfile) ? inProfile : inFolder;
-        var other = ReferenceEquals(preferred, inProfile) ? inFolder : inProfile;
-        return File.Exists(preferred) || !File.Exists(other) ? preferred : other;
+        // ~\.claude itself: the CLI keeps the profile beside it (~\.claude.json) when no variable is
+        // set, which is how UsageAI reads this folder; one kept inside it only answers when that is
+        // the only one there.
+        return File.Exists(inProfile) || !File.Exists(inFolder) ? inProfile : inFolder;
     }
 
     private static readonly Dictionary<string, (DateTime WrittenAt, long Length, AccountIdentity? Identity)> IdentityCache =
@@ -459,7 +482,24 @@ internal static class AccountCommands
 {
     /// <summary>PowerShell, the Windows Terminal default: sets the folder variable, then signs in.</summary>
     public static string SignIn(string providerId, string folder) =>
-        $"{UseFolder(providerId, folder)}; {(providerId.Equals(AccountDiscovery.CodexProviderId, StringComparison.OrdinalIgnoreCase) ? "codex login" : "claude")}";
+        $"{UseFolder(providerId, folder)}; {LoginCommand(providerId)}";
+
+    /// <summary>
+    /// The sign-in for the main login, which reads the standard folder. A terminal that inherits
+    /// <c>CLAUDE_CONFIG_DIR</c> / <c>CODEX_HOME</c> (as UsageAI did) would sign in to that folder
+    /// instead, so the line clears the variable first.
+    /// </summary>
+    public static string SignInMain(string providerId, IDictionary? environment = null)
+    {
+        var variable = AccountDiscovery.FolderVariable(providerId);
+        var inherited = environment is null ? Environment.GetEnvironmentVariable(variable) : environment[variable] as string;
+        return string.IsNullOrWhiteSpace(inherited)
+            ? LoginCommand(providerId)
+            : $"Remove-Item Env:{variable} -ErrorAction Ignore; {LoginCommand(providerId)}";
+    }
+
+    private static string LoginCommand(string providerId) =>
+        providerId.Equals(AccountDiscovery.CodexProviderId, StringComparison.OrdinalIgnoreCase) ? "codex login" : "claude";
 
     /// <summary>The line that makes the CLI in a terminal use <paramref name="folder"/>.</summary>
     public static string UseFolder(string providerId, string folder) =>

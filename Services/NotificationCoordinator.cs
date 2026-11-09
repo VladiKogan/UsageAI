@@ -218,6 +218,41 @@ internal sealed class NotificationCoordinator
         return memory;
     }
 
+    /// <summary>
+    /// Moves one provider key's remembered readings in the saved state to another key, or drops them
+    /// when <paramref name="newProviderId"/> is null. Used before any coordinator loads the file, so
+    /// a login whose records change key keeps its alert memory.
+    /// </summary>
+    internal static void RenameInFile(string stateFile, string providerId, string? newProviderId)
+    {
+        var memory = LoadMemory(stateFile);
+        var prefix = $"{providerId}|";
+        var moved = memory.Keys.Where(key => key.StartsWith(prefix, StringComparison.Ordinal)).ToArray();
+        if (moved.Length == 0)
+        {
+            return;
+        }
+
+        foreach (var key in moved)
+        {
+            var value = memory[key];
+            memory.Remove(key);
+            if (newProviderId is not null)
+            {
+                memory[$"{newProviderId}|{key[prefix.Length..]}"] = value;
+            }
+        }
+
+        try
+        {
+            AppPaths.WriteAllTextAtomic(stateFile, JsonSerializer.Serialize(memory, StateJsonOptions));
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
+        {
+            // Alert memory is a convenience; the next readings are then recorded silently.
+        }
+    }
+
     /// <summary>Forgets a provider's history so hiding and re-showing it does not replay alerts.</summary>
     public void Forget(string providerId)
     {

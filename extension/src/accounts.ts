@@ -13,7 +13,10 @@ import { readBoundedText, userHome } from "./security";
 export type AccountProviderId = "claude" | "codex";
 export const accountProviderIds: readonly AccountProviderId[] = ["claude", "codex"];
 
-/** The primary login: today's behaviour, including an inherited `CLAUDE_CONFIG_DIR` / `CODEX_HOME`. */
+/**
+ * The main login, keyed by the bare provider id: always the standard `~/.claude` / `~/.codex`. An
+ * inherited `CLAUDE_CONFIG_DIR` / `CODEX_HOME` never moves it; that folder is found as an account.
+ */
 export const defaultAccountId = "default";
 /** How many folders `usageai.accounts` may name. */
 export const maxConfiguredAccounts = 16;
@@ -127,26 +130,53 @@ export function isUncPath(folder: string): boolean {
   return /^[\\/]{2}/.test(folder.trim());
 }
 
-/** The folder the default login lives in, or nothing when its environment variable is unusable. */
-export function defaultLoginFolder(
-  provider: AccountProviderId,
-  environment: NodeJS.ProcessEnv = process.env,
-  home: string = userHome(),
-): string | undefined {
-  const configured = environment[configDirectoryVariable(provider)]?.trim().replace(/^"|"$/g, "");
-  if (configured) {
-    return path.isAbsolute(configured) ? path.resolve(configured) : undefined;
-  }
+/**
+ * The main login's folder: always the provider's standard `~/.claude` / `~/.codex`, the folder its
+ * CLI uses when no variable is set, however the editor was started. Mirrors the desktop's
+ * `AccountDiscovery.DefaultFolder`.
+ */
+export function defaultLoginFolder(provider: AccountProviderId, home: string = userHome()): string {
   return path.join(home, provider === "claude" ? ".claude" : ".codex");
 }
 
-/** Claude keeps its profile next to the folder when no `CLAUDE_CONFIG_DIR` is set, and inside it otherwise. */
-export function claudeProfilePath(
-  folder: string,
-  isDefaultWithoutConfigDirectory: boolean,
+/**
+ * The folder an inherited `CLAUDE_CONFIG_DIR` / `CODEX_HOME` names, when it is an absolute local
+ * path other than the standard folder. It is offered as a found account, never as the main login.
+ */
+export function inheritedLoginFolder(
+  provider: AccountProviderId,
+  environment: NodeJS.ProcessEnv = process.env,
   home: string = userHome(),
-): string {
-  return isDefaultWithoutConfigDirectory ? path.join(home, ".claude.json") : path.join(folder, ".claude.json");
+  platform: NodeJS.Platform = process.platform,
+): string | undefined {
+  const configured = environment[configDirectoryVariable(provider)]?.trim().replace(/^"|"$/g, "");
+  if (!configured || !pathApi(platform).isAbsolute(configured) || isUncPath(configured)) {
+    return undefined;
+  }
+  const folder = pathApi(platform).resolve(configured);
+  return normalizeAccountPath(folder, platform) === normalizeAccountPath(defaultLoginFolder(provider, home), platform)
+    ? undefined
+    : folder;
+}
+
+/**
+ * Where Claude keeps a folder's account profile, `.claude.json`: inside the folder when the CLI runs
+ * with `CLAUDE_CONFIG_DIR`, but beside the standard `~/.claude` (as `~/.claude.json`) when no variable
+ * is set, which is how the main login is read. A profile inside `~/.claude` only answers when it is
+ * the only one there. Mirrors the desktop's `AccountDiscovery.ClaudeIdentityFile`.
+ */
+export async function claudeProfilePath(
+  folder: string,
+  home: string = userHome(),
+  isFile: (file: string) => Promise<boolean> = nodeAccountFileSystem.isFile,
+  platform: NodeJS.Platform = process.platform,
+): Promise<string> {
+  const inFolder = path.join(folder, ".claude.json");
+  if (normalizeAccountPath(folder, platform) !== normalizeAccountPath(defaultLoginFolder("claude", home), platform)) {
+    return inFolder;
+  }
+  const inProfile = path.join(home, ".claude.json");
+  return await isFile(inProfile) || !await isFile(inFolder) ? inProfile : inFolder;
 }
 
 export interface AccountFileSystem {
@@ -413,6 +443,26 @@ export function commandWithEnvironment(
   return platform === "win32"
     ? `$env:${name}='${value.replaceAll("'", "''")}'; ${command}`
     : `${name}='${value.replaceAll("'", "'\\''")}' ${command}`;
+}
+
+/**
+ * The sign-in for the main login, which reads the standard folder. A terminal that inherits
+ * `CLAUDE_CONFIG_DIR` / `CODEX_HOME` (as the editor did) would sign in to that folder instead, so
+ * the line clears the variable first.
+ */
+export function mainSignInCommand(
+  provider: AccountProviderId,
+  environment: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+): string {
+  const command = provider === "codex" ? "codex login" : "claude";
+  const variable = configDirectoryVariable(provider);
+  if (!environment[variable]?.trim()) {
+    return command;
+  }
+  return platform === "win32"
+    ? `Remove-Item Env:${variable} -ErrorAction Ignore; ${command}`
+    : `env -u ${variable} ${command}`;
 }
 
 /** Account names become folder suffixes: lower-case letters, digits and single dashes. */

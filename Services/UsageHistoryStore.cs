@@ -33,16 +33,7 @@ internal static class UsageHistoryStore
             var builder = new StringBuilder();
             foreach (var sample in samples.Take(MaxSamplesPerAppend))
             {
-                builder.Append("{\"t\":")
-                    .Append(JsonSerializer.Serialize(sample.At.ToString("O", CultureInfo.InvariantCulture)))
-                    .Append(",\"p\":")
-                    .Append(JsonSerializer.Serialize(sample.ProviderId))
-                    .Append(",\"m\":")
-                    .Append(JsonSerializer.Serialize(sample.MetricKey))
-                    .Append(",\"u\":")
-                    .Append(sample.UsedPercent.ToString(CultureInfo.InvariantCulture))
-                    .Append('}')
-                    .Append('\n');
+                AppendLine(builder, sample);
             }
 
             File.AppendAllText(AppPaths.HistoryFile, builder.ToString());
@@ -100,7 +91,15 @@ internal static class UsageHistoryStore
     /// Drops every sample of one provider key, for an account now signed in to someone else or one
     /// the user removed.
     /// </summary>
-    public static void RemoveProvider(string providerId)
+    public static void RemoveProvider(string providerId) => RenameProvider(providerId, null);
+
+    /// <summary>
+    /// Moves every sample of one provider key to another, for a login whose records belong under a
+    /// different key now (see <see cref="AccountManager.MigrateInheritedMainLogins"/>), or drops them
+    /// when <paramref name="newProviderId"/> is null. Samples already under the new key stay, so the
+    /// two runs merge in file (time) order.
+    /// </summary>
+    public static void RenameProvider(string providerId, string? newProviderId)
     {
         try
         {
@@ -111,29 +110,36 @@ internal static class UsageHistoryStore
             }
 
             var kept = new StringBuilder();
-            var removed = false;
+            var changed = false;
             foreach (var line in File.ReadLines(path))
             {
-                if (TryParse(line) is { } sample)
+                if (TryParse(line) is not { } sample)
                 {
-                    if (sample.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase))
-                    {
-                        removed = true;
-                        continue;
-                    }
+                    continue;
+                }
 
+                if (!sample.ProviderId.Equals(providerId, StringComparison.OrdinalIgnoreCase))
+                {
                     kept.Append(line).Append('\n');
+                    continue;
+                }
+
+                changed = true;
+                if (newProviderId is not null)
+                {
+                    AppendLine(kept, sample with { ProviderId = newProviderId });
                 }
             }
 
-            if (removed)
+            if (changed)
             {
                 AppPaths.WriteAllTextAtomic(path, kept.ToString());
             }
         }
         catch (Exception exception) when (exception is IOException or UnauthorizedAccessException)
         {
-            // History is optional; the samples age out with the retention window instead.
+            // History is optional; a failed rewrite leaves the samples where they were, and dropped
+            // ones age out with the retention window instead.
         }
     }
 
@@ -146,6 +152,18 @@ internal static class UsageHistoryStore
             metric.Key,
             metric.UsedPercent!.Value))
         .ToArray();
+
+    /// <summary>Writes one sample as the file's JSON line, newline included.</summary>
+    private static void AppendLine(StringBuilder builder, UsageSample sample) => builder
+        .Append("{\"t\":")
+        .Append(JsonSerializer.Serialize(sample.At.ToString("O", CultureInfo.InvariantCulture)))
+        .Append(",\"p\":")
+        .Append(JsonSerializer.Serialize(sample.ProviderId))
+        .Append(",\"m\":")
+        .Append(JsonSerializer.Serialize(sample.MetricKey))
+        .Append(",\"u\":")
+        .Append(sample.UsedPercent.ToString(CultureInfo.InvariantCulture))
+        .Append("}\n");
 
     private static void PruneIfLarge()
     {

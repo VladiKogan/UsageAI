@@ -131,7 +131,7 @@ internal sealed partial class TerminalCommands
         if (trimmed.Equals("claude", StringComparison.OrdinalIgnoreCase) ||
             trimmed.Equals("codex", StringComparison.OrdinalIgnoreCase))
         {
-            return $"{trimmed} already starts the default login; choose a name such as {trimmed}-work.";
+            return $"{trimmed} already starts the login in its standard folder; choose a name such as {trimmed}-work.";
         }
 
         return ReservedDeviceName().IsMatch(trimmed)
