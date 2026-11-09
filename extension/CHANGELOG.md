@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Security
+
+- **The packaging tools use `minimatch` 11.0.5, clearing a moderate-severity advisory.**
+  `@vscode/vsce` 4.1.0, the newest release, still asks for `minimatch` 10, and every version from
+  7.0.0 up to 11.0.0 could be slowed to a halt by a crafted glob pattern (GHSA-g3hv-75wg-m249).
+  No 10.x release carries the fix, so an npm override moves it to 11. That release only drops
+  Node 18, which the extension's build no longer supports, and it packages exactly the same 29
+  files. Nothing in the published VSIX changes.
+
 ## 0.1.22
 
 ### Changed
