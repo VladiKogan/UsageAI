@@ -170,7 +170,10 @@ internal sealed partial class SettingsForm : Form
         _nav.TabIndex = 0;
         _scrollFrame.TabIndex = 1;
 
-        _layout = new TableLayoutPanel
+        // Double-buffered: the section cards are antialiased, which on a window's own DC reads the
+        // screen back and cost about 16 ms for every strip a scroll step uncovered (a whole frame,
+        // so the page stuttered), and the strip showed bare background before its card (the flash).
+        _layout = new BufferedTableLayoutPanel
         {
             AutoSize = true,
             AutoSizeMode = AutoSizeMode.GrowAndShrink,
@@ -1423,5 +1426,11 @@ internal sealed partial class SettingsForm : Form
     private sealed record ProviderEntry(string Id, string Name)
     {
         public override string ToString() => Name;
+    }
+
+    /// <summary>A <see cref="TableLayoutPanel"/> that paints through an off-screen buffer.</summary>
+    private sealed class BufferedTableLayoutPanel : TableLayoutPanel
+    {
+        public BufferedTableLayoutPanel() => DoubleBuffered = true;
     }
 }

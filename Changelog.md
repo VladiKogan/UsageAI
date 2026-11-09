@@ -4,6 +4,17 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Settings scrolls smoothly, without flashing.** Each scroll step repainted the strip it uncovered
+  with the section cards drawn straight onto the window. Their rounded, antialiased edges made
+  Windows read the screen back, which took about 16 ms a step, a whole frame at 60 Hz, so the page
+  stuttered, and the strip showed bare background before its card appeared. The page now paints
+  through an off-screen buffer: a scroll step takes about 2 ms (about 5 ms for a full mouse-wheel
+  notch), and the cards appear whole.
+
 ## [0.17.2] - 2026-11-09
 
 ### Changed

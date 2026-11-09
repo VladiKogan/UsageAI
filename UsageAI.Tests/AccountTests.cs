@@ -1287,6 +1287,11 @@ internal static class AccountTests
             dialog.ShowSection(SettingsForm.AccountsSection);
             Application.DoEvents();
 
+            // The page paints its antialiased section cards off screen: drawn on the window itself
+            // they cost a whole frame per scroll step and flashed bare background first.
+            True((bool)typeof(Control).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
+                .GetValue(Field<TableLayoutPanel>(dialog, "_layout"))!);
+
             var list = Field<CheckedListBox>(dialog, "_accountList");
             var accounts = IsType<SettingsCheckList>(list);
             var index = list.Items.Cast<object>().Select(item => item.ToString()!).ToList().FindIndex(item => item.StartsWith("Claude · Work", StringComparison.Ordinal));
