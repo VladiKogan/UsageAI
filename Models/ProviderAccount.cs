@@ -74,7 +74,7 @@ internal sealed class ProviderAccount
 
     /// <summary>
     /// Command files the user made that start the CLI with this login folder, such as
-    /// <c>C:\tools\claude-team.cmd</c>, found on the PATH by each account scan. UsageAI only lists
+    /// <c>C:\tools\claude-work.cmd</c>, found on the PATH by each account scan. UsageAI only lists
     /// them; it never rewrites or deletes them.
     /// </summary>
     public string[] UserCommands { get; set; } = Array.Empty<string>();

@@ -313,12 +313,13 @@ internal sealed partial class SettingsForm
         var plan = status?.Snapshot?.Plan is { Length: > 0 } planName ? $" · {planName}" : string.Empty;
         var email = account?.Email is { } known ? $"{known}{plan}\n" : plan.Length > 0 ? $"{plan.TrimStart(' ', '·')}\n" : string.Empty;
         var command = account?.Command is { } name ? $"Terminal command: {name}\n" : string.Empty;
-        if (account is { UserCommands.Length: > 0 })
+        if (account is { UserCommandNames.Count: > 0 })
         {
+            // One name per folder: claude-work.cmd and claude-work.ps1 side by side are one command.
             var yours = account.UserCommands
                 .GroupBy(file => Path.GetDirectoryName(file) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
                 .Select(group => $"{string.Join(", ", group.Select(Path.GetFileNameWithoutExtension).Distinct(StringComparer.OrdinalIgnoreCase))} (in {ShortenProfile(group.Key)})");
-            command += $"Your own terminal command{(account.UserCommands.Length > 1 ? "s" : string.Empty)}: {string.Join("; ", yours)}\n";
+            command += $"Your own terminal command{(account.UserCommandNames.Count > 1 ? "s" : string.Empty)}: {string.Join("; ", yours)}\n";
         }
 
         _accountDetails.Text =$"{email}{source}\n{command}{StatusText(key)}{(status?.Error is { } error ? $": {error}" : string.Empty)}";
@@ -379,7 +380,9 @@ internal sealed partial class SettingsForm
 
         var providerName = AccountDiscovery.ProviderName(account.ProviderId);
         var label = _accountDrafts.TryGetValue(key, out var draft) && draft.Label is { } drafted ? drafted : account.Label;
-        var suggested = account.Command ?? TerminalCommands.Suggest(account.ProviderId, label ?? account.Email?.Split('@')[0], folder);
+        var suggested = account.Command ?? TerminalCommands.SuggestFree(
+            TerminalCommands.Suggest(account.ProviderId, label ?? account.Email?.Split('@')[0], folder),
+            account.UserCommandNames);
         var name = TextPrompt.Ask(
             this,
             "Terminal command",
@@ -484,7 +487,6 @@ internal sealed partial class SettingsForm
         var command = ProviderKey.IsDefault(key) ? (providerId == AccountDiscovery.CodexProviderId ? "codex" : "claude") + login
             : account?.Command is { } own && _accountActions?.Manager.Terminal is { } terminal &&
               terminal.IsOnUserPath() && File.Exists(terminal.FilePath(own)) ? own + login
-            : account?.UserCommands.FirstOrDefault(File.Exists) is { } yours ? Path.GetFileNameWithoutExtension(yours) + login
             : AccountCommands.SignIn(providerId, folder);
         if (PromptDialog.Ask(
                 "Re-authenticate",

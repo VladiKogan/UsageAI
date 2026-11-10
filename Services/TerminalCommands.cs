@@ -43,6 +43,9 @@ internal sealed partial class TerminalCommands
     /// <summary>How many command files one search reads at most, however long the PATH is.</summary>
     private const int MaxUserCommandFiles = 2_000;
 
+    /// <summary>The longest command file path kept; saved settings drop longer ones the same way.</summary>
+    public const int MaxUserCommandPath = 1_024;
+
     /// <summary>The kinds of file a user's own command is looked for in.</summary>
     public static readonly IReadOnlySet<string> UserCommandExtensions =
         new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".cmd", ".bat", ".ps1" };
@@ -95,7 +98,7 @@ internal sealed partial class TerminalCommands
     }
 
     /// <summary>
-    /// Commands the user made without UsageAI, such as a <c>claude-team.cmd</c> that sets
+    /// Commands the user made without UsageAI, such as a <c>claude-work.cmd</c> that sets
     /// <c>CLAUDE_CONFIG_DIR</c> and starts Claude: every <c>.cmd</c>, <c>.bat</c> or <c>.ps1</c>
     /// file in a PATH folder that sets a provider's folder variable to an absolute path. Each file
     /// is only read, bounded in size, and only that one variable is taken from it; such files may
@@ -111,13 +114,16 @@ internal sealed partial class TerminalCommands
         };
         var found = new List<UserCommand>();
         var read = 0;
-        foreach (var directory in _searchFolders().Where(directory => !SameFolder(directory, _folder)))
+        foreach (var directory in _searchFolders().Where(directory => !SameFolder(directory, _folder) && IsLocalFolder(directory)))
         {
             string[] files;
             try
             {
-                files = Directory.EnumerateFiles(directory, "*", options)
-                    .Where(file => UserCommandExtensions.Contains(Path.GetExtension(file)))
+                // The file system filters by extension, so a folder such as System32 is never
+                // listed in full; the exact check drops 8.3 matches such as ".cmdx".
+                files = UserCommandExtensions
+                    .SelectMany(extension => Directory.EnumerateFiles(directory, "*" + extension, options))
+                    .Where(file => UserCommandExtensions.Contains(Path.GetExtension(file)) && file.Length <= MaxUserCommandPath)
                     .ToArray();
             }
             catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException)
@@ -142,6 +148,29 @@ internal sealed partial class TerminalCommands
         return found;
     }
 
+    /// <summary>
+    /// True for a folder on a local fixed or removable drive. A share (<c>\\server\tools</c>) or a
+    /// mapped network drive is skipped: an unreachable one blocks for the network timeout, and the
+    /// search runs on the tray app's own thread.
+    /// </summary>
+    internal static bool IsLocalFolder(string directory)
+    {
+        if (directory.StartsWith(@"\\", StringComparison.Ordinal) || directory.StartsWith("//", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            return Path.GetPathRoot(directory) is { Length: > 0 } root &&
+                   new DriveInfo(root).DriveType is DriveType.Fixed or DriveType.Removable;
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
     private UserCommand? ReadUserCommand(string file)
     {
         string text;
@@ -164,9 +193,13 @@ internal sealed partial class TerminalCommands
             return null;
         }
 
+        // The first assignment that names a folder: a launcher without setlocal often clears the
+        // variable again after the CLI returns.
         var powerShell = Path.GetExtension(file).Equals(".ps1", StringComparison.OrdinalIgnoreCase);
-        var match = (powerShell ? PowerShellFolderVariable() : CmdFolderVariable()).Matches(text).LastOrDefault();
-        if (match is null || UserCommandFolder(match.Groups["value"].Value, powerShell) is not { } folder)
+        var (match, folder) = (powerShell ? PowerShellFolderVariable() : CmdFolderVariable()).Matches(text)
+            .Select(candidate => (candidate, folder: UserCommandFolder(candidate.Groups["value"].Value, powerShell)))
+            .FirstOrDefault(candidate => candidate.folder is not null);
+        if (match is null || folder is null)
         {
             return null;
         }
@@ -241,6 +274,30 @@ internal sealed partial class TerminalCommands
 
         var suggestion = $"{cli}-{slug}";
         return suggestion.Length <= MaxNameLength ? suggestion : suggestion[..MaxNameLength].TrimEnd('-');
+    }
+
+    /// <summary>
+    /// <paramref name="suggestion"/>, or with a number added when the user's own commands already
+    /// use that name: offering a name that is on the PATH would only be refused on OK.
+    /// </summary>
+    public static string SuggestFree(string suggestion, IReadOnlyCollection<string> taken)
+    {
+        if (!taken.Contains(suggestion, StringComparer.OrdinalIgnoreCase))
+        {
+            return suggestion;
+        }
+
+        for (var number = 2; ; number++)
+        {
+            var suffix = $"-{number}";
+            var candidate = (suggestion.Length + suffix.Length <= MaxNameLength
+                ? suggestion
+                : suggestion[..(MaxNameLength - suffix.Length)].TrimEnd('-')) + suffix;
+            if (!taken.Contains(candidate, StringComparer.OrdinalIgnoreCase))
+            {
+                return candidate;
+            }
+        }
     }
 
     /// <summary>Why a name cannot be a command, or null when it can.</summary>

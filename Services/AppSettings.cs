@@ -515,7 +515,7 @@ internal sealed class AppSettings
             account.DuplicateOf = BoundedText(account.DuplicateOf, 320);
             account.Command = TerminalCommands.NameProblem(account.Command) is null ? account.Command!.Trim() : null;
             account.UserCommands = (account.UserCommands ?? Array.Empty<string>())
-                .Where(file => file is { Length: > 0 and <= 260 } &&
+                .Where(file => file is { Length: > 0 } && file.Length <= TerminalCommands.MaxUserCommandPath &&
                     Path.IsPathFullyQualified(file) &&
                     TerminalCommands.UserCommandExtensions.Contains(Path.GetExtension(file)))
                 .Distinct(StringComparer.OrdinalIgnoreCase)

@@ -9,20 +9,22 @@ The project follows [Semantic Versioning](https://semver.org/).
 ### Added
 
 - **Terminal commands you made yourself show up on their account.** Each account scan now looks
-  through the folders on your PATH for `.cmd`, `.bat` and `.ps1` files that set `CLAUDE_CONFIG_DIR`
-  or `CODEX_HOME` to an account's folder, such as a `claude-work.cmd` written long before UsageAI
-  could make one. Settings lists them in the account's details, and Re-authenticate offers one when
-  UsageAI wrote no command of its own. They are only read: UsageAI never rewrites or deletes them,
-  and Forget says so. Only the folder variable is taken from each file; anything else in it, such
-  as a key, is never kept. Files over 16 KB and UsageAI's own commands are skipped.
+  through the local folders on your PATH for `.cmd`, `.bat` and `.ps1` files that set
+  `CLAUDE_CONFIG_DIR` or `CODEX_HOME` to an account's folder, such as a `claude-work.cmd` written
+  long before UsageAI could make one. Settings lists them in the account's details, and Terminal
+  command… no longer suggests a name you already use. They are only read: UsageAI never rewrites or
+  deletes them, and Forget says so. Only the folder variable is taken from each file; anything else
+  in it, such as a key, is never kept. Network folders, files over 16 KB and UsageAI's own commands
+  are skipped, and with Find accounts automatically off the PATH is read only when you press Rescan.
 
 ### Changed
 
 - **The tray icon is the UsageAI tank whichever provider or account it follows.** Choosing a
   single provider or account, or leaving it on Automatic, used to bring back the older ring gauge;
   only All connected drew the logo. Every choice now draws the tank, filled to the limit its tooltip
-  names and turning amber and red at the same thresholds. With no provider reachable the icon is
-  still a red ring with `!`.
+  names and turning amber and red at the same thresholds. Following one provider, its ring wears
+  that provider's colour while usage is calm, so Automatic still shows which one it follows. With no
+  provider reachable the icon is still a red ring with `!`.
 
 ### Fixed
 

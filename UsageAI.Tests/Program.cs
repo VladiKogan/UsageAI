@@ -1528,6 +1528,25 @@ internal static class Program
         Equal(Color.FromArgb(241, 241, 239).ToArgb(), TankPixel(10, 25, 0.79).ToArgb());
         Equal(Theme.DarkWarning.ToArgb(), TankPixel(80, 20, 0.79).ToArgb());
         Equal(Theme.DarkCritical.ToArgb(), TankPixel(100, 0, 0.79).ToArgb());
+
+        // Following one provider, the calm ring wears its colour from the dark palette, whatever
+        // the app theme; a warning still overrides it.
+        Theme.Apply(ThemeMode.Light, 72, 90);
+        using (var claudeTank = TrayIconFactory.CreateTank(10, 10, size: 32, identityColor: Theme.DarkForProvider("claude@1a2b3c4d")))
+        using (var claudeBitmap = claudeTank.ToBitmap())
+        {
+            Equal(Color.FromArgb(222, 155, 112).ToArgb(), claudeBitmap.GetPixel(16, (int)(32 * 0.79)).ToArgb());
+        }
+
+        using (var warningTank = TrayIconFactory.CreateTank(80, 80, size: 32, identityColor: Theme.DarkForProvider("codex")))
+        using (var warningBitmap = warningTank.ToBitmap())
+        {
+            Equal(Theme.DarkWarning.ToArgb(), warningBitmap.GetPixel(16, (int)(32 * 0.79)).ToArgb());
+        }
+
+        Equal(Color.FromArgb(157, 169, 255).ToArgb(), Theme.DarkForProvider("copilot").ToArgb());
+        Equal(Color.FromArgb(100, 170, 255).ToArgb(), Theme.DarkForProvider("gemini").ToArgb());
+        Theme.Apply(ThemeMode.Dark, 72, 90);
         using var small = TrayIconFactory.CreateTank(50, 50, size: 16);
         True(small.Width == 16);
 
