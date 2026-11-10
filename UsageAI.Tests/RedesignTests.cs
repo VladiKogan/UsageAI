@@ -1203,6 +1203,37 @@ internal static class RedesignTests
             False(ReferenceEquals(drifted, scaled.Items[0].Font));
         }
 
+        // Each label sits in the middle of its row: a drop-down lays text out from the row's top,
+        // which left the whole vertical padding below every label.
+        using (var centred = TrayMenu.Create(static () => { }, static () => { }, static () => { }, static () => { }))
+        {
+            TrayMenu.ApplyMetrics(centred, 192);
+            centred.CreateControl();
+            centred.PerformLayout();
+            centred.Size = centred.GetPreferredSize(Size.Empty);
+            using var bitmap = new Bitmap(Math.Max(1, centred.Width), Math.Max(1, centred.Height));
+            centred.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+            foreach (var item in new[] { centred.Items[0], centred.Items[^1] })
+            {
+                var row = Rectangle.Intersect(item.Bounds, new Rectangle(Point.Empty, bitmap.Size));
+                True(row.Height > 0);
+                var ink = Enumerable.Range(row.Top, row.Height)
+                    .Where(y => Enumerable.Range(row.Left, row.Width).Any(x =>
+                    {
+                        var pixel = bitmap.GetPixel(x, y);
+                        return Math.Abs(pixel.GetBrightness() - Theme.Surface.GetBrightness()) > 0.3;
+                    }))
+                    .ToArray();
+                True(ink.Length > 0);
+                var above = ink.First() - row.Top;
+                var below = row.Bottom - 1 - ink.Last();
+                if (Math.Abs(above - below) > 4)
+                {
+                    throw new InvalidOperationException($"{item.Text}: {above} px above its text, {below} below.");
+                }
+            }
+        }
+
         True(WindowThemeHelpers.MonitorDpiAt(Point.Empty) is >= 96);
 
         // High Contrast keeps the system menu renderer and square corners.

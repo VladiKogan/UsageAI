@@ -33,6 +33,9 @@ The project follows [Semantic Versioning](https://semver.org/).
   than one account, its main login read only as "Claude Code", so it was easy to take for the
   provider as a whole. It now carries the same label as in the popup ("Claude Code · me@example.com"),
   and each extra account is listed right after its provider instead of at the end.
+- **The tray menu's labels sit in the middle of their rows.** Windows lays a menu row's text out
+  from its top, so with the roomier rows every label sat high with all its spacing below it. Each
+  label is now centred between the row's top and bottom, in High Contrast too.
 
 ## [0.17.3] - 2026-11-09
 
