@@ -48,6 +48,7 @@ internal sealed class PromptDialog : Form
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = true;
+        WindowThemeHelpers.RevealWhenPainted(this);
         StartPosition = FormStartPosition.CenterScreen;
         Text = caption;
         AppIcon.Apply(this);

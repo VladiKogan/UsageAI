@@ -4,6 +4,19 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Windows no longer flash white as they open.** Windows shows a new window before it has drawn
+  anything, so on the dark theme Settings opened as a white sheet for about 50 ms, then as white
+  blocks where its controls were still to paint; the dashboard, What's New and the popup did the
+  same for 20 to 65 ms. Each window now stays cloaked until it and its controls have painted, and
+  appears finished in its first frame. Open dashboard from the popup also stopped flickering: the
+  popup used to take on a frame and the dashboard's size on screen, vanish while Windows recreated
+  it for the taskbar, and reappear where it had been before jumping to the dashboard's place. It is
+  now taken off the screen first, and the dashboard appears once, in its place.
+
 ## [0.18.0] - 2026-11-10
 
 ### Added

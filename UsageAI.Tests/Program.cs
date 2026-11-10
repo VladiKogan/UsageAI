@@ -85,6 +85,7 @@ internal static class Program
         ("prompt dialog, tray menu and ring-only tray icon", RedesignTests.TestPromptMenuAndTrayAsync),
         ("gauges ease to new values and respect reduced motion", RedesignTests.TestMotionAsync),
         ("controls measure at their window's DPI and repaint once after a rebuild", RedesignTests.TestWindowDpiAndRedrawAsync),
+        ("windows stay cloaked until painted, also when the popup becomes the dashboard", RedesignTests.TestWindowsRevealOnlyWhenPaintedAsync),
         ("settings number fields draw themed spin buttons", RedesignTests.TestThemedStepperAsync),
         ("settings window resizes and remembers a size the user chose", RedesignTests.TestSettingsWindowSizeAsync),
         ("scrolling views use a slim scrollbar", RedesignTests.TestSlimScrollBarAsync),

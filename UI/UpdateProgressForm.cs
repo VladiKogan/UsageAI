@@ -62,6 +62,7 @@ internal sealed class UpdateProgressForm : Form
         MinimizeBox = false;
         ShowIcon = false;
         ShowInTaskbar = false;
+        WindowThemeHelpers.RevealWhenPainted(this);
         StartPosition = FormStartPosition.Manual;
         Text = "UsageAI update";
         TopMost = true;

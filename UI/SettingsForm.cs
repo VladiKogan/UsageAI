@@ -116,6 +116,7 @@ internal sealed partial class SettingsForm : Form
         MinimizeBox = false;
         SizeGripStyle = SizeGripStyle.Hide;
         ShowInTaskbar = false;
+        WindowThemeHelpers.RevealWhenPainted(this);
         StartPosition = FormStartPosition.CenterScreen;
         Text = "UsageAI settings";
         AppIcon.Apply(this);

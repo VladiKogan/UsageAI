@@ -48,6 +48,7 @@ internal sealed class WhatsNewForm : Form
         MinimizeBox = false;
         MinimumSize = new Size(420, 360);
         ShowInTaskbar = false;
+        WindowThemeHelpers.RevealWhenPainted(this);
         StartPosition = FormStartPosition.CenterScreen;
         Text = "What's new in UsageAI";
         AppIcon.Apply(this);

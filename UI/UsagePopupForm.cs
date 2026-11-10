@@ -68,6 +68,7 @@ internal sealed class UsagePopupForm : Form
     // Shared by every tile and the table, which are rebuilt on updates, so a gauge keeps easing
     // from what it showed before the rebuild.
     private readonly MotionTracker _motion = new();
+    private readonly WindowThemeHelpers.PaintedReveal _reveal;
     private readonly System.Windows.Forms.Timer _refreshAnimationTimer;
     private long _refreshAnimationStart;
 
@@ -85,6 +86,7 @@ internal sealed class UsagePopupForm : Form
         Name = "UsagePopup";
         ShowIcon = false;
         ShowInTaskbar = false;
+        _reveal = WindowThemeHelpers.RevealWhenPainted(this);
         StartPosition = FormStartPosition.Manual;
         Text = "UsageAI";
         TopMost = true;
@@ -388,6 +390,14 @@ internal sealed class UsagePopupForm : Form
         }
 
         _mode = mode;
+
+        // Switching on screen (the popup's Open dashboard) reframes, resizes and moves the window
+        // and recreates its handle, since it joins or leaves the taskbar; none of that is watched.
+        if (Visible)
+        {
+            _reveal.HideUntilPainted();
+        }
+
         ConfigureWindowPresentation();
         _detailsButton.Visible = mode == DashboardMode.Compact;
         _metricMode.Visible = mode == DashboardMode.Full;
