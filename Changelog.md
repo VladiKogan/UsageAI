@@ -16,6 +16,14 @@ The project follows [Semantic Versioning](https://semver.org/).
   and Forget says so. Only the folder variable is taken from each file; anything else in it, such
   as a key, is never kept. Files over 16 KB and UsageAI's own commands are skipped.
 
+### Changed
+
+- **The tray icon is the UsageAI tank whichever provider or account it follows.** Choosing a
+  single provider or account, or leaving it on Automatic, used to bring back the older ring gauge;
+  only All connected drew the logo. Every choice now draws the tank, filled to the limit its tooltip
+  names and turning amber and red at the same thresholds. With no provider reachable the icon is
+  still a red ring with `!`.
+
 ### Fixed
 
 - **Claude's saved limit resets show up again, each kind on its own row.** Claude now reports

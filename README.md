@@ -68,9 +68,9 @@ and Antigravity.
 
 ## 👀 What you'll see
 
-**A tray icon that actually tells you something.** A ring that fills as you burn through your limit, the same gauge the popup draws. It stays one calm colour while you're fine, turns amber at your warning threshold (72% by default) and red at the critical one (90%), and shows `!` when no provider can be reached.
+**A tray icon that actually tells you something.** The UsageAI logo, its tank filling as you burn through your limit. It stays the logo's calm cyan while you're fine, turns amber at your warning threshold (72% by default) and red at the critical one (90%), and becomes a red ring with `!` when no provider can be reached.
 
-**Or every provider at once.** Set the tray icon provider to **All connected** and the icon becomes the UsageAI logo, its tank filled to the busiest limit it lists and turning amber and red at the same thresholds. Point at it for one line per provider, the same limits the popup shows:
+**Or every provider at once.** Set the tray icon provider to **All connected** and the tank fills to the busiest limit it lists, turning amber and red at the same thresholds. Point at it for one line per provider, the same limits the popup shows:
 
 ```text
 UsageAI
