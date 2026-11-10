@@ -36,6 +36,23 @@ internal static class Theme
 
     public static readonly Color DarkCritical = Color.FromArgb(240, 96, 90);
 
+    private static readonly Color DarkCodex = Color.FromArgb(110, 211, 180);
+
+    private static readonly Color DarkClaude = Color.FromArgb(222, 155, 112);
+
+    private static readonly Color DarkCopilot = Color.FromArgb(157, 169, 255);
+
+    private static readonly Color DarkGemini = Color.FromArgb(100, 170, 255);
+
+    /// <summary>A provider's colour from the dark palette, for the tray's logo tile, which is dark in every theme.</summary>
+    public static Color DarkForProvider(string providerId) => Models.ProviderKey.ProviderOf(providerId).ToLowerInvariant() switch
+    {
+        "claude" => DarkClaude,
+        "copilot" => DarkCopilot,
+        "gemini" => DarkGemini,
+        _ => DarkCodex,
+    };
+
     public static bool IsDark { get; private set; } = true;
 
     public static bool IsHighContrast { get; private set; }
@@ -155,10 +172,10 @@ internal static class Theme
             Critical = DarkCritical;
             WarningText = Color.FromArgb(242, 191, 114);
             CriticalText = Color.FromArgb(255, 138, 132);
-            Codex = Color.FromArgb(110, 211, 180);
-            Claude = Color.FromArgb(222, 155, 112);
-            Copilot = Color.FromArgb(157, 169, 255);
-            Gemini = Color.FromArgb(100, 170, 255);
+            Codex = DarkCodex;
+            Claude = DarkClaude;
+            Copilot = DarkCopilot;
+            Gemini = DarkGemini;
         }
         else
         {

@@ -4,7 +4,27 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
-## Unreleased
+## [0.18.0] - 2026-11-10
+
+### Added
+
+- **Terminal commands you made yourself show up on their account.** Each account scan now looks
+  through the local folders on your PATH for `.cmd`, `.bat` and `.ps1` files that set
+  `CLAUDE_CONFIG_DIR` or `CODEX_HOME` to an account's folder, such as a `claude-work.cmd` written
+  long before UsageAI could make one. Settings lists them in the account's details, and Terminal
+  command… no longer suggests a name you already use. They are only read: UsageAI never rewrites or
+  deletes them, and Forget says so. Only the folder variable is taken from each file; anything else
+  in it, such as a key, is never kept. Network folders, files over 16 KB and UsageAI's own commands
+  are skipped, and with Find accounts automatically off the PATH is read only when you press Rescan.
+
+### Changed
+
+- **The tray icon is the UsageAI tank whichever provider or account it follows.** Choosing a
+  single provider or account, or leaving it on Automatic, used to bring back the older ring gauge;
+  only All connected drew the logo. Every choice now draws the tank, filled to the limit its tooltip
+  names and turning amber and red at the same thresholds. Following one provider, its ring wears
+  that provider's colour while usage is calm, so Automatic still shows which one it follows. With no
+  provider reachable the icon is still a red ring with `!`.
 
 ### Fixed
 
@@ -19,6 +39,13 @@ The project follows [Semantic Versioning](https://semver.org/).
   way the Claude CLI names it: "Fable reset" (it gives back what Fable used this week), "5-hour
   reset", "Weekly reset" or "Full reset". Each row shows how many you have and the earliest use-by
   date, with the year only when it isn't this year.
+- **The Tray icon provider list names your main login's account too.** While a provider shows more
+  than one account, its main login read only as "Claude Code", so it was easy to take for the
+  provider as a whole. It now carries the same label as in the popup ("Claude Code · me@example.com"),
+  and each extra account is listed right after its provider instead of at the end.
+- **The tray menu's labels sit in the middle of their rows.** Windows lays a menu row's text out
+  from its top, so with the roomier rows every label sat high with all its spacing below it. Each
+  label is now centred between the row's top and bottom, in High Contrast too.
 
 ## [0.17.3] - 2026-11-09
 

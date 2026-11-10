@@ -47,7 +47,7 @@ internal static class TrayMenu
     {
         menu.BackColor = Theme.Surface;
         menu.ForeColor = Theme.Text;
-        menu.Renderer = Theme.IsHighContrast ? new ToolStripSystemRenderer() : new MenuRenderer();
+        menu.Renderer = Theme.IsHighContrast ? new MenuRenderer.HighContrast() : new MenuRenderer();
         WindowThemeHelpers.ApplyMenuCorners(menu);
         menu.Invalidate(invalidateChildren: true);
     }

@@ -183,7 +183,7 @@ internal sealed class AccountManager
         }
 
         var duplicatesChanged = RecheckDuplicates();
-        RefreshTerminalCommands();
+        RefreshTerminalCommands(findUserCommands: true);
         _settings.AccountsInitialized = true;
         _settings.LastAccountScanUtc = nowUtc.ToUniversalTime();
         _settings.Save();
@@ -340,17 +340,57 @@ internal sealed class AccountManager
     /// Brings every account's terminal command up to date, on the same startup and daily tick as the
     /// scan. A command that starts the CLI bundled in an editor extension names that extension's
     /// version folder, which an update deletes; this points it at the copy installed now.
+    /// <para>
+    /// With <paramref name="findUserCommands"/>, as an account scan asks, it also looks on the
+    /// PATH for the user's own commands. Startup with automatic finding off leaves that out, so
+    /// turning finding off also stops UsageAI reading the PATH's scripts. The caller saves.
+    /// </para>
     /// </summary>
-    public int RefreshTerminalCommands()
+    public int RefreshTerminalCommands(bool findUserCommands = false)
     {
         if (Terminal is null)
         {
             return 0;
         }
 
+        if (findUserCommands)
+        {
+            FindUserCommands(Terminal);
+        }
+
         return _settings.Accounts
             .Where(account => account is { IsDefault: false, Command: not null, Path: not null })
             .Count(account => Terminal.Refresh(account.ProviderId, account.Path!, account.Command!));
+    }
+
+    /// <summary>How many of the user's own commands are kept per account.</summary>
+    public const int MaxUserCommands = 8;
+
+    /// <summary>
+    /// Records, for each account, the commands the user made for its folder outside UsageAI, so
+    /// Settings shows them. The shortest name comes first, as the plain one (<c>claude-work</c>
+    /// before <c>claude-work-api</c>).
+    /// </summary>
+    private void FindUserCommands(TerminalCommands terminal)
+    {
+        var found = terminal.FindUserCommands();
+        foreach (var account in _settings.Accounts.Where(account => account is { IsDefault: false, Path: not null }))
+        {
+            var files = found
+                .Where(command =>
+                    command.ProviderId.Equals(account.ProviderId, StringComparison.OrdinalIgnoreCase) &&
+                    command.Folder.Equals(account.Path, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(command => command.Name.Length)
+                .ThenBy(command => command.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(command => command.File)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(MaxUserCommands)
+                .ToArray();
+            if (!files.SequenceEqual(account.UserCommands, StringComparer.OrdinalIgnoreCase))
+            {
+                account.UserCommands = files;
+            }
+        }
     }
 
     /// <summary>

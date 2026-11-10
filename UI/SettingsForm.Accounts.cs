@@ -313,7 +313,16 @@ internal sealed partial class SettingsForm
         var plan = status?.Snapshot?.Plan is { Length: > 0 } planName ? $" · {planName}" : string.Empty;
         var email = account?.Email is { } known ? $"{known}{plan}\n" : plan.Length > 0 ? $"{plan.TrimStart(' ', '·')}\n" : string.Empty;
         var command = account?.Command is { } name ? $"Terminal command: {name}\n" : string.Empty;
-        _accountDetails.Text = $"{email}{source}\n{command}{StatusText(key)}{(status?.Error is { } error ? $": {error}" : string.Empty)}";
+        if (account is { UserCommandNames.Count: > 0 })
+        {
+            // One name per folder: claude-work.cmd and claude-work.ps1 side by side are one command.
+            var yours = account.UserCommands
+                .GroupBy(file => Path.GetDirectoryName(file) ?? string.Empty, StringComparer.OrdinalIgnoreCase)
+                .Select(group => $"{string.Join(", ", group.Select(Path.GetFileNameWithoutExtension).Distinct(StringComparer.OrdinalIgnoreCase))} (in {ShortenProfile(group.Key)})");
+            command += $"Your own terminal command{(account.UserCommandNames.Count > 1 ? "s" : string.Empty)}: {string.Join("; ", yours)}\n";
+        }
+
+        _accountDetails.Text =$"{email}{source}\n{command}{StatusText(key)}{(status?.Error is { } error ? $": {error}" : string.Empty)}";
     }
 
     /// <summary>
@@ -371,13 +380,17 @@ internal sealed partial class SettingsForm
 
         var providerName = AccountDiscovery.ProviderName(account.ProviderId);
         var label = _accountDrafts.TryGetValue(key, out var draft) && draft.Label is { } drafted ? drafted : account.Label;
-        var suggested = account.Command ?? TerminalCommands.Suggest(account.ProviderId, label ?? account.Email?.Split('@')[0], folder);
+        var suggested = account.Command ?? TerminalCommands.SuggestFree(
+            TerminalCommands.Suggest(account.ProviderId, label ?? account.Email?.Split('@')[0], folder),
+            account.UserCommandNames);
         var name = TextPrompt.Ask(
             this,
             "Terminal command",
-            account.Command is null
-                ? $"Command that starts {providerName} with this account:"
-                : "Command for this account (clear it to remove):",
+            account.Command is not null
+                ? "Command for this account (clear it to remove):"
+                : account.UserCommandNames is { Count: > 0 } yours
+                    ? $"You already start this account with {string.Join(", ", yours)}. Command UsageAI writes as well:"
+                    : $"Command that starts {providerName} with this account:",
             suggested);
         if (name is null)
         {
@@ -553,6 +566,12 @@ internal sealed partial class SettingsForm
 
         var created = account.Source == AccountSource.Created;
         var commandNote = account.Command is { } command ? $"\n\nIts terminal command, {command}, is deleted too." : string.Empty;
+        if (account.UserCommandNames is { Count: > 0 } yours)
+        {
+            commandNote += yours.Count == 1
+                ? $"\n\nYour own command, {yours[0]}, is left as it is."
+                : $"\n\nYour own commands, {string.Join(", ", yours)}, are left as they are.";
+        }
         var confirmed = created
             ? PromptDialog.Ask(
                 "Remove account",

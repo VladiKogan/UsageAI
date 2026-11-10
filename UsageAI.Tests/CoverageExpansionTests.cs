@@ -4148,6 +4148,15 @@ internal static class CoverageExpansionTests
         var tray = GetPrivateField<NotifyIcon>(context, "_trayIcon");
         True(tray.Text.Contains("55% used", StringComparison.Ordinal));
 
+        // One provider draws the same tank as All connected: its centre holds water, where the
+        // old ring gauge left a hole.
+        using (var trayBitmap = tray.Icon!.ToBitmap())
+        {
+            var centre = trayBitmap.GetPixel(trayBitmap.Width / 2, trayBitmap.Height / 2);
+            True(centre.A == 255);
+            Equal(Theme.DarkSignal.ToArgb(), centre.ToArgb());
+        }
+
         await InvokePrivateTaskAsync(context, "RefreshAsync", true);
         Application.DoEvents();
         Equal(2, client.CallCount);

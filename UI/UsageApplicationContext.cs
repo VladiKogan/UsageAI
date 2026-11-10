@@ -145,7 +145,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
             exit: Exit,
             addAccount: () => OpenAddAccount());
 
-        _currentIcon = TrayIconFactory.Create(0);
+        _currentIcon = TrayIconFactory.CreateTank(0, 0);
         _trayIcon = new NotifyIcon
         {
             ContextMenuStrip = _menu,
@@ -562,14 +562,16 @@ internal sealed class UsageApplicationContext : ApplicationContext
             return;
         }
 
+        // One provider or account draws the same tank as All connected, filled to the limit its
+        // tooltip names, so choosing one never brings back a different icon. Its calm ring takes
+        // the provider's colour, so Automatic still shows which provider it follows.
         var trayStatus = SelectTrayStatus(connected, _settings.TrayProviderId)!;
-        var usedPercent = TrayUsedPercent(trayStatus);
         var trayIncident = _incidents?.For(trayStatus.Kind);
-        ReplaceIcon(TrayIconFactory.Create(
-            usedPercent,
-            identityColor: Theme.ForProvider(trayStatus.ProviderId),
-            fillPercent: TrayDisplayedPercent(trayStatus, _settings.QuotaDisplay) ?? 0,
-            incident: trayIncident?.Severity));
+        ReplaceIcon(TrayIconFactory.CreateTank(
+            TrayUsedPercent(trayStatus),
+            TrayDisplayedPercent(trayStatus, _settings.QuotaDisplay) ?? 0,
+            incident: trayIncident?.Severity,
+            identityColor: Theme.DarkForProvider(trayStatus.ProviderId)));
         _trayIcon.Text = WithIncident(TrayTooltip(trayStatus, _settings.QuotaDisplay), trayIncident);
     }
 

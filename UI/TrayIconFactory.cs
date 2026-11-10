@@ -153,8 +153,12 @@ internal static class TrayIconFactory
     /// reads as critical. The tile is dark whatever the app theme, so the colours are the dark
     /// palette's. Geometry matches scripts\render-logo.ps1 in its 48-unit tile, with a flat
     /// waterline at every size, since a wave would read as a second level.
+    /// <para>
+    /// <paramref name="identityColor"/>, given while the tank follows one provider, colours the
+    /// calm ring so the icon still says which provider it is, as the ring gauge's colour used to.
+    /// </para>
     /// </summary>
-    public static Icon CreateTank(int usedPercent, int fillPercent, int size = 0, IncidentSeverity? incident = null)
+    public static Icon CreateTank(int usedPercent, int fillPercent, int size = 0, IncidentSeverity? incident = null, Color? identityColor = null)
     {
         var pixels = Math.Clamp(size <= 0 ? PreferredSize : size, 16, 64);
         var small = pixels <= 24;
@@ -167,7 +171,7 @@ internal static class TrayIconFactory
             Theme.IsWarningUsage(usedPercent) ? Theme.DarkWarning :
             null;
         var water = highContrast ? SystemColors.Highlight : status ?? Theme.DarkSignal;
-        var ringColor = highContrast ? SystemColors.WindowText : status ?? Color.FromArgb(241, 241, 239);
+        var ringColor = highContrast ? SystemColors.WindowText : status ?? identityColor ?? Color.FromArgb(241, 241, 239);
 
         using var bitmap = new Bitmap(pixels, pixels, PixelFormat.Format32bppArgb);
         using (var graphics = Graphics.FromImage(bitmap))

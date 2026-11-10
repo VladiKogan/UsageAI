@@ -2,6 +2,7 @@ using System.Runtime.InteropServices;
 using System.Text;
 using System.Text.RegularExpressions;
 using Microsoft.Win32;
+using UsageAI.Models;
 
 namespace UsageAI.Services;
 
@@ -14,6 +15,12 @@ internal sealed record TerminalCommandResult(
     bool PathUpdateFailed = false)
 {
     public bool Succeeded => Problem is null;
+}
+
+/// <summary>A command file the user made that points a provider's CLI at a login folder.</summary>
+internal sealed record UserCommand(string ProviderId, string Folder, string File)
+{
+    public string Name => Path.GetFileNameWithoutExtension(File);
 }
 
 /// <summary>
@@ -30,6 +37,19 @@ internal sealed partial class TerminalCommands
 
     private const int MaxNameLength = 40;
 
+    /// <summary>A command file larger than this is not a launcher, so it is never read.</summary>
+    private const int MaxUserCommandBytes = 16_384;
+
+    /// <summary>How many command files one search reads at most, however long the PATH is.</summary>
+    private const int MaxUserCommandFiles = 2_000;
+
+    /// <summary>The longest command file path kept; saved settings drop longer ones the same way.</summary>
+    public const int MaxUserCommandPath = 1_024;
+
+    /// <summary>The kinds of file a user's own command is looked for in.</summary>
+    public static readonly IReadOnlySet<string> UserCommandExtensions =
+        new HashSet<string>(StringComparer.OrdinalIgnoreCase) { ".cmd", ".bat", ".ps1" };
+
     private static readonly HashSet<string> ProgramExtensions = new(StringComparer.OrdinalIgnoreCase)
     {
         ".com", ".exe", ".bat", ".cmd", ".vbs", ".vbe", ".js", ".jse", ".wsf", ".wsh", ".msc", ".ps1",
@@ -41,14 +61,19 @@ internal sealed partial class TerminalCommands
     private readonly Func<string, string?> _findCommand;
     private readonly Func<string, string?> _findCli;
     private readonly string _userProfile;
+    private readonly Func<IReadOnlyList<string>> _searchFolders;
 
+    /// <param name="searchFolders">
+    /// Where <see cref="FindUserCommands"/> looks; none unless given, so a test never reads the real PATH.
+    /// </param>
     internal TerminalCommands(
         string folder,
         Func<string?> readUserPath,
         Action<string> writeUserPath,
         Func<string, string?> findCommand,
         Func<string, string?> findCli,
-        string? userProfile = null)
+        string? userProfile = null,
+        Func<IReadOnlyList<string>>? searchFolders = null)
     {
         _folder = Path.GetFullPath(folder);
         _readUserPath = readUserPath;
@@ -56,6 +81,7 @@ internal sealed partial class TerminalCommands
         _findCommand = findCommand;
         _findCli = findCli;
         _userProfile = userProfile ?? AccountDiscovery.UserProfile();
+        _searchFolders = searchFolders ?? (static () => Array.Empty<string>());
     }
 
     /// <summary>The tray app's: <c>%LOCALAPPDATA%\UsageAI\bin</c>, the user's PATH and the installed CLIs.</summary>
@@ -67,7 +93,150 @@ internal sealed partial class TerminalCommands
             UserEnvironmentPath.Read,
             UserEnvironmentPath.Write,
             name => FindCommandOnPath(name, folder),
-            FindCli);
+            FindCli,
+            searchFolders: () => PathFolders(folder));
+    }
+
+    /// <summary>
+    /// Commands the user made without UsageAI, such as a <c>claude-work.cmd</c> that sets
+    /// <c>CLAUDE_CONFIG_DIR</c> and starts Claude: every <c>.cmd</c>, <c>.bat</c> or <c>.ps1</c>
+    /// file in a PATH folder that sets a provider's folder variable to an absolute path. Each file
+    /// is only read, bounded in size, and only that one variable is taken from it; such files may
+    /// hold other settings, even keys, which are never kept. UsageAI's own files are skipped.
+    /// </summary>
+    public IReadOnlyList<UserCommand> FindUserCommands()
+    {
+        var options = new EnumerationOptions
+        {
+            IgnoreInaccessible = true,
+            MatchType = MatchType.Simple,
+            RecurseSubdirectories = false,
+        };
+        var found = new List<UserCommand>();
+        var read = 0;
+        foreach (var directory in _searchFolders().Where(directory => !SameFolder(directory, _folder) && IsLocalFolder(directory)))
+        {
+            string[] files;
+            try
+            {
+                // The file system filters by extension, so a folder such as System32 is never
+                // listed in full; the exact check drops 8.3 matches such as ".cmdx".
+                files = UserCommandExtensions
+                    .SelectMany(extension => Directory.EnumerateFiles(directory, "*" + extension, options))
+                    .Where(file => UserCommandExtensions.Contains(Path.GetExtension(file)) && file.Length <= MaxUserCommandPath)
+                    .ToArray();
+            }
+            catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or System.Security.SecurityException or ArgumentException)
+            {
+                continue;
+            }
+
+            foreach (var file in files)
+            {
+                if (read++ >= MaxUserCommandFiles)
+                {
+                    return found;
+                }
+
+                if (ReadUserCommand(file) is { } command)
+                {
+                    found.Add(command);
+                }
+            }
+        }
+
+        return found;
+    }
+
+    /// <summary>
+    /// True for a folder on a local fixed or removable drive. A share (<c>\\server\tools</c>) or a
+    /// mapped network drive is skipped: an unreachable one blocks for the network timeout, and the
+    /// search runs on the tray app's own thread.
+    /// </summary>
+    internal static bool IsLocalFolder(string directory)
+    {
+        if (directory.StartsWith(@"\\", StringComparison.Ordinal) || directory.StartsWith("//", StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        try
+        {
+            return Path.GetPathRoot(directory) is { Length: > 0 } root &&
+                   new DriveInfo(root).DriveType is DriveType.Fixed or DriveType.Removable;
+        }
+        catch (Exception exception) when (exception is ArgumentException or IOException or UnauthorizedAccessException)
+        {
+            return false;
+        }
+    }
+
+    private UserCommand? ReadUserCommand(string file)
+    {
+        string text;
+        try
+        {
+            if (new FileInfo(file).Length > MaxUserCommandBytes)
+            {
+                return null;
+            }
+
+            text = SecureLocalFile.ReadAllText(file, MaxUserCommandBytes);
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or System.Security.SecurityException)
+        {
+            return null;
+        }
+
+        if (text.StartsWith(Marker, StringComparison.Ordinal))
+        {
+            return null;
+        }
+
+        // The first assignment that names a folder: a launcher without setlocal often clears the
+        // variable again after the CLI returns.
+        var powerShell = Path.GetExtension(file).Equals(".ps1", StringComparison.OrdinalIgnoreCase);
+        var (match, folder) = (powerShell ? PowerShellFolderVariable() : CmdFolderVariable()).Matches(text)
+            .Select(candidate => (candidate, folder: UserCommandFolder(candidate.Groups["value"].Value, powerShell)))
+            .FirstOrDefault(candidate => candidate.folder is not null);
+        if (match is null || folder is null)
+        {
+            return null;
+        }
+
+        var providerId = match.Groups["name"].Value.Equals(
+            AccountDiscovery.FolderVariable(AccountDiscovery.CodexProviderId), StringComparison.OrdinalIgnoreCase)
+            ? AccountDiscovery.CodexProviderId
+            : AccountDiscovery.ClaudeProviderId;
+        return new UserCommand(providerId, folder, Path.GetFullPath(file));
+    }
+
+    /// <summary>
+    /// The folder a command sets, with <c>%VAR%</c> (cmd) or <c>$env:VAR</c> and <c>$HOME</c>
+    /// (PowerShell) expanded; null when anything is left unexpanded or the path is not absolute.
+    /// </summary>
+    private string? UserCommandFolder(string value, bool powerShell)
+    {
+        var expanded = powerShell
+            ? PowerShellVariable().Replace(
+                value.Trim(),
+                match => match.Groups["env"].Success
+                    ? Environment.GetEnvironmentVariable(match.Groups["env"].Value) ?? match.Value
+                    : _userProfile)
+            : Environment.ExpandEnvironmentVariables(value.Trim());
+        if (expanded.Contains(powerShell ? '$' : '%', StringComparison.Ordinal) || !Path.IsPathFullyQualified(expanded))
+        {
+            return null;
+        }
+
+        try
+        {
+            return ProviderKey.NormalizeFolder(expanded);
+        }
+        catch (Exception exception) when (exception is ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return null;
+        }
     }
 
     /// <summary>The folder the command files are written to.</summary>
@@ -105,6 +274,30 @@ internal sealed partial class TerminalCommands
 
         var suggestion = $"{cli}-{slug}";
         return suggestion.Length <= MaxNameLength ? suggestion : suggestion[..MaxNameLength].TrimEnd('-');
+    }
+
+    /// <summary>
+    /// <paramref name="suggestion"/>, or with a number added when the user's own commands already
+    /// use that name: offering a name that is on the PATH would only be refused on OK.
+    /// </summary>
+    public static string SuggestFree(string suggestion, IReadOnlyCollection<string> taken)
+    {
+        if (!taken.Contains(suggestion, StringComparer.OrdinalIgnoreCase))
+        {
+            return suggestion;
+        }
+
+        for (var number = 2; ; number++)
+        {
+            var suffix = $"-{number}";
+            var candidate = (suggestion.Length + suffix.Length <= MaxNameLength
+                ? suggestion
+                : suggestion[..(MaxNameLength - suffix.Length)].TrimEnd('-')) + suffix;
+            if (!taken.Contains(candidate, StringComparer.OrdinalIgnoreCase))
+            {
+                return candidate;
+            }
+        }
     }
 
     /// <summary>Why a name cannot be a command, or null when it can.</summary>
@@ -389,14 +582,7 @@ internal sealed partial class TerminalCommands
     {
         var extensions = (Environment.GetEnvironmentVariable("PATHEXT") is { Length: > 0 } pathExt ? pathExt : ".COM;.EXE;.BAT;.CMD")
             .Split(';', StringSplitOptions.RemoveEmptyEntries);
-        var directories = (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
-            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
-            .Concat((UserEnvironmentPath.Read() ?? string.Empty).Split(';', StringSplitOptions.RemoveEmptyEntries))
-            .Select(entry => Environment.ExpandEnvironmentVariables(entry.Trim().Trim('"')))
-            .Where(Path.IsPathFullyQualified)
-            .Where(directory => !SameFolder(directory, ownFolder))
-            .Distinct(StringComparer.OrdinalIgnoreCase);
-        foreach (var directory in directories)
+        foreach (var directory in PathFolders(ownFolder))
         {
             foreach (var extension in extensions)
             {
@@ -410,6 +596,20 @@ internal sealed partial class TerminalCommands
 
         return null;
     }
+
+    /// <summary>
+    /// The folders a terminal looks in: this process's PATH and the user's saved one, expanded,
+    /// absolute and each once, without <paramref name="ownFolder"/> (UsageAI's own commands).
+    /// </summary>
+    internal static IReadOnlyList<string> PathFolders(string ownFolder) =>
+        (Environment.GetEnvironmentVariable("PATH") ?? string.Empty)
+            .Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries)
+            .Concat((UserEnvironmentPath.Read() ?? string.Empty).Split(';', StringSplitOptions.RemoveEmptyEntries))
+            .Select(entry => Environment.ExpandEnvironmentVariables(entry.Trim().Trim('"')))
+            .Where(Path.IsPathFullyQualified)
+            .Where(directory => !SameFolder(directory, ownFolder))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
 
     /// <summary>
     /// How the command starts the CLI: its bare name when it is on the PATH, so an update that moves
@@ -456,6 +656,18 @@ internal sealed partial class TerminalCommands
 
     [GeneratedRegex(@"^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
     private static partial Regex ReservedDeviceName();
+
+    /// <summary><c>set "CLAUDE_CONFIG_DIR=…"</c> or <c>set CODEX_HOME=…</c> on a line of its own.</summary>
+    [GeneratedRegex(@"^[ \t]*@?[ \t]*set[ \t]+""?(?<name>CLAUDE_CONFIG_DIR|CODEX_HOME)=(?<value>[^""\r\n]*)""?[ \t]*\r?$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase | RegexOptions.Multiline)]
+    private static partial Regex CmdFolderVariable();
+
+    /// <summary><c>$env:CLAUDE_CONFIG_DIR = '…'</c>, quoted or not, on a line of its own.</summary>
+    [GeneratedRegex(@"^[ \t]*\$env:(?<name>CLAUDE_CONFIG_DIR|CODEX_HOME)[ \t]*=[ \t]*(?<quote>['""]?)(?<value>[^'""\r\n;]*)\k<quote>[ \t]*;?[ \t]*\r?$", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase | RegexOptions.Multiline)]
+    private static partial Regex PowerShellFolderVariable();
+
+    /// <summary><c>$env:NAME</c> or <c>$HOME</c> inside a PowerShell value.</summary>
+    [GeneratedRegex(@"\$env:(?<env>[A-Za-z_][A-Za-z0-9_]*)|\$HOME\b", RegexOptions.CultureInvariant | RegexOptions.IgnoreCase)]
+    private static partial Regex PowerShellVariable();
 }
 
 /// <summary>The user's own saved PATH (<c>HKCU\Environment</c>), which new terminals start with.</summary>

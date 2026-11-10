@@ -139,8 +139,8 @@ internal sealed class AppSettings
     public string[] ProviderOrder { get; set; } = Array.Empty<string>();
 
     /// <summary>
-    /// <see cref="TrayProviderId"/> value that lists every connected provider in the tray tooltip.
-    /// No single gauge stands for them all, so the tray then shows the UsageAI logo.
+    /// <see cref="TrayProviderId"/> value that lists every connected provider in the tray tooltip,
+    /// with the logo's tank filled to the busiest limit among them.
     /// </summary>
     public const string AllProvidersTrayId = "all";
 
@@ -493,6 +493,7 @@ internal sealed class AppSettings
                 account.Pending = false;
                 account.DuplicateOf = null;
                 account.Command = null;
+                account.UserCommands = Array.Empty<string>();
             }
             else
             {
@@ -513,6 +514,13 @@ internal sealed class AppSettings
                 : null;
             account.DuplicateOf = BoundedText(account.DuplicateOf, 320);
             account.Command = TerminalCommands.NameProblem(account.Command) is null ? account.Command!.Trim() : null;
+            account.UserCommands = (account.UserCommands ?? Array.Empty<string>())
+                .Where(file => file is { Length: > 0 } && file.Length <= TerminalCommands.MaxUserCommandPath &&
+                    Path.IsPathFullyQualified(file) &&
+                    TerminalCommands.UserCommandExtensions.Contains(Path.GetExtension(file)))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(AccountManager.MaxUserCommands)
+                .ToArray();
             account.Order = Math.Clamp(account.Order, 0, 1000);
             if (kept.Any(other => other.UnitKey.Equals(account.UnitKey, StringComparison.OrdinalIgnoreCase)))
             {

@@ -73,7 +73,38 @@ internal sealed class MenuRenderer : ToolStripProfessionalRenderer
     protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
     {
         e.TextColor = e.Item.Enabled ? Theme.Text : Theme.Faint;
+        CenterVertically(e);
         base.OnRenderItemText(e);
+    }
+
+    /// <summary>
+    /// Centres a menu row's text between its top and bottom. A drop-down menu adds an item's
+    /// vertical padding to the row's height but lays the text out from the row's top, so with
+    /// the roomier Windows 11 rows every label sat high, its whole padding below it.
+    /// </summary>
+    internal static void CenterVertically(ToolStripItemTextRenderEventArgs e)
+    {
+        if (e.Item is not ToolStripMenuItem { IsOnDropDown: true } item)
+        {
+            return;
+        }
+
+        var text = e.TextRectangle;
+        e.TextRectangle = new Rectangle(text.X, 0, text.Width, item.Height);
+        e.TextFormat = (e.TextFormat & ~TextFormatFlags.Bottom) | TextFormatFlags.VerticalCenter | TextFormatFlags.SingleLine;
+    }
+
+    /// <summary>
+    /// High Contrast's menu: the system renderer's own colours and painting, with the row's
+    /// text centred the same way.
+    /// </summary>
+    internal sealed class HighContrast : ToolStripSystemRenderer
+    {
+        protected override void OnRenderItemText(ToolStripItemTextRenderEventArgs e)
+        {
+            CenterVertically(e);
+            base.OnRenderItemText(e);
+        }
     }
 
     private sealed class MenuColorTable : ProfessionalColorTable

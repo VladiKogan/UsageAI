@@ -32,12 +32,12 @@ You're mid-refactor and the model stops. Weekly limit. Nobody told you it was cl
 **UsageAI** is a tiny Windows tray app that keeps every AI coding limit you have in one glance — how much you've used, how fast you're burning it, and exactly when it resets. No dashboards to open, no logins to repeat, no surprises at 2 a.m.
 
 <p align="center">
-  <img src="usageai-preview.png?v=0.17.3" alt="UsageAI 0.17.3 compact tray popup" width="420" />
+  <img src="usageai-preview.png?v=0.18.0" alt="UsageAI 0.18.0 compact tray popup" width="420" />
 </p>
 
 ## ⚡ Get it
 
-Current release: **UsageAI for Windows 0.17.3** and **UsageAI editor extension 0.1.23**.
+Current release: **UsageAI for Windows 0.18.0** and **UsageAI editor extension 0.1.23**.
 You can also browse the complete **[Releases page](https://github.com/VladiKogan/UsageAI/releases)**.
 
 **One line in PowerShell** installs the latest release, or updates to it:
@@ -52,8 +52,8 @@ first if you like.
 
 | | |
 | --- | --- |
-| 🚀 **[UsageAI-0.17.3-Setup.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.17.3/UsageAI-0.17.3-Setup.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.17.3/UsageAI-0.17.3-Setup.exe.sha256)) | The easy one. Start Menu shortcut, clean uninstall, and it installs the .NET 10 Desktop Runtime for you if you don't have it. |
-| 🎒 **[UsageAI-0.17.3-portable.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.17.3/UsageAI-0.17.3-portable.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.17.3/UsageAI-0.17.3-portable.exe.sha256)) | One file. No install. Drop it anywhere and double-click — it uses the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) if you already have it. |
+| 🚀 **[UsageAI-0.18.0-Setup.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.18.0/UsageAI-0.18.0-Setup.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.18.0/UsageAI-0.18.0-Setup.exe.sha256)) | The easy one. Start Menu shortcut, clean uninstall, and it installs the .NET 10 Desktop Runtime for you if you don't have it. |
+| 🎒 **[UsageAI-0.18.0-portable.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.18.0/UsageAI-0.18.0-portable.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.18.0/UsageAI-0.18.0-portable.exe.sha256)) | One file. No install. Drop it anywhere and double-click — it uses the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) if you already have it. |
 | 🧩 **[usageai-0.1.23.vsix](https://open-vsx.org/api/vladikogan/usageai/0.1.23/file/vladikogan.usageai-0.1.23.vsix)** | The VS Code and Antigravity extension. Install it from the editor's **Extensions: Install from VSIX...** command. |
 
 Windows 10 or 11 (x64), plus at least one AI tool you're already signed in to. That's the whole setup — UsageAI reuses the login you already have, so there's nothing new to create, paste, or remember.
@@ -68,9 +68,9 @@ and Antigravity.
 
 ## 👀 What you'll see
 
-**A tray icon that actually tells you something.** A ring that fills as you burn through your limit, the same gauge the popup draws. It stays one calm colour while you're fine, turns amber at your warning threshold (72% by default) and red at the critical one (90%), and shows `!` when no provider can be reached.
+**A tray icon that actually tells you something.** The UsageAI logo, its tank filling as you burn through your limit. It stays the logo's calm cyan while you're fine, turns amber at your warning threshold (72% by default) and red at the critical one (90%), and becomes a red ring with `!` when no provider can be reached.
 
-**Or every provider at once.** Set the tray icon provider to **All connected** and the icon becomes the UsageAI logo, its tank filled to the busiest limit it lists and turning amber and red at the same thresholds. Point at it for one line per provider, the same limits the popup shows:
+**Or every provider at once.** Set the tray icon provider to **All connected** and the tank fills to the busiest limit it lists, turning amber and red at the same thresholds. Point at it for one line per provider, the same limits the popup shows:
 
 ```text
 UsageAI
@@ -93,7 +93,7 @@ Gemini 60% | 30%
 **One glance or the full picture.** Left-click for a compact popup of ring gauges, two providers to a row; open the dashboard for one table of every limit from Codex, Claude Code, GitHub Copilot, and Google Gemini, in columns that line up — usage, what is used or left, when it resets, and where the current pace lands.
 
 <p align="center">
-  <img src="usageai-dashboard-preview.png?v=0.17.3" alt="UsageAI 0.17.3 dashboard" width="750" />
+  <img src="usageai-dashboard-preview.png?v=0.18.0" alt="UsageAI 0.18.0 dashboard" width="750" />
 </p>
 
 **It never goes blank.** If a refresh fails, UsageAI keeps the last good reading and marks it **stale**, with the provider's own error message attached. The dashboard says when that good reading was captured and when the next automatic retry is due, with a **Retry** link for that provider alone; the popup dims its rings and explains on hover. Each failed provider wakes independently after its backoff, instead of waiting for the regular polling interval or hammering a rate-limited API.
@@ -145,6 +145,10 @@ show several accounts, side by side:
   instead of replacing the main one.
 - **Settings → Accounts** shows, hides, renames, reorders, re-authenticates and removes them, and
   sets alerts per account. The tray keeps following your main login unless you pick another.
+- **A command per account.** **Terminal command…** writes a small command such as `claude-work`
+  that starts the CLI with that account's folder, so you never type the variable. A command you
+  wrote yourself, a `.cmd`, `.bat` or `.ps1` on your PATH that sets `CLAUDE_CONFIG_DIR` /
+  `CODEX_HOME`, is listed on its account too. UsageAI never changes those files.
 
 Codex and Claude Code don't need a separate CLI install: if only their editor extension is installed in VS Code, VS Code Insiders, VSCodium, Cursor, Windsurf, or Antigravity, UsageAI uses the CLI that extension ships.
 
