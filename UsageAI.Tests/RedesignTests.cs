@@ -1499,6 +1499,93 @@ internal static class RedesignTests
     }
 
     /// <summary>
+    /// Windows stay cloaked from creation until they have painted, so a dark window never opens
+    /// as a white sheet, and the popup turning into the dashboard on screen is never watched:
+    /// it is cloaked before it is reframed and recreated, and revealed once, finished.
+    /// </summary>
+    public static Task TestWindowsRevealOnlyWhenPaintedAsync()
+    {
+        using var form = new Form
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-10_000, -10_000),
+        };
+        form.Controls.Add(new Panel { Dock = DockStyle.Fill });
+        var reveal = WindowThemeHelpers.RevealWhenPainted(form);
+        _ = form.Handle;
+
+        // Without DWM (no cloaking) there is nothing to hold back; the paths still run.
+        var canCloak = IsCloaked(form);
+        form.Show();
+        True(!canCloak || IsCloaked(form));
+        Application.DoEvents();
+        False(IsCloaked(form));
+
+        // Hidden, it is cloaked again for its next opening, which waits for its paint too.
+        form.Hide();
+        True(!canCloak || IsCloaked(form));
+        form.Show();
+        form.Hide();
+        Application.DoEvents();
+        True(!canCloak || IsCloaked(form));
+        form.Show();
+        Application.DoEvents();
+        False(IsCloaked(form));
+
+        // Taken off the screen for a change, and back once it has painted again.
+        reveal.HideUntilPainted();
+        True(!canCloak || IsCloaked(form));
+        Application.DoEvents();
+        False(IsCloaked(form));
+
+        // A handle recreated while on screen comes back cloaked and is revealed the same way.
+        var before = form.Handle;
+        form.ShowInTaskbar = true;
+        True(form.Handle != before);
+        True(!canCloak || IsCloaked(form));
+        Application.DoEvents();
+        False(IsCloaked(form));
+        form.Hide();
+
+        using var popup = new UsagePopupForm(new AppSettings { IsEphemeral = true }, 96)
+        {
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-10_000, -10_000),
+        };
+        popup.SetStates(
+            new[] { Status("codex", "Codex", Metric("5-hour", UsageMetricKind.Session, 20)) },
+            false,
+            DateTimeOffset.Now,
+            Array.Empty<UsageSample>());
+        popup.Show();
+        Application.DoEvents();
+        False(IsCloaked(popup));
+        var compactHandle = popup.Handle;
+
+        // Open dashboard from the visible popup: recreated off screen, then shown finished.
+        popup.SetMode(DashboardMode.Full);
+        True(popup.Handle != compactHandle);
+        True(!canCloak || IsCloaked(popup));
+        typeof(UsagePopupForm)
+            .GetMethod("ShowDashboard", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(popup, new object[] { new Rectangle(-10_000, -10_000, 1_400, 1_000), false });
+        Application.DoEvents();
+        False(IsCloaked(popup));
+        popup.Hide();
+        return Task.CompletedTask;
+    }
+
+    private static bool IsCloaked(Control control)
+    {
+        const int DWMWA_CLOAKED = 14;
+        return DwmGetWindowAttribute(control.Handle, DWMWA_CLOAKED, out var cloaked, sizeof(int)) == 0 && cloaked != 0;
+    }
+
+    [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
+    private static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);
+
+    /// <summary>
     /// Settings' number fields draw their spin buttons in the app's palette rather than the
     /// system's light style, which showed as a white block on a dark card.
     /// </summary>

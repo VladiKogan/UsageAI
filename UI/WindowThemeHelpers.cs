@@ -180,6 +180,109 @@ internal static class WindowThemeHelpers
         }
     }
 
+    /// <summary>
+    /// Keeps <paramref name="form"/> off the screen until it has painted. Windows shows a new
+    /// window before it has drawn anything, so the dark windows opened as a white sheet (about
+    /// 50 ms for Settings) and then as white blocks for each child control. The window is
+    /// cloaked whenever its handle is created or it is hidden — it still exists and paints, it is
+    /// just not composed onto the screen — and revealed once, after showing, every pending paint
+    /// of it and its children is done. That also covers a handle recreated while the window is
+    /// on screen (the popup turning into the dashboard), whose new window would otherwise
+    /// appear unpainted where the popup was before moving.
+    /// </summary>
+    public static PaintedReveal RevealWhenPainted(Form form) => new(form);
+
+    private const int DWMWA_CLOAK = 13;
+
+    internal static bool SetCloak(Control control, bool cloaked)
+    {
+        if (!OperatingSystem.IsWindows() || !control.IsHandleCreated)
+        {
+            return false;
+        }
+
+        try
+        {
+            var value = cloaked ? 1 : 0;
+            return DwmSetWindowAttribute(control.Handle, DWMWA_CLOAK, ref value, sizeof(int)) == 0;
+        }
+        catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException)
+        {
+            return false;
+        }
+    }
+
+    /// <summary>Cloaks a form until it has painted; see <see cref="RevealWhenPainted"/>.</summary>
+    internal sealed class PaintedReveal
+    {
+        private readonly Form _form;
+        private bool _pending;
+
+        public PaintedReveal(Form form)
+        {
+            _form = form;
+            form.HandleCreated += OnHandleCreated;
+            form.VisibleChanged += OnVisibleChanged;
+        }
+
+        /// <summary>
+        /// Takes a window that is on screen off it until it has painted again, for a change that
+        /// reshapes it in steps (a new frame, a new size, a new place) the user should not watch.
+        /// </summary>
+        public void HideUntilPainted()
+        {
+            SetCloak(_form, cloaked: true);
+            Schedule();
+        }
+
+        private void OnHandleCreated(object? sender, EventArgs eventArgs)
+        {
+            // A reveal queued on a handle that was just replaced may never run; this one stands in.
+            _pending = false;
+            SetCloak(_form, cloaked: true);
+            Schedule();
+        }
+
+        private void OnVisibleChanged(object? sender, EventArgs eventArgs)
+        {
+            if (_form.Visible)
+            {
+                Schedule();
+            }
+            else
+            {
+                SetCloak(_form, cloaked: true);
+            }
+        }
+
+        // Queued rather than run now, so whatever the caller does after showing — sizing,
+        // moving, filling the window — is finished before it appears.
+        private void Schedule()
+        {
+            if (_pending || !_form.Visible || !_form.IsHandleCreated || _form.IsDisposed)
+            {
+                return;
+            }
+
+            _pending = true;
+            _form.BeginInvoke(Reveal);
+        }
+
+        private void Reveal()
+        {
+            _pending = false;
+            if (_form.IsDisposed || !_form.IsHandleCreated || !_form.Visible)
+            {
+                // Hidden again before it was revealed: it stays cloaked until it is next shown.
+                return;
+            }
+
+            const uint RDW_UPDATENOW = 0x0100, RDW_ALLCHILDREN = 0x0080, RDW_ERASENOW = 0x0200;
+            _ = RedrawWindow(_form.Handle, IntPtr.Zero, IntPtr.Zero, RDW_ERASENOW | RDW_UPDATENOW | RDW_ALLCHILDREN);
+            SetCloak(_form, cloaked: false);
+        }
+    }
+
     /// <summary>DWM colours are COLORREF values: 0x00BBGGRR.</summary>
     internal static int ColorRef(Color color) => color.R | (color.G << 8) | (color.B << 16);
 

@@ -50,6 +50,7 @@ internal sealed class AddAccountForm : Form
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = true;
+        WindowThemeHelpers.RevealWhenPainted(this);
         StartPosition = FormStartPosition.CenterScreen;
         Text = reauthenticate is null ? "Add account" : "Re-authenticate account";
         AppIcon.Apply(this);
@@ -630,6 +631,7 @@ internal sealed class TextPrompt : Form
         MaximizeBox = false;
         MinimizeBox = false;
         ShowInTaskbar = false;
+        WindowThemeHelpers.RevealWhenPainted(this);
         StartPosition = FormStartPosition.CenterParent;
         Text = caption;
         ClientSize = new Size(scale[380], scale[132]);
