@@ -72,6 +72,19 @@ internal sealed class ProviderAccount
     /// <summary>The terminal command UsageAI wrote for this login folder, such as <c>claude-work</c>.</summary>
     public string? Command { get; set; }
 
+    /// <summary>
+    /// Command files the user made that start the CLI with this login folder, such as
+    /// <c>C:\tools\claude-team.cmd</c>, found on the PATH by each account scan. UsageAI only lists
+    /// them; it never rewrites or deletes them.
+    /// </summary>
+    public string[] UserCommands { get; set; } = Array.Empty<string>();
+
+    /// <summary>The names <see cref="UserCommands"/> are typed as, each once.</summary>
+    [JsonIgnore]
+    public IReadOnlyList<string> UserCommandNames =>
+        UserCommands.Select(System.IO.Path.GetFileNameWithoutExtension).OfType<string>()
+            .Distinct(StringComparer.OrdinalIgnoreCase).ToArray();
+
     [JsonIgnore]
     public bool IsDefault => ProviderKey.IsDefaultAccount(Id);
 

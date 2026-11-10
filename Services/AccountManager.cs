@@ -348,9 +348,47 @@ internal sealed class AccountManager
             return 0;
         }
 
+        FindUserCommands(Terminal);
         return _settings.Accounts
             .Where(account => account is { IsDefault: false, Command: not null, Path: not null })
             .Count(account => Terminal.Refresh(account.ProviderId, account.Path!, account.Command!));
+    }
+
+    /// <summary>How many of the user's own commands are kept per account.</summary>
+    public const int MaxUserCommands = 8;
+
+    /// <summary>
+    /// Records, for each account, the commands the user made for its folder outside UsageAI, so
+    /// Settings shows them and Re-authenticate can offer one. The shortest name comes first, as
+    /// the plain one (<c>claude-team</c> before <c>claude-api-team</c>). Saves only on a change.
+    /// </summary>
+    private void FindUserCommands(TerminalCommands terminal)
+    {
+        var found = terminal.FindUserCommands();
+        var changed = false;
+        foreach (var account in _settings.Accounts.Where(account => account is { IsDefault: false, Path: not null }))
+        {
+            var files = found
+                .Where(command =>
+                    command.ProviderId.Equals(account.ProviderId, StringComparison.OrdinalIgnoreCase) &&
+                    command.Folder.Equals(account.Path, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(command => command.Name.Length)
+                .ThenBy(command => command.Name, StringComparer.OrdinalIgnoreCase)
+                .Select(command => command.File)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(MaxUserCommands)
+                .ToArray();
+            if (!files.SequenceEqual(account.UserCommands, StringComparer.OrdinalIgnoreCase))
+            {
+                account.UserCommands = files;
+                changed = true;
+            }
+        }
+
+        if (changed)
+        {
+            _settings.Save();
+        }
     }
 
     /// <summary>

@@ -493,6 +493,7 @@ internal sealed class AppSettings
                 account.Pending = false;
                 account.DuplicateOf = null;
                 account.Command = null;
+                account.UserCommands = Array.Empty<string>();
             }
             else
             {
@@ -513,6 +514,13 @@ internal sealed class AppSettings
                 : null;
             account.DuplicateOf = BoundedText(account.DuplicateOf, 320);
             account.Command = TerminalCommands.NameProblem(account.Command) is null ? account.Command!.Trim() : null;
+            account.UserCommands = (account.UserCommands ?? Array.Empty<string>())
+                .Where(file => file is { Length: > 0 and <= 260 } &&
+                    Path.IsPathFullyQualified(file) &&
+                    TerminalCommands.UserCommandExtensions.Contains(Path.GetExtension(file)))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(AccountManager.MaxUserCommands)
+                .ToArray();
             account.Order = Math.Clamp(account.Order, 0, 1000);
             if (kept.Any(other => other.UnitKey.Equals(account.UnitKey, StringComparison.OrdinalIgnoreCase)))
             {

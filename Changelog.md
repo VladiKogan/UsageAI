@@ -6,6 +6,16 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## Unreleased
 
+### Added
+
+- **Terminal commands you made yourself show up on their account.** Each account scan now looks
+  through the folders on your PATH for `.cmd`, `.bat` and `.ps1` files that set `CLAUDE_CONFIG_DIR`
+  or `CODEX_HOME` to an account's folder, such as a `claude-work.cmd` written long before UsageAI
+  could make one. Settings lists them in the account's details, and Re-authenticate offers one when
+  UsageAI wrote no command of its own. They are only read: UsageAI never rewrites or deletes them,
+  and Forget says so. Only the folder variable is taken from each file; anything else in it, such
+  as a key, is never kept. Files over 16 KB and UsageAI's own commands are skipped.
+
 ### Fixed
 
 - **Claude's saved limit resets show up again, each kind on its own row.** Claude now reports

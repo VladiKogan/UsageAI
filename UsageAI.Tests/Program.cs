@@ -150,6 +150,7 @@ internal static class Program
         ("add account dialog signs in, adds a folder or re-authenticates", AccountTests.TestAddAccountDialogAsync),
         ("forgotten and duplicate accounts stay right, and retries wait their turn", AccountTests.TestAccountReviewFixesAsync),
         ("terminal commands start a CLI on one login folder", AccountTests.TestTerminalCommandsAsync),
+        ("your own terminal commands are found for their login folder", AccountTests.TestUserTerminalCommandsAreFoundAsync),
         ("the main login is the standard folder; an inherited one is found and migrated", AccountTests.TestStandardFolderAndMigrationAsync),
         ("settings account list selects on click, passes the wheel on and shows live status", AccountTests.TestAccountListClicksWheelAndLiveStatusAsync),
         ("an in-app update leaves a note for the copy that starts after it", UpdateFlowTests.TestUpdateHandoffAsync),

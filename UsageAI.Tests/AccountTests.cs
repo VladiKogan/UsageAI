@@ -1272,6 +1272,120 @@ internal static class AccountTests
         return Task.CompletedTask;
     }
 
+    public static async Task TestUserTerminalCommandsAreFoundAsync()
+    {
+        var root = NewDirectory("own-commands");
+        var environment = SaveEnvironment("USAGEAI_TEST_LOGINS");
+        try
+        {
+            var profile = Path.Combine(root, "profile");
+            var bin = Path.Combine(root, "bin");
+            var tools = Path.Combine(root, "tools");
+            var scripts = Path.Combine(root, "scripts");
+            Directory.CreateDirectory(tools);
+            Directory.CreateDirectory(scripts);
+            Directory.CreateDirectory(bin);
+            var work = Login(profile, ".claude-work", ".credentials.json");
+            var lab = Login(profile, ".codex-lab", "auth.json");
+            Environment.SetEnvironmentVariable("USAGEAI_TEST_LOGINS", profile);
+
+            // Quoted and unquoted cmd, a %VAR% path, a .bat, and a PowerShell script all count.
+            File.WriteAllText(Path.Combine(tools, "claude-work.cmd"), $"@echo off\r\nsetlocal\r\nset \"CLAUDE_CONFIG_DIR={work}\"\r\nclaude %*\r\n");
+            File.WriteAllText(Path.Combine(tools, "claude-work-api.bat"), "@echo off\r\nset ANTHROPIC_API_KEY=not-kept\r\nSET CLAUDE_CONFIG_DIR=%USAGEAI_TEST_LOGINS%\\.claude-work\\\r\nclaude %*\r\n");
+            File.WriteAllText(Path.Combine(scripts, "codex-lab.ps1"), "$env:CODEX_HOME = \"$env:USAGEAI_TEST_LOGINS\\.codex-lab\"\r\ncodex @args\r\n");
+
+            // Not read as commands: UsageAI's own file, a relative folder, an unexpandable variable,
+            // a file too large to be a launcher, and other extensions. A folder no account uses is
+            // found, but belongs to no account.
+            File.WriteAllText(Path.Combine(tools, "claude-ours.cmd"), $"{TerminalCommands.Marker}\r\nset \"CLAUDE_CONFIG_DIR={work}\"\r\n");
+            File.WriteAllText(Path.Combine(tools, "claude-else.cmd"), $"set \"CLAUDE_CONFIG_DIR={Path.Combine(root, "elsewhere")}\"\r\n");
+            File.WriteAllText(Path.Combine(tools, "claude-relative.cmd"), "set \"CLAUDE_CONFIG_DIR=.claude-work\"\r\n");
+            File.WriteAllText(Path.Combine(tools, "claude-here.cmd"), "set \"CLAUDE_CONFIG_DIR=%~dp0.claude-work\"\r\n");
+            File.WriteAllText(Path.Combine(tools, "claude-big.cmd"), $"set \"CLAUDE_CONFIG_DIR={work}\"\r\n@rem {new string('x', 20_000)}\r\n");
+            File.WriteAllText(Path.Combine(tools, "claude-work.cmdx"), $"set \"CLAUDE_CONFIG_DIR={work}\"\r\n");
+            File.WriteAllText(Path.Combine(tools, "claude-work.txt"), $"set \"CLAUDE_CONFIG_DIR={work}\"\r\n");
+            File.WriteAllText(Path.Combine(bin, "claude-mine.cmd"), $"set \"CLAUDE_CONFIG_DIR={work}\"\r\n");
+
+            var terminal = new TerminalCommands(
+                bin,
+                () => null,
+                _ => throw new InvalidOperationException("A check must not write the PATH."),
+                _ => null,
+                _ => "claude",
+                profile,
+                () => new[] { tools, scripts, bin, Path.Combine(root, "missing") });
+            var found = terminal.FindUserCommands();
+            Equal(
+                "claude-else.cmd|claude-work-api.bat|claude-work.cmd|codex-lab.ps1",
+                string.Join("|", found.Select(command => Path.GetFileName(command.File)).Order(StringComparer.OrdinalIgnoreCase)));
+            True(found.All(command => command.Folder is not null));
+            Equal("codex", found.Single(command => command.Name == "codex-lab").ProviderId);
+
+            // Each account keeps the files for its own folder, the plain name first.
+            var settings = new AppSettings { IsEphemeral = true, AccountsInitialized = true };
+            var manager = new AccountManager(settings, profile, providerId => Path.Combine(profile, "." + providerId), account => new StubClient(account.UnitKey))
+            {
+                Terminal = terminal,
+            };
+            var workKey = manager.AddFolder("claude", work, AccountSource.Added, "Work").UnitKey!;
+            var labKey = manager.AddFolder("codex", lab, AccountSource.Added, "Lab").UnitKey!;
+            Equal(0, manager.RefreshTerminalCommands());
+            Equal("claude-work|claude-work-api", string.Join("|", settings.FindAccount(workKey)!.UserCommandNames));
+            Equal("codex-lab", string.Join("|", settings.FindAccount(labKey)!.UserCommandNames));
+            Equal(0, settings.FindAccount("claude")?.UserCommands.Length ?? 0);
+
+            // Settings lists them, and forgetting the account leaves them where they are.
+            using (var dialog = new SettingsForm(
+                       settings,
+                       new[] { ("codex", "Codex"), ("claude", "Claude Code") },
+                       _ => Task.FromResult(new UpdateCheckResult(true, null)),
+                       _ => Task.CompletedTask,
+                       dpiOverride: 96,
+                       readStartup: static () => new StartupState(StartupStatus.NotRegistered, null),
+                       writeStartup: _ => { },
+                       accounts: new SettingsAccountActions(null, manager)))
+            {
+                dialog.Show();
+                Application.DoEvents();
+                var list = Field<CheckedListBox>(dialog, "_accountList");
+                list.SelectedIndex = list.Items.Cast<object>().Select(item => item.ToString()!).ToList()
+                    .FindIndex(item => item.StartsWith("Claude · Work", StringComparison.Ordinal));
+                Application.DoEvents();
+                True(Field<Label>(dialog, "_accountDetails").Text.Contains(
+                    $"Your own terminal commands: claude-work, claude-work-api (in {AccountDiscovery.DisplayFolder(tools)})",
+                    StringComparison.Ordinal));
+                dialog.Close();
+            }
+
+            // A file that no longer points there drops out on the next scan.
+            File.WriteAllText(Path.Combine(tools, "claude-work.cmd"), "@echo off\r\nclaude %*\r\n");
+            manager.RefreshTerminalCommands();
+            Equal("claude-work-api", string.Join("|", settings.FindAccount(workKey)!.UserCommandNames));
+            Equal(null, manager.Remove(workKey, deleteCreatedFolder: false));
+            True(File.Exists(Path.Combine(tools, "claude-work-api.bat")));
+
+            // Saved entries that are not absolute command files are dropped on load.
+            var saved = new AppSettings { IsEphemeral = true };
+            saved.Accounts.Add(new ProviderAccount
+            {
+                ProviderId = "claude",
+                Source = AccountSource.Added,
+                Path = work,
+                UserCommands = new[] { "relative.cmd", Path.Combine(tools, "x.exe"), Path.Combine(tools, "ok.cmd"), Path.Combine(tools, "OK.cmd") },
+            });
+            saved.Accounts.Add(new ProviderAccount { ProviderId = "claude", UserCommands = new[] { Path.Combine(tools, "main.cmd") } });
+            Invoke(saved, "Validate");
+            Equal(Path.Combine(tools, "ok.cmd"), string.Join("|", saved.Accounts.Single(account => !account.IsDefault).UserCommands));
+            Equal(0, saved.Accounts.Single(account => account.IsDefault).UserCommands.Length);
+            await Task.CompletedTask;
+        }
+        finally
+        {
+            RestoreEnvironment(environment);
+            TryDelete(root);
+        }
+    }
+
     public static async Task TestAccountListClicksWheelAndLiveStatusAsync()
     {
         var profile = NewDirectory("list");
