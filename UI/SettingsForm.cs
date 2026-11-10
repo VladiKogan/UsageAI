@@ -262,19 +262,21 @@ internal sealed partial class SettingsForm : Form
         _providers.MouseMove += OnProvidersMouseMove;
         _providers.MouseUp += OnProvidersMouseUp;
         _providers.ItemCheck += OnProvidersItemCheck;
+        var choices = trayChoices ?? Array.Empty<(string Id, string DisplayName)>();
         foreach (var id in _settings.OrderProviders(providers.Select(provider => provider.Id).ToArray()))
         {
             var provider = providers.First(candidate =>
                 candidate.Id.Equals(id, StringComparison.OrdinalIgnoreCase));
-            var entry = new ProviderEntry(provider.Id, provider.DisplayName);
             _providers.Items.Add(
-                entry,
+                new ProviderEntry(provider.Id, provider.DisplayName),
                 _settings.IsProviderVisible(provider.Id));
-            _trayProvider.Items.Add(entry);
+            AddTrayChoices(provider.Id, provider.DisplayName, choices);
         }
 
-        // An account other than a default login can drive the tray too, once it is shown.
-        foreach (var (id, displayName) in (trayChoices ?? Array.Empty<(string, string)>()).Where(choice => !ProviderKey.IsDefault(choice.Item1)))
+        // An account whose provider is not in the list above still gets its entry.
+        foreach (var (id, displayName) in choices.Where(choice =>
+            !ProviderKey.IsDefault(choice.Id) &&
+            !providers.Any(provider => provider.Id.Equals(ProviderKey.ProviderOf(choice.Id), StringComparison.OrdinalIgnoreCase))))
         {
             _trayProvider.Items.Add(new ProviderEntry(id, displayName));
         }
@@ -1421,6 +1423,26 @@ internal sealed partial class SettingsForm : Form
         }
 
         base.Dispose(disposing);
+    }
+
+    /// <summary>
+    /// Adds a provider's tray choices: its main login, then each other shown account. While the
+    /// provider shows more than one account the main login carries its label too ("Claude Code ·
+    /// me@example.com"), as in the popup, so it is never mistaken for the provider as a whole.
+    /// </summary>
+    private void AddTrayChoices(
+        string providerId,
+        string providerName,
+        IReadOnlyList<(string Id, string DisplayName)> choices)
+    {
+        var main = choices.FirstOrDefault(choice => choice.Id.Equals(providerId, StringComparison.OrdinalIgnoreCase));
+        _trayProvider.Items.Add(new ProviderEntry(providerId, main.DisplayName ?? providerName));
+        foreach (var (id, displayName) in choices.Where(choice =>
+            !ProviderKey.IsDefault(choice.Id) &&
+            ProviderKey.ProviderOf(choice.Id).Equals(providerId, StringComparison.OrdinalIgnoreCase)))
+        {
+            _trayProvider.Items.Add(new ProviderEntry(id, displayName));
+        }
     }
 
     private sealed record ProviderEntry(string Id, string Name)

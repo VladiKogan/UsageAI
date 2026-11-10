@@ -19,6 +19,10 @@ The project follows [Semantic Versioning](https://semver.org/).
   way the Claude CLI names it: "Fable reset" (it gives back what Fable used this week), "5-hour
   reset", "Weekly reset" or "Full reset". Each row shows how many you have and the earliest use-by
   date, with the year only when it isn't this year.
+- **The Tray icon provider list names your main login's account too.** While a provider shows more
+  than one account, its main login read only as "Claude Code", so it was easy to take for the
+  provider as a whole. It now carries the same label as in the popup ("Claude Code · me@example.com"),
+  and each extra account is listed right after its provider instead of at the end.
 
 ## [0.17.3] - 2026-11-09
 

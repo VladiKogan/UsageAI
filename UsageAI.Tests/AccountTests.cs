@@ -703,8 +703,14 @@ internal static class AccountTests
             True(items.Any(item => item.StartsWith("Claude · work@example.com — Expired", StringComparison.Ordinal)));
             True(items.Any(item => item.StartsWith("Codex · lab — New", StringComparison.Ordinal)));
             True(items.Any(item => item.StartsWith("Claude · .claude", StringComparison.Ordinal)));
+            // The main login carries its label in the tray list, and each account follows its provider.
             var tray = Field<ComboBox>(dialog, "_trayProvider");
-            True(tray.Items.Cast<object>().Any(item => item.ToString() == "Claude Code · work@example.com"));
+            Equal(
+                "Automatic|All connected|Codex|Claude Code · me|Claude Code · work@example.com",
+                string.Join("|", tray.Items.Cast<object>().Select(item => item.ToString())));
+            Equal(
+                "Codex|Claude Code",
+                string.Join("|", Field<CheckedListBox>(dialog, "_providers").Items.Cast<object>().Select(item => item.ToString())));
 
             // Selecting an account shows where it is read from; edits wait for Save.
             list.SelectedIndex = Array.FindIndex(items, item => item.StartsWith("Claude · work", StringComparison.Ordinal));
@@ -722,6 +728,7 @@ internal static class AccountTests
             True(Field<Label>(dialog, "_accountDetails").Text.Contains("Created by UsageAI", StringComparison.Ordinal));
             list.SetItemChecked(list.SelectedIndex, true);
             Field<ToggleSwitch>(dialog, "_askBeforeShowing").Checked = false;
+            tray.SelectedIndex = 3;
             Field<Button>(dialog, "_saveButton").PerformClick();
             Application.DoEvents();
 
@@ -733,6 +740,7 @@ internal static class AccountTests
             False(settings.FindAccount(labKey)!.Pending);
             True(settings.IsUnitVisible(labKey));
             False(settings.AskBeforeShowingNewAccounts);
+            Equal("claude", settings.TrayProviderId);
 
             // The popup's banner shows the first notice and reports the answer.
             manager.NotifyIdentityChanged("claude", null, "team@example.com");
