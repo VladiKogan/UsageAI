@@ -51,6 +51,15 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
   sign-in that does not finish removes the folder only when that attempt created it. UsageAI deletes
   a login folder only when the user removes an account UsageAI created, after a confirmation that
   names the path, or answers yes to the uninstaller's question listing those folders.
+- An account's terminal command is a `.cmd` file UsageAI writes to `%LOCALAPPDATA%\UsageAI\bin`
+  (added once to the user's PATH) that sets `CLAUDE_CONFIG_DIR` / `CODEX_HOME` and starts the CLI.
+  It holds no credential, and UsageAI replaces or deletes only files that start with its marker
+  line. To list commands the user made themselves, each account scan (and **Rescan**, but not a
+  startup with automatic finding off) reads the `.cmd`, `.bat` and `.ps1` files of at most 16 KB in
+  the PATH's local folders; shares and mapped network drives are skipped. Only the line that sets
+  `CLAUDE_CONFIG_DIR` / `CODEX_HOME` is used, and only the file's path is kept in settings. Anything
+  else such a file holds, an API key included, is never stored, logged or sent, and the files are
+  never changed.
 - GitHub Copilot tokens are sent only to the GitHub service that issued them: `api.github.com` for
   github.com and `api.<host>` for a GitHub Enterprise Cloud host (`*.ghe.com`), as named by the
   credential file the token came from. A token for any other host, such as a self-hosted GitHub

@@ -145,6 +145,10 @@ show several accounts, side by side:
   instead of replacing the main one.
 - **Settings → Accounts** shows, hides, renames, reorders, re-authenticates and removes them, and
   sets alerts per account. The tray keeps following your main login unless you pick another.
+- **A command per account.** **Terminal command…** writes a small command such as `claude-work`
+  that starts the CLI with that account's folder, so you never type the variable. A command you
+  wrote yourself, a `.cmd`, `.bat` or `.ps1` on your PATH that sets `CLAUDE_CONFIG_DIR` /
+  `CODEX_HOME`, is listed on its account too. UsageAI never changes those files.
 
 Codex and Claude Code don't need a separate CLI install: if only their editor extension is installed in VS Code, VS Code Insiders, VSCodium, Cursor, Windsurf, or Antigravity, UsageAI uses the CLI that extension ships.
 
