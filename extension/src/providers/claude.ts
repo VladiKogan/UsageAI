@@ -1,6 +1,6 @@
 import { access, readdir, realpath, stat } from "node:fs/promises";
 import * as path from "node:path";
-import { commandWithEnvironment, defaultLoginFolder, mainSignInCommand } from "../accounts";
+import { commandWithEnvironment, defaultLoginFolder, hasClaudeApiKeyLogin, mainSignInCommand } from "../accounts";
 import { claudeBundledPaths, findBundledExecutable, noExtensions, type ExtensionPathResolver } from "../bundled-cli";
 import { UsageProviderError } from "../errors";
 import { clampPercent, type UsageClient, type UsageMetric, type UsageSnapshot } from "../model";
@@ -94,7 +94,7 @@ export class ClaudeUsageClient implements UsageClient {
       }
     }
 
-    let credentials = await this.loadCredentials();
+    let credentials = await this.loadCredentialsOrExplainApiKeyLogin();
     credentials = await refreshExpiredClaudeCredentials(
       credentials,
       () => this.loadCredentials(),
@@ -134,6 +134,22 @@ export class ClaudeUsageClient implements UsageClient {
     }
   }
 
+  /**
+   * `loadCredentials`, except that a login switched to an API key (Console billing) says so: signing
+   * in that way removes the subscription login UsageAI reads, which otherwise looks like an
+   * unexplained sign-out. Not used by the recovery loop, which reloads every 100 ms.
+   */
+  private async loadCredentialsOrExplainApiKeyLogin(): Promise<ClaudeCredentials> {
+    try {
+      return await this.loadCredentials();
+    } catch (error) {
+      if (await hasClaudeApiKeyLogin(this.account?.configDirectory ?? defaultLoginFolder("claude"))) {
+        throw new UsageProviderError(claudeApiKeyLoginMessage(this.account?.configDirectory), 0, { cause: error });
+      }
+      throw error;
+    }
+  }
+
   private async loadCredentials(): Promise<ClaudeCredentials> {
     if (this.account) {
       return readClaudeCredentialFile(claudeCredentialPath(this.account.configDirectory));
@@ -154,6 +170,12 @@ export class ClaudeUsageClient implements UsageClient {
 
     return readClaudeCredentialFile(claudeCredentialPath());
   }
+}
+
+export function claudeApiKeyLoginMessage(configDirectory?: string): string {
+  return configDirectory
+    ? `Claude Code at ${configDirectory} is signed in with an API key (Console billing) instead of a Claude subscription, so there are no plan limits to show. Sign it in with your subscription (\`claude auth login --claudeai\` with its CLAUDE_CONFIG_DIR), then refresh.`
+    : "Claude Code is signed in with an API key (Console billing) instead of a Claude subscription, so there are no plan limits to show. Sign in with your subscription (`claude auth login --claudeai`), then refresh.";
 }
 
 async function readClaudeCredentialFile(credentialPath: string): Promise<ClaudeCredentials> {

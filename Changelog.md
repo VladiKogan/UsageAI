@@ -8,6 +8,12 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Fixed
 
+- **Claude Code says when its login was switched to an API key.** Signing in to Claude Code
+  with Console (API) billing, for example from the Claude Code editor extension, replaces the
+  Claude subscription login in that folder, so UsageAI had no subscription to read and only said
+  the saved login could not be read, which looked like an unexplained sign-out. When the folder
+  holds an API key instead, the Claude card now says so and how to sign in with the subscription
+  again. Only whether a key is stored is read; the key itself is never shown or kept.
 - **Windows no longer flash white as they open.** Windows shows a new window before it has drawn
   anything, so on the dark theme Settings opened as a white sheet for about 50 ms, then as white
   blocks where its controls were still to paint; the dashboard, What's New and the popup did the

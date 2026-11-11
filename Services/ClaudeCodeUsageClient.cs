@@ -123,7 +123,7 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
         }
 
         var credentials = await RefreshExpiredCredentialsThroughClaudeAsync(
-            LoadCredentials(),
+            LoadCredentialsOrExplainApiKeyLogin(),
             cancellationToken);
         ValidateCredentials(credentials);
 
@@ -351,6 +351,30 @@ internal sealed class ClaudeCodeUsageClient : IAccountUsageClient
             "claude",
             "Claude Code");
     }
+
+    /// <summary>
+    /// <see cref="LoadCredentials"/>, except that a login switched to an API key (Console billing)
+    /// says so: signing in that way removes the subscription login UsageAI reads, which otherwise
+    /// looks like an unexplained sign-out. Not used by the recovery loop, which reloads every 100 ms.
+    /// </summary>
+    private ClaudeCredentials LoadCredentialsOrExplainApiKeyLogin()
+    {
+        try
+        {
+            return LoadCredentials();
+        }
+        catch (ClaudeCodeUsageException exception) when (
+            (_configDirectory is null || Directory.Exists(_configDirectory)) &&
+            AccountDiscovery.HasClaudeApiKeyLogin(_configDirectory ?? AccountDiscovery.DefaultFolder(AccountDiscovery.ClaudeProviderId)))
+        {
+            throw new ClaudeCodeUsageException(ApiKeyLoginMessage(_configDirectory), exception);
+        }
+    }
+
+    internal static string ApiKeyLoginMessage(string? configDirectory) =>
+        configDirectory is null
+            ? "Claude Code is signed in with an API key (Console billing) instead of a Claude subscription, so there are no plan limits to show. Sign in with your subscription (`claude auth login --claudeai`), then refresh."
+            : $"Claude Code at {configDirectory} is signed in with an API key (Console billing) instead of a Claude subscription, so there are no plan limits to show. Re-authenticate it with your subscription in Settings → Accounts, then refresh.";
 
     private ClaudeCredentials LoadCredentials()
     {
