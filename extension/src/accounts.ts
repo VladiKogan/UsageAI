@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
 import { readdir, stat } from "node:fs/promises";
 import * as path from "node:path";
-import { getObject, getString } from "./providers/json";
+import { getObject, getString, isObject } from "./providers/json";
 import { readBoundedText, userHome } from "./security";
 
 /**
@@ -450,6 +450,21 @@ export async function readClaudeIdentity(profilePath: string): Promise<AccountId
     };
   } catch {
     return {};
+  }
+}
+
+/**
+ * Whether a Claude login folder is signed in with an API key (Console billing) instead of a Claude
+ * subscription: its profile carries `primaryApiKey`. Only whether the key exists is read; the key
+ * itself is never kept or shown. False when unknown. Mirrors `AccountDiscovery.HasClaudeApiKeyLogin`.
+ */
+export async function hasClaudeApiKeyLogin(folder: string, home: string = userHome()): Promise<boolean> {
+  try {
+    const root = JSON.parse(await readBoundedText(await claudeProfilePath(folder, home), maxClaudeProfileCharacters)) as unknown;
+    const key = isObject(root) ? root.primaryApiKey : undefined;
+    return typeof key === "string" && key.trim().length > 0;
+  } catch {
+    return false;
   }
 }
 

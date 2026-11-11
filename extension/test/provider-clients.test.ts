@@ -5,7 +5,9 @@ import * as os from "node:os";
 import * as path from "node:path";
 import test, { mock } from "node:test";
 import { UsageProviderError } from "../src/errors";
+import { hasClaudeApiKeyLogin } from "../src/accounts";
 import {
+  claudeApiKeyLoginMessage,
   claudeCliUserAgent,
   ClaudeUsageClient,
   forgetInstalledClaudeCliVersion,
@@ -94,6 +96,66 @@ test("Claude client sends OAuth usage requests and honors throttling hints", asy
     restoreEnvironment("USAGEAI_CLAUDE_OAUTH_TOKEN", oldToken);
     restoreEnvironment("USAGEAI_CLAUDE_OAUTH_SCOPES", oldScopes);
     restoreEnvironment("USAGEAI_CLAUDE_SESSION_KEY", oldSession);
+  }
+});
+
+test("Claude client explains a login switched to an API key", async () => {
+  const names = ["USAGEAI_CLAUDE_OAUTH_TOKEN", "USAGEAI_CLAUDE_SESSION_KEY", "CLAUDE_AI_SESSION_KEY", "CLAUDE_WEB_SESSION_KEY", "CLAUDE_CONFIG_DIR"] as const;
+  const previous = new Map(names.map((name) => [name, process.env[name]]));
+  for (const name of names) delete process.env[name];
+  const home = userHome();
+  const folder = path.join(home, ".claude");
+  const credentialPath = path.join(folder, ".credentials.json");
+  const profilePath = path.join(home, ".claude.json");
+  const saved = await Promise.all([credentialPath, profilePath].map((file) => readFile(file, "utf8").catch(() => undefined)));
+  const account = await mkdtemp(path.join(os.tmpdir(), "usageai-claude-console-"));
+  const apiKey = "sk-ant-api-test-secret";
+  const noRecovery = async (): Promise<boolean> => { throw new Error("No CLI recovery for a missing login."); };
+  try {
+    mock.method(security, "requestJson", (async () => { throw new Error("HTTP should not be reached."); }) as typeof security.requestJson);
+    await mkdir(folder, { recursive: true });
+    // Signing in with Console billing leaves only MCP tokens in the credential file and puts an
+    // API key in the profile: say so, and never show the key.
+    await writeFile(credentialPath, JSON.stringify({ mcpOAuth: {} }), "utf8");
+    await writeFile(profilePath, JSON.stringify({ primaryApiKey: apiKey, oauthAccount: { emailAddress: "me@example.com" } }), "utf8");
+    await assert.rejects(() => new ClaudeUsageClient(noRecovery).getUsage(), (error: Error) => {
+      assert.equal(error.message, claudeApiKeyLoginMessage());
+      assert.ok(!error.message.includes(apiKey));
+      return true;
+    });
+    assert.equal(await hasClaudeApiKeyLogin(folder, home), true);
+
+    // No key, a blank one or an unreadable profile keep the ordinary message.
+    for (const other of [JSON.stringify({ oauthAccount: {} }), JSON.stringify({ primaryApiKey: "  " }), JSON.stringify({ primaryApiKey: 7 }), "{invalid"]) {
+      await writeFile(profilePath, other, "utf8");
+      assert.equal(await hasClaudeApiKeyLogin(folder, home), false);
+      await assert.rejects(() => new ClaudeUsageClient(noRecovery).getUsage(), /not signed in, or its saved login could not be read/);
+    }
+
+    // A subscription login that is still there wins even beside a stored API key.
+    mock.restoreAll();
+    mock.method(security, "requestJson", (async () => ({ status: 200, headers: {}, data: { five_hour: { utilization: 12 } } })) as typeof security.requestJson);
+    await writeFile(profilePath, JSON.stringify({ primaryApiKey: apiKey }), "utf8");
+    await writeFile(credentialPath, JSON.stringify({
+      claudeAiOauth: { accessToken: "file-access", expiresAt: Date.now() + 3_600_000, scopes: ["user:profile"], subscriptionType: "pro" },
+    }), "utf8");
+    assert.equal((await new ClaudeUsageClient(noRecovery, undefined, async () => undefined).getUsage()).metrics[0]?.usedPercent, 12);
+
+    // An extra account reads the profile inside its own folder and names the folder.
+    await writeFile(path.join(account, ".claude.json"), JSON.stringify({ primaryApiKey: apiKey }), "utf8");
+    await assert.rejects(
+      () => new ClaudeUsageClient(noRecovery, { id: "0badc0de", configDirectory: account }).getUsage(),
+      (error: Error) => error.message === claudeApiKeyLoginMessage(account) && error.message.includes(account),
+    );
+  } finally {
+    mock.restoreAll();
+    for (const name of names) restoreEnvironment(name, previous.get(name));
+    for (const [index, file] of [credentialPath, profilePath].entries()) {
+      const contents = saved[index];
+      if (contents === undefined) await rm(file, { force: true });
+      else await writeFile(file, contents, "utf8");
+    }
+    await rm(account, { recursive: true, force: true });
   }
 });
 

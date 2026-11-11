@@ -41,7 +41,9 @@ If a provider secret may have been exposed, revoke or rotate it with that provid
   start with `.claude` / `.codex` and that hold that provider's credential file, from an inherited
   `CLAUDE_CONFIG_DIR` / `CODEX_HOME`, or chosen by the user, and must be absolute and local (no
   UNC). Who is signed in is read from local files only (`.claude.json`'s `oauthAccount`, the email
-  in Codex's `id_token`) and kept as a hash plus the email, for labels.
+  in Codex's `id_token`) and kept as a hash plus the email, for labels. When a Claude login cannot
+  be read, `.claude.json` is checked for a `primaryApiKey` only to say the login was switched to
+  API billing; whether one exists is all that is used, and the key is never kept, sent or shown.
 - "Sign in to another account" starts the provider's official login, `claude auth login --claudeai`
   or `codex login`, with `CLAUDE_CONFIG_DIR` / `CODEX_HOME` pointing at a new or empty folder the user
   confirmed. The CLI performs the whole OAuth sign-in in the browser and writes its own credential

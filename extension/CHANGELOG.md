@@ -1,5 +1,16 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+
+- **Claude Code says when its login was switched to an API key.** Signing in to Claude Code
+  with Console (API) billing, for example from the Claude Code extension, replaces the Claude
+  subscription login in that folder, so UsageAI had no subscription to read and only said the
+  saved login could not be read, which looked like an unexplained sign-out. When the folder holds
+  an API key instead, the Claude card now says so and how to sign in with the subscription
+  again. Only whether a key is stored is read; the key itself is never shown or kept.
+
 ## 0.1.23
 
 ### Added

@@ -361,6 +361,35 @@ internal static class AccountDiscovery
         return File.Exists(inProfile) || !File.Exists(inFolder) ? inProfile : inFolder;
     }
 
+    /// <summary>
+    /// Whether a Claude login folder is signed in with an API key (Console billing) instead of a
+    /// Claude subscription: its profile carries <c>primaryApiKey</c>. Only whether the key exists is
+    /// read; the key itself is never kept or shown. False when unknown.
+    /// </summary>
+    public static bool HasClaudeApiKeyLogin(string folder, string? userProfile = null)
+    {
+        try
+        {
+            var path = ClaudeIdentityFile(folder, userProfile);
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
+            using var document = JsonDocument.Parse(
+                SecureLocalFile.ReadAllText(path, MaxIdentityFileCharacters),
+                new JsonDocumentOptions { MaxDepth = 256 });
+            return document.RootElement.ValueKind == JsonValueKind.Object &&
+                   document.RootElement.TryGetProperty("primaryApiKey", out var key) &&
+                   key.ValueKind == JsonValueKind.String &&
+                   !string.IsNullOrWhiteSpace(key.GetString());
+        }
+        catch (Exception exception) when (exception is IOException or UnauthorizedAccessException or InvalidDataException or JsonException or ArgumentException)
+        {
+            return false;
+        }
+    }
+
     private static readonly Dictionary<string, (DateTime WrittenAt, long Length, AccountIdentity? Identity)> IdentityCache =
         new(StringComparer.OrdinalIgnoreCase);
 

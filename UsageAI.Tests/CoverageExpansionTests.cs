@@ -4408,6 +4408,107 @@ internal static class CoverageExpansionTests
         }
     }
 
+    public static async Task TestClaudeApiKeyLoginIsExplainedAsync()
+    {
+        var environment = SaveEnvironment(
+            "USAGEAI_CLAUDE_OAUTH_TOKEN",
+            "USAGEAI_CLAUDE_SESSION_KEY",
+            "CLAUDE_AI_SESSION_KEY",
+            "CLAUDE_WEB_SESSION_KEY",
+            "CLAUDE_CONFIG_DIR");
+        var profile = Environment.GetEnvironmentVariable("USERPROFILE")!;
+        var directory = Path.Combine(profile, ".claude");
+        Directory.CreateDirectory(directory);
+        var credentialPath = Path.Combine(directory, ".credentials.json");
+        var profilePath = Path.Combine(profile, ".claude.json");
+        var savedCredentials = File.Exists(credentialPath) ? File.ReadAllText(credentialPath) : null;
+        var savedProfile = File.Exists(profilePath) ? File.ReadAllText(profilePath) : null;
+        var account = Path.Combine(AppPaths.DataDirectory, $".claude-console-{Guid.NewGuid():N}");
+        const string apiKey = "sk-ant-api-test-secret";
+        try
+        {
+            foreach (var name in environment.Keys)
+            {
+                Environment.SetEnvironmentVariable(name, null);
+            }
+
+            ClaudeCodeUsageClient Client(HttpClient http, string? folder = null) =>
+                new(http, () => Array.Empty<string>(), _ => throw new InvalidOperationException("No CLI recovery for a missing login."), folder, () => null);
+            using var unreachable = new HttpClient(new StubHttpHandler((_, _, _) =>
+                throw new InvalidOperationException("HTTP should not be reached.")));
+
+            // Signing in with Console billing leaves the credential file without the subscription
+            // login (only MCP tokens) and puts an API key in the profile: say so, never the key.
+            File.WriteAllText(credentialPath, """{"mcpOAuth":{}}""");
+            File.WriteAllText(profilePath, $$$"""{"primaryApiKey":"{{{apiKey}}}","oauthAccount":{"emailAddress":"me@example.com"}}""");
+            var exception = await ThrowsAsync<ClaudeCodeUsageException>(() => Client(unreachable).GetUsageAsync());
+            Equal(ClaudeCodeUsageClient.ApiKeyLoginMessage(null), exception.Message);
+            False(exception.Message.Contains(apiKey, StringComparison.Ordinal));
+            True(AccountDiscovery.HasClaudeApiKeyLogin(directory));
+
+            File.Delete(credentialPath);
+            exception = await ThrowsAsync<ClaudeCodeUsageException>(() => Client(unreachable).GetUsageAsync());
+            Equal(ClaudeCodeUsageClient.ApiKeyLoginMessage(null), exception.Message);
+
+            // No key, a blank key or an unreadable profile keep the ordinary messages.
+            foreach (var other in new[] { """{"oauthAccount":{}}""", """{"primaryApiKey":"  "}""", """{"primaryApiKey":7}""", "{invalid", "[]" })
+            {
+                File.WriteAllText(profilePath, other);
+                False(AccountDiscovery.HasClaudeApiKeyLogin(directory));
+                exception = await ThrowsAsync<ClaudeCodeUsageException>(() => Client(unreachable).GetUsageAsync());
+                True(exception.Message.Contains("not signed in", StringComparison.OrdinalIgnoreCase));
+            }
+
+            File.Delete(profilePath);
+            False(AccountDiscovery.HasClaudeApiKeyLogin(directory));
+
+            // A subscription login that is still there wins even beside a stored API key.
+            File.WriteAllText(profilePath, $$"""{"primaryApiKey":"{{apiKey}}"}""");
+            File.WriteAllText(
+                credentialPath,
+                $$$"""{"claudeAiOauth":{"accessToken":"file-access","expiresAt":{{{DateTimeOffset.UtcNow.AddHours(1).ToUnixTimeMilliseconds()}}},"scopes":["user:profile"],"subscriptionType":"pro"}}""");
+            using (var http = new HttpClient(new StubHttpHandler((_, _, _) =>
+                       Task.FromResult(JsonResponse(HttpStatusCode.OK, """{"five_hour":{"utilization":12}}""")))))
+            {
+                Equal(12, (await Client(http).GetUsageAsync()).Primary!.UsedPercent);
+            }
+
+            // An extra account reads the profile inside its own folder and names the folder.
+            Directory.CreateDirectory(account);
+            File.WriteAllText(Path.Combine(account, ".claude.json"), $$"""{"primaryApiKey":"{{apiKey}}"}""");
+            exception = await ThrowsAsync<ClaudeCodeUsageException>(() => Client(unreachable, account).GetUsageAsync());
+            Equal(ClaudeCodeUsageClient.ApiKeyLoginMessage(account), exception.Message);
+            True(exception.Message.Contains("Settings → Accounts", StringComparison.Ordinal));
+
+            // A folder that is gone keeps its own message.
+            Directory.Delete(account, recursive: true);
+            exception = await ThrowsAsync<ClaudeCodeUsageException>(() => Client(unreachable, account).GetUsageAsync());
+            True(exception.Message.Contains("not found", StringComparison.OrdinalIgnoreCase));
+        }
+        finally
+        {
+            RestoreEnvironment(environment);
+            RestoreFile(credentialPath, savedCredentials);
+            RestoreFile(profilePath, savedProfile);
+            if (Directory.Exists(account))
+            {
+                Directory.Delete(account, recursive: true);
+            }
+        }
+    }
+
+    private static void RestoreFile(string path, string? contents)
+    {
+        if (contents is null)
+        {
+            File.Delete(path);
+        }
+        else
+        {
+            File.WriteAllText(path, contents);
+        }
+    }
+
     public static async Task TestProviderCredentialBranchesAsync()
     {
         var environment = SaveEnvironment(

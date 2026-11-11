@@ -123,6 +123,7 @@ internal static class Program
         ("application context lifecycle and tray updates", CoverageExpansionTests.TestApplicationContextAsync),
         ("preview and command-line entry points", CoverageExpansionTests.TestPreviewAndEntryPointsAsync),
         ("provider credential refresh and discovery branches", CoverageExpansionTests.TestProviderCredentialBranchesAsync),
+        ("Claude explains a login switched to an API key", CoverageExpansionTests.TestClaudeApiKeyLoginIsExplainedAsync),
         ("Gemini local probe and fallback branches", CoverageExpansionTests.TestGeminiDeepBranchesAsync),
         ("Gemini names every failed path", CoverageExpansionTests.TestGeminiCombinedErrorAsync),
         ("Gemini consumer-tier shutdown and Code Assist project", CoverageExpansionTests.TestGeminiConsumerTierShutdownAsync),
