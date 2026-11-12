@@ -37,7 +37,7 @@ You're mid-refactor and the model stops. Weekly limit. Nobody told you it was cl
 
 ## ⚡ Get it
 
-Current release: **UsageAI for Windows 0.18.0** and **UsageAI editor extension 0.1.23**.
+Current release: **UsageAI for Windows 0.18.0** and **UsageAI editor extension 0.1.24**.
 You can also browse the complete **[Releases page](https://github.com/VladiKogan/UsageAI/releases)**.
 
 **One line in PowerShell** installs the latest release, or updates to it:
@@ -54,7 +54,7 @@ first if you like.
 | --- | --- |
 | 🚀 **[UsageAI-0.18.0-Setup.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.18.0/UsageAI-0.18.0-Setup.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.18.0/UsageAI-0.18.0-Setup.exe.sha256)) | The easy one. Start Menu shortcut, clean uninstall, and it installs the .NET 10 Desktop Runtime for you if you don't have it. |
 | 🎒 **[UsageAI-0.18.0-portable.exe](https://github.com/VladiKogan/UsageAI/releases/download/v0.18.0/UsageAI-0.18.0-portable.exe)** ([SHA-256](https://github.com/VladiKogan/UsageAI/releases/download/v0.18.0/UsageAI-0.18.0-portable.exe.sha256)) | One file. No install. Drop it anywhere and double-click — it uses the [.NET 10 Desktop Runtime](https://dotnet.microsoft.com/download/dotnet/10.0) if you already have it. |
-| 🧩 **[usageai-0.1.23.vsix](https://open-vsx.org/api/vladikogan/usageai/0.1.23/file/vladikogan.usageai-0.1.23.vsix)** | The VS Code and Antigravity extension. Install it from the editor's **Extensions: Install from VSIX...** command. |
+| 🧩 **[usageai-0.1.24.vsix](https://open-vsx.org/api/vladikogan/usageai/0.1.24/file/vladikogan.usageai-0.1.24.vsix)** | The VS Code and Antigravity extension. Install it from the editor's **Extensions: Install from VSIX...** command. |
 
 Windows 10 or 11 (x64), plus at least one AI tool you're already signed in to. That's the whole setup — UsageAI reuses the login you already have, so there's nothing new to create, paste, or remember.
 
