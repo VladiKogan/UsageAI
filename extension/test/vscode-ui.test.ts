@@ -623,6 +623,7 @@ test("activation helpers sanitize configuration and activation registers its sur
 
   const subscriptions: Array<{ dispose(): unknown }> = [];
   const updates: unknown[] = [];
+  const stateUpdates: Array<[string, unknown]> = [];
   // Activation lists the home folder for other logins; point it at an empty one.
   const previousHome = { USERPROFILE: process.env.USERPROFILE, HOME: process.env.HOME };
   const emptyHome = mkdtempSync(path.join(os.tmpdir(), "usageai-activation-home-"));
@@ -634,7 +635,7 @@ test("activation helpers sanitize configuration and activation registers its sur
       get: (key: string, fallback: unknown) => key === dashboardModule.dashboardExpandedProvidersKey
         ? ["claude"]
         : fallback,
-      update: async (_key: string, value: unknown) => { updates.push(value); },
+      update: async (key: string, value: unknown) => { updates.push(value); stateUpdates.push([key, value]); },
     },
   };
   mock.method(UsageRefreshService.prototype, "start", () => {});
@@ -677,14 +678,25 @@ test("activation helpers sanitize configuration and activation registers its sur
     assert.equal((posted.at(-1) as { quotaDisplay?: string }).quotaDisplay, "used");
     await dashboardMessage?.({ type: "setProviderExpanded", providerId: "claude", expanded: false });
     await dashboardMessage?.({ type: "setMetricDisplayMode", mode: "important" });
+    // A dragged card is saved only for two shown cards; anything else is ignored.
+    await dashboardMessage?.({ type: "moveCard", providerId: "codex", targetId: "nope", after: true });
+    await dashboardMessage?.({ type: "moveCard", providerId: "codex", targetId: "claude", after: "yes" });
+    assert.equal(stateUpdates.some(([key]) => key === dashboardModule.dashboardUnitOrderKey), false);
     assert.ok(updates.some((value) => Array.isArray(value) && value.length === 0));
     assert.deepEqual(configurationUpdates, [{ key: "metricDisplayMode", value: "important", target: 1 }]);
+    // A card dropped on another provider's card moves the provider: only the provider order is
+    // written, and the accounts' order, which did not change, is left alone.
+    configurationValues.set("providers", ["codex", "claude"]);
+    await dashboardMessage?.({ type: "moveCard", providerId: "codex", targetId: "claude", after: true });
+    assert.deepEqual(configurationUpdates.at(-1), { key: "providers", value: ["claude", "codex"], target: 1 });
+    assert.equal(stateUpdates.some(([key]) => key === dashboardModule.dashboardUnitOrderKey), false);
+    configurationValues.set("providers", ["codex", "unknown"]);
     await registeredCommands.get("usageai.rescanAccounts")?.();
     assert.ok(informationMessages.includes("UsageAI found no new accounts."));
 
-    // The Status Bar picker ticks from what is shown, writes the account list first, skips a
-    // checkbox already holding its value (Codex), and sets the fallback so the checkboxes take
-    // over from the legacy setting.
+    // The Status Bar picker ticks from what is shown, skips a checkbox already holding its value
+    // (Codex), sets the fallback so the checkboxes take over from the legacy setting, and keeps
+    // the extra accounts in the extension's own state, never in a setting.
     configurationUpdates.length = 0;
     const offered: string[] = [];
     quickPickAnswer = (items) => {
@@ -694,14 +706,17 @@ test("activation helpers sanitize configuration and activation registers its sur
     await registeredCommands.get("usageai.chooseStatusBarItems")?.();
     assert.deepEqual(offered, ["Codex ✓", "When nothing above is chosen", "Show the account with the highest usage ✓"]);
     assert.deepEqual(configurationUpdates.map((update) => [update.key, update.value]), [
-      ["statusBarProviders.accounts", undefined],
       ["statusBarProviders.hottestWhenNoneSelected", false],
     ]);
-    // A window that has not registered the account list refuses it before any checkbox changes.
+    assert.deepEqual(stateUpdates.filter(([key]) => key === extensionModule.statusBarAccountsKey), [[extensionModule.statusBarAccountsKey, []]]);
+    // A setting the window has not registered is refused, and the accounts are then not saved either.
     configurationUpdates.length = 0;
-    unregisteredConfigurationKey = "statusBarProviders.accounts";
+    stateUpdates.length = 0;
+    unregisteredConfigurationKey = "statusBarProviders.hottestWhenNoneSelected";
+    quickPickAnswer = (items) => items.filter((item) => item.label !== "Codex");
     await registeredCommands.get("usageai.chooseStatusBarItems")?.();
-    assert.deepEqual(configurationUpdates, []);
+    assert.deepEqual(configurationUpdates.filter((update) => update.key === "statusBarProviders.hottestWhenNoneSelected"), []);
+    assert.deepEqual(stateUpdates.filter(([key]) => key === extensionModule.statusBarAccountsKey), []);
     assert.ok(informationMessages.some((message) => message.startsWith("VS Code has not loaded UsageAI's newest settings")));
     unregisteredConfigurationKey = undefined;
     quickPickAnswer = undefined;
@@ -888,6 +903,29 @@ test("account clients, Status Bar account names, and cached readings are keyed b
   assert.equal(created, 2);
   extensionModule.buildUsageClients(base, accounts.slice(0, 1), create, cache);
   assert.equal(cache.size, 0);
+  // Cards dragged into an order keep it within their provider; a unit the order does not name follows.
+  assert.deepEqual(
+    extensionModule.buildUsageClients(base, [...accounts, account("claude", "0a0b0c0d", "found", "lab")], create, new Map(), ["claude@1a2b3c4d", "claude", "gemini"])
+      .map((entry) => entry.id),
+    ["codex@5e6f7a8b", "claude@1a2b3c4d", "claude", "claude@0a0b0c0d", "copilot", "gemini"],
+  );
+
+  // Dropping a card on one of the same provider reorders that provider's accounts; dropping it on
+  // another provider's card moves the whole provider before or after that provider.
+  const shownUnits = ["codex", "codex@5e6f7a8b", "claude", "claude@1a2b3c4d", "gemini"];
+  const shownProviders = ["codex", "claude", "gemini"];
+  assert.deepEqual(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "codex@5e6f7a8b", "codex", false), {
+    providers: shownProviders,
+    units: ["codex@5e6f7a8b", "codex", "claude", "claude@1a2b3c4d", "gemini"],
+  });
+  assert.deepEqual(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "gemini", "codex@5e6f7a8b", false)?.providers, ["gemini", "codex", "claude"]);
+  assert.deepEqual(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "codex@5e6f7a8b", "claude@1a2b3c4d", true)?.providers, ["claude", "codex", "gemini"]);
+  assert.equal(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "codex", "codex@5e6f7a8b", false), undefined);
+  assert.equal(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "claude", "codex@5e6f7a8b", true), undefined);
+  assert.equal(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "copilot", "codex", true), undefined);
+  assert.equal(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "codex", "codex", true), undefined);
+  assert.deepEqual(dashboardModule.sanitizeUnitOrder(["claude", "claude@1a2b3c4d", "claude", "nope", "gemini@1a2b3c4d", 4]), ["claude", "claude@1a2b3c4d"]);
+  assert.deepEqual(dashboardModule.sanitizeUnitOrder("claude"), []);
 
   assert.deepEqual(extensionModule.resolveStatusBarAccounts(["TEAM", "work@example.com", "claude@0a0b0c0d", "nobody", 4, "TEAM"], accounts), [
     "claude@1a2b3c4d",
@@ -901,7 +939,26 @@ test("account clients, Status Bar account names, and cached readings are keyed b
   configurationValues.set("statusBarProvider", "claude");
   configurationValues.set("statusBarProviders.accounts", ["team", "work"]);
   assert.deepEqual(extensionModule.getStatusBarProviderSelection(configuration as never, ["claude"], accounts), ["claude", "claude@1a2b3c4d"]);
+  // The extension's own saved list, once the picker has written one, replaces that former setting.
+  assert.deepEqual(extensionModule.getStatusBarProviderSelection(configuration as never, ["claude"], accounts, []), "claude");
+  assert.deepEqual(extensionModule.getStatusBarProviderSelection(configuration as never, ["claude"], accounts, ["claude@1a2b3c4d"]), ["claude", "claude@1a2b3c4d"]);
+  // Items follow the dashboard: providers in their configured order, each main login followed by
+  // its other accounts, instead of every extra account after the last provider.
   configurationValues.clear();
+  for (const key of ["statusBarProviders.codex", "statusBarProviders.claude", "statusBarProviders.gemini"]) {
+    configurationValues.set(key, true);
+    inspectedConfiguration.add(key);
+  }
+  assert.deepEqual(
+    extensionModule.getStatusBarProviderSelection(configuration as never, ["gemini", "codex", "claude"], accounts, ["claude@1a2b3c4d", "codex@5e6f7a8b"]),
+    ["gemini", "codex", "codex@5e6f7a8b", "claude", "claude@1a2b3c4d"],
+  );
+  assert.deepEqual(
+    extensionModule.getStatusBarProviderSelection(configuration as never, ["gemini", "codex", "claude"], accounts, ["claude@1a2b3c4d", "codex@5e6f7a8b"], ["claude@1a2b3c4d", "claude"]),
+    ["gemini", "codex", "codex@5e6f7a8b", "claude@1a2b3c4d", "claude"],
+  );
+  configurationValues.clear();
+  inspectedConfiguration.clear();
 
   assert.deepEqual(Object.keys(extensionModule.sanitizeCachedSnapshots({
     "claude@1a2b3c4d": snapshot("claude", 5),

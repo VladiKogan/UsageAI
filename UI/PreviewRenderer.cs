@@ -304,12 +304,19 @@ internal static class PreviewRenderer
     private static void ShowMenu()
     {
         using var context = new ApplicationContext();
+        var (states, _, _) = SampleData(DateTimeOffset.Now);
+        var quick = new TrayQuickState(
+            states.Select(state => (state.ProviderId, state.ProviderName)).ToArray(),
+            AppSettings.AllProvidersTrayId,
+            QuotaDisplay.Used,
+            NotificationsEnabled: true);
         using var menu = TrayMenu.Create(
             open: context.ExitThread,
             refresh: context.ExitThread,
             settings: context.ExitThread,
             exit: context.ExitThread,
-            addAccount: context.ExitThread);
+            addAccount: context.ExitThread,
+            quick: new TrayQuickSettings(() => quick, _ => context.ExitThread(), _ => context.ExitThread(), _ => context.ExitThread()));
         menu.Closed += (_, _) => context.ExitThread();
         menu.Show(Cursor.Position);
         Application.Run(context);

@@ -6,6 +6,16 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **The tray menu changes the settings you switch most, without opening Settings.** Right-click
+  the tray icon for **Tray icon shows** (Automatic, All connected, or any shown provider or
+  account), **Show quota as** (Used or Remaining) and **Pause notifications** / **Resume
+  notifications**. The chosen entry is ticked, the lists are read again each time the menu opens,
+  so a new account appears at once, and a change redraws the tray icon, popup and dashboard from
+  the readings already there, with no new request to any provider. While the Settings window is
+  open these entries are greyed out, since its OK button would write its own values over them.
+
 ### Fixed
 
 - **Claude Code says when its login was switched to an API key.** Signing in to Claude Code

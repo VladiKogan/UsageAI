@@ -5,7 +5,14 @@ import { AccountService, accountsStateKey } from "./account-service";
 import { isAccountUnitKey, providerKindOf, type AccountEntry, type AccountProviderId } from "./accounts";
 import { addAccount, SettingNotRegisteredError, type AddAccountUi, type LoginLaunch } from "./add-account";
 import { localExtensionPath, type ExtensionPathResolver } from "./bundled-cli";
-import { dashboardExpandedProvidersKey, loadExpandedProviders, UsageDashboardViewProvider } from "./dashboard-view";
+import {
+  dashboardExpandedProvidersKey,
+  dashboardUnitOrderKey,
+  loadExpandedProviders,
+  moveDashboardCard,
+  sanitizeUnitOrder,
+  UsageDashboardViewProvider,
+} from "./dashboard-view";
 import { incidentSummary, isOutage, ProviderIncidentService } from "./incidents";
 import { manageAccounts, type ManageAccountsUi } from "./manage-accounts";
 import {
@@ -32,6 +39,8 @@ import {
 } from "./status-bar-picker";
 
 const cacheKey = "usageai.cachedSnapshots.v1";
+/** The extra accounts the Status Bar shows, as the picker saved them. */
+export const statusBarAccountsKey = "usageai.statusBar.accounts.v1";
 const providerOrder: readonly UsageProviderId[] = ["codex", "claude", "copilot", "gemini"];
 /** How often the once-a-day account scan asks whether it is due. */
 const accountScanCheckMs = 60 * 60_000;
@@ -51,13 +60,16 @@ export function bundledCliResolver(context: Pick<vscode.ExtensionContext, "exten
 /**
  * The refresh units for the current accounts: each provider's default client (unless its default
  * login is hidden), then one client per other shown account. Account clients are kept while their
- * folder stays the same, so a unit's client state survives an unrelated account change.
+ * folder stays the same, so a unit's client state survives an unrelated account change. Within a
+ * provider, units named in `unitOrder` (the order the user dragged the cards into) come first, in
+ * that order.
  */
 export function buildUsageClients(
   baseClients: Readonly<Record<UsageProviderId, UsageClient>>,
   accounts: readonly AccountEntry[] | undefined,
   createAccountClient: (account: AccountEntry) => UsageClient,
   cache: Map<string, UsageClient> = new Map(),
+  unitOrder: readonly string[] = [],
 ): UsageClient[] {
   const clients: UsageClient[] = [];
   const used = new Set<string>();
@@ -68,8 +80,9 @@ export function buildUsageClients(
     }
     // Before the first account read, the default login shows exactly as before.
     const entries = accounts?.filter((account) => account.provider === providerId);
+    const own: UsageClient[] = [];
     if (!entries || entries.some((account) => account.source === "default")) {
-      clients.push(baseClients[providerId]);
+      own.push(baseClients[providerId]);
     }
     for (const account of entries ?? []) {
       if (account.source === "default") {
@@ -79,8 +92,13 @@ export function buildUsageClients(
       const client = cache.get(key) ?? createAccountClient(account);
       cache.set(key, client);
       used.add(key);
-      clients.push(client);
+      own.push(client);
     }
+    const place = (client: UsageClient): number => {
+      const index = unitOrder.indexOf(client.id);
+      return index < 0 ? unitOrder.length + own.indexOf(client) : index;
+    };
+    clients.push(...[...own].sort((left, right) => place(left) - place(right)));
   }
   for (const key of [...cache.keys()]) {
     if (!used.has(key)) {
@@ -122,6 +140,9 @@ export function activate(context: vscode.ExtensionContext): void {
     warn: (message) => void vscode.window.showWarningMessage(message),
   });
   let accountsLoaded = false;
+  let shownAccounts: readonly AccountEntry[] | undefined;
+  /** The order the user dragged the cards into; it also orders the Status Bar. */
+  const unitOrder = (): string[] => sanitizeUnitOrder(context.globalState.get<unknown>(dashboardUnitOrderKey));
   const enabledProviderIds = () => sanitizeProviderIds(
     configuration().get<readonly string[]>("providers", [...providerOrder]),
   );
@@ -129,7 +150,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const incidents = new ProviderIncidentService();
   const showIncidents = () => configuration().get("showProviderIncidents", true) === true;
   const refreshService = new UsageRefreshService({
-    clients: buildUsageClients(baseClients, undefined, createAccountClient, accountClients),
+    clients: buildUsageClients(baseClients, undefined, createAccountClient, accountClients, unitOrder()),
     enabledProviderIds,
     visibleIntervalMs: () => clampMinutes(configuration().get("refreshIntervalMinutes", 5), 1, 120) * 60_000,
     backgroundIntervalMs: () => clampMinutes(configuration().get("backgroundRefreshIntervalMinutes", 15), 5, 240) * 60_000,
@@ -165,9 +186,39 @@ export function activate(context: vscode.ExtensionContext): void {
         mode,
         vscode.ConfigurationTarget.Global,
       ),
+      moveCard: async (moved, target, after) => {
+        const providers = enabledProviderIds();
+        const units = refreshService.getStates().map((state) => state.id);
+        const move = moveDashboardCard(providers, units, moved, target, after);
+        if (!move) {
+          return;
+        }
+        try {
+          // The accounts' order is the extension's own state; the providers' order is the
+          // usageai.providers setting, which the Status Bar follows too. Only the one that changed
+          // is written: reordering a provider's accounts must not pin the provider list in the
+          // user's settings, and moving a provider leaves the accounts' order as it was.
+          if (move.units.join() !== units.join()) {
+            await context.globalState.update(dashboardUnitOrderKey, move.units);
+            refreshService.setClients(buildUsageClients(baseClients, shownAccounts, createAccountClient, accountClients, unitOrder()));
+          }
+          if (move.providers.join() !== providers.join()) {
+            await updateStatusBarSetting("providers", move.providers);
+          }
+        } catch (error) {
+          void vscode.window.showErrorMessage(`UsageAI could not save the new order: ${error instanceof Error ? error.message : String(error)}`);
+        }
+      },
     },
   );
   const statusBars = new StatusBarController();
+  /**
+   * The Status Bar's extra accounts. They are the extension's own state, so nothing shows in the
+   * Settings editor; until the picker first saves, a list left in settings.json by an earlier
+   * version (`usageai.statusBarProviders.accounts`, no longer in the manifest) still applies.
+   */
+  const statusBarAccounts = (): unknown => context.globalState.get<unknown>(statusBarAccountsKey)
+    ?? configuration().get<unknown>("statusBarProviders.accounts", []);
   const refreshManually = () => vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Window,
@@ -179,7 +230,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const updateUi = (states: readonly ProviderState[]) => {
     statusBars.update(
       states,
-      getStatusBarProviderSelection(configuration(), enabledProviderIds(), accounts.accounts),
+      getStatusBarProviderSelection(configuration(), enabledProviderIds(), accounts.accounts, statusBarAccounts(), unitOrder()),
       normalizeQuotaDisplay(configuration().get<unknown>("quotaDisplay", "used")),
     );
     // Until the accounts are read, the cached readings of the other accounts are kept, not dropped.
@@ -195,7 +246,8 @@ export function activate(context: vscode.ExtensionContext): void {
 
   const removeAccountListener = accounts.onDidChange((shown) => {
     accountsLoaded = true;
-    refreshService.setClients(buildUsageClients(baseClients, shown, createAccountClient, accountClients));
+    shownAccounts = shown;
+    refreshService.setClients(buildUsageClients(baseClients, shown, createAccountClient, accountClients, unitOrder()));
   });
   // Found logins are looked for at activation and once a day, never on a refresh tick.
   void accounts.scan().catch(() => undefined);
@@ -301,19 +353,20 @@ export function activate(context: vscode.ExtensionContext): void {
       accounts: () => accounts.accounts,
       providerName,
       selection: () => normalizeStatusBarProviders(
-        getStatusBarProviderSelection(configuration(), enabledProviderIds(), accounts.accounts),
+        getStatusBarProviderSelection(configuration(), enabledProviderIds(), accounts.accounts, statusBarAccounts(), unitOrder()),
       ),
       hottestWhenNoneSelected: () => statusBarHottestFallback(configuration()),
-      configuredAccounts: () => configuration().get<unknown>("statusBarProviders.accounts", []),
+      configuredAccounts: statusBarAccounts,
       save: async (change) => {
-        // The account list first: it is the setting a window may not have registered yet, so a
-        // refusal comes before any checkbox has changed.
-        await updateStatusBarSetting("statusBarProviders.accounts", change.accounts.length > 0 ? [...change.accounts] : undefined);
         for (const [provider, shown] of Object.entries(change.providers)) {
           await updateStatusBarSetting(`statusBarProviders.${provider}`, shown, shown ? true : undefined);
         }
         // Set explicitly, so the checkboxes take over from the legacy statusBarProvider setting.
         await updateStatusBarSetting("statusBarProviders.hottestWhenNoneSelected", change.hottestWhenNoneSelected);
+        // The accounts last, once every setting was accepted. They raise no configuration change,
+        // so the Status Bar is redrawn here.
+        await context.globalState.update(statusBarAccountsKey, [...change.accounts]);
+        updateUi(refreshService.getStates());
       },
     })),
     vscode.commands.registerCommand("usageai.rescanAccounts", async () => {
@@ -449,17 +502,32 @@ export function getStatusBarProviderSelection(
   configuration: vscode.WorkspaceConfiguration,
   providerIds: readonly UsageProviderId[],
   accounts: readonly AccountEntry[] = [],
+  extraAccounts: unknown = configuration.get<unknown>("statusBarProviders.accounts", []),
+  unitOrder: readonly string[] = [],
 ): unknown {
   const selection = statusBarProviderSelection(configuration, providerIds);
-  // Accounts named in their own setting join whatever the checkboxes chose; a provider's own entry
-  // keeps following its primary account.
-  const extra = resolveStatusBarAccounts(configuration.get<unknown>("statusBarProviders.accounts", []), accounts)
+  // The extra accounts join whatever the checkboxes chose; a provider's own entry keeps following
+  // its primary account.
+  const extra = resolveStatusBarAccounts(extraAccounts, accounts)
     .filter((unit) => providerIds.includes(providerKindOf(unit) as UsageProviderId));
   if (extra.length === 0) {
     return selection;
   }
   const base = typeof selection === "string" ? [selection] : Array.isArray(selection) ? selection : [];
-  return [...base, ...extra];
+  // In dashboard order: providers as `usageai.providers` lists them, and within one the order its
+  // cards were dragged into, else the main login followed by its other accounts, rather than
+  // every extra account after the last provider.
+  const rank = (unit: unknown): number => {
+    const kind = typeof unit === "string" ? providerIds.indexOf(providerKindOf(unit) as UsageProviderId) : -1;
+    const account = accounts.findIndex((entry) => entry.unitKey === unit);
+    const dragged = unitOrder.indexOf(unit as string);
+    const within = dragged >= 0 ? dragged : 400 + (unit === providerIds[kind] ? 0 : 1 + (account < 0 ? 400 : account));
+    return kind < 0 ? -1 : kind * 1_000 + within;
+  };
+  return [...base, ...extra]
+    .map((unit, index) => ({ unit, index }))
+    .sort((left, right) => rank(left.unit) - rank(right.unit) || left.index - right.index)
+    .map((entry) => entry.unit);
 }
 
 function statusBarProviderSelection(
@@ -468,6 +536,8 @@ function statusBarProviderSelection(
 ): unknown {
   const usesCheckboxes = statusBarCheckboxKeys.some((key) => isExplicitlyConfigured(configuration, key));
   if (!usesCheckboxes) {
+    // The legacy list is no longer in the manifest, so it is out of the Settings editor, but a
+    // value still in settings.json is honoured until a checkbox is set.
     return configuration.get<unknown>("statusBarProvider", ["hottest"]);
   }
 

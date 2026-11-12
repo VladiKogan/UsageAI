@@ -78,6 +78,40 @@ internal sealed class MenuRenderer : ToolStripProfessionalRenderer
     }
 
     /// <summary>
+    /// A chosen row's tick: a plain stroke in the text colour, in the middle of the row's check
+    /// margin, instead of the standard renderer's boxed image.
+    /// </summary>
+    protected override void OnRenderItemCheck(ToolStripItemImageRenderEventArgs e)
+    {
+        var scale = new LayoutScale(e.ToolStrip?.DeviceDpi ?? LayoutScale.BaselineDpi);
+        var x = e.ImageRectangle.Left + e.ImageRectangle.Width / 2F;
+        var y = e.Item.Height / 2F;
+        var unit = scale.Exact(1);
+        var previous = e.Graphics.SmoothingMode;
+        e.Graphics.SmoothingMode = SmoothingMode.AntiAlias;
+        using var pen = new Pen(e.Item.Enabled ? Theme.Text : Theme.Faint, 1.5F * unit)
+        {
+            StartCap = LineCap.Round,
+            EndCap = LineCap.Round,
+            LineJoin = LineJoin.Round,
+        };
+        e.Graphics.DrawLines(pen, new[]
+        {
+            new PointF(x - 4.5F * unit, y),
+            new PointF(x - 1.5F * unit, y + 3F * unit),
+            new PointF(x + 4.5F * unit, y - 3.5F * unit),
+        });
+        e.Graphics.SmoothingMode = previous;
+    }
+
+    /// <summary>A submenu's arrow in the text colour, which the standard one ignores on a dark menu.</summary>
+    protected override void OnRenderArrow(ToolStripArrowRenderEventArgs e)
+    {
+        e.ArrowColor = e.Item?.Enabled == false ? Theme.Faint : Theme.Text;
+        base.OnRenderArrow(e);
+    }
+
+    /// <summary>
     /// Centres a menu row's text between its top and bottom. A drop-down menu adds an item's
     /// vertical padding to the row's height but lays the text out from the row's top, so with
     /// the roomier Windows 11 rows every label sat high, its whole padding below it.

@@ -78,7 +78,9 @@ test("extension manifest keeps local hosting and a compact view toolbar", async 
     extensionKind?: string[];
     contributes?: {
       commands?: Array<{ command: string; title: string; category?: string; icon?: string }>;
-      menus?: { "view/title"?: Array<{ command: string; when?: string; group?: string }> };
+      menus?: Record<string, Array<{ command?: string; submenu?: string; when?: string; group?: string }>>;
+      submenus?: Array<{ id: string; label: string; icon?: string }>;
+      configuration?: Array<{ title: string; properties: Record<string, { description?: string; markdownDescription?: string }> }>;
       views?: Record<string, Array<{ id: string; name: string }>>;
     };
   };
@@ -99,15 +101,41 @@ test("extension manifest keeps local hosting and a compact view toolbar", async 
   const viewMenu = (packageJson.contributes?.menus?.["view/title"] ?? [])
     .filter((entry) => entry.when === "view == usageai.dashboard");
   const toolbar = viewMenu.filter((entry) => entry.group?.startsWith("navigation"));
-  assert.deepEqual(toolbar.map((entry) => entry.command), ["usageai.refresh", "usageai.openSettings"]);
-  // The account commands live in the view's "…" menu, never as toolbar buttons.
+  assert.deepEqual(
+    toolbar.map((entry) => entry.command ?? entry.submenu),
+    ["usageai.refresh", "usageai.accountsMenu", "usageai.openSettings"],
+  );
+  // Every account command sits under the one Accounts button, never as a toolbar button of its
+  // own; the "…" menu keeps only the Status Bar picker.
+  const submenus = new Map((packageJson.contributes?.submenus ?? []).map((entry) => [entry.id, entry]));
+  assert.deepEqual(
+    (packageJson.contributes?.menus?.["usageai.accountsMenu"] ?? []).map((entry) => entry.command),
+    ["usageai.addAccount", "usageai.manageAccounts", "usageai.rescanAccounts"],
+  );
   assert.deepEqual(
     viewMenu.filter((entry) => !entry.group?.startsWith("navigation")).map((entry) => entry.command),
-    ["usageai.addAccount", "usageai.manageAccounts", "usageai.rescanAccounts", "usageai.chooseStatusBarItems"],
+    ["usageai.chooseStatusBarItems"],
   );
   for (const entry of toolbar) {
-    assert.match(entry.group ?? "", /^navigation/, entry.command);
-    assert.match(commands.get(entry.command)?.icon ?? "", /^\$\([a-z-]+\)$/, entry.command);
+    const icon = entry.command ? commands.get(entry.command)?.icon : submenus.get(entry.submenu ?? "")?.icon;
+    assert.match(icon ?? "", /^\$\([a-z-]+\)$/, entry.command ?? entry.submenu);
+  }
+  assert.equal(submenus.get("usageai.accountsMenu")?.icon, "$(account)");
+
+  // Settings are grouped by what they change, each with a description, and the legacy Status Bar
+  // list is read from settings.json but no longer shown beside the checkboxes that replaced it.
+  const sections = packageJson.contributes?.configuration ?? [];
+  assert.deepEqual(sections.map((section) => section.title), ["Providers and Accounts", "Status Bar", "Display", "Refresh"]);
+  assert.deepEqual(Object.keys(sections[1]?.properties ?? {}), [
+    "usageai.statusBarProviders.codex",
+    "usageai.statusBarProviders.claude",
+    "usageai.statusBarProviders.copilot",
+    "usageai.statusBarProviders.gemini",
+    "usageai.statusBarProviders.hottestWhenNoneSelected",
+  ]);
+  for (const [key, property] of sections.flatMap((section) => Object.entries(section.properties))) {
+    assert.ok(property.description ?? property.markdownDescription, key);
+    assert.notEqual(key, "usageai.statusBarProvider");
   }
   assert.equal(commands.get("usageai.refresh")?.icon, "$(refresh)");
   assert.equal(commands.get("usageai.openSettings")?.icon, "$(gear)");

@@ -273,8 +273,8 @@ function dashboardPage(codiconFont) {
     .pane-title span { flex: 1; text-transform: uppercase; }
     .pane-title i { width: 22px; height: 22px; display: inline-flex; align-items: center; justify-content: center; font: normal 16px/1 codicon; font-style: normal; color: #CCCCCC; }
   </style>`;
-  // Codicon code points: refresh, gear, ellipsis (Views and More Actions).
-  const titleIcons = codiconFont ? "<i>\uEB37</i><i>\uEB51</i><i>\uEA7C</i>" : "";
+  // Codicon code points: refresh, account (the Accounts menu), gear, ellipsis (Views and More Actions).
+  const titleIcons = codiconFont ? "<i>\uEB37</i><i>\uEB99</i><i>\uEB51</i><i>\uEA7C</i>" : "";
   return html
     .replace(/<meta http-equiv="Content-Security-Policy"[^>]*>/, "")
     .replace("<head>", `<head>${bootstrap}${chrome}`)

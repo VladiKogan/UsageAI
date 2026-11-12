@@ -76,15 +76,21 @@ as not signed in there because its sign-in usually stays with your local VS Code
 
 ## Choose what appears
 
-Open **UsageAI: Open Settings** to personalize the extension:
+The dashboard's title bar has four buttons: **Refresh**, **Accounts** (add, manage and rescan
+accounts), **Open Settings**, and the **…** menu with **Choose Status Bar Items…**.
 
-- **UsageAI: Providers** enables providers and sets their order in both the dashboard and Status Bar.
+Open **UsageAI: Open Settings** to personalize the extension. The settings are in four groups:
+**Providers and Accounts**, **Status Bar**, **Display** and **Refresh**.
+
+- **Providers** enables providers and sets their order in both the dashboard and Status Bar.
+  The quicker way to reorder is to drag a dashboard card by its header (or focus it and press
+  Alt+Up / Alt+Down). A provider's accounts stay together, and the Status Bar follows the same order.
 - **UsageAI: Choose Status Bar Items…** (also in the dashboard's **…** menu) lists every provider
   and every Claude Code and Codex account with a checkbox. Each one you tick gets its own compact
   reading, so two Claude Code accounts can sit side by side.
-- The **UsageAI: Status Bar** settings hold the same choice. Each provider's checkbox is its main
-  login; extra Claude Code and Codex accounts are listed under **Accounts**.
-- If nothing is chosen, **Hottest When None Selected** shows the account with the highest current usage. Turn it off to hide UsageAI from the Status Bar.
+- The **Status Bar** settings hold a checkbox for each provider's main login. Extra Claude Code
+  and Codex accounts are chosen in **Choose Status Bar Items…** only, and are not a setting.
+- If nothing is chosen, **Hottest When None Selected** shows the provider with the highest current usage. Turn it off to hide UsageAI from the Status Bar.
 - **Quota Display** chooses whether meters and percentages show the quota **used** (the default)
   or the quota **remaining**, in both the dashboard and the Status Bar. Warning and critical colors
   keep their meaning either way.
@@ -108,12 +114,12 @@ Claude Code and Codex can show more than one account, each on a card of its own 
   when the extension starts, once a day, and when you run **UsageAI: Rescan Accounts**. This is
   one listing of the home folder, never a search. On the first run the logins already there are
   shown at once; one found later is shown only after you answer **Show** (or **Ignore**).
-- **Added by you.** **UsageAI: Add Account…** (also in the dashboard's **…** menu) either signs in
+- **Added by you.** **UsageAI: Add Account…** (also under the dashboard's **Accounts** button) either signs in
   to another account with the provider's own CLI (`claude auth login --claudeai` or `codex login`)
   in an editor terminal, into a new folder such as `~/.claude-work` that your own CLI can use
   too, or adds a login folder you already have. Added folders are saved in `usageai.accounts`.
   Each folder must be an absolute, local path that holds the credential file.
-- **Managed in one list.** **UsageAI: Manage Accounts…** (also in the dashboard's **…** menu)
+- **Managed in one list.** **UsageAI: Manage Accounts…** (also under the dashboard's **Accounts** button)
   lists every Claude Code and Codex login UsageAI knows about, including hidden, ignored and
   waiting ones, and any entry whose folder is gone or signed out. Pick one to rename it, hide or
   show it, remove one you added, or open or copy its folder. A login folder is never deleted or changed. The command writes `usageai.accounts` for
@@ -126,9 +132,8 @@ extension was updated while the window stayed open. Choose **Reload Window** and
 Your main login is always the standard `~/.claude` / `~/.codex`, however the editor was started.
 If it inherits `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, the folder the variable names is found as one more
 account instead of replacing the main one. The main login stays the primary account: the
-**UsageAI: Status Bar** checkboxes follow it.
-To put another account in the Status Bar, tick it in **UsageAI: Choose Status Bar Items…**, or
-name it by its label or email in `usageai.statusBarProviders.accounts`. A login whose email and organization match an account
+**Status Bar** checkboxes follow it.
+To put another account in the Status Bar, tick it in **UsageAI: Choose Status Bar Items…**. A login whose email and organization match an account
 already shown is not added twice. Each account refreshes on its own, so an expired login goes
 stale on its own card only. UsageAI reads another account's folder only: it sends that login's
 token to the same Anthropic or ChatGPT endpoint as the main login's, and gives the folder to

@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { isKnownUnitKey } from "./accounts";
+import { isKnownUnitKey, providerKindOf } from "./accounts";
 import {
   displayedPercent,
   formatResetCountdown,
@@ -21,6 +21,48 @@ export const dashboardExpandedProvidersKey = "usageai.dashboard.expandedProvider
 export const legacyDashboardExpandedProvidersKey = "usageai.dashboard.expandedProviders.v1";
 const knownProviderIds = ["codex", "claude", "copilot", "gemini"] as const;
 const maxRememberedCards = 64;
+/** The cards' order within each provider, as unit keys, after the user dragged one. */
+export const dashboardUnitOrderKey = "usageai.dashboard.unitOrder.v1";
+
+/** Known unit keys only, once each. */
+export function sanitizeUnitOrder(value: unknown): string[] {
+  return Array.isArray(value) ? sanitizeExpandedProviderIds(value) : [];
+}
+
+/**
+ * Where everything goes after one card is dropped before or after another. A provider's cards stay
+ * together: within one provider the card changes place among that provider's accounts, and onto
+ * another provider's card the whole provider moves before or after that provider. Undefined when
+ * nothing would change or an id is not shown.
+ */
+export function moveDashboardCard(
+  providers: readonly string[],
+  units: readonly string[],
+  moved: string,
+  target: string,
+  after: boolean,
+): { readonly providers: string[]; readonly units: string[] } | undefined {
+  if (moved === target || !units.includes(moved) || !units.includes(target)) {
+    return undefined;
+  }
+  const movedKind = providerKindOf(moved);
+  const targetKind = providerKindOf(target);
+  let nextProviders = [...providers];
+  let nextUnits = [...units];
+  if (movedKind === targetKind) {
+    nextUnits = units.filter((unit) => unit !== moved);
+    nextUnits.splice(nextUnits.indexOf(target) + (after ? 1 : 0), 0, moved);
+  } else {
+    if (!providers.includes(movedKind) || !providers.includes(targetKind)) {
+      return undefined;
+    }
+    nextProviders = providers.filter((provider) => provider !== movedKind);
+    nextProviders.splice(nextProviders.indexOf(targetKind) + (after ? 1 : 0), 0, movedKind);
+  }
+  return nextProviders.join() === providers.join() && nextUnits.join() === units.join()
+    ? undefined
+    : { providers: nextProviders, units: nextUnits };
+}
 
 export interface DashboardViewOptions {
   readonly loadExpandedProviders?: () => unknown;
@@ -28,6 +70,8 @@ export interface DashboardViewOptions {
   readonly metricDisplayMode?: () => unknown;
   readonly setMetricDisplayMode?: (mode: MetricDisplayMode) => void | PromiseLike<void>;
   readonly quotaDisplay?: () => unknown;
+  /** A card was dropped before or after another; both are shown unit keys. */
+  readonly moveCard?: (moved: string, target: string, after: boolean) => void | PromiseLike<void>;
 }
 
 /** Known unit keys only: a provider id, or an account unit key of a provider that has accounts. */
@@ -196,6 +240,12 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
       }
       return;
     }
+    if (message.type === "moveCard") {
+      if (!isKnownUnitKey(message.providerId, knownProviderIds) || !isKnownUnitKey(message.targetId, knownProviderIds)
+        || typeof message.after !== "boolean") return;
+      await this.options.moveCard?.(message.providerId, message.targetId, message.after);
+      return;
+    }
     if (message.type === "setAllExpanded") {
       if (typeof message.expanded !== "boolean") return;
       this.expandedProviders.clear();
@@ -235,6 +285,8 @@ interface DashboardMessage {
   readonly providerId?: string;
   readonly expanded?: boolean;
   readonly mode?: unknown;
+  readonly targetId?: unknown;
+  readonly after?: unknown;
 }
 
 function isMessage(value: unknown): value is DashboardMessage {
@@ -266,6 +318,13 @@ function dashboardHtml(webview: vscode.Webview): string {
     .card[data-level="warning"]::before { background: var(--vscode-editorWarning-foreground); }
     .card[data-level="critical"]::before { background: var(--vscode-errorForeground); }
     .card[data-stale="true"] { opacity: .82; }
+    /* A provider's accounts are one stack: no gap, one shared edge, the colour bars end to end. */
+    .card[data-stack="middle"], .card[data-stack="last"] { margin-top: -10px; border-top-left-radius: 0; border-top-right-radius: 0; }
+    .card[data-stack="first"], .card[data-stack="middle"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
+    .card.dragging { opacity: .45; }
+    .card[data-drop] { z-index: 1; }
+    .card[data-drop="before"] { box-shadow: 0 -2px 0 var(--vscode-focusBorder); }
+    .card[data-drop="after"] { box-shadow: 0 2px 0 var(--vscode-focusBorder); }
     .card-toggle { appearance: none; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 7px; width: 100%; border: 0; padding: 10px 10px 8px 10px; color: inherit; background: transparent; text-align: left; cursor: pointer; }
     .card-toggle:hover { background: var(--vscode-list-hoverBackground); }
     .card-toggle:focus-visible, .action:focus-visible, select:focus-visible { outline: 2px solid var(--vscode-focusBorder); outline-offset: -2px; }
@@ -320,7 +379,16 @@ function dashboardHtml(webview: vscode.Webview): string {
     const providers = document.getElementById('providers'); const stamp = document.getElementById('stamp'); const metricMode = document.getElementById('metric-mode');
     document.getElementById('collapse-all').addEventListener('click', () => vscode.postMessage({ type: 'setAllExpanded', expanded: false }));
     document.getElementById('expand-all').addEventListener('click', () => vscode.postMessage({ type: 'setAllExpanded', expanded: true }));
-    let latestPayload;
+    let latestPayload; let dragging; let deferred; let dropAfter = false;
+    const kindOf = (unit) => String(unit).split('@')[0];
+    const groupCards = (kind) => [...providers.querySelectorAll('.card')].filter(node => kindOf(node.dataset.unit) === kind);
+    // The card whose header holds the keyboard focus. A redraw rebuilds every card, and one move sends several
+    // (the new order, then the changed setting), so the focus is put back on each instead of once.
+    const focusedUnit = () => { const active = document.activeElement; return document.hasFocus?.() && active?.classList?.contains('card-toggle') ? active.closest('.card')?.dataset.unit : undefined; };
+    const clearDrop = () => { for (const node of providers.querySelectorAll('[data-drop]')) delete node.dataset.drop; };
+    const moveCard = (providerId, targetId, after) => vscode.postMessage({ type: 'moveCard', providerId, targetId, after });
+    // A reading that lands mid-drag is drawn once the drag ends: redrawing would remove the card being dragged.
+    const endDrag = () => { dragging = undefined; clearDrop(); for (const node of providers.querySelectorAll('.dragging')) { node.classList.remove('dragging'); node.draggable = false; } if (deferred) { const next = deferred; deferred = undefined; render(next); } };
     metricMode.addEventListener('change', () => { const mode = metricMode.value; if (latestPayload) render({ ...latestPayload, metricDisplayMode: mode }); vscode.postMessage({ type: 'setMetricDisplayMode', mode }); });
     const el = (tag, className, text) => { const node = document.createElement(tag); if (className) node.className = className; if (text !== undefined) node.textContent = text; return node; };
     const button = (label, type, providerId) => { const node = el('button', 'action', label); node.type = 'button'; node.addEventListener('click', () => vscode.postMessage({ type, providerId })); return node; };
@@ -343,7 +411,8 @@ function dashboardHtml(webview: vscode.Webview): string {
       const foot = el('div', 'metric-foot'); foot.append(el('span', '', metric.usageText || (remaining ? used + '% used' : left + '% left')), el('span', '', [countdown(metric.resetsAt), pace(metric)].filter(Boolean).join(' · '))); root.append(head, rail, foot); return root;
     };
     const render = (payload) => {
-      latestPayload = payload;
+      if (dragging) { deferred = payload; return; }
+      latestPayload = payload; const focused = focusedUnit(); let focusedHead;
       providers.replaceChildren(); const warning = payload.warningPercent ?? 72; const critical = payload.criticalPercent ?? 90;
       const mode = ['metered', 'important'].includes(payload.metricDisplayMode) ? payload.metricDisplayMode : 'all'; metricMode.value = mode;
       const quota = payload.quotaDisplay === 'remaining' ? 'remaining' : 'used';
@@ -351,12 +420,34 @@ function dashboardHtml(webview: vscode.Webview): string {
       if (!payload.states.length) { const empty = el('div', 'empty'); empty.append(el('strong', '', 'No providers selected'), el('span', '', 'Choose providers in UsageAI settings.')); empty.append(button('Open settings', 'settings')); providers.append(empty); return; }
       let newest = 0;
       for (const state of payload.states) {
-        const card = el('article', 'card'); card.dataset.stale = String(state.stale);
+        const card = el('article', 'card'); card.dataset.stale = String(state.stale); card.dataset.unit = state.id;
+        const place = payload.states.indexOf(state); const joinsAbove = place > 0 && kindOf(payload.states[place - 1].id) === kindOf(state.id); const joinsBelow = place + 1 < payload.states.length && kindOf(payload.states[place + 1].id) === kindOf(state.id);
+        if (joinsAbove || joinsBelow) card.dataset.stack = joinsAbove && joinsBelow ? 'middle' : joinsAbove ? 'last' : 'first';
+        // Only the card itself: a drag of selected text or a link inside it bubbles here too, and must not move the card.
+        card.addEventListener('dragstart', (event) => { if (event.target !== card) return; dragging = state.id; card.classList.add('dragging'); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', state.displayName); });
+        // Over an account of the same provider the card goes beside it. Over another provider the
+        // whole provider moves, so every card of the dragged provider dims and the line sits at
+        // the edge of the provider under the pointer, never between two of its accounts.
+        card.addEventListener('dragover', (event) => {
+          if (!dragging || dragging === state.id) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move'; clearDrop();
+          const same = kindOf(dragging) === kindOf(state.id); const group = same ? [card] : groupCards(kindOf(state.id));
+          const first = group[0]; const last = group[group.length - 1];
+          dropAfter = event.clientY > (first.getBoundingClientRect().top + last.getBoundingClientRect().bottom) / 2;
+          (dropAfter ? last : first).dataset.drop = dropAfter ? 'after' : 'before';
+          for (const node of groupCards(kindOf(dragging))) node.classList.toggle('dragging', !same || node.dataset.unit === dragging);
+        });
+        card.addEventListener('drop', (event) => { if (!dragging || dragging === state.id) return; event.preventDefault(); moveCard(dragging, state.id, dropAfter); });
+        card.addEventListener('dragend', endDrag);
         const highestMetric = collapsedDashboardMetric(state);
         const highest = highestMetric?.usedPercent ?? 0; card.dataset.level = level(highest, warning, critical);
         const expanded = effectiveDashboardExpansion(state, remembered.has(state.id)); const contentId = 'provider-content-' + state.id;
         const head = el('button', 'card-toggle'); head.type = 'button'; head.setAttribute('aria-expanded', String(expanded)); head.setAttribute('aria-controls', contentId); head.setAttribute('aria-label', (expanded ? 'Collapse ' : 'Expand ') + state.displayName + ' usage');
         head.addEventListener('click', () => vscode.postMessage({ type: 'setProviderExpanded', providerId: state.id, expanded: !expanded }));
+        // Dragging starts from the header only, so text in an open card can still be selected.
+        head.title = 'Drag to reorder, or press Alt+Up / Alt+Down'; head.setAttribute('aria-keyshortcuts', 'Alt+ArrowUp Alt+ArrowDown');
+        head.addEventListener('pointerdown', () => { card.draggable = true; });
+        head.addEventListener('keydown', (event) => { if (!event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return; event.preventDefault(); const down = event.key === 'ArrowDown'; const ids = payload.states.map(other => other.id); const neighbour = ids[ids.indexOf(state.id) + (down ? 1 : -1)]; if (neighbour) moveCard(state.id, neighbour, down); });
+        if (state.id === focused) focusedHead = head;
         const chevron = el('span', 'chevron', '⌄'); chevron.setAttribute('aria-hidden', 'true'); const provider = el('div', 'provider');
         const planParts = state.snapshot ? [state.snapshot.plan, state.snapshot.accountName] : ['Not connected']; if (state.stale) planParts.push('Stale'); provider.append(el('span', 'provider-name', state.displayName), el('span', 'plan', planParts.filter(Boolean).join(' · ')));
         if (state.incident) { const incident = el('span', 'incident', 'Status page: ' + state.incident); incident.dataset.outage = String(Boolean(state.incidentIsOutage)); provider.append(incident); }
@@ -365,7 +456,7 @@ function dashboardHtml(webview: vscode.Webview): string {
         // Remaining mode never shows a provider without a metered limit as "100% left".
         if (state.snapshot && quota === 'remaining') { if (highestMetric) headline.append(el('span', '', displayed(highest, quota) + '%'), el('span', 'headline-unit', 'left')); else headline.append(el('span', '', '—')); }
         else if (state.snapshot) headline.append(el('span', '', highest + '%')); else if (!state.refreshing) headline.append(el('span', '', '—')); head.append(chevron, provider, headline); card.append(head);
-        const body = el('div', 'card-body'); body.id = contentId; body.hidden = !expanded;
+        const body = el('div', 'card-body'); body.id = contentId; body.hidden = !expanded; body.addEventListener('pointerdown', () => { card.draggable = false; });
         if (state.snapshot) {
           newest = Math.max(newest, new Date(state.snapshot.fetchedAt).getTime()); const metrics = el('div', 'metrics'); const visibleMetrics = selectedMetrics(state.snapshot.metrics, mode);
           if (!visibleMetrics.length) metrics.append(el('div', 'filtered-empty', 'No metered limits reported')); else for (const metric of visibleMetrics) metrics.append(renderMetric(metric, warning, critical, quota)); body.append(metrics);
@@ -375,6 +466,7 @@ function dashboardHtml(webview: vscode.Webview): string {
         else if (state.snapshot) { const actions = el('div', 'actions card-actions'); actions.append(button('Account', 'openAccount', state.id)); body.append(actions); }
         card.append(body); providers.append(card);
       }
+      focusedHead?.focus();
       const refreshing = payload.states.some(state => state.refreshing); const staleStates = payload.states.filter(state => state.stale); stamp.replaceChildren();
       if (refreshing) { const spinner = el('span', 'spinner'); spinner.setAttribute('aria-hidden', 'true'); stamp.append(spinner, el('span', '', 'Refreshing…')); }
       else if (staleStates.length) { const noun = staleStates.length === 1 ? 'provider' : 'providers'; const latestCheck = Math.max(0, ...staleStates.map(state => new Date(state.lastAttemptedAt || '').getTime()).filter(Number.isFinite)); stamp.textContent = staleStates.length + ' ' + noun + ' stale' + (latestCheck ? ' · checked ' + localTime(latestCheck) : ''); }

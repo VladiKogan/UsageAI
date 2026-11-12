@@ -2,7 +2,55 @@
 
 ## Unreleased
 
+### Added
+
+- **An Accounts button in the dashboard's title bar holds every account command.** Add
+  Account…, Manage Accounts… and Rescan Accounts were three entries in the **…** menu, next to the
+  unrelated Status Bar picker. They now open from one person icon between Refresh and Settings,
+  and the **…** menu keeps only **Choose Status Bar Items…**.
+- **Drag a card in the dashboard to reorder it.** Drag a card by its header and drop it above or
+  below another; with the keyboard, focus the header and press Alt+Up or Alt+Down. A provider's
+  accounts stay together: dropping a card on another account of the same provider reorders that
+  provider's accounts, and dropping it on a different provider's card moves the whole provider.
+  The accounts of one provider are drawn as one joined stack, and while you drag toward another
+  provider all of them dim and the drop line sits at the edge of the provider under the pointer,
+  so what will move is visible before you drop.
+  The Status Bar follows the same order. The provider order is saved in the `usageai.providers`
+  setting, as before; the order of a provider's accounts is kept by the extension.
+
+### Changed
+
+- **Settings are grouped by what they change.** One long list under "UsageAI" is now four short
+  groups: **Providers and Accounts**, **Status Bar**, **Display** (used or remaining, which limits
+  a card lists, warning and critical levels) and **Refresh**. The Status Bar group reads top to
+  bottom: a checkbox per provider, then the fallback that applies when nothing is chosen. Descriptions are shorter and say what each setting does. No setting was renamed, so
+  your values carry over.
+- **The legacy "Status Bar Provider" setting is gone from the Settings editor.** It sat under the
+  checkboxes that replaced it, could only be edited in `settings.json`, and made the group hard to
+  read. A value you still have in `settings.json` keeps working until you tick a Status Bar
+  checkbox or use **Choose Status Bar Items…**; the editor now marks it as unknown, and it can be
+  deleted once you have.
+- **The Status Bar's extra accounts are no longer a setting.** The "Status Bar Providers: Accounts"
+  list was only there so **Choose Status Bar Items…** had somewhere to save, and nobody needed
+  to edit it. The picker now keeps its choice in the extension's own storage, so the entry is
+  gone from Settings. A list you already have keeps applying until you next use the picker,
+  which then takes over; after that the `usageai.statusBarProviders.accounts` line in
+  `settings.json` is unused and can be deleted. Accounts can no longer be added to the Status
+  Bar by typing a label or email into `settings.json`.
+
 ### Fixed
+
+- **Extra accounts sit next to their provider in the Status Bar.** A second Claude Code or Codex
+  account was always placed after the last provider, whatever the provider order. Status Bar
+  items now follow the dashboard: providers in their chosen order, each followed by its accounts.
+- **Claude's "Fable reset" row no longer goes missing with a native Claude Code install.** Claude
+  reports saved resets by CLI version, and UsageAI could not tell which version was installed
+  when the copy in `~/.local/bin` and the one kept under `~/.local/share/claude/versions` were
+  written more than two seconds apart, which the installer routinely does. It then named itself
+  as the oldest version it knows, `2.1.0`, and Claude left out the resets that version cannot
+  use, while the desktop app, which reads the version from the executable, showed them. The
+  installed copy is now matched by size, and by the nearest time only between kept copies of the
+  same size.
 
 - **Claude Code says when its login was switched to an API key.** Signing in to Claude Code
   with Console (API) billing, for example from the Claude Code extension, replaces the Claude

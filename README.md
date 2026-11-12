@@ -108,6 +108,9 @@ Gemini 60% | 30%
 | Point at the tray icon | Usage of the tray provider, or of every provider with **All connected** |
 | **Win+Alt+U** | Same thing, from anywhere |
 | Right-click ▸ **Open dashboard** | Full dashboard, all providers and metrics |
+| Right-click ▸ **Tray icon shows** | Pick what the tray icon follows: Automatic, All connected, or one provider or account |
+| Right-click ▸ **Show quota as** | Switch every meter between quota used and quota remaining |
+| Right-click ▸ **Pause notifications** | Mute usage alerts until you choose **Resume notifications** |
 | Right-click ▸ **Settings…** | Preferences |
 | Launch UsageAI again | Brings the running window forward |
 | `Esc` | Back to the tray |
