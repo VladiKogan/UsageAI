@@ -917,6 +917,15 @@ test("account clients, Status Bar account names, and cached readings are keyed b
   assert.deepEqual(orderUnits(["copilot", ...shownUnits], ["claude", "codex"]), ["claude", "claude@1a2b3c4d", "codex", "codex@5e6f7a8b", "copilot", "gemini"]);
   assert.deepEqual(dashboardModule.sanitizeUnitOrder(["claude", "claude@1a2b3c4d", "claude", "nope", "gemini@1a2b3c4d", 4]), ["claude", "claude@1a2b3c4d"]);
   assert.deepEqual(dashboardModule.sanitizeUnitOrder("claude"), []);
+  // 0.1.24's list ordered the cards within each provider only, and the providers followed the
+  // setting; it applies that way until a card is dragged in this version.
+  const savedOrders = new Map<string, unknown>([[dashboardModule.legacyDashboardUnitOrderKey, ["codex", "claude@1a2b3c4d", "claude", "gemini"]]]);
+  const readOrder = (providers: readonly string[]) => dashboardModule.loadUnitOrder((key: string) => savedOrders.get(key), providers);
+  assert.deepEqual(readOrder(["gemini", "claude", "codex"]), ["gemini", "claude@1a2b3c4d", "claude", "codex"]);
+  assert.deepEqual(readOrder(["claude"]), ["claude@1a2b3c4d", "claude"]);
+  savedOrders.set(dashboardModule.dashboardUnitOrderKey, ["claude", "gemini", "nope", "claude@1a2b3c4d"]);
+  assert.deepEqual(readOrder(["gemini", "claude", "codex"]), ["claude", "gemini", "claude@1a2b3c4d"]);
+  assert.deepEqual(dashboardModule.loadUnitOrder(() => undefined, ["codex"]), []);
 
   assert.deepEqual(extensionModule.resolveStatusBarAccounts(["TEAM", "work@example.com", "claude@0a0b0c0d", "nobody", 4, "TEAM"], accounts), [
     "claude@1a2b3c4d",

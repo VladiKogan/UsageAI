@@ -9,6 +9,7 @@ import {
   dashboardExpandedProvidersKey,
   dashboardUnitOrderKey,
   loadExpandedProviders,
+  loadUnitOrder,
   moveDashboardCard,
   sanitizeUnitOrder,
   UsageDashboardViewProvider,
@@ -132,10 +133,10 @@ export function activate(context: vscode.ExtensionContext): void {
   });
   let accountsLoaded = false;
   /** The order the user dragged the cards into; it also orders the Status Bar. */
-  const unitOrder = (): string[] => sanitizeUnitOrder(context.globalState.get<unknown>(dashboardUnitOrderKey));
   const enabledProviderIds = () => sanitizeProviderIds(
     configuration().get<readonly string[]>("providers", [...providerOrder]),
   );
+  const unitOrder = (): string[] => loadUnitOrder((key) => context.globalState.get<unknown>(key), enabledProviderIds());
   const cached = sanitizeCachedSnapshots(context.globalState.get<unknown>(cacheKey, {}));
   const incidents = new ProviderIncidentService();
   const showIncidents = () => configuration().get("showProviderIncidents", true) === true;

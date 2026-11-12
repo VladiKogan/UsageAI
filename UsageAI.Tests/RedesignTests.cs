@@ -1114,6 +1114,8 @@ internal static class RedesignTests
         Equal("claude@1a2b3c4d|codex|claude|gemini", Order());
         True(settings.MoveUnit(keys, "codex", "gemini", after: true));
         Equal("claude@1a2b3c4d|claude|gemini|codex", Order());
+        // Account labels are told apart in the grouped order, so a dragged card keeps its name.
+        Equal("codex|claude|claude@1a2b3c4d|gemini", string.Join('|', settings.GroupUnits(keys)));
         False(settings.MoveUnit(keys, "codex", "gemini", after: true));
         False(settings.MoveUnit(keys, "claude", Team, after: true));
         False(settings.MoveUnit(keys, "codex", "codex", after: true));
@@ -1179,6 +1181,10 @@ internal static class RedesignTests
             Raise(tile, "OnKeyDown", new KeyEventArgs(Keys.Escape));
             Raise(tile, "OnMouseCaptureChanged", EventArgs.Empty);
             Equal("Move,Cancel", string.Join(',', phases));
+            // The button is still down: its release is not a click on the tile either.
+            Raise(tile, "OnMouseClick", Mouse(90, 30));
+            Raise(tile, "OnMouseUp", Mouse(90, 30));
+            Equal(1, opened);
             Raise(tile, "OnMouseMove", Mouse(60, 30, MouseButtons.None));
 
             Raise(tile, "OnKeyDown", new KeyEventArgs(Keys.Alt | Keys.Right));
@@ -1258,10 +1264,24 @@ internal static class RedesignTests
             Raise(team, "OnMouseUp", Mouse(-4000, -4000));
             Equal(1, requests.Count);
 
+            // Esc during a drag gives up the drag and leaves the popup open; otherwise it closes it.
             tiles = popup.PreviewTiles!.Value.Tiles.Select(entry => entry.Tile).ToArray();
+            Raise(tiles[3], "OnMouseDown", Mouse(20, 20));
+            var overFirst = Over(tiles[3], tiles[0], 1);
+            Raise(tiles[3], "OnMouseMove", Mouse(overFirst.X, overFirst.Y));
+            True(tiles[3].Dimmed);
+            Raise(popup, "OnKeyDown", new KeyEventArgs(Keys.Escape));
+            True(popup.Visible);
+            False(tiles[3].Dimmed);
+            Equal(DropMark.None, tiles[0].DropMark);
+            Raise(tiles[3], "OnMouseUp", Mouse(overFirst.X, overFirst.Y));
+            Equal(1, requests.Count);
+
             Raise(tiles[0], "OnKeyDown", new KeyEventArgs(Keys.Alt | Keys.Right));
             Raise(tiles[0], "OnKeyDown", new KeyEventArgs(Keys.Alt | Keys.Left));
             Equal("gemini>claude:False,codex>claude:True", string.Join(',', requests));
+            Raise(popup, "OnKeyDown", new KeyEventArgs(Keys.Escape));
+            False(popup.Visible);
         }
 
         // The dashboard: a provider is picked up by its heading row.
@@ -1298,7 +1318,8 @@ internal static class RedesignTests
             using (var dragging = new Bitmap(ledger.Width, ledger.Height))
             {
                 ledger.DrawToBitmap(dragging, new Rectangle(Point.Empty, dragging.Size));
-                Equal(Theme.Accent.ToArgb(), dragging.GetPixel(300, tops[Team].Bottom).ToArgb());            }
+                Equal(Theme.Accent.ToArgb(), dragging.GetPixel(300, tops[Team].Bottom).ToArgb());
+            }
 
             Raise(ledger, "OnMouseClick", Mouse(300, Low(Team)));
             Raise(ledger, "OnMouseUp", Mouse(300, Low(Team)));
@@ -1310,6 +1331,13 @@ internal static class RedesignTests
             Raise(ledger, "OnMouseUp", Mouse(300, Heading("claude")));
             Equal("claude@1a2b3c4d>claude:False", requests[^1]);
 
+            // The gap under a provider, where the line is drawn, drops after that provider.
+            Raise(ledger, "OnMouseDown", Mouse(300, Heading("codex")));
+            Raise(ledger, "OnMouseMove", Mouse(300, tops["claude"].Bottom + 4));
+            Raise(ledger, "OnMouseUp", Mouse(300, tops["claude"].Bottom + 4));
+            Equal("codex>claude:True", requests[^1]);
+            Equal(3, requests.Count);
+
             // New rows, or a lost capture, end a drag without a move.
             Raise(ledger, "OnMouseDown", Mouse(300, Heading("gemini")));
             Raise(ledger, "OnMouseMove", Mouse(300, Heading("codex")));
@@ -1318,7 +1346,12 @@ internal static class RedesignTests
             Raise(ledger, "OnMouseDown", Mouse(300, Heading("gemini")));
             Raise(ledger, "OnMouseMove", Mouse(300, Heading("codex")));
             Raise(ledger, "OnMouseCaptureChanged", EventArgs.Empty);
-            Equal(2, requests.Count);
+            Raise(ledger, "OnMouseDown", Mouse(300, Heading("gemini")));
+            Raise(ledger, "OnMouseMove", Mouse(300, Heading("codex")));
+            True(ledger.CancelDrag());
+            False(ledger.CancelDrag());
+            Raise(ledger, "OnMouseUp", Mouse(300, Heading("codex")));
+            Equal(3, requests.Count);
 
             // Alt+Down moves the provider whose link has the focus.
             using (var painted = new Bitmap(ledger.Width, ledger.Height))
@@ -1339,7 +1372,7 @@ internal static class RedesignTests
             }
 
             Equal("codex>claude:True", requests[^1]);
-            Equal(3, requests.Count);
+            Equal(4, requests.Count);
         }
 
         return Task.CompletedTask;

@@ -165,7 +165,8 @@ internal sealed class UsageRefreshService : IDisposable
         var labels = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
         foreach (var provider in visibleKeys.GroupBy(ProviderKey.ProviderOf, StringComparer.OrdinalIgnoreCase))
         {
-            var keys = _settings.OrderUnits(provider.ToArray());
+            // Not the dragged order: "Account 2" must stay with its account when a card is moved.
+            var keys = _settings.GroupUnits(provider.ToArray());
             if (keys.Count < 2)
             {
                 continue;

@@ -1,3 +1,5 @@
+using System.Drawing.Drawing2D;
+
 namespace UsageAI.UI;
 
 /// <summary>A card was dropped before or after another; both are shown provider keys.</summary>
@@ -44,6 +46,45 @@ internal static class CardReorder
     {
         var next = index + (forward ? 1 : -1);
         return index >= 0 && index < count && next >= 0 && next < count ? next : -1;
+    }
+
+    /// <summary>
+    /// Whether a press has moved past the system's drag threshold, so a click stays a click.
+    /// </summary>
+    public static bool IsDrag(Point pressed, Point now)
+    {
+        var slack = SystemInformation.DragSize;
+        return Math.Abs(now.X - pressed.X) > slack.Width / 2 || Math.Abs(now.Y - pressed.Y) > slack.Height / 2;
+    }
+
+    /// <summary>
+    /// Marks the card a drag would move: faded toward <paramref name="behind"/>, the window
+    /// behind it. High Contrast keeps the card's own opaque colours and frames it with a dashed
+    /// line instead. Drawn in whole pixels, so the caller turns antialiasing off first.
+    /// </summary>
+    public static void DrawMoving(Graphics graphics, Rectangle card, Color behind, int stroke)
+    {
+        if (Theme.IsHighContrast)
+        {
+            using var frame = new Pen(SystemColors.Highlight, stroke) { DashStyle = DashStyle.Dash };
+            graphics.DrawRectangle(
+                frame,
+                card.Left + stroke / 2,
+                card.Top + stroke / 2,
+                Math.Max(1, card.Width - stroke),
+                Math.Max(1, card.Height - stroke));
+            return;
+        }
+
+        using var fade = new SolidBrush(Color.FromArgb(150, behind));
+        graphics.FillRectangle(fade, card);
+    }
+
+    /// <summary>The line where the dragged card would land.</summary>
+    public static void DrawLanding(Graphics graphics, Rectangle line)
+    {
+        using var brush = new SolidBrush(Theme.IsHighContrast ? SystemColors.Highlight : Theme.Accent);
+        graphics.FillRectangle(brush, line);
     }
 }
 

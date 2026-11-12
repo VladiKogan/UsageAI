@@ -274,6 +274,8 @@ internal sealed partial class SettingsForm : Form
             AddTrayChoices(provider.Id, provider.DisplayName, choices);
         }
 
+        _openedProviderOrder = _providers.Items.Cast<ProviderEntry>().Select(entry => entry.Id).ToArray();
+
         // An account whose provider is not in the list above still gets its entry.
         foreach (var (id, displayName) in choices.Where(choice =>
             !ProviderKey.IsDefault(choice.Id) &&
@@ -590,9 +592,12 @@ internal sealed partial class SettingsForm : Form
             _settings.SetProviderVisible(entry.Id, _providers.GetItemChecked(index));
         }
 
+        // Compared with the order the list opened in, so a move that was undone, or a drag given
+        // up with Esc, counts as no reordering.
+        var providersReordered = !_openedProviderOrder.SequenceEqual(order, StringComparer.OrdinalIgnoreCase);
         _settings.ProviderOrder = order.ToArray();
         ApplyAccounts();
-        if (_orderEdited)
+        if (providersReordered || _accountOrderEdited)
         {
             // An order chosen here replaces one made by dragging cards, which it cannot show.
             _settings.UnitOrder = Array.Empty<string>();
@@ -707,13 +712,16 @@ internal sealed partial class SettingsForm : Form
         }
     }
 
+    /// <summary>The Providers list as this window opened it, to tell whether it was reordered.</summary>
+    private readonly string[] _openedProviderOrder;
+
+    /// <summary>An account's place among its provider's accounts was changed in this window.</summary>
+    private bool _accountOrderEdited;
+
     /// <summary>
     /// The one place the list is reordered, so the buttons, the keyboard shortcut, and a drag all
     /// move an entry the same way: the tick travels with its provider and stays selected.
     /// </summary>
-    /// <summary>The Providers list or an account's place was reordered in this window.</summary>
-    private bool _orderEdited;
-
     private void MoveProvider(int from, int to)
     {
         var count = _providers.Items.Count;
@@ -724,7 +732,6 @@ internal sealed partial class SettingsForm : Form
 
         var item = _providers.Items[from];
         var isChecked = _providers.GetItemChecked(from);
-        _orderEdited = true;
         _providers.BeginUpdate();
         _movingProvider = true;
         try

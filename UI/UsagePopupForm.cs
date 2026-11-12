@@ -284,10 +284,20 @@ internal sealed class UsagePopupForm : Form
         };
         KeyDown += (_, eventArgs) =>
         {
-            if (eventArgs.KeyCode == Keys.Escape)
+            if (eventArgs.KeyCode != Keys.Escape)
             {
-                Hide();
+                return;
             }
+
+            // This handler sees the key before the card does. Esc during a card drag gives up
+            // the drag and leaves the window open.
+            if (CancelCardDrag())
+            {
+                eventArgs.Handled = true;
+                return;
+            }
+
+            Hide();
         };
         Theme.Changed += OnThemeChanged;
 
@@ -933,8 +943,8 @@ internal sealed class UsagePopupForm : Form
     private string? _movedKey;
 
     /// <summary>
-    /// Fades the tile being dragged, shows where it would land, and on release asks for the move. Tiles read left to right, so the pointer's side of the tile under
-    /// it decides before or after.
+    /// Fades the tile being dragged, shows where it would land, and on release asks for the move.
+    /// Tiles read left to right, so the pointer's side of the tile under it decides before or after.
     /// </summary>
     private void OnTileDragged(object? sender, TileDragEventArgs eventArgs)
     {
@@ -992,6 +1002,16 @@ internal sealed class UsagePopupForm : Form
             ReorderRequested?.Invoke(this, request);
         }
     }
+
+    /// <summary>Gives up the tile or dashboard provider being dragged, if one is.</summary>
+    private bool CancelCardDrag() =>
+        // Copied first: ending a tile's drag can rebuild the tiles.
+        _content.Controls.Cast<Control>().ToArray().Any(control => control switch
+        {
+            ProviderTile tile => tile.CancelDrag(),
+            UsageLedger ledger => ledger.CancelDrag(),
+            _ => false,
+        });
 
     private void OnTileMoveRequested(object? sender, bool forward)
     {

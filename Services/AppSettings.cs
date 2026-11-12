@@ -282,19 +282,7 @@ internal sealed class AppSettings
     public IReadOnlyList<string> OrderUnits(IReadOnlyList<string> unitKeys)
     {
         var comparer = StringComparer.OrdinalIgnoreCase;
-        var providers = OrderProviders(unitKeys
-            .Select(ProviderKey.ProviderOf)
-            .Distinct(comparer)
-            .ToArray());
-        var grouped = providers
-            .SelectMany(providerId => unitKeys
-                .Select((key, index) => (Key: key, Index: index))
-                .Where(entry => ProviderKey.ProviderOf(entry.Key).Equals(providerId, StringComparison.OrdinalIgnoreCase))
-                .OrderBy(entry => FindAccount(entry.Key)?.Order ?? (ProviderKey.IsDefault(entry.Key) ? 0 : int.MaxValue))
-                .ThenBy(entry => ProviderKey.IsDefault(entry.Key) ? 0 : 1)
-                .ThenBy(entry => entry.Index)
-                .Select(entry => entry.Key))
-            .ToArray();
+        var grouped = GroupUnits(unitKeys);
         if (UnitOrder.Length == 0)
         {
             return grouped;
@@ -312,6 +300,28 @@ internal sealed class AppSettings
         }
 
         return ordered;
+    }
+
+    /// <summary>
+    /// Provider keys by provider (the saved provider order), then each provider's accounts by
+    /// their position: the order before any card is dragged. Account labels are told apart in
+    /// this order whatever was dragged, so moving a card never renames it.
+    /// </summary>
+    public IReadOnlyList<string> GroupUnits(IReadOnlyList<string> unitKeys)
+    {
+        var providers = OrderProviders(unitKeys
+            .Select(ProviderKey.ProviderOf)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray());
+        return providers
+            .SelectMany(providerId => unitKeys
+                .Select((key, index) => (Key: key, Index: index))
+                .Where(entry => ProviderKey.ProviderOf(entry.Key).Equals(providerId, StringComparison.OrdinalIgnoreCase))
+                .OrderBy(entry => FindAccount(entry.Key)?.Order ?? (ProviderKey.IsDefault(entry.Key) ? 0 : int.MaxValue))
+                .ThenBy(entry => ProviderKey.IsDefault(entry.Key) ? 0 : 1)
+                .ThenBy(entry => entry.Index)
+                .Select(entry => entry.Key))
+            .ToArray();
     }
 
     /// <summary>

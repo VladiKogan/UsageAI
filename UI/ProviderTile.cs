@@ -38,6 +38,7 @@ internal sealed class ProviderTile : Control
     private bool _toolTipVisible;
     private Point? _pressedAt;
     private bool _dragging;
+    private bool _dragCancelled;
     private bool _dimmed;
     private DropMark _dropMark;
 
@@ -171,10 +172,7 @@ internal sealed class ProviderTile : Control
         base.OnMouseMove(e);
         if (_pressedAt is { } pressed && e.Button.HasFlag(MouseButtons.Left))
         {
-            // A press becomes a drag only past the system's drag threshold, so a click stays a click.
-            var slack = SystemInformation.DragSize;
-            if (!_dragging &&
-                (Math.Abs(e.X - pressed.X) > slack.Width / 2 || Math.Abs(e.Y - pressed.Y) > slack.Height / 2))
+            if (!_dragging && CardReorder.IsDrag(pressed, e.Location))
             {
                 _dragging = true;
                 Cursor = Cursors.SizeAll;
@@ -212,10 +210,26 @@ internal sealed class ProviderTile : Control
             Focus();
         }
 
+        _dragCancelled = false;
         if (e.Button == MouseButtons.Left && !_indicatorBounds.Contains(e.Location))
         {
             _pressedAt = e.Location;
         }
+    }
+
+    /// <summary>Gives up a drag in progress, as Esc does. False when the tile is not being dragged.</summary>
+    internal bool CancelDrag()
+    {
+        if (!_dragging)
+        {
+            return false;
+        }
+
+        // Letting go of the capture ends the drag through OnMouseCaptureChanged; a tile that
+        // never had it is ended here.
+        Capture = false;
+        EndDrag(Cursor.Position, TileDragPhase.Cancel);
+        return true;
     }
 
     protected override void OnMouseUp(MouseEventArgs e)
@@ -243,6 +257,8 @@ internal sealed class ProviderTile : Control
         }
 
         _dragging = false;
+        // A drag given up with the button still down: its release is not a click either.
+        _dragCancelled = phase == TileDragPhase.Cancel;
         Cursor = Cursors.Hand;
         Dragged?.Invoke(this, new TileDragEventArgs(screenPoint, phase));
     }
@@ -251,7 +267,7 @@ internal sealed class ProviderTile : Control
     {
         base.OnMouseClick(e);
         // The click of a drag's release (raised before its MouseUp) is not a click on the tile.
-        if (e.Button != MouseButtons.Left || _dragging || _indicatorBounds.Contains(e.Location))
+        if (e.Button != MouseButtons.Left || _dragging || _dragCancelled || _indicatorBounds.Contains(e.Location))
         {
             return;
         }
@@ -268,9 +284,8 @@ internal sealed class ProviderTile : Control
     protected override void OnKeyDown(KeyEventArgs e)
     {
         base.OnKeyDown(e);
-        if (e.KeyCode == Keys.Escape && _dragging)
+        if (e.KeyCode == Keys.Escape && CancelDrag())
         {
-            Capture = false;
             e.Handled = true;
             return;
         }
@@ -360,17 +375,14 @@ internal sealed class ProviderTile : Control
         graphics.SmoothingMode = SmoothingMode.None;
         if (_dimmed)
         {
-            // A card that would move is faded toward the window behind it.
-            using var fade = new SolidBrush(Color.FromArgb(150, Parent?.BackColor ?? Theme.Night));
-            graphics.FillRectangle(fade, ClientRectangle);
+            CardReorder.DrawMoving(graphics, ClientRectangle, Parent?.BackColor ?? Theme.Night, scale[2]);
         }
 
         if (_dropMark != DropMark.None)
         {
             // Tiles read left to right, so the line stands at the edge the card would land beside.
             var width = scale[3];
-            using var line = new SolidBrush(Theme.IsHighContrast ? SystemColors.Highlight : Theme.Accent);
-            graphics.FillRectangle(line, _dropMark == DropMark.Before ? 0 : Width - width, 0, width, Height);
+            CardReorder.DrawLanding(graphics, new Rectangle(_dropMark == DropMark.Before ? 0 : Width - width, 0, width, Height));
         }
     }
 

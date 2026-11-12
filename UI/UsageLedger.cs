@@ -43,6 +43,7 @@ internal sealed class UsageLedger : Control
     private Point? _pressedAt;
     private string? _dragKey;
     private bool _dragging;
+    private bool _dragCancelled;
     private CardReorder.Drop? _drop;
     private string? _movingKey;
     private string? _pendingFocusKey;
@@ -156,6 +157,7 @@ internal sealed class UsageLedger : Control
     protected override void OnMouseDown(MouseEventArgs e)
     {
         base.OnMouseDown(e);
+        _dragCancelled = false;
         // A provider is picked up by its heading row, anywhere but on its links and buttons.
         if (e.Button == MouseButtons.Left &&
             !_actions.Any(action => action.Bounds.Contains(e.Location)) &&
@@ -182,6 +184,21 @@ internal sealed class UsageLedger : Control
         }
     }
 
+    /// <summary>Gives up a drag in progress, as Esc does. False when no provider is being dragged.</summary>
+    internal bool CancelDrag()
+    {
+        if (!_dragging)
+        {
+            return false;
+        }
+
+        // Letting go of the capture ends the drag through OnMouseCaptureChanged; a table that
+        // never had it is ended here.
+        Capture = false;
+        EndDrag(drop: false);
+        return true;
+    }
+
     private void EndDrag(bool drop)
     {
         _pressedAt = null;
@@ -195,6 +212,8 @@ internal sealed class UsageLedger : Control
             ? new CardReorderEventArgs(moved, blocks[landing.MarkIndex].Key, landing.After)
             : null;
         _dragging = false;
+        // A drag given up with the button still down: its release is not a click on a link either.
+        _dragCancelled = !drop;
         _drop = null;
         Cursor = Cursors.Default;
         Invalidate();
@@ -254,8 +273,11 @@ internal sealed class UsageLedger : Control
     {
         var blocks = Blocks();
         var keys = blocks.Select(block => block.Key).ToArray();
-        var target = blocks.FindIndex(block => y >= block.Top && y < block.Bottom);
-        var drop = target < 0
+        // The gap under a provider counts as that provider, and the column headings as the first
+        // one: the line is drawn there, so it must not go out when the pointer reaches it.
+        // Outside the table there is nothing to drop on.
+        var target = y < 0 || y >= Height ? -1 : Math.Max(0, blocks.FindLastIndex(block => y >= block.Top));
+        var drop = target < 0 || target >= blocks.Count
             ? null
             : CardReorder.Resolve(
                 keys.Length,
@@ -275,10 +297,7 @@ internal sealed class UsageLedger : Control
         base.OnMouseMove(e);
         if (_pressedAt is { } pressed && e.Button.HasFlag(MouseButtons.Left))
         {
-            // A press becomes a drag only past the system's drag threshold.
-            var slack = SystemInformation.DragSize;
-            if (!_dragging &&
-                (Math.Abs(e.X - pressed.X) > slack.Width / 2 || Math.Abs(e.Y - pressed.Y) > slack.Height / 2))
+            if (!_dragging && CardReorder.IsDrag(pressed, e.Location))
             {
                 _dragging = true;
                 Cursor = Cursors.SizeAll;
@@ -315,7 +334,7 @@ internal sealed class UsageLedger : Control
     {
         base.OnMouseClick(e);
         // The click of a drag's release (raised before its MouseUp) is not a click on a link.
-        if (e.Button != MouseButtons.Left || _dragging)
+        if (e.Button != MouseButtons.Left || _dragging || _dragCancelled)
         {
             return;
         }
@@ -476,21 +495,16 @@ internal sealed class UsageLedger : Control
         // Whole pixels: an antialiased fill would blur the fade and the line at their edges.
         graphics.SmoothingMode = SmoothingMode.None;
         var blocks = Blocks();
-        using var fade = new SolidBrush(Color.FromArgb(150, BackColor));
-        for (var index = 0; index < blocks.Count; index++)
+        var thickness = scale[2];
+        foreach (var block in blocks.Where(block => block.Key.Equals(_dragKey, StringComparison.OrdinalIgnoreCase)))
         {
-            if (blocks[index].Key.Equals(_dragKey, StringComparison.OrdinalIgnoreCase))
-            {
-                graphics.FillRectangle(fade, 0, blocks[index].Top, Width, blocks[index].Bottom - blocks[index].Top);
-            }
+            CardReorder.DrawMoving(graphics, new Rectangle(0, block.Top, Width, block.Bottom - block.Top), BackColor, thickness);
         }
 
         if (_drop is { } drop && drop.MarkIndex < blocks.Count)
         {
-            var thickness = scale[2];
             var edge = drop.After ? blocks[drop.MarkIndex].Bottom : blocks[drop.MarkIndex].Top - thickness;
-            using var line = new SolidBrush(Theme.IsHighContrast ? SystemColors.Highlight : Theme.Accent);
-            graphics.FillRectangle(line, 0, Math.Clamp(edge, 0, Height - thickness), Width, thickness);
+            CardReorder.DrawLanding(graphics, new Rectangle(0, Math.Clamp(edge, 0, Height - thickness), Width, thickness));
         }
     }
 

@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { isKnownUnitKey } from "./accounts";
+import { isKnownUnitKey, providerKindOf } from "./accounts";
 import {
   displayedPercent,
   formatResetCountdown,
@@ -22,11 +22,27 @@ export const legacyDashboardExpandedProvidersKey = "usageai.dashboard.expandedPr
 const knownProviderIds = ["codex", "claude", "copilot", "gemini"] as const;
 const maxRememberedCards = 64;
 /** The cards' order, as unit keys, after the user dragged one. */
-export const dashboardUnitOrderKey = "usageai.dashboard.unitOrder.v1";
+export const dashboardUnitOrderKey = "usageai.dashboard.unitOrder.v2";
+/** 0.1.24's list, which ordered the cards only within each provider. */
+export const legacyDashboardUnitOrderKey = "usageai.dashboard.unitOrder.v1";
 
 /** Known unit keys only, once each. */
 export function sanitizeUnitOrder(value: unknown): string[] {
   return Array.isArray(value) ? sanitizeExpandedProviderIds(value) : [];
+}
+
+/**
+ * The saved card order. Until a card is dragged in this version, 0.1.24's list applies as it did
+ * there: it ordered the cards within each provider only, and the providers followed
+ * `providerIds` (the setting). Read as a whole order it would undo a provider moved since.
+ */
+export function loadUnitOrder(get: (key: string) => unknown, providerIds: readonly string[]): string[] {
+  const saved = get(dashboardUnitOrderKey);
+  if (saved !== undefined) {
+    return sanitizeUnitOrder(saved);
+  }
+  const legacy = sanitizeUnitOrder(get(legacyDashboardUnitOrderKey));
+  return providerIds.flatMap((providerId) => legacy.filter((unit) => providerKindOf(unit) === providerId));
 }
 
 /**
