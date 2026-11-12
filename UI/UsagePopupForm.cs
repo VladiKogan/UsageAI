@@ -779,7 +779,7 @@ internal sealed class UsagePopupForm : Form
 
     private void RebuildCards()
     {
-        if (_tileDragActive)
+        if (_tileDragActive || _content.Controls.OfType<UsageLedger>().Any(table => table.IsDragging))
         {
             // A reading that lands mid-drag is drawn once the drag ends: rebuilding would dispose
             // the tile being dragged.
@@ -849,6 +849,15 @@ internal sealed class UsagePopupForm : Form
             };
             ledger.ActionInvoked += OnCardActionInvoked;
             ledger.ReorderRequested += (_, eventArgs) => ReorderRequested?.Invoke(this, eventArgs);
+            // Providers publish one at a time during a refresh; each would end a drag in progress.
+            ledger.DragEnded += (_, _) =>
+            {
+                if (_rebuildDeferred)
+                {
+                    _rebuildDeferred = false;
+                    RebuildCards();
+                }
+            };
             _content.Controls.Add(ledger);
         }
         else

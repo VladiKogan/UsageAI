@@ -217,11 +217,18 @@ internal sealed class UsageLedger : Control
         _drop = null;
         Cursor = Cursors.Default;
         Invalidate();
+        DragEnded?.Invoke(this, EventArgs.Empty);
         if (request is not null)
         {
             ReorderRequested?.Invoke(this, request);
         }
     }
+
+    /// <summary>A provider is being dragged; the dashboard holds new readings back until it ends.</summary>
+    internal bool IsDragging => _dragging;
+
+    /// <summary>A drag ended, dropped or cancelled; raised before any <see cref="ReorderRequested"/>.</summary>
+    internal event EventHandler? DragEnded;
 
     /// <summary>Each provider key's rows as one block, top to bottom.</summary>
     private List<(string Key, int Top, int Bottom)> Blocks()

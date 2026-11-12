@@ -1375,6 +1375,27 @@ internal static class RedesignTests
             Equal(4, requests.Count);
         }
 
+        // In the dashboard window a reading that lands mid-drag waits, as in the popup: providers
+        // publish one at a time during a refresh, and each would otherwise end the drag.
+        using (var dashboard = new UsagePopupForm(new AppSettings { IsEphemeral = true }, 96) { StaysOpenWhenInactive = true })
+        {
+            var requests = 0;
+            dashboard.ReorderRequested += (_, _) => requests++;
+            dashboard.SetStates(states, isRefreshing: false, lastRefreshed: DateTimeOffset.Now, history: Array.Empty<UsageSample>());
+            dashboard.ShowNearTray(DashboardMode.Full);
+            Application.DoEvents();
+            var table = dashboard.PreviewTable!.Value.Table;
+            var heading = table.Rows.TakeWhile(row => row.Kind != UsageLedger.RowKind.Provider).Sum(row => row.BaselineHeight) + 10;
+            Raise(table, "OnMouseDown", Mouse(300, heading));
+            Raise(table, "OnMouseMove", Mouse(300, table.Height - 6));
+            True(table.IsDragging);
+            dashboard.SetStates(states, isRefreshing: true, lastRefreshed: DateTimeOffset.Now, history: Array.Empty<UsageSample>());
+            True(table.IsDragging);
+            Raise(table, "OnMouseUp", Mouse(300, table.Height - 6));
+            False(table.IsDragging);
+            Equal(1, requests);
+        }
+
         return Task.CompletedTask;
     }
 
