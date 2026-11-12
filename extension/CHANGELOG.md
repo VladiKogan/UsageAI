@@ -14,14 +14,20 @@
 - **Settings are grouped by what they change.** One long list under "UsageAI" is now four short
   groups: **Providers and Accounts**, **Status Bar**, **Display** (used or remaining, which limits
   a card lists, warning and critical levels) and **Refresh**. The Status Bar group reads top to
-  bottom: a checkbox per provider, the extra accounts, then the fallback that applies when nothing
-  is chosen. Descriptions are shorter and say what each setting does. No setting was renamed, so
+  bottom: a checkbox per provider, then the fallback that applies when nothing is chosen. Descriptions are shorter and say what each setting does. No setting was renamed, so
   your values carry over.
 - **The legacy "Status Bar Provider" setting is gone from the Settings editor.** It sat under the
   checkboxes that replaced it, could only be edited in `settings.json`, and made the group hard to
   read. A value you still have in `settings.json` keeps working until you tick a Status Bar
   checkbox or use **Choose Status Bar Items…**; the editor now marks it as unknown, and it can be
   deleted once you have.
+- **The Status Bar's extra accounts are no longer a setting.** The "Status Bar Providers: Accounts"
+  list was only there so **Choose Status Bar Items…** had somewhere to save, and nobody needed
+  to edit it. The picker now keeps its choice in the extension's own storage, so the entry is
+  gone from Settings. A list you already have keeps applying until you next use the picker,
+  which then takes over; after that the `usageai.statusBarProviders.accounts` line in
+  `settings.json` is unused and can be deleted. Accounts can no longer be added to the Status
+  Bar by typing a label or email into `settings.json`.
 
 ### Fixed
 

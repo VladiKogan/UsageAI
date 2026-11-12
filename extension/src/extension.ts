@@ -32,6 +32,8 @@ import {
 } from "./status-bar-picker";
 
 const cacheKey = "usageai.cachedSnapshots.v1";
+/** The extra accounts the Status Bar shows, as the picker saved them. */
+export const statusBarAccountsKey = "usageai.statusBar.accounts.v1";
 const providerOrder: readonly UsageProviderId[] = ["codex", "claude", "copilot", "gemini"];
 /** How often the once-a-day account scan asks whether it is due. */
 const accountScanCheckMs = 60 * 60_000;
@@ -168,6 +170,13 @@ export function activate(context: vscode.ExtensionContext): void {
     },
   );
   const statusBars = new StatusBarController();
+  /**
+   * The Status Bar's extra accounts. They are the extension's own state, so nothing shows in the
+   * Settings editor; until the picker first saves, a list left in settings.json by an earlier
+   * version (`usageai.statusBarProviders.accounts`, no longer in the manifest) still applies.
+   */
+  const statusBarAccounts = (): unknown => context.globalState.get<unknown>(statusBarAccountsKey)
+    ?? configuration().get<unknown>("statusBarProviders.accounts", []);
   const refreshManually = () => vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Window,
@@ -179,7 +188,7 @@ export function activate(context: vscode.ExtensionContext): void {
   const updateUi = (states: readonly ProviderState[]) => {
     statusBars.update(
       states,
-      getStatusBarProviderSelection(configuration(), enabledProviderIds(), accounts.accounts),
+      getStatusBarProviderSelection(configuration(), enabledProviderIds(), accounts.accounts, statusBarAccounts()),
       normalizeQuotaDisplay(configuration().get<unknown>("quotaDisplay", "used")),
     );
     // Until the accounts are read, the cached readings of the other accounts are kept, not dropped.
@@ -301,19 +310,20 @@ export function activate(context: vscode.ExtensionContext): void {
       accounts: () => accounts.accounts,
       providerName,
       selection: () => normalizeStatusBarProviders(
-        getStatusBarProviderSelection(configuration(), enabledProviderIds(), accounts.accounts),
+        getStatusBarProviderSelection(configuration(), enabledProviderIds(), accounts.accounts, statusBarAccounts()),
       ),
       hottestWhenNoneSelected: () => statusBarHottestFallback(configuration()),
-      configuredAccounts: () => configuration().get<unknown>("statusBarProviders.accounts", []),
+      configuredAccounts: statusBarAccounts,
       save: async (change) => {
-        // The account list first: it is the setting a window may not have registered yet, so a
-        // refusal comes before any checkbox has changed.
-        await updateStatusBarSetting("statusBarProviders.accounts", change.accounts.length > 0 ? [...change.accounts] : undefined);
         for (const [provider, shown] of Object.entries(change.providers)) {
           await updateStatusBarSetting(`statusBarProviders.${provider}`, shown, shown ? true : undefined);
         }
         // Set explicitly, so the checkboxes take over from the legacy statusBarProvider setting.
         await updateStatusBarSetting("statusBarProviders.hottestWhenNoneSelected", change.hottestWhenNoneSelected);
+        // The accounts last, once every setting was accepted. They raise no configuration change,
+        // so the Status Bar is redrawn here.
+        await context.globalState.update(statusBarAccountsKey, [...change.accounts]);
+        updateUi(refreshService.getStates());
       },
     })),
     vscode.commands.registerCommand("usageai.rescanAccounts", async () => {
@@ -449,11 +459,12 @@ export function getStatusBarProviderSelection(
   configuration: vscode.WorkspaceConfiguration,
   providerIds: readonly UsageProviderId[],
   accounts: readonly AccountEntry[] = [],
+  extraAccounts: unknown = configuration.get<unknown>("statusBarProviders.accounts", []),
 ): unknown {
   const selection = statusBarProviderSelection(configuration, providerIds);
-  // Accounts named in their own setting join whatever the checkboxes chose; a provider's own entry
-  // keeps following its primary account.
-  const extra = resolveStatusBarAccounts(configuration.get<unknown>("statusBarProviders.accounts", []), accounts)
+  // The extra accounts join whatever the checkboxes chose; a provider's own entry keeps following
+  // its primary account.
+  const extra = resolveStatusBarAccounts(extraAccounts, accounts)
     .filter((unit) => providerIds.includes(providerKindOf(unit) as UsageProviderId));
   if (extra.length === 0) {
     return selection;

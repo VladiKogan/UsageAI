@@ -4,12 +4,12 @@ import type { StatusBarProviderId, StatusBarSelectionId } from "./model";
 
 export type UsageProviderId = Exclude<StatusBarProviderId, "hottest">;
 
-/** How many extra accounts `usageai.statusBarProviders.accounts` may name. */
+/** How many extra accounts the Status Bar may show. */
 export const maxStatusBarAccounts = 16;
 
 /**
- * Extra Status Bar entries from `usageai.statusBarProviders.accounts`: each an account unit key
- * (`claude@1a2b3c4d`) or a shown account's label or email.
+ * Extra Status Bar entries: each an account unit key (`claude@1a2b3c4d`), as the picker saves
+ * them, or a shown account's label or email, as the former setting allowed by hand.
  */
 export function resolveStatusBarAccounts(value: unknown, accounts: readonly AccountEntry[]): string[] {
   const names = Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === "string") : [];
@@ -70,7 +70,7 @@ export interface StatusBarPickerDependencies {
   /** The Status Bar items shown now, from whichever settings are in use. */
   readonly selection: () => readonly StatusBarSelectionId[];
   readonly hottestWhenNoneSelected: () => boolean;
-  /** The raw `usageai.statusBarProviders.accounts` value. */
+  /** The saved extra accounts: the extension's own state, else the former setting's value. */
   readonly configuredAccounts: () => unknown;
   readonly save: (change: StatusBarChange) => PromiseLike<void>;
 }
@@ -177,7 +177,7 @@ export async function chooseStatusBarItems(dependencies: StatusBarPickerDependen
   const change = statusBarChange(items, chosen, dependencies.configuredAccounts(), dependencies.accounts());
   if (change.accounts.length > maxStatusBarAccounts) {
     // Cutting the list would drop a ticked account silently while reporting success.
-    ui.error(`usageai.statusBarProviders.accounts can name at most ${maxStatusBarAccounts} accounts. Untick some, or remove names from that setting, then try again.`);
+    ui.error(`The Status Bar can show at most ${maxStatusBarAccounts} extra accounts. Untick some, then try again.`);
     return "failed";
   }
   try {

@@ -86,8 +86,8 @@ Open **UsageAI: Open Settings** to personalize the extension. The settings are i
 - **UsageAI: Choose Status Bar Items…** (also in the dashboard's **…** menu) lists every provider
   and every Claude Code and Codex account with a checkbox. Each one you tick gets its own compact
   reading, so two Claude Code accounts can sit side by side.
-- The **Status Bar** settings hold the same choice. Each provider's checkbox is its main
-  login; extra Claude Code and Codex accounts are listed under **Accounts**.
+- The **Status Bar** settings hold a checkbox for each provider's main login. Extra Claude Code
+  and Codex accounts are chosen in **Choose Status Bar Items…** only, and are not a setting.
 - If nothing is chosen, **Hottest When None Selected** shows the provider with the highest current usage. Turn it off to hide UsageAI from the Status Bar.
 - **Quota Display** chooses whether meters and percentages show the quota **used** (the default)
   or the quota **remaining**, in both the dashboard and the Status Bar. Warning and critical colors
@@ -131,8 +131,7 @@ Your main login is always the standard `~/.claude` / `~/.codex`, however the edi
 If it inherits `CLAUDE_CONFIG_DIR` or `CODEX_HOME`, the folder the variable names is found as one more
 account instead of replacing the main one. The main login stays the primary account: the
 **Status Bar** checkboxes follow it.
-To put another account in the Status Bar, tick it in **UsageAI: Choose Status Bar Items…**, or
-name it by its label or email in `usageai.statusBarProviders.accounts`. A login whose email and organization match an account
+To put another account in the Status Bar, tick it in **UsageAI: Choose Status Bar Items…**. A login whose email and organization match an account
 already shown is not added twice. Each account refreshes on its own, so an expired login goes
 stale on its own card only. UsageAI reads another account's folder only: it sends that login's
 token to the same Anthropic or ChatGPT endpoint as the main login's, and gives the folder to

@@ -286,7 +286,7 @@
             "type": "boolean",
             "default": false,
             "order": 10,
-            "markdownDescription": "Show Codex (your main login, `~/.codex`) in the Status Bar. [Choose Status Bar Items…](command:usageai.chooseStatusBarItems) sets every Status Bar item in one list."
+            "markdownDescription": "Show Codex (your main login, `~/.codex`) in the Status Bar. [Choose Status Bar Items…](command:usageai.chooseStatusBarItems) sets every Status Bar item in one list, and is where extra Claude Code and Codex accounts are added."
           },
           "usageai.statusBarProviders.claude": {
             "type": "boolean",
@@ -306,22 +306,10 @@
             "order": 40,
             "markdownDescription": "Show Gemini in the Status Bar."
           },
-          "usageai.statusBarProviders.accounts": {
-            "type": "array",
-            "default": [],
-            "uniqueItems": true,
-            "maxItems": 16,
-            "items": {
-              "type": "string"
-            },
-            "scope": "application",
-            "order": 50,
-            "markdownDescription": "Extra Claude Code and Codex accounts to show in the Status Bar, beside the providers ticked above. [Choose Status Bar Items…](command:usageai.chooseStatusBarItems) fills this in for you. By hand, name an account by its label or email, or by the id the command writes (such as `claude@1a2b3c4d`)."
-          },
           "usageai.statusBarProviders.hottestWhenNoneSelected": {
             "type": "boolean",
             "default": true,
-            "order": 60,
+            "order": 50,
             "markdownDescription": "When nothing above is chosen, show whichever provider has the highest usage right now. Turn this off as well to keep UsageAI out of the Status Bar."
           }
         }

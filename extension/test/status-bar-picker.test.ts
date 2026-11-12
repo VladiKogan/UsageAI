@@ -150,6 +150,6 @@ test("choosing Status Bar items saves once, and a refused save offers a reload",
   saved.length = 0;
   const full = Array.from({ length: 16 }, (_, index) => `old${index}`);
   assert.equal(await chooseStatusBarItems({ ...dependencies(["claude@1a2b3c4d"]), configuredAccounts: () => full }), "failed");
-  assert.match(log.at(-1) ?? "", /^error usageai\.statusBarProviders\.accounts can name at most 16 accounts/);
+  assert.match(log.at(-1) ?? "", /^error The Status Bar can show at most 16 extra accounts/);
   assert.deepEqual(saved, []);
 });

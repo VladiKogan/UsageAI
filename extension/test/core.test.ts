@@ -131,7 +131,6 @@ test("extension manifest keeps local hosting and a compact view toolbar", async 
     "usageai.statusBarProviders.claude",
     "usageai.statusBarProviders.copilot",
     "usageai.statusBarProviders.gemini",
-    "usageai.statusBarProviders.accounts",
     "usageai.statusBarProviders.hottestWhenNoneSelected",
   ]);
   for (const [key, property] of sections.flatMap((section) => Object.entries(section.properties))) {

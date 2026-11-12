@@ -623,6 +623,7 @@ test("activation helpers sanitize configuration and activation registers its sur
 
   const subscriptions: Array<{ dispose(): unknown }> = [];
   const updates: unknown[] = [];
+  const stateUpdates: Array<[string, unknown]> = [];
   // Activation lists the home folder for other logins; point it at an empty one.
   const previousHome = { USERPROFILE: process.env.USERPROFILE, HOME: process.env.HOME };
   const emptyHome = mkdtempSync(path.join(os.tmpdir(), "usageai-activation-home-"));
@@ -634,7 +635,7 @@ test("activation helpers sanitize configuration and activation registers its sur
       get: (key: string, fallback: unknown) => key === dashboardModule.dashboardExpandedProvidersKey
         ? ["claude"]
         : fallback,
-      update: async (_key: string, value: unknown) => { updates.push(value); },
+      update: async (key: string, value: unknown) => { updates.push(value); stateUpdates.push([key, value]); },
     },
   };
   mock.method(UsageRefreshService.prototype, "start", () => {});
@@ -682,9 +683,9 @@ test("activation helpers sanitize configuration and activation registers its sur
     await registeredCommands.get("usageai.rescanAccounts")?.();
     assert.ok(informationMessages.includes("UsageAI found no new accounts."));
 
-    // The Status Bar picker ticks from what is shown, writes the account list first, skips a
-    // checkbox already holding its value (Codex), and sets the fallback so the checkboxes take
-    // over from the legacy setting.
+    // The Status Bar picker ticks from what is shown, skips a checkbox already holding its value
+    // (Codex), sets the fallback so the checkboxes take over from the legacy setting, and keeps
+    // the extra accounts in the extension's own state, never in a setting.
     configurationUpdates.length = 0;
     const offered: string[] = [];
     quickPickAnswer = (items) => {
@@ -694,14 +695,17 @@ test("activation helpers sanitize configuration and activation registers its sur
     await registeredCommands.get("usageai.chooseStatusBarItems")?.();
     assert.deepEqual(offered, ["Codex ✓", "When nothing above is chosen", "Show the account with the highest usage ✓"]);
     assert.deepEqual(configurationUpdates.map((update) => [update.key, update.value]), [
-      ["statusBarProviders.accounts", undefined],
       ["statusBarProviders.hottestWhenNoneSelected", false],
     ]);
-    // A window that has not registered the account list refuses it before any checkbox changes.
+    assert.deepEqual(stateUpdates.filter(([key]) => key === extensionModule.statusBarAccountsKey), [[extensionModule.statusBarAccountsKey, []]]);
+    // A setting the window has not registered is refused, and the accounts are then not saved either.
     configurationUpdates.length = 0;
-    unregisteredConfigurationKey = "statusBarProviders.accounts";
+    stateUpdates.length = 0;
+    unregisteredConfigurationKey = "statusBarProviders.hottestWhenNoneSelected";
+    quickPickAnswer = (items) => items.filter((item) => item.label !== "Codex");
     await registeredCommands.get("usageai.chooseStatusBarItems")?.();
-    assert.deepEqual(configurationUpdates, []);
+    assert.deepEqual(configurationUpdates.filter((update) => update.key === "statusBarProviders.hottestWhenNoneSelected"), []);
+    assert.deepEqual(stateUpdates.filter(([key]) => key === extensionModule.statusBarAccountsKey), []);
     assert.ok(informationMessages.some((message) => message.startsWith("VS Code has not loaded UsageAI's newest settings")));
     unregisteredConfigurationKey = undefined;
     quickPickAnswer = undefined;
@@ -901,6 +905,9 @@ test("account clients, Status Bar account names, and cached readings are keyed b
   configurationValues.set("statusBarProvider", "claude");
   configurationValues.set("statusBarProviders.accounts", ["team", "work"]);
   assert.deepEqual(extensionModule.getStatusBarProviderSelection(configuration as never, ["claude"], accounts), ["claude", "claude@1a2b3c4d"]);
+  // The extension's own saved list, once the picker has written one, replaces that former setting.
+  assert.deepEqual(extensionModule.getStatusBarProviderSelection(configuration as never, ["claude"], accounts, []), "claude");
+  assert.deepEqual(extensionModule.getStatusBarProviderSelection(configuration as never, ["claude"], accounts, ["claude@1a2b3c4d"]), ["claude", "claude@1a2b3c4d"]);
   configurationValues.clear();
 
   assert.deepEqual(Object.keys(extensionModule.sanitizeCachedSnapshots({
