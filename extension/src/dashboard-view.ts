@@ -26,9 +26,7 @@ export const dashboardUnitOrderKey = "usageai.dashboard.unitOrder.v1";
 
 /** Known unit keys only, once each. */
 export function sanitizeUnitOrder(value: unknown): string[] {
-  return Array.isArray(value)
-    ? [...new Set(value.filter((candidate): candidate is string => isKnownUnitKey(candidate, knownProviderIds)))].slice(0, maxRememberedCards)
-    : [];
+  return Array.isArray(value) ? sanitizeExpandedProviderIds(value) : [];
 }
 
 /**
@@ -377,7 +375,10 @@ function dashboardHtml(webview: vscode.Webview): string {
     const providers = document.getElementById('providers'); const stamp = document.getElementById('stamp'); const metricMode = document.getElementById('metric-mode');
     document.getElementById('collapse-all').addEventListener('click', () => vscode.postMessage({ type: 'setAllExpanded', expanded: false }));
     document.getElementById('expand-all').addEventListener('click', () => vscode.postMessage({ type: 'setAllExpanded', expanded: true }));
-    let latestPayload; let dragging; let deferred; let refocus;
+    let latestPayload; let dragging; let deferred;
+    // The card whose header holds the keyboard focus. A redraw rebuilds every card, and one move sends several
+    // (the new order, then the changed setting), so the focus is put back on each instead of once.
+    const focusedUnit = () => { const active = document.activeElement; return document.hasFocus?.() && active?.classList?.contains('card-toggle') ? active.closest('.card')?.dataset.unit : undefined; };
     const clearDrop = () => { for (const node of providers.querySelectorAll('[data-drop]')) delete node.dataset.drop; };
     const moveCard = (providerId, targetId, after) => vscode.postMessage({ type: 'moveCard', providerId, targetId, after });
     // A reading that lands mid-drag is drawn once the drag ends: redrawing would remove the card being dragged.
@@ -405,7 +406,7 @@ function dashboardHtml(webview: vscode.Webview): string {
     };
     const render = (payload) => {
       if (dragging) { deferred = payload; return; }
-      latestPayload = payload;
+      latestPayload = payload; const focused = focusedUnit(); let focusedHead;
       providers.replaceChildren(); const warning = payload.warningPercent ?? 72; const critical = payload.criticalPercent ?? 90;
       const mode = ['metered', 'important'].includes(payload.metricDisplayMode) ? payload.metricDisplayMode : 'all'; metricMode.value = mode;
       const quota = payload.quotaDisplay === 'remaining' ? 'remaining' : 'used';
@@ -414,7 +415,8 @@ function dashboardHtml(webview: vscode.Webview): string {
       let newest = 0;
       for (const state of payload.states) {
         const card = el('article', 'card'); card.dataset.stale = String(state.stale); card.dataset.unit = state.id;
-        card.addEventListener('dragstart', (event) => { dragging = state.id; card.classList.add('dragging'); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', state.displayName); });
+        // Only the card itself: a drag of selected text or a link inside it bubbles here too, and must not move the card.
+        card.addEventListener('dragstart', (event) => { if (event.target !== card) return; dragging = state.id; card.classList.add('dragging'); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', state.displayName); });
         card.addEventListener('dragover', (event) => { if (!dragging || dragging === state.id) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move'; const box = card.getBoundingClientRect(); clearDrop(); card.dataset.drop = event.clientY > box.top + box.height / 2 ? 'after' : 'before'; });
         card.addEventListener('drop', (event) => { if (!dragging || dragging === state.id) return; event.preventDefault(); moveCard(dragging, state.id, card.dataset.drop === 'after'); });
         card.addEventListener('dragend', endDrag);
@@ -426,7 +428,8 @@ function dashboardHtml(webview: vscode.Webview): string {
         // Dragging starts from the header only, so text in an open card can still be selected.
         head.title = 'Drag to reorder, or press Alt+Up / Alt+Down'; head.setAttribute('aria-keyshortcuts', 'Alt+ArrowUp Alt+ArrowDown');
         head.addEventListener('pointerdown', () => { card.draggable = true; });
-        head.addEventListener('keydown', (event) => { if (!event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return; event.preventDefault(); const down = event.key === 'ArrowDown'; const ids = payload.states.map(other => other.id); const neighbour = ids[ids.indexOf(state.id) + (down ? 1 : -1)]; if (neighbour) { refocus = state.id; moveCard(state.id, neighbour, down); } });
+        head.addEventListener('keydown', (event) => { if (!event.altKey || (event.key !== 'ArrowUp' && event.key !== 'ArrowDown')) return; event.preventDefault(); const down = event.key === 'ArrowDown'; const ids = payload.states.map(other => other.id); const neighbour = ids[ids.indexOf(state.id) + (down ? 1 : -1)]; if (neighbour) moveCard(state.id, neighbour, down); });
+        if (state.id === focused) focusedHead = head;
         const chevron = el('span', 'chevron', '⌄'); chevron.setAttribute('aria-hidden', 'true'); const provider = el('div', 'provider');
         const planParts = state.snapshot ? [state.snapshot.plan, state.snapshot.accountName] : ['Not connected']; if (state.stale) planParts.push('Stale'); provider.append(el('span', 'provider-name', state.displayName), el('span', 'plan', planParts.filter(Boolean).join(' · ')));
         if (state.incident) { const incident = el('span', 'incident', 'Status page: ' + state.incident); incident.dataset.outage = String(Boolean(state.incidentIsOutage)); provider.append(incident); }
@@ -445,7 +448,7 @@ function dashboardHtml(webview: vscode.Webview): string {
         else if (state.snapshot) { const actions = el('div', 'actions card-actions'); actions.append(button('Account', 'openAccount', state.id)); body.append(actions); }
         card.append(body); providers.append(card);
       }
-      if (refocus) { const moved = [...providers.querySelectorAll('.card')].find(node => node.dataset.unit === refocus); refocus = undefined; moved?.querySelector('.card-toggle')?.focus(); }
+      focusedHead?.focus();
       const refreshing = payload.states.some(state => state.refreshing); const staleStates = payload.states.filter(state => state.stale); stamp.replaceChildren();
       if (refreshing) { const spinner = el('span', 'spinner'); spinner.setAttribute('aria-hidden', 'true'); stamp.append(spinner, el('span', '', 'Refreshing…')); }
       else if (staleStates.length) { const noun = staleStates.length === 1 ? 'provider' : 'providers'; const latestCheck = Math.max(0, ...staleStates.map(state => new Date(state.lastAttemptedAt || '').getTime()).filter(Number.isFinite)); stamp.textContent = staleStates.length + ' ' + noun + ' stale' + (latestCheck ? ' · checked ' + localTime(latestCheck) : ''); }

@@ -684,6 +684,13 @@ test("activation helpers sanitize configuration and activation registers its sur
     assert.equal(stateUpdates.some(([key]) => key === dashboardModule.dashboardUnitOrderKey), false);
     assert.ok(updates.some((value) => Array.isArray(value) && value.length === 0));
     assert.deepEqual(configurationUpdates, [{ key: "metricDisplayMode", value: "important", target: 1 }]);
+    // A card dropped on another provider's card moves the provider: only the provider order is
+    // written, and the accounts' order, which did not change, is left alone.
+    configurationValues.set("providers", ["codex", "claude"]);
+    await dashboardMessage?.({ type: "moveCard", providerId: "codex", targetId: "claude", after: true });
+    assert.deepEqual(configurationUpdates.at(-1), { key: "providers", value: ["claude", "codex"], target: 1 });
+    assert.equal(stateUpdates.some(([key]) => key === dashboardModule.dashboardUnitOrderKey), false);
+    configurationValues.set("providers", ["codex", "unknown"]);
     await registeredCommands.get("usageai.rescanAccounts")?.();
     assert.ok(informationMessages.includes("UsageAI found no new accounts."));
 

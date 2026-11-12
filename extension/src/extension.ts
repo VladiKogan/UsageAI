@@ -187,16 +187,24 @@ export function activate(context: vscode.ExtensionContext): void {
         vscode.ConfigurationTarget.Global,
       ),
       moveCard: async (moved, target, after) => {
-        const move = moveDashboardCard(enabledProviderIds(), refreshService.getStates().map((state) => state.id), moved, target, after);
+        const providers = enabledProviderIds();
+        const units = refreshService.getStates().map((state) => state.id);
+        const move = moveDashboardCard(providers, units, moved, target, after);
         if (!move) {
           return;
         }
         try {
           // The accounts' order is the extension's own state; the providers' order is the
-          // usageai.providers setting, which the Status Bar follows too.
-          await context.globalState.update(dashboardUnitOrderKey, move.units);
-          refreshService.setClients(buildUsageClients(baseClients, shownAccounts, createAccountClient, accountClients, unitOrder()));
-          await updateStatusBarSetting("providers", move.providers);
+          // usageai.providers setting, which the Status Bar follows too. Only the one that changed
+          // is written: reordering a provider's accounts must not pin the provider list in the
+          // user's settings, and moving a provider leaves the accounts' order as it was.
+          if (move.units.join() !== units.join()) {
+            await context.globalState.update(dashboardUnitOrderKey, move.units);
+            refreshService.setClients(buildUsageClients(baseClients, shownAccounts, createAccountClient, accountClients, unitOrder()));
+          }
+          if (move.providers.join() !== providers.join()) {
+            await updateStatusBarSetting("providers", move.providers);
+          }
         } catch (error) {
           void vscode.window.showErrorMessage(`UsageAI could not save the new order: ${error instanceof Error ? error.message : String(error)}`);
         }
