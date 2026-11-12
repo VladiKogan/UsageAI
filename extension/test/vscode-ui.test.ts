@@ -678,6 +678,10 @@ test("activation helpers sanitize configuration and activation registers its sur
     assert.equal((posted.at(-1) as { quotaDisplay?: string }).quotaDisplay, "used");
     await dashboardMessage?.({ type: "setProviderExpanded", providerId: "claude", expanded: false });
     await dashboardMessage?.({ type: "setMetricDisplayMode", mode: "important" });
+    // A dragged card is saved only for two shown cards; anything else is ignored.
+    await dashboardMessage?.({ type: "moveCard", providerId: "codex", targetId: "nope", after: true });
+    await dashboardMessage?.({ type: "moveCard", providerId: "codex", targetId: "claude", after: "yes" });
+    assert.equal(stateUpdates.some(([key]) => key === dashboardModule.dashboardUnitOrderKey), false);
     assert.ok(updates.some((value) => Array.isArray(value) && value.length === 0));
     assert.deepEqual(configurationUpdates, [{ key: "metricDisplayMode", value: "important", target: 1 }]);
     await registeredCommands.get("usageai.rescanAccounts")?.();
@@ -892,6 +896,29 @@ test("account clients, Status Bar account names, and cached readings are keyed b
   assert.equal(created, 2);
   extensionModule.buildUsageClients(base, accounts.slice(0, 1), create, cache);
   assert.equal(cache.size, 0);
+  // Cards dragged into an order keep it within their provider; a unit the order does not name follows.
+  assert.deepEqual(
+    extensionModule.buildUsageClients(base, [...accounts, account("claude", "0a0b0c0d", "found", "lab")], create, new Map(), ["claude@1a2b3c4d", "claude", "gemini"])
+      .map((entry) => entry.id),
+    ["codex@5e6f7a8b", "claude@1a2b3c4d", "claude", "claude@0a0b0c0d", "copilot", "gemini"],
+  );
+
+  // Dropping a card on one of the same provider reorders that provider's accounts; dropping it on
+  // another provider's card moves the whole provider before or after that provider.
+  const shownUnits = ["codex", "codex@5e6f7a8b", "claude", "claude@1a2b3c4d", "gemini"];
+  const shownProviders = ["codex", "claude", "gemini"];
+  assert.deepEqual(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "codex@5e6f7a8b", "codex", false), {
+    providers: shownProviders,
+    units: ["codex@5e6f7a8b", "codex", "claude", "claude@1a2b3c4d", "gemini"],
+  });
+  assert.deepEqual(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "gemini", "codex@5e6f7a8b", false)?.providers, ["gemini", "codex", "claude"]);
+  assert.deepEqual(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "codex@5e6f7a8b", "claude@1a2b3c4d", true)?.providers, ["claude", "codex", "gemini"]);
+  assert.equal(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "codex", "codex@5e6f7a8b", false), undefined);
+  assert.equal(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "claude", "codex@5e6f7a8b", true), undefined);
+  assert.equal(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "copilot", "codex", true), undefined);
+  assert.equal(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "codex", "codex", true), undefined);
+  assert.deepEqual(dashboardModule.sanitizeUnitOrder(["claude", "claude@1a2b3c4d", "claude", "nope", "gemini@1a2b3c4d", 4]), ["claude", "claude@1a2b3c4d"]);
+  assert.deepEqual(dashboardModule.sanitizeUnitOrder("claude"), []);
 
   assert.deepEqual(extensionModule.resolveStatusBarAccounts(["TEAM", "work@example.com", "claude@0a0b0c0d", "nobody", 4, "TEAM"], accounts), [
     "claude@1a2b3c4d",
@@ -908,7 +935,23 @@ test("account clients, Status Bar account names, and cached readings are keyed b
   // The extension's own saved list, once the picker has written one, replaces that former setting.
   assert.deepEqual(extensionModule.getStatusBarProviderSelection(configuration as never, ["claude"], accounts, []), "claude");
   assert.deepEqual(extensionModule.getStatusBarProviderSelection(configuration as never, ["claude"], accounts, ["claude@1a2b3c4d"]), ["claude", "claude@1a2b3c4d"]);
+  // Items follow the dashboard: providers in their configured order, each main login followed by
+  // its other accounts, instead of every extra account after the last provider.
   configurationValues.clear();
+  for (const key of ["statusBarProviders.codex", "statusBarProviders.claude", "statusBarProviders.gemini"]) {
+    configurationValues.set(key, true);
+    inspectedConfiguration.add(key);
+  }
+  assert.deepEqual(
+    extensionModule.getStatusBarProviderSelection(configuration as never, ["gemini", "codex", "claude"], accounts, ["claude@1a2b3c4d", "codex@5e6f7a8b"]),
+    ["gemini", "codex", "codex@5e6f7a8b", "claude", "claude@1a2b3c4d"],
+  );
+  assert.deepEqual(
+    extensionModule.getStatusBarProviderSelection(configuration as never, ["gemini", "codex", "claude"], accounts, ["claude@1a2b3c4d", "codex@5e6f7a8b"], ["claude@1a2b3c4d", "claude"]),
+    ["gemini", "codex", "codex@5e6f7a8b", "claude@1a2b3c4d", "claude"],
+  );
+  configurationValues.clear();
+  inspectedConfiguration.clear();
 
   assert.deepEqual(Object.keys(extensionModule.sanitizeCachedSnapshots({
     "claude@1a2b3c4d": snapshot("claude", 5),

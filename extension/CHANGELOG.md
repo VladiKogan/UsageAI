@@ -8,6 +8,12 @@
   Account…, Manage Accounts… and Rescan Accounts were three entries in the **…** menu, next to the
   unrelated Status Bar picker. They now open from one person icon between Refresh and Settings,
   and the **…** menu keeps only **Choose Status Bar Items…**.
+- **Drag a card in the dashboard to reorder it.** Drag a card by its header and drop it above or
+  below another; with the keyboard, focus the header and press Alt+Up or Alt+Down. A provider's
+  accounts stay together: dropping a card on another account of the same provider reorders that
+  provider's accounts, and dropping it on a different provider's card moves the whole provider.
+  The Status Bar follows the same order. The provider order is saved in the `usageai.providers`
+  setting, as before; the order of a provider's accounts is kept by the extension.
 
 ### Changed
 
@@ -31,6 +37,9 @@
 
 ### Fixed
 
+- **Extra accounts sit next to their provider in the Status Bar.** A second Claude Code or Codex
+  account was always placed after the last provider, whatever the provider order. Status Bar
+  items now follow the dashboard: providers in their chosen order, each followed by its accounts.
 - **Claude's "Fable reset" row no longer goes missing with a native Claude Code install.** Claude
   reports saved resets by CLI version, and UsageAI could not tell which version was installed
   when the copy in `~/.local/bin` and the one kept under `~/.local/share/claude/versions` were
