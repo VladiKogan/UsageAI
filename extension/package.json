@@ -152,6 +152,13 @@
         "category": "UsageAI"
       }
     ],
+    "submenus": [
+      {
+        "id": "usageai.accountsMenu",
+        "label": "Accounts",
+        "icon": "$(account)"
+      }
+    ],
     "menus": {
       "view/title": [
         {
@@ -160,35 +167,39 @@
           "group": "navigation@1"
         },
         {
-          "command": "usageai.openSettings",
+          "submenu": "usageai.accountsMenu",
           "when": "view == usageai.dashboard",
           "group": "navigation@2"
         },
         {
-          "command": "usageai.addAccount",
+          "command": "usageai.openSettings",
           "when": "view == usageai.dashboard",
-          "group": "accounts@1"
-        },
-        {
-          "command": "usageai.manageAccounts",
-          "when": "view == usageai.dashboard",
-          "group": "accounts@2"
-        },
-        {
-          "command": "usageai.rescanAccounts",
-          "when": "view == usageai.dashboard",
-          "group": "accounts@3"
+          "group": "navigation@3"
         },
         {
           "command": "usageai.chooseStatusBarItems",
           "when": "view == usageai.dashboard",
           "group": "statusbar@1"
         }
+      ],
+      "usageai.accountsMenu": [
+        {
+          "command": "usageai.addAccount",
+          "group": "1_accounts@1"
+        },
+        {
+          "command": "usageai.manageAccounts",
+          "group": "1_accounts@2"
+        },
+        {
+          "command": "usageai.rescanAccounts",
+          "group": "2_find@1"
+        }
       ]
     },
     "configuration": [
       {
-        "title": "UsageAI",
+        "title": "Providers and Accounts",
         "order": 10,
         "properties": {
           "usageai.providers": {
@@ -210,14 +221,13 @@
               ]
             },
             "order": 10,
-            "description": "Providers to display, in dashboard and Status Bar order."
+            "description": "Providers to show, in dashboard and Status Bar order."
           },
           "usageai.accounts": {
             "type": "array",
             "default": [],
             "maxItems": 16,
             "scope": "application",
-            "order": 15,
             "items": {
               "type": "object",
               "required": [
@@ -250,36 +260,90 @@
                 }
               }
             },
-            "markdownDescription": "Other Claude Code and Codex logins to show, each a login folder of its own. Folders named `.claude-*` or `.codex-*` in your home folder are found automatically; add others here or with **UsageAI: Add Account…**. A `label` or `hidden` flag also applies to a found folder or the default one. Each folder must be an absolute local path that holds the provider's credential file.\n\n[Manage Accounts…](command:usageai.manageAccounts) renames, hides, shows or removes any account without editing this list by hand."
-          },
-          "usageai.refreshIntervalMinutes": {
-            "type": "number",
-            "default": 5,
-            "minimum": 1,
-            "maximum": 120,
             "order": 20,
-            "description": "How often to refresh provider usage while the UsageAI view is visible."
-          },
-          "usageai.backgroundRefreshIntervalMinutes": {
-            "type": "number",
-            "default": 15,
-            "minimum": 5,
-            "maximum": 240,
-            "order": 30,
-            "description": "How often to refresh while the UsageAI view is hidden."
+            "markdownDescription": "Extra Claude Code and Codex logins, each a login folder of its own. You do not need to edit this list: [Manage Accounts…](command:usageai.manageAccounts) renames, hides, shows or removes any account, and [Add Account…](command:usageai.addAccount) adds one.\n\nFolders named `.claude-*` or `.codex-*` in your home folder are found automatically. An entry needs the absolute local path of a folder that holds the provider's credential file; a `label` or `hidden` flag also applies to a found folder or the main login."
           },
           "usageai.enableGitHubCliFallback": {
             "type": "boolean",
             "default": false,
-            "order": 40,
-            "description": "Allow UsageAI to invoke `gh auth token` when no Copilot credential file is usable."
+            "order": 30,
+            "description": "GitHub Copilot: allow UsageAI to run `gh auth token` when no Copilot credential file is usable."
           },
           "usageai.showProviderIncidents": {
             "type": "boolean",
             "default": true,
-            "order": 41,
             "scope": "application",
-            "description": "Read the providers' public status pages (status.claude.com, www.githubstatus.com, status.openai.com) at most every five minutes, without any credential, and show an ongoing incident in the Status Bar tooltip and on the provider's card."
+            "order": 40,
+            "description": "Show an ongoing incident from the providers' public status pages (status.claude.com, www.githubstatus.com, status.openai.com) in the Status Bar tooltip and on the provider's card. The pages are read at most every five minutes, without any credential."
+          }
+        }
+      },
+      {
+        "title": "Status Bar",
+        "order": 20,
+        "properties": {
+          "usageai.statusBarProviders.codex": {
+            "type": "boolean",
+            "default": false,
+            "order": 10,
+            "markdownDescription": "Show Codex (your main login, `~/.codex`) in the Status Bar. [Choose Status Bar Items…](command:usageai.chooseStatusBarItems) sets every Status Bar item in one list."
+          },
+          "usageai.statusBarProviders.claude": {
+            "type": "boolean",
+            "default": false,
+            "order": 20,
+            "markdownDescription": "Show Claude Code (your main login, `~/.claude`) in the Status Bar."
+          },
+          "usageai.statusBarProviders.copilot": {
+            "type": "boolean",
+            "default": false,
+            "order": 30,
+            "markdownDescription": "Show GitHub Copilot in the Status Bar."
+          },
+          "usageai.statusBarProviders.gemini": {
+            "type": "boolean",
+            "default": false,
+            "order": 40,
+            "markdownDescription": "Show Gemini in the Status Bar."
+          },
+          "usageai.statusBarProviders.accounts": {
+            "type": "array",
+            "default": [],
+            "uniqueItems": true,
+            "maxItems": 16,
+            "items": {
+              "type": "string"
+            },
+            "scope": "application",
+            "order": 50,
+            "markdownDescription": "Extra Claude Code and Codex accounts to show in the Status Bar, beside the providers ticked above. [Choose Status Bar Items…](command:usageai.chooseStatusBarItems) fills this in for you. By hand, name an account by its label or email, or by the id the command writes (such as `claude@1a2b3c4d`)."
+          },
+          "usageai.statusBarProviders.hottestWhenNoneSelected": {
+            "type": "boolean",
+            "default": true,
+            "order": 60,
+            "markdownDescription": "When nothing above is chosen, show whichever provider has the highest usage right now. Turn this off as well to keep UsageAI out of the Status Bar."
+          }
+        }
+      },
+      {
+        "title": "Display",
+        "order": 30,
+        "properties": {
+          "usageai.quotaDisplay": {
+            "type": "string",
+            "enum": [
+              "used",
+              "remaining"
+            ],
+            "enumDescriptions": [
+              "Meters fill with, and percentages show, the quota already used.",
+              "Meters fill with, and percentages show, the quota still left."
+            ],
+            "default": "used",
+            "scope": "application",
+            "order": 10,
+            "description": "Show quota used or quota remaining, in the dashboard meters and the Status Bar. Warning and critical levels keep their meaning either way."
           },
           "usageai.metricDisplayMode": {
             "type": "string",
@@ -295,128 +359,46 @@
             ],
             "default": "all",
             "scope": "application",
-            "order": 50,
-            "description": "Metrics shown in expanded dashboard cards. Collapsed summaries and the Status Bar are unchanged."
-          },
-          "usageai.quotaDisplay": {
-            "type": "string",
-            "enum": [
-              "used",
-              "remaining"
-            ],
-            "enumDescriptions": [
-              "Meters fill with, and percentages show, the quota already used.",
-              "Meters fill with, and percentages show, the quota still left."
-            ],
-            "default": "used",
-            "scope": "application",
-            "order": 60,
-            "description": "Whether dashboard meters and the Status Bar show quota used or quota remaining. Warning and critical levels keep their meaning either way."
-          }
-        }
-      },
-      {
-        "title": "UsageAI: Status Bar",
-        "order": 20,
-        "properties": {
-          "usageai.statusBarProviders.hottestWhenNoneSelected": {
-            "type": "boolean",
-            "default": true,
-            "order": 10,
-            "markdownDescription": "When no provider or account is chosen here, show whichever one has the highest usage right now. [Choose Status Bar Items…](command:usageai.chooseStatusBarItems) sets every Status Bar item, including extra Claude Code and Codex accounts, in one list."
-          },
-          "usageai.statusBarProviders.codex": {
-            "type": "boolean",
-            "default": false,
             "order": 20,
-            "markdownDescription": "Show your main Codex login (`~/.codex`) in the Status Bar. Other Codex accounts are chosen under **Accounts** below, or with [Choose Status Bar Items…](command:usageai.chooseStatusBarItems)."
+            "description": "Which limits an expanded dashboard card lists. Collapsed summaries and the Status Bar are unchanged."
           },
-          "usageai.statusBarProviders.claude": {
-            "type": "boolean",
-            "default": false,
-            "order": 30,
-            "markdownDescription": "Show your main Claude Code login (`~/.claude`) in the Status Bar. Other Claude Code accounts are chosen under **Accounts** below, or with [Choose Status Bar Items…](command:usageai.chooseStatusBarItems)."
-          },
-          "usageai.statusBarProviders.copilot": {
-            "type": "boolean",
-            "default": false,
-            "order": 40,
-            "markdownDescription": "Show GitHub Copilot in the Status Bar."
-          },
-          "usageai.statusBarProviders.gemini": {
-            "type": "boolean",
-            "default": false,
-            "order": 50,
-            "markdownDescription": "Show Gemini in the Status Bar."
-          },
-          "usageai.statusBarProviders.accounts": {
-            "type": "array",
-            "default": [],
-            "uniqueItems": true,
-            "maxItems": 16,
-            "items": {
-              "type": "string"
-            },
-            "order": 60,
-            "scope": "application",
-            "markdownDescription": "Claude Code and Codex accounts other than the main logins to show in the Status Bar, each beside the others. The easy way is [Choose Status Bar Items…](command:usageai.chooseStatusBarItems): it lists every account with a checkbox and fills this in for you. By hand, name each account by its label or email, or by the id the command writes (such as `claude@1a2b3c4d`)."
-          },
-          "usageai.statusBarProvider": {
-            "default": [
-              "hottest"
-            ],
-            "oneOf": [
-              {
-                "type": "array",
-                "uniqueItems": true,
-                "items": {
-                  "type": "string",
-                  "enum": [
-                    "hottest",
-                    "codex",
-                    "claude",
-                    "copilot",
-                    "gemini"
-                  ]
-                }
-              },
-              {
-                "type": "string",
-                "enum": [
-                  "hottest",
-                  "codex",
-                  "claude",
-                  "copilot",
-                  "gemini"
-                ]
-              }
-            ],
-            "order": 100,
-            "description": "Legacy provider selection retained for upgrade compatibility.",
-            "deprecationMessage": "Use the UsageAI Status Bar checkboxes instead.",
-            "markdownDeprecationMessage": "Use the **UsageAI: Status Bar** checkboxes instead."
-          }
-        }
-      },
-      {
-        "title": "UsageAI: Usage Levels",
-        "order": 30,
-        "properties": {
           "usageai.warningPercent": {
             "type": "number",
             "default": 72,
             "minimum": 1,
             "maximum": 100,
-            "order": 10,
-            "description": "Usage percentage at which meters enter the warning state. Always measured as quota used, even when meters show quota remaining."
+            "order": 30,
+            "description": "Usage percentage at which meters turn to the warning colour. Always measured as quota used, even when meters show quota remaining."
           },
           "usageai.criticalPercent": {
             "type": "number",
             "default": 90,
             "minimum": 1,
             "maximum": 100,
+            "order": 40,
+            "description": "Usage percentage at which meters turn to the critical colour. Always measured as quota used, even when meters show quota remaining."
+          }
+        }
+      },
+      {
+        "title": "Refresh",
+        "order": 40,
+        "properties": {
+          "usageai.refreshIntervalMinutes": {
+            "type": "number",
+            "default": 5,
+            "minimum": 1,
+            "maximum": 120,
+            "order": 10,
+            "description": "Minutes between refreshes while the UsageAI view is open."
+          },
+          "usageai.backgroundRefreshIntervalMinutes": {
+            "type": "number",
+            "default": 15,
+            "minimum": 5,
+            "maximum": 240,
             "order": 20,
-            "description": "Usage percentage at which meters enter the critical state. Always measured as quota used, even when meters show quota remaining."
+            "description": "Minutes between refreshes while the UsageAI view is hidden."
           }
         }
       }

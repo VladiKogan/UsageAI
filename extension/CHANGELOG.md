@@ -2,7 +2,37 @@
 
 ## Unreleased
 
+### Added
+
+- **An Accounts button in the dashboard's title bar holds every account command.** Add
+  Account…, Manage Accounts… and Rescan Accounts were three entries in the **…** menu, next to the
+  unrelated Status Bar picker. They now open from one person icon between Refresh and Settings,
+  and the **…** menu keeps only **Choose Status Bar Items…**.
+
+### Changed
+
+- **Settings are grouped by what they change.** One long list under "UsageAI" is now four short
+  groups: **Providers and Accounts**, **Status Bar**, **Display** (used or remaining, which limits
+  a card lists, warning and critical levels) and **Refresh**. The Status Bar group reads top to
+  bottom: a checkbox per provider, the extra accounts, then the fallback that applies when nothing
+  is chosen. Descriptions are shorter and say what each setting does. No setting was renamed, so
+  your values carry over.
+- **The legacy "Status Bar Provider" setting is gone from the Settings editor.** It sat under the
+  checkboxes that replaced it, could only be edited in `settings.json`, and made the group hard to
+  read. A value you still have in `settings.json` keeps working until you tick a Status Bar
+  checkbox or use **Choose Status Bar Items…**; the editor now marks it as unknown, and it can be
+  deleted once you have.
+
 ### Fixed
+
+- **Claude's "Fable reset" row no longer goes missing with a native Claude Code install.** Claude
+  reports saved resets by CLI version, and UsageAI could not tell which version was installed
+  when the copy in `~/.local/bin` and the one kept under `~/.local/share/claude/versions` were
+  written more than two seconds apart, which the installer routinely does. It then named itself
+  as the oldest version it knows, `2.1.0`, and Claude left out the resets that version cannot
+  use, while the desktop app, which reads the version from the executable, showed them. The
+  installed copy is now matched by size, and by the nearest time only between kept copies of the
+  same size.
 
 - **Claude Code says when its login was switched to an API key.** Signing in to Claude Code
   with Console (API) billing, for example from the Claude Code extension, replaces the Claude

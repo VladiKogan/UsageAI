@@ -468,6 +468,8 @@ function statusBarProviderSelection(
 ): unknown {
   const usesCheckboxes = statusBarCheckboxKeys.some((key) => isExplicitlyConfigured(configuration, key));
   if (!usesCheckboxes) {
+    // The legacy list is no longer in the manifest, so it is out of the Settings editor, but a
+    // value still in settings.json is honoured until a checkbox is set.
     return configuration.get<unknown>("statusBarProvider", ["hottest"]);
   }
 

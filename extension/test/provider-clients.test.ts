@@ -431,6 +431,17 @@ test("Claude CLI version for the reset request is read from the CLI's files", as
     await utimes(path.join(localBin, executable), stamp, stamp);
     assert.equal(await versionOf(path.join(localBin, executable)), "2.1.9");
 
+    // The installer writes the two files up to a minute apart, so the size decides, and the time
+    // only between kept copies of the same size.
+    const later = new Date(stamp.getTime() + 55_000);
+    await utimes(path.join(localBin, executable), later, later);
+    assert.equal(await versionOf(path.join(localBin, executable)), "2.1.9");
+    await writeFile(path.join(versions, "2.1.11"), "installed build");
+    await utimes(path.join(versions, "2.1.11"), new Date(later.getTime() + 5_000), new Date(later.getTime() + 5_000));
+    assert.equal(await versionOf(path.join(localBin, executable)), "2.1.11");
+    await rm(path.join(versions, "2.1.11"));
+    assert.equal(await versionOf(path.join(localBin, executable)), "2.1.9");
+
     // Kept for a while, so a refresh does not look again, and accounts refreshing together share one read.
     process.env.CLAUDE_PATH = path.join(bundled, executable);
     assert.equal(await installedClaudeCliVersion(), "2.1.9");

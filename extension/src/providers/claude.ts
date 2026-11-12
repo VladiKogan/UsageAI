@@ -553,8 +553,9 @@ async function readClaudeCliVersion(launch: ClaudeLaunch): Promise<string | unde
     return cliVersionOf(linked);
   }
   // The Windows native install copies the version it runs into ~/.local/bin, keeping that copy and
-  // earlier ones in ~/.local/share/claude/versions/<x.y.z>. The kept copy with the same size and
-  // modification time is the one installed; with no such copy nothing is guessed.
+  // earlier ones in ~/.local/share/claude/versions/<x.y.z>. The kept copy of the same size is the
+  // one installed, the nearest in time when several are that size: the two files are written up to
+  // a minute apart, so the times themselves never match. With no such copy nothing is guessed.
   // Both sides resolved alike, so a home reached through a short (8.3) or linked path still matches.
   const localBin = await realpath(path.join(userHome(), ".local", "bin")).catch(() => path.join(userHome(), ".local", "bin"));
   if (path.dirname(resolved).toLowerCase() !== localBin.toLowerCase()) {
@@ -562,13 +563,18 @@ async function readClaudeCliVersion(launch: ClaudeLaunch): Promise<string | unde
   }
   const installed = await stat(resolved);
   const versions = path.join(userHome(), ".local", "share", "claude", "versions");
+  let nearest: { readonly version: string; readonly apart: number } | undefined;
   for (const kept of (await readdir(versions).catch((): string[] => [])).filter(isCliVersion)) {
     const copy = await stat(path.join(versions, kept)).catch(() => undefined);
-    if (copy?.isFile() && copy.size === installed.size && Math.abs(copy.mtimeMs - installed.mtimeMs) < 2_000) {
-      return kept;
+    if (!copy?.isFile() || copy.size !== installed.size) {
+      continue;
+    }
+    const apart = Math.abs(copy.mtimeMs - installed.mtimeMs);
+    if (!nearest || apart < nearest.apart) {
+      nearest = { version: kept, apart };
     }
   }
-  return undefined;
+  return nearest?.version;
 }
 
 async function createClaudeLaunch(command: string): Promise<ClaudeLaunch | undefined> {
