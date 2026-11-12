@@ -258,7 +258,7 @@ internal sealed class UsageLedger : Control
         var drop = target < 0
             ? null
             : CardReorder.Resolve(
-                keys,
+                keys.Length,
                 Array.FindIndex(keys, key => key.Equals(_dragKey, StringComparison.OrdinalIgnoreCase)),
                 target,
                 pastMiddle: y > (blocks[target].Top + blocks[target].Bottom) / 2);
@@ -369,7 +369,7 @@ internal sealed class UsageLedger : Control
         var keys = Blocks().Select(block => block.Key).ToArray();
         var index = Array.FindIndex(keys, key =>
             key.Equals(_actions[_focusIndex].Status?.ProviderId, StringComparison.OrdinalIgnoreCase));
-        var neighbour = CardReorder.Neighbour(keys, index, forward);
+        var neighbour = CardReorder.Neighbour(keys.Length, index, forward);
         if (neighbour < 0)
         {
             return;
@@ -470,7 +470,7 @@ internal sealed class UsageLedger : Control
         }
     }
 
-    /// <summary>Fades the providers a drag would move and draws the line where they would land.</summary>
+    /// <summary>Fades the provider being dragged and draws the line where it would land.</summary>
     private void DrawDrag(Graphics graphics, LayoutScale scale)
     {
         // Whole pixels: an antialiased fill would blur the fade and the line at their edges.
@@ -479,7 +479,7 @@ internal sealed class UsageLedger : Control
         using var fade = new SolidBrush(Color.FromArgb(150, BackColor));
         for (var index = 0; index < blocks.Count; index++)
         {
-            if (blocks[index].Key.Equals(_dragKey, StringComparison.OrdinalIgnoreCase) || _drop?.Dimmed.Contains(index) == true)
+            if (blocks[index].Key.Equals(_dragKey, StringComparison.OrdinalIgnoreCase))
             {
                 graphics.FillRectangle(fade, 0, blocks[index].Top, Width, blocks[index].Bottom - blocks[index].Top);
             }

@@ -108,7 +108,7 @@ Gemini 60% | 30%
 | Point at the tray icon | Usage of the tray provider, or of every provider with **All connected** |
 | **Win+Alt+U** | Same thing, from anywhere |
 | Right-click ▸ **Open dashboard** | Full dashboard, all providers and metrics |
-| Drag a popup tile, or a dashboard provider by its heading row | Reorder providers and accounts (keyboard: Alt + an arrow key) |
+| Drag a popup tile, or a dashboard provider by its heading row | Put any provider or account where you want it (keyboard: Alt + an arrow key) |
 | Right-click ▸ **Tray icon shows** | Pick what the tray icon follows: Automatic, All connected, or one provider or account |
 | Right-click ▸ **Show quota as** | Switch every meter between quota used and quota remaining |
 | Right-click ▸ **Pause notifications** | Mute usage alerts until you choose **Resume notifications** |

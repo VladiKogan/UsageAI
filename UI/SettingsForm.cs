@@ -592,6 +592,12 @@ internal sealed partial class SettingsForm : Form
 
         _settings.ProviderOrder = order.ToArray();
         ApplyAccounts();
+        if (_orderEdited)
+        {
+            // An order chosen here replaces one made by dragging cards, which it cannot show.
+            _settings.UnitOrder = Array.Empty<string>();
+        }
+
         foreach (var picker in _popupGroupPickers)
         {
             _settings.SetPopupMetricGroup(
@@ -705,6 +711,9 @@ internal sealed partial class SettingsForm : Form
     /// The one place the list is reordered, so the buttons, the keyboard shortcut, and a drag all
     /// move an entry the same way: the tick travels with its provider and stays selected.
     /// </summary>
+    /// <summary>The Providers list or an account's place was reordered in this window.</summary>
+    private bool _orderEdited;
+
     private void MoveProvider(int from, int to)
     {
         var count = _providers.Items.Count;
@@ -715,6 +724,7 @@ internal sealed partial class SettingsForm : Form
 
         var item = _providers.Items[from];
         var isChecked = _providers.GetItemChecked(from);
+        _orderEdited = true;
         _providers.BeginUpdate();
         _movingProvider = true;
         try

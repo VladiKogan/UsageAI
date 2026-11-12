@@ -221,7 +221,7 @@
               ]
             },
             "order": 10,
-            "description": "Providers to show, in dashboard and Status Bar order."
+            "description": "Providers to show, and their starting order in the dashboard and Status Bar. To arrange the cards, drag them in the dashboard."
           },
           "usageai.accounts": {
             "type": "array",

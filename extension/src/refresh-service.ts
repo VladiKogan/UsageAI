@@ -1,5 +1,5 @@
 import { EventEmitter } from "node:events";
-import { accountCardTitle, providerKindOf } from "./accounts";
+import { accountCardTitle, orderUnits, providerKindOf } from "./accounts";
 import { UsageProviderError, safeErrorMessage } from "./errors";
 import type { ProviderState, UsageClient, UsageSnapshot } from "./model";
 
@@ -13,6 +13,8 @@ interface RefreshServiceOptions {
   readonly clients: readonly UsageClient[];
   /** Provider ids (not unit keys) to show, in order; every account of a provider follows it. */
   readonly enabledProviderIds: () => readonly string[];
+  /** The order the user dragged the cards into; empty keeps each provider's accounts together. */
+  readonly unitOrder?: () => readonly string[];
   readonly visibleIntervalMs: () => number;
   readonly backgroundIntervalMs: () => number;
   readonly initialSnapshots?: Readonly<Record<string, UsageSnapshot>>;
@@ -89,7 +91,7 @@ export class UsageRefreshService {
 
   public getStates(): readonly ProviderState[] {
     const order = this.options.enabledProviderIds();
-    return order.flatMap((providerId) => {
+    const grouped = order.flatMap((providerId) => {
       const units = this.clients.filter((client) => providerKindOf(client.id) === providerId);
       return units.flatMap((client) => {
         const state = this.states.get(client.id);
@@ -109,6 +111,15 @@ export class UsageRefreshService {
         }];
       });
     });
+    const saved = this.options.unitOrder?.() ?? [];
+    return saved.length === 0
+      ? grouped
+      : orderUnits(grouped.map((state) => state.id), saved).flatMap((unit) => grouped.filter((state) => state.id === unit));
+  }
+
+  /** The cards were dragged into a new order. */
+  public orderChanged(): void {
+    this.emit();
   }
 
   /** Republishes the current states, for example after the providers' status pages changed. */

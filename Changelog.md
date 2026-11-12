@@ -8,14 +8,15 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ### Added
 
-- **Drag a provider or account to reorder it, in the popup and the dashboard.** In the popup,
+- **Drag any provider or account to reorder it, in the popup and the dashboard.** In the popup,
   drag a tile onto another; in the dashboard, drag a provider by its heading row. With the
   keyboard, focus a tile, or one of a provider's links in the dashboard, and press Alt with an
-  arrow key. A provider's accounts stay together: dropping onto another account of the same
-  provider reorders that provider's accounts, which Settings could not do, and dropping onto a
-  different provider moves the whole provider. While you drag, everything that would move fades
-  and a line shows where it will land. The order is the one Settings' Providers list shows, and
-  the tray tooltip's All connected list follows it. Nothing is polled when the order changes.
+  arrow key. Each card moves on its own and lands exactly where you drop it, so a second account
+  can sit anywhere, not only next to its provider's first. While you drag, the card fades and a
+  line shows where it will land. A new account appears after the last card of its provider. The
+  tray tooltip's All connected list follows the same order, and nothing is polled when it
+  changes. Until you drag a card the order is the one from Settings, and reordering providers or
+  accounts in Settings afterwards goes back to that grouped order.
 
 - **The tray menu changes the settings you switch most, without opening Settings.** Right-click
   the tray icon for **Tray icon shows** (Automatic, All connected, or any shown provider or

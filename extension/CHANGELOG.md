@@ -1,5 +1,18 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **Each dashboard card now moves on its own when you drag it.** In 0.1.24 a provider's accounts
+  stayed together: dropping a card on another provider moved the whole provider, and its accounts
+  were drawn as one joined stack. A card now lands exactly where you drop it, so a second account
+  can sit anywhere, and cards are drawn separately again. Only the dragged card fades, and the
+  line sits above or below the card under the pointer. The Status Bar follows the same order. An
+  order you already dragged is kept. The order is the extension's own, so dragging no longer
+  rewrites the `usageai.providers` setting, which now gives the starting order and the place a
+  newly shown provider takes; a new account appears after the last card of its provider.
+
 ## 0.1.24
 
 ### Added

@@ -933,8 +933,7 @@ internal sealed class UsagePopupForm : Form
     private string? _movedKey;
 
     /// <summary>
-    /// Shows what a tile being dragged would do — which tiles move, and where they land — and on
-    /// release asks for the move. Tiles read left to right, so the pointer's side of the tile under
+    /// Fades the tile being dragged, shows where it would land, and on release asks for the move. Tiles read left to right, so the pointer's side of the tile under
     /// it decides before or after.
     /// </summary>
     private void OnTileDragged(object? sender, TileDragEventArgs eventArgs)
@@ -955,7 +954,7 @@ internal sealed class UsagePopupForm : Form
             drop = target is null
                 ? null
                 : CardReorder.Resolve(
-                    tiles.Select(tile => tile.UnitKey).ToArray(),
+                    tiles.Length,
                     Array.IndexOf(tiles, dragged),
                     Array.IndexOf(tiles, target),
                     pastMiddle: point.X > target.Left + target.Width / 2);
@@ -963,8 +962,7 @@ internal sealed class UsagePopupForm : Form
 
         for (var index = 0; index < tiles.Length; index++)
         {
-            tiles[index].Dimmed = eventArgs.Phase == TileDragPhase.Move &&
-                                  (tiles[index] == dragged || drop?.Dimmed.Contains(index) == true);
+            tiles[index].Dimmed = eventArgs.Phase == TileDragPhase.Move && tiles[index] == dragged;
             tiles[index].DropMark = drop?.MarkIndex == index
                 ? drop.After ? DropMark.After : DropMark.Before
                 : DropMark.None;
@@ -999,7 +997,7 @@ internal sealed class UsagePopupForm : Form
     {
         var tiles = _content.Controls.OfType<ProviderTile>().ToArray();
         var index = Array.IndexOf(tiles, sender as ProviderTile);
-        var neighbour = CardReorder.Neighbour(tiles.Select(tile => tile.UnitKey).ToArray(), index, forward);
+        var neighbour = CardReorder.Neighbour(tiles.Length, index, forward);
         if (neighbour < 0)
         {
             return;

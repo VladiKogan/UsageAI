@@ -254,6 +254,10 @@ internal sealed class AccountManager
             // The login keeps the slot's place; the slot itself, now a different login, goes last.
             account.Order = main.Order;
             main.Order = _settings.NextAccountOrder(login.ProviderId);
+            _settings.UnitOrder = _settings.UnitOrder
+                .Where(key => !string.Equals(key, accountKey, StringComparison.OrdinalIgnoreCase))
+                .Select(key => string.Equals(key, mainKey, StringComparison.OrdinalIgnoreCase) ? accountKey : key)
+                .ToArray();
             if (string.Equals(_settings.TrayProviderId, mainKey, StringComparison.OrdinalIgnoreCase))
             {
                 _settings.TrayProviderId = accountKey;

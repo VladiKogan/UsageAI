@@ -1,5 +1,5 @@
 import * as vscode from "vscode";
-import { isKnownUnitKey, providerKindOf } from "./accounts";
+import { isKnownUnitKey } from "./accounts";
 import {
   displayedPercent,
   formatResetCountdown,
@@ -21,7 +21,7 @@ export const dashboardExpandedProvidersKey = "usageai.dashboard.expandedProvider
 export const legacyDashboardExpandedProvidersKey = "usageai.dashboard.expandedProviders.v1";
 const knownProviderIds = ["codex", "claude", "copilot", "gemini"] as const;
 const maxRememberedCards = 64;
-/** The cards' order within each provider, as unit keys, after the user dragged one. */
+/** The cards' order, as unit keys, after the user dragged one. */
 export const dashboardUnitOrderKey = "usageai.dashboard.unitOrder.v1";
 
 /** Known unit keys only, once each. */
@@ -30,38 +30,22 @@ export function sanitizeUnitOrder(value: unknown): string[] {
 }
 
 /**
- * Where everything goes after one card is dropped before or after another. A provider's cards stay
- * together: within one provider the card changes place among that provider's accounts, and onto
- * another provider's card the whole provider moves before or after that provider. Undefined when
- * nothing would change or an id is not shown.
+ * The shown cards after one is dropped before or after another. Each card moves on its own, so a
+ * provider's accounts need not stay together. Undefined when nothing would change or an id is not
+ * shown.
  */
 export function moveDashboardCard(
-  providers: readonly string[],
   units: readonly string[],
   moved: string,
   target: string,
   after: boolean,
-): { readonly providers: string[]; readonly units: string[] } | undefined {
+): string[] | undefined {
   if (moved === target || !units.includes(moved) || !units.includes(target)) {
     return undefined;
   }
-  const movedKind = providerKindOf(moved);
-  const targetKind = providerKindOf(target);
-  let nextProviders = [...providers];
-  let nextUnits = [...units];
-  if (movedKind === targetKind) {
-    nextUnits = units.filter((unit) => unit !== moved);
-    nextUnits.splice(nextUnits.indexOf(target) + (after ? 1 : 0), 0, moved);
-  } else {
-    if (!providers.includes(movedKind) || !providers.includes(targetKind)) {
-      return undefined;
-    }
-    nextProviders = providers.filter((provider) => provider !== movedKind);
-    nextProviders.splice(nextProviders.indexOf(targetKind) + (after ? 1 : 0), 0, movedKind);
-  }
-  return nextProviders.join() === providers.join() && nextUnits.join() === units.join()
-    ? undefined
-    : { providers: nextProviders, units: nextUnits };
+  const next = units.filter((unit) => unit !== moved);
+  next.splice(next.indexOf(target) + (after ? 1 : 0), 0, moved);
+  return next.join() === units.join() ? undefined : next;
 }
 
 export interface DashboardViewOptions {
@@ -318,9 +302,6 @@ function dashboardHtml(webview: vscode.Webview): string {
     .card[data-level="warning"]::before { background: var(--vscode-editorWarning-foreground); }
     .card[data-level="critical"]::before { background: var(--vscode-errorForeground); }
     .card[data-stale="true"] { opacity: .82; }
-    /* A provider's accounts are one stack: no gap, one shared edge, the colour bars end to end. */
-    .card[data-stack="middle"], .card[data-stack="last"] { margin-top: -10px; border-top-left-radius: 0; border-top-right-radius: 0; }
-    .card[data-stack="first"], .card[data-stack="middle"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
     .card.dragging { opacity: .45; }
     .card[data-drop] { z-index: 1; }
     .card[data-drop="before"] { box-shadow: 0 -2px 0 var(--vscode-focusBorder); }
@@ -380,8 +361,6 @@ function dashboardHtml(webview: vscode.Webview): string {
     document.getElementById('collapse-all').addEventListener('click', () => vscode.postMessage({ type: 'setAllExpanded', expanded: false }));
     document.getElementById('expand-all').addEventListener('click', () => vscode.postMessage({ type: 'setAllExpanded', expanded: true }));
     let latestPayload; let dragging; let deferred; let dropAfter = false;
-    const kindOf = (unit) => String(unit).split('@')[0];
-    const groupCards = (kind) => [...providers.querySelectorAll('.card')].filter(node => kindOf(node.dataset.unit) === kind);
     // The card whose header holds the keyboard focus. A redraw rebuilds every card, and one move sends several
     // (the new order, then the changed setting), so the focus is put back on each instead of once.
     const focusedUnit = () => { const active = document.activeElement; return document.hasFocus?.() && active?.classList?.contains('card-toggle') ? active.closest('.card')?.dataset.unit : undefined; };
@@ -421,21 +400,10 @@ function dashboardHtml(webview: vscode.Webview): string {
       let newest = 0;
       for (const state of payload.states) {
         const card = el('article', 'card'); card.dataset.stale = String(state.stale); card.dataset.unit = state.id;
-        const place = payload.states.indexOf(state); const joinsAbove = place > 0 && kindOf(payload.states[place - 1].id) === kindOf(state.id); const joinsBelow = place + 1 < payload.states.length && kindOf(payload.states[place + 1].id) === kindOf(state.id);
-        if (joinsAbove || joinsBelow) card.dataset.stack = joinsAbove && joinsBelow ? 'middle' : joinsAbove ? 'last' : 'first';
         // Only the card itself: a drag of selected text or a link inside it bubbles here too, and must not move the card.
         card.addEventListener('dragstart', (event) => { if (event.target !== card) return; dragging = state.id; card.classList.add('dragging'); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', state.displayName); });
-        // Over an account of the same provider the card goes beside it. Over another provider the
-        // whole provider moves, so every card of the dragged provider dims and the line sits at
-        // the edge of the provider under the pointer, never between two of its accounts.
-        card.addEventListener('dragover', (event) => {
-          if (!dragging || dragging === state.id) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move'; clearDrop();
-          const same = kindOf(dragging) === kindOf(state.id); const group = same ? [card] : groupCards(kindOf(state.id));
-          const first = group[0]; const last = group[group.length - 1];
-          dropAfter = event.clientY > (first.getBoundingClientRect().top + last.getBoundingClientRect().bottom) / 2;
-          (dropAfter ? last : first).dataset.drop = dropAfter ? 'after' : 'before';
-          for (const node of groupCards(kindOf(dragging))) node.classList.toggle('dragging', !same || node.dataset.unit === dragging);
-        });
+        // Each card moves on its own: the line sits above or below the card under the pointer.
+        card.addEventListener('dragover', (event) => { if (!dragging || dragging === state.id) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move'; const box = card.getBoundingClientRect(); clearDrop(); dropAfter = event.clientY > box.top + box.height / 2; card.dataset.drop = dropAfter ? 'after' : 'before'; });
         card.addEventListener('drop', (event) => { if (!dragging || dragging === state.id) return; event.preventDefault(); moveCard(dragging, state.id, dropAfter); });
         card.addEventListener('dragend', endDrag);
         const highestMetric = collapsedDashboardMetric(state);

@@ -1079,8 +1079,8 @@ internal static class RedesignTests
 
     /// <summary>
     /// Cards are reordered by dragging: a popup tile, or a dashboard provider by its heading row,
-    /// and with Alt and an arrow key. A provider's accounts stay together, so a drop on another
-    /// provider moves the whole provider, and the feedback shows what would move before the drop.
+    /// and with Alt and an arrow key. Each card moves on its own, so a provider's accounts need not
+    /// stay together, and a line shows where the card would land before the drop.
     /// </summary>
     public static Task TestCardReorderAsync()
     {
@@ -1089,46 +1089,53 @@ internal static class RedesignTests
             control.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(control, new object[] { eventArgs });
         static MouseEventArgs Mouse(int x, int y, MouseButtons button = MouseButtons.Left) => new(button, 1, x, y, 0);
 
-        // What a card held over another shows: beside a sibling account, or at the edge of another
-        // provider, with every card of the dragged provider dimmed.
+        // What a card held over another shows: the line on the side of that card the pointer is on.
         var keys = new[] { "codex", "claude", Team, "gemini" };
-        var beside = CardReorder.Resolve(keys, 2, 1, pastMiddle: false)!;
-        Equal("1 False 2", $"{beside.MarkIndex} {beside.After} {string.Join(',', beside.Dimmed)}");
-        var before = CardReorder.Resolve(keys, 3, 1, pastMiddle: true)!;
-        Equal("1 False 3", $"{before.MarkIndex} {before.After} {string.Join(',', before.Dimmed)}");
-        var after = CardReorder.Resolve(keys, 0, 2, pastMiddle: false)!;
-        Equal("2 True 0", $"{after.MarkIndex} {after.After} {string.Join(',', after.Dimmed)}");
-        var group = CardReorder.Resolve(keys, 1, 3, pastMiddle: true)!;
-        Equal("3 True 1,2", $"{group.MarkIndex} {group.After} {string.Join(',', group.Dimmed)}");
-        Null(CardReorder.Resolve(keys, 1, 1, pastMiddle: true));
-        Null(CardReorder.Resolve(keys, 1, -1, pastMiddle: true));
+        Equal(new CardReorder.Drop(1, false), CardReorder.Resolve(4, 3, 1, pastMiddle: false));
+        Equal(new CardReorder.Drop(2, true), CardReorder.Resolve(4, 0, 2, pastMiddle: true));
+        Null(CardReorder.Resolve(4, 1, 1, pastMiddle: true));
+        Null(CardReorder.Resolve(4, 1, -1, pastMiddle: true));
+        Null(CardReorder.Resolve(4, 4, 1, pastMiddle: true));
         Equal("1,-1,2,-1", string.Join(',', new[]
         {
-            CardReorder.Neighbour(keys, 0, forward: true), CardReorder.Neighbour(keys, 0, forward: false),
-            CardReorder.Neighbour(keys, 3, forward: false), CardReorder.Neighbour(keys, 3, forward: true),
+            CardReorder.Neighbour(4, 0, forward: true), CardReorder.Neighbour(4, 0, forward: false),
+            CardReorder.Neighbour(4, 3, forward: false), CardReorder.Neighbour(4, 3, forward: true),
         }));
 
-        // The saved order: across providers the provider moves, within one the account does.
+        // The saved order: until a card is dragged a provider's accounts sit together; a dragged
+        // card goes exactly where it was dropped, between another provider's accounts included.
         var settings = new AppSettings { IsEphemeral = true };
         settings.EnsureAccount(Team);
         string Order() => string.Join('|', settings.OrderUnits(keys));
         Equal("codex|claude|claude@1a2b3c4d|gemini", Order());
         True(settings.MoveUnit(keys, "gemini", Team, after: false));
-        Equal("codex|gemini|claude|claude@1a2b3c4d", Order());
+        Equal("codex|claude|gemini|claude@1a2b3c4d", Order());
         True(settings.MoveUnit(keys, Team, "codex", after: false));
-        Equal("claude|claude@1a2b3c4d|codex|gemini", Order());
-        True(settings.MoveUnit(keys, Team, "claude", after: false));
-        Equal("claude@1a2b3c4d|claude|codex|gemini", Order());
-        True(settings.MoveUnit(keys, Team, "claude", after: true));
-        Equal("claude|claude@1a2b3c4d|codex|gemini", Order());
-        False(settings.MoveUnit(keys, "claude", Team, after: false));
-        False(settings.MoveUnit(keys, "codex", "claude", after: true));
+        Equal("claude@1a2b3c4d|codex|claude|gemini", Order());
+        True(settings.MoveUnit(keys, "codex", "gemini", after: true));
+        Equal("claude@1a2b3c4d|claude|gemini|codex", Order());
+        False(settings.MoveUnit(keys, "codex", "gemini", after: true));
+        False(settings.MoveUnit(keys, "claude", Team, after: true));
         False(settings.MoveUnit(keys, "codex", "codex", after: true));
         False(settings.MoveUnit(keys, "copilot", "codex", after: true));
-        // A provider that is not shown keeps its saved place.
-        settings.ProviderOrder = new[] { "copilot", "claude", "codex", "gemini" };
-        True(settings.MoveUnit(keys, "gemini", "claude", after: false));
-        Equal("copilot,gemini,claude,codex", string.Join(',', settings.ProviderOrder));
+
+        // A card the order does not name yet follows the last card of its provider, or goes last;
+        // one that is not shown now keeps its place for when it is.
+        const string Lab = "claude@0a0b0c0d";
+        Equal("claude@1a2b3c4d|claude|claude@0a0b0c0d|gemini|codex|copilot",
+            string.Join('|', settings.OrderUnits(new[] { "copilot", Lab, "codex", "claude", Team, "gemini" })));
+        var shownNow = new[] { "claude", "codex" };
+        var others = new[] { "gemini", "codex" };
+        True(settings.MoveUnit(shownNow, "codex", "claude", after: false));
+        Equal("claude@1a2b3c4d|codex|claude|gemini", Order());
+        Equal("codex|gemini", string.Join('|', settings.OrderUnits(others)));
+
+        // A hand-edited file is cleaned up, and reordering in Settings starts from its own order again.
+        settings.UnitOrder = new[] { "claude", " ", "CLAUDE", "gemini" };
+        settings.Save();
+        Equal("claude,gemini", string.Join(',', settings.UnitOrder));
+        settings.UnitOrder = Array.Empty<string>();
+        Equal("codex|claude|claude@1a2b3c4d|gemini", Order());
 
         var states = keys
             .Select(key => Status(key, key, new UsageMetric("Weekly", UsageMetricKind.Rolling, 40)) with
