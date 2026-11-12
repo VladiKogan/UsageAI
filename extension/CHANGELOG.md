@@ -12,6 +12,9 @@
   below another; with the keyboard, focus the header and press Alt+Up or Alt+Down. A provider's
   accounts stay together: dropping a card on another account of the same provider reorders that
   provider's accounts, and dropping it on a different provider's card moves the whole provider.
+  The accounts of one provider are drawn as one joined stack, and while you drag toward another
+  provider all of them dim and the drop line sits at the edge of the provider under the pointer,
+  so what will move is visible before you drop.
   The Status Bar follows the same order. The provider order is saved in the `usageai.providers`
   setting, as before; the order of a provider's accounts is kept by the extension.
 

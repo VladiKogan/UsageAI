@@ -318,7 +318,11 @@ function dashboardHtml(webview: vscode.Webview): string {
     .card[data-level="warning"]::before { background: var(--vscode-editorWarning-foreground); }
     .card[data-level="critical"]::before { background: var(--vscode-errorForeground); }
     .card[data-stale="true"] { opacity: .82; }
+    /* A provider's accounts are one stack: no gap, one shared edge, the colour bars end to end. */
+    .card[data-stack="middle"], .card[data-stack="last"] { margin-top: -10px; border-top-left-radius: 0; border-top-right-radius: 0; }
+    .card[data-stack="first"], .card[data-stack="middle"] { border-bottom-left-radius: 0; border-bottom-right-radius: 0; }
     .card.dragging { opacity: .45; }
+    .card[data-drop] { z-index: 1; }
     .card[data-drop="before"] { box-shadow: 0 -2px 0 var(--vscode-focusBorder); }
     .card[data-drop="after"] { box-shadow: 0 2px 0 var(--vscode-focusBorder); }
     .card-toggle { appearance: none; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 7px; width: 100%; border: 0; padding: 10px 10px 8px 10px; color: inherit; background: transparent; text-align: left; cursor: pointer; }
@@ -375,7 +379,9 @@ function dashboardHtml(webview: vscode.Webview): string {
     const providers = document.getElementById('providers'); const stamp = document.getElementById('stamp'); const metricMode = document.getElementById('metric-mode');
     document.getElementById('collapse-all').addEventListener('click', () => vscode.postMessage({ type: 'setAllExpanded', expanded: false }));
     document.getElementById('expand-all').addEventListener('click', () => vscode.postMessage({ type: 'setAllExpanded', expanded: true }));
-    let latestPayload; let dragging; let deferred;
+    let latestPayload; let dragging; let deferred; let dropAfter = false;
+    const kindOf = (unit) => String(unit).split('@')[0];
+    const groupCards = (kind) => [...providers.querySelectorAll('.card')].filter(node => kindOf(node.dataset.unit) === kind);
     // The card whose header holds the keyboard focus. A redraw rebuilds every card, and one move sends several
     // (the new order, then the changed setting), so the focus is put back on each instead of once.
     const focusedUnit = () => { const active = document.activeElement; return document.hasFocus?.() && active?.classList?.contains('card-toggle') ? active.closest('.card')?.dataset.unit : undefined; };
@@ -415,10 +421,22 @@ function dashboardHtml(webview: vscode.Webview): string {
       let newest = 0;
       for (const state of payload.states) {
         const card = el('article', 'card'); card.dataset.stale = String(state.stale); card.dataset.unit = state.id;
+        const place = payload.states.indexOf(state); const joinsAbove = place > 0 && kindOf(payload.states[place - 1].id) === kindOf(state.id); const joinsBelow = place + 1 < payload.states.length && kindOf(payload.states[place + 1].id) === kindOf(state.id);
+        if (joinsAbove || joinsBelow) card.dataset.stack = joinsAbove && joinsBelow ? 'middle' : joinsAbove ? 'last' : 'first';
         // Only the card itself: a drag of selected text or a link inside it bubbles here too, and must not move the card.
         card.addEventListener('dragstart', (event) => { if (event.target !== card) return; dragging = state.id; card.classList.add('dragging'); event.dataTransfer.effectAllowed = 'move'; event.dataTransfer.setData('text/plain', state.displayName); });
-        card.addEventListener('dragover', (event) => { if (!dragging || dragging === state.id) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move'; const box = card.getBoundingClientRect(); clearDrop(); card.dataset.drop = event.clientY > box.top + box.height / 2 ? 'after' : 'before'; });
-        card.addEventListener('drop', (event) => { if (!dragging || dragging === state.id) return; event.preventDefault(); moveCard(dragging, state.id, card.dataset.drop === 'after'); });
+        // Over an account of the same provider the card goes beside it. Over another provider the
+        // whole provider moves, so every card of the dragged provider dims and the line sits at
+        // the edge of the provider under the pointer, never between two of its accounts.
+        card.addEventListener('dragover', (event) => {
+          if (!dragging || dragging === state.id) return; event.preventDefault(); event.dataTransfer.dropEffect = 'move'; clearDrop();
+          const same = kindOf(dragging) === kindOf(state.id); const group = same ? [card] : groupCards(kindOf(state.id));
+          const first = group[0]; const last = group[group.length - 1];
+          dropAfter = event.clientY > (first.getBoundingClientRect().top + last.getBoundingClientRect().bottom) / 2;
+          (dropAfter ? last : first).dataset.drop = dropAfter ? 'after' : 'before';
+          for (const node of groupCards(kindOf(dragging))) node.classList.toggle('dragging', !same || node.dataset.unit === dragging);
+        });
+        card.addEventListener('drop', (event) => { if (!dragging || dragging === state.id) return; event.preventDefault(); moveCard(dragging, state.id, dropAfter); });
         card.addEventListener('dragend', endDrag);
         const highestMetric = collapsedDashboardMetric(state);
         const highest = highestMetric?.usedPercent ?? 0; card.dataset.level = level(highest, warning, critical);
