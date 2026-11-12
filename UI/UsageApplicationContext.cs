@@ -128,6 +128,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _popup.ProviderRefreshRequested += async (_, eventArgs) => await RetryProviderAsync(eventArgs.Status.ProviderId);
         _popup.SettingsRequested += (_, _) => OpenSettings();
         _popup.AddAccountRequested += (_, _) => OpenAddAccount();
+        _popup.ReorderRequested += (_, eventArgs) => MoveCard(eventArgs.Moved, eventArgs.Target, eventArgs.After);
         _popup.NoticeAnswered += (_, eventArgs) => AnswerNotice(eventArgs.Notice, eventArgs.Primary);
         PushStateToPopup();
 
@@ -704,6 +705,24 @@ internal sealed class UsageApplicationContext : ApplicationContext
     /// <summary>The shown providers and accounts the tray icon can follow, for Settings and the tray menu.</summary>
     private (string Id, string Name)[] TrayChoices() =>
         _service.Statuses.Select(status => (status.ProviderId, status.ProviderName)).ToArray();
+
+    /// <summary>
+    /// A card dragged to a new place in the popup or dashboard: saves the order and redraws from
+    /// the cached snapshots. The order is presentation only, so nothing is polled; the tray's
+    /// All connected tooltip lists providers in the same order.
+    /// </summary>
+    private void MoveCard(string moved, string target, bool after)
+    {
+        if (_isExiting ||
+            !_settings.MoveUnit(_service.Statuses.Select(status => status.ProviderId).ToArray(), moved, target, after))
+        {
+            return;
+        }
+
+        _settings.Save();
+        PushStateToPopup();
+        UpdateTray();
+    }
 
     private void OpenSettings() => OpenSettings(null);
 

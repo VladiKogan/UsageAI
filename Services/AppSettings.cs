@@ -264,6 +264,56 @@ internal sealed class AppSettings
         (FindAccount(unitKey) is not { } account ||
          (!account.Hidden && !account.Pending && account.DuplicateOf is null));
 
+    /// <summary>
+    /// Moves a shown card before or after another, as a drag in the popup or dashboard asks. A
+    /// provider's accounts stay together: within one provider the account changes place among
+    /// its siblings (their <see cref="ProviderAccount.Order"/>), and onto another provider's card
+    /// the whole provider moves in <see cref="ProviderOrder"/>. False when nothing changed.
+    /// </summary>
+    public bool MoveUnit(IReadOnlyList<string> unitKeys, string moved, string target, bool after)
+    {
+        var comparer = StringComparer.OrdinalIgnoreCase;
+        var ordered = OrderUnits(unitKeys);
+        if (comparer.Equals(moved, target) || !ordered.Contains(moved, comparer) || !ordered.Contains(target, comparer))
+        {
+            return false;
+        }
+
+        var movedProvider = ProviderKey.ProviderOf(moved);
+        var targetProvider = ProviderKey.ProviderOf(target);
+        if (comparer.Equals(movedProvider, targetProvider))
+        {
+            var siblings = ordered.Where(key => comparer.Equals(ProviderKey.ProviderOf(key), movedProvider)).ToList();
+            var before = siblings.ToArray();
+            siblings.RemoveAll(key => comparer.Equals(key, moved));
+            siblings.Insert(siblings.FindIndex(key => comparer.Equals(key, target)) + (after ? 1 : 0), moved);
+            if (siblings.SequenceEqual(before, comparer))
+            {
+                return false;
+            }
+
+            for (var index = 0; index < siblings.Count; index++)
+            {
+                EnsureAccount(siblings[index]).Order = index;
+            }
+
+            return true;
+        }
+
+        // Providers not shown keep their saved place; shown ones the order has not named yet join it.
+        var providers = ProviderOrder.Concat(ordered.Select(ProviderKey.ProviderOf)).Distinct(comparer).ToList();
+        var previous = providers.ToArray();
+        providers.RemoveAll(provider => comparer.Equals(provider, movedProvider));
+        providers.Insert(providers.FindIndex(provider => comparer.Equals(provider, targetProvider)) + (after ? 1 : 0), movedProvider);
+        if (providers.SequenceEqual(previous, comparer))
+        {
+            return false;
+        }
+
+        ProviderOrder = providers.ToArray();
+        return true;
+    }
+
     public bool AccountAlertsEnabled(string unitKey) => FindAccount(unitKey)?.Alerts ?? true;
 
     /// <summary>

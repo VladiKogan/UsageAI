@@ -40,6 +40,12 @@ internal sealed class UsageLedger : Control
     private LedgerFonts _fonts;
     private int _focusIndex = -1;
     private int _hoverIndex = -1;
+    private Point? _pressedAt;
+    private string? _dragKey;
+    private bool _dragging;
+    private CardReorder.Drop? _drop;
+    private string? _movingKey;
+    private string? _pendingFocusKey;
 
     public UsageLedger(
         IReadOnlyList<ProviderStatus> states,
@@ -77,6 +83,9 @@ internal sealed class UsageLedger : Control
         _quotaDisplay = quotaDisplay;
         _rows = BuildRows(states, displayMode, forecastHistory, DateTimeOffset.Now);
         _hoverIndex = -1;
+        // The rows a drag was measured against are gone; a keyboard move keeps its provider focused.
+        EndDrag(drop: false);
+        _pendingFocusKey = _movingKey;
         ApplyRows(states);
         Invalidate();
     }
@@ -90,6 +99,12 @@ internal sealed class UsageLedger : Control
     }
 
     public event EventHandler<ProviderCardActionEventArgs>? ActionInvoked;
+
+    /// <summary>
+    /// A provider was dragged by its heading row, or moved with Alt+Up / Alt+Down while one of its
+    /// links has the focus, to before or after another.
+    /// </summary>
+    public event EventHandler<CardReorderEventArgs>? ReorderRequested;
 
     /// <summary>Eases the usage bars toward new values; null draws them where they belong at once.</summary>
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
@@ -138,9 +153,145 @@ internal sealed class UsageLedger : Control
         ApplyDpiChange();
     }
 
+    protected override void OnMouseDown(MouseEventArgs e)
+    {
+        base.OnMouseDown(e);
+        // A provider is picked up by its heading row, anywhere but on its links and buttons.
+        if (e.Button == MouseButtons.Left &&
+            !_actions.Any(action => action.Bounds.Contains(e.Location)) &&
+            HeadingAt(e.Y) is { } key)
+        {
+            _pressedAt = e.Location;
+            _dragKey = key;
+        }
+    }
+
+    protected override void OnMouseUp(MouseEventArgs e)
+    {
+        base.OnMouseUp(e);
+        EndDrag(drop: true);
+    }
+
+    // Capture goes when the window is deactivated mid-drag (Alt+Tab).
+    protected override void OnMouseCaptureChanged(EventArgs e)
+    {
+        base.OnMouseCaptureChanged(e);
+        if (!Capture)
+        {
+            EndDrag(drop: false);
+        }
+    }
+
+    private void EndDrag(bool drop)
+    {
+        _pressedAt = null;
+        if (!_dragging)
+        {
+            return;
+        }
+
+        var blocks = Blocks();
+        var request = drop && _drop is { } landing && _dragKey is { } moved && landing.MarkIndex < blocks.Count
+            ? new CardReorderEventArgs(moved, blocks[landing.MarkIndex].Key, landing.After)
+            : null;
+        _dragging = false;
+        _drop = null;
+        Cursor = Cursors.Default;
+        Invalidate();
+        if (request is not null)
+        {
+            ReorderRequested?.Invoke(this, request);
+        }
+    }
+
+    /// <summary>Each provider key's rows as one block, top to bottom.</summary>
+    private List<(string Key, int Top, int Bottom)> Blocks()
+    {
+        var scale = Scale();
+        var blocks = new List<(string Key, int Top, int Bottom)>();
+        var top = 0;
+        foreach (var row in _rows)
+        {
+            var bottom = top + scale[row.BaselineHeight];
+            if (row.Status is { } status)
+            {
+                if (blocks.Count > 0 && blocks[^1].Key.Equals(status.ProviderId, StringComparison.OrdinalIgnoreCase))
+                {
+                    blocks[^1] = (blocks[^1].Key, blocks[^1].Top, bottom);
+                }
+                else
+                {
+                    blocks.Add((status.ProviderId, top, bottom));
+                }
+            }
+
+            top = bottom;
+        }
+
+        return blocks;
+    }
+
+    /// <summary>The provider key whose heading row is at <paramref name="y"/>, if one is.</summary>
+    private string? HeadingAt(int y)
+    {
+        var scale = Scale();
+        var top = 0;
+        foreach (var row in _rows)
+        {
+            var bottom = top + scale[row.BaselineHeight];
+            if (y >= top && y < bottom)
+            {
+                return row.Kind == RowKind.Provider ? row.Status?.ProviderId : null;
+            }
+
+            top = bottom;
+        }
+
+        return null;
+    }
+
+    private void UpdateDrop(int y)
+    {
+        var blocks = Blocks();
+        var keys = blocks.Select(block => block.Key).ToArray();
+        var target = blocks.FindIndex(block => y >= block.Top && y < block.Bottom);
+        var drop = target < 0
+            ? null
+            : CardReorder.Resolve(
+                keys,
+                Array.FindIndex(keys, key => key.Equals(_dragKey, StringComparison.OrdinalIgnoreCase)),
+                target,
+                pastMiddle: y > (blocks[target].Top + blocks[target].Bottom) / 2);
+        if (drop?.MarkIndex != _drop?.MarkIndex || drop?.After != _drop?.After)
+        {
+            Invalidate();
+        }
+
+        _drop = drop;
+    }
+
     protected override void OnMouseMove(MouseEventArgs e)
     {
         base.OnMouseMove(e);
+        if (_pressedAt is { } pressed && e.Button.HasFlag(MouseButtons.Left))
+        {
+            // A press becomes a drag only past the system's drag threshold.
+            var slack = SystemInformation.DragSize;
+            if (!_dragging &&
+                (Math.Abs(e.X - pressed.X) > slack.Width / 2 || Math.Abs(e.Y - pressed.Y) > slack.Height / 2))
+            {
+                _dragging = true;
+                Cursor = Cursors.SizeAll;
+                Invalidate();
+            }
+
+            if (_dragging)
+            {
+                UpdateDrop(e.Y);
+                return;
+            }
+        }
+
         var index = _actions.FindIndex(action => action.Bounds.Contains(e.Location));
         if (index != _hoverIndex)
         {
@@ -163,7 +314,8 @@ internal sealed class UsageLedger : Control
     protected override void OnMouseClick(MouseEventArgs e)
     {
         base.OnMouseClick(e);
-        if (e.Button != MouseButtons.Left)
+        // The click of a drag's release (raised before its MouseUp) is not a click on a link.
+        if (e.Button != MouseButtons.Left || _dragging)
         {
             return;
         }
@@ -184,6 +336,7 @@ internal sealed class UsageLedger : Control
         Keys.Tab => _focusIndex < _actions.Count - 1,
         Keys.Tab | Keys.Shift => _focusIndex > 0,
         Keys.Enter or Keys.Space => _focusIndex >= 0 && _focusIndex < _actions.Count,
+        (Keys.Alt | Keys.Up) or (Keys.Alt | Keys.Down) => _focusIndex >= 0 && _focusIndex < _actions.Count,
         _ => base.IsInputKey(keyData),
     };
 
@@ -204,7 +357,28 @@ internal sealed class UsageLedger : Control
                 Invoke(_actions[_focusIndex]);
                 e.Handled = true;
                 break;
+            case (Keys.Alt | Keys.Up) or (Keys.Alt | Keys.Down) when _focusIndex >= 0 && _focusIndex < _actions.Count:
+                MoveFocusedProvider(forward: e.KeyCode == Keys.Down);
+                e.Handled = true;
+                break;
         }
+    }
+
+    private void MoveFocusedProvider(bool forward)
+    {
+        var keys = Blocks().Select(block => block.Key).ToArray();
+        var index = Array.FindIndex(keys, key =>
+            key.Equals(_actions[_focusIndex].Status?.ProviderId, StringComparison.OrdinalIgnoreCase));
+        var neighbour = CardReorder.Neighbour(keys, index, forward);
+        if (neighbour < 0)
+        {
+            return;
+        }
+
+        // SetData, which the move causes, hands the focus back to the moved provider's first link.
+        _movingKey = keys[index];
+        ReorderRequested?.Invoke(this, new CardReorderEventArgs(keys[index], keys[neighbour], forward));
+        _movingKey = null;
     }
 
     protected override void OnGotFocus(EventArgs e)
@@ -277,6 +451,46 @@ internal sealed class UsageLedger : Control
                 scale.Exact(4));
             using var pen = new Pen(Theme.Accent, Math.Max(1F, scale.Exact(1.5F)));
             graphics.DrawPath(pen, focus);
+        }
+
+        if (_dragging)
+        {
+            DrawDrag(graphics, scale);
+        }
+
+        if (_pendingFocusKey is { } moved)
+        {
+            _pendingFocusKey = null;
+            var index = _actions.FindIndex(action =>
+                moved.Equals(action.Status?.ProviderId, StringComparison.OrdinalIgnoreCase));
+            if (Focused && index >= 0 && index != _focusIndex)
+            {
+                MoveFocus(index);
+            }
+        }
+    }
+
+    /// <summary>Fades the providers a drag would move and draws the line where they would land.</summary>
+    private void DrawDrag(Graphics graphics, LayoutScale scale)
+    {
+        // Whole pixels: an antialiased fill would blur the fade and the line at their edges.
+        graphics.SmoothingMode = SmoothingMode.None;
+        var blocks = Blocks();
+        using var fade = new SolidBrush(Color.FromArgb(150, BackColor));
+        for (var index = 0; index < blocks.Count; index++)
+        {
+            if (blocks[index].Key.Equals(_dragKey, StringComparison.OrdinalIgnoreCase) || _drop?.Dimmed.Contains(index) == true)
+            {
+                graphics.FillRectangle(fade, 0, blocks[index].Top, Width, blocks[index].Bottom - blocks[index].Top);
+            }
+        }
+
+        if (_drop is { } drop && drop.MarkIndex < blocks.Count)
+        {
+            var thickness = scale[2];
+            var edge = drop.After ? blocks[drop.MarkIndex].Bottom : blocks[drop.MarkIndex].Top - thickness;
+            using var line = new SolidBrush(Theme.IsHighContrast ? SystemColors.Highlight : Theme.Accent);
+            graphics.FillRectangle(line, 0, Math.Clamp(edge, 0, Height - thickness), Width, thickness);
         }
     }
 
