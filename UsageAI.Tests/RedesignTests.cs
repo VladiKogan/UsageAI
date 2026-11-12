@@ -1266,6 +1266,128 @@ internal static class RedesignTests
             Equal("open,refresh,settings,exit", string.Join(',', invoked));
         }
 
+        // Quick settings: what the tray icon shows, quota used or remaining, and pausing
+        // notifications, each read again whenever the menu opens.
+        var quickState = new TrayQuickState(
+            new[] { ("codex", "Codex"), ("claude@1a2b3c4d", "Claude Code · R&D") },
+            "CLAUDE@1a2b3c4d",
+            QuotaDisplay.Used,
+            NotificationsEnabled: true);
+        var changes = new List<string>();
+        using (var quickMenu = TrayMenu.Create(
+            static () => { },
+            static () => { },
+            static () => { },
+            static () => { },
+            quick: new TrayQuickSettings(
+                () => quickState,
+                id => changes.Add($"tray:{id ?? "automatic"}"),
+                display => changes.Add($"quota:{display}"),
+                enabled => changes.Add($"notify:{enabled}"))))
+        {
+            static string Rows(ToolStripItem item) => string.Join('|', ((ToolStripMenuItem)item).DropDownItems
+                .Cast<ToolStripItem>()
+                .Select(row => row is ToolStripMenuItem { Checked: true } ? $"[{row.Text}]" : row.Text));
+            var opening = typeof(ToolStripDropDown).GetMethod(
+                "OnOpening",
+                System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!;
+
+            Equal(
+                "Open dashboard|Refresh||Tray icon shows|Show quota as|Pause notifications||Settings…||Exit",
+                string.Join('|', quickMenu.Items.Cast<ToolStripItem>().Select(item => item.Text)));
+            Equal("Automatic|All connected||Codex|[Claude Code · R&&D]", Rows(quickMenu.Items[3]));
+            Equal("[Used]|Remaining", Rows(quickMenu.Items[4]));
+
+            // A list's rows get the menu's spacing and face.
+            TrayMenu.ApplyMetrics(quickMenu, 192);
+            var list = ((ToolStripMenuItem)quickMenu.Items[3]).DropDown;
+            Equal(new Padding(20, 10, 20, 10), list.Items[0].Padding);
+            Equal(Padding.Empty, list.Items[2].Padding);
+            Equal(Typography.PixelSize(TrayMenu.FontPoints, list.DeviceDpi), list.Items[0].Font.Size);
+            var face = list.Items[0].Font;
+            opening.Invoke(quickMenu, new object[] { new System.ComponentModel.CancelEventArgs() });
+            True(ReferenceEquals(face, ((ToolStripMenuItem)quickMenu.Items[3]).DropDown.Items[0].Font));
+
+            // Only the chosen row carries a tick, drawn in its check margin.
+            list.CreateControl();
+            list.PerformLayout();
+            list.Size = list.GetPreferredSize(Size.Empty);
+            using (var bitmap = new Bitmap(Math.Max(1, list.Width), Math.Max(1, list.Height)))
+            {
+                list.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
+                bool Ticked(ToolStripItem row)
+                {
+                    var margin = Rectangle.Intersect(
+                        new Rectangle(row.Bounds.Left, row.Bounds.Top, new LayoutScale(list.DeviceDpi)[20], row.Bounds.Height),
+                        new Rectangle(Point.Empty, bitmap.Size));
+                    return Enumerable.Range(margin.Top, margin.Height).Any(y => Enumerable.Range(margin.Left, margin.Width).Any(x =>
+                        Math.Abs(bitmap.GetPixel(x, y).GetBrightness() - Theme.Surface.GetBrightness()) > 0.3));
+                }
+
+                True(Ticked(list.Items[^1]));
+                False(Ticked(list.Items[0]));
+            }
+
+            ((ToolStripMenuItem)quickMenu.Items[3]).DropDownItems[0].PerformClick();
+            ((ToolStripMenuItem)quickMenu.Items[3]).DropDownItems[1].PerformClick();
+            ((ToolStripMenuItem)quickMenu.Items[3]).DropDownItems[3].PerformClick();
+            ((ToolStripMenuItem)quickMenu.Items[4]).DropDownItems[1].PerformClick();
+            quickMenu.Items[5].PerformClick();
+            Equal("tray:automatic,tray:all,tray:codex,quota:Remaining,notify:False", string.Join(',', changes));
+
+            // A pinned provider that is no longer shown reads as Automatic, and Settings being open
+            // switches the quick settings off.
+            quickState = new TrayQuickState(
+                new[] { ("codex", "Codex") },
+                "claude@1a2b3c4d",
+                QuotaDisplay.Remaining,
+                NotificationsEnabled: false,
+                Enabled: false);
+            opening.Invoke(quickMenu, new object[] { new System.ComponentModel.CancelEventArgs() });
+            Equal("[Automatic]|All connected||Codex", Rows(quickMenu.Items[3]));
+            Equal("Used|[Remaining]", Rows(quickMenu.Items[4]));
+            Equal("Resume notifications", quickMenu.Items[5].Text);
+            False(quickMenu.Items[3].Enabled || quickMenu.Items[4].Enabled || quickMenu.Items[5].Enabled);
+
+            quickState = quickState with { TrayProviderId = AppSettings.AllProvidersTrayId, Enabled = true };
+            opening.Invoke(quickMenu, new object[] { new System.ComponentModel.CancelEventArgs() });
+            Equal("Automatic|[All connected]||Codex", Rows(quickMenu.Items[3]));
+        }
+
+        // The app's own wiring: a quick setting lands in the settings the app runs on, and is
+        // ignored while the Settings window is open, whose Save would write over it.
+        var appSettings = new AppSettings
+        {
+            IsEphemeral = true,
+            Theme = ThemeMode.Dark,
+            GlobalHotkeyEnabled = false,
+            LastRunVersion = AppIdentity.Version,
+        };
+        var (samples, _, _) = PreviewRenderer.SampleData(DateTimeOffset.Now);
+        var sampleClient = new PreviewUsageClient(samples[0], new PreviewTrayStages(appSettings), TimeSpan.Zero);
+        using (var context = new UsageApplicationContext(new[] { sampleClient }, appSettings, showTrayIcon: false, profileExisted: true))
+        {
+            const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
+            var appMenu = (ContextMenuStrip)typeof(UsageApplicationContext).GetField("_menu", Private)!.GetValue(context)!;
+            ToolStripMenuItem Row(string text) =>
+                (ToolStripMenuItem)appMenu.Items.Cast<ToolStripItem>().First(item => item.Text == text);
+
+            Row("Tray icon shows").DropDownItems[1].PerformClick();
+            Row("Show quota as").DropDownItems[1].PerformClick();
+            Row("Pause notifications").PerformClick();
+            Equal(AppSettings.AllProvidersTrayId, appSettings.TrayProviderId);
+            Equal(QuotaDisplay.Remaining, appSettings.QuotaDisplay);
+            False(appSettings.NotificationsEnabled);
+
+            using var openSettings = Settings(appSettings, null);
+            typeof(UsageApplicationContext).GetField("_openSettings", Private)!.SetValue(context, openSettings);
+            Row("Tray icon shows").DropDownItems[0].PerformClick();
+            Row("Show quota as").DropDownItems[0].PerformClick();
+            Equal(AppSettings.AllProvidersTrayId, appSettings.TrayProviderId);
+            Equal(QuotaDisplay.Remaining, appSettings.QuotaDisplay);
+            typeof(UsageApplicationContext).GetField("_openSettings", Private)!.SetValue(context, null);
+        }
+
         // The tray ring is a clean arc: the middle stays clear rather than holding a pie or glyph.
         using (var icon = TrayIconFactory.Create(60, size: 32))
         using (var bitmap = icon.ToBitmap())

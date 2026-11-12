@@ -143,7 +143,17 @@ internal sealed class UsageApplicationContext : ApplicationContext
             refresh: () => _ = RefreshRequestedByUserAsync(),
             settings: OpenSettings,
             exit: Exit,
-            addAccount: () => OpenAddAccount());
+            addAccount: () => OpenAddAccount(),
+            quick: new TrayQuickSettings(
+                Read: () => new TrayQuickState(
+                    TrayChoices(),
+                    _settings.TrayProviderId,
+                    _settings.QuotaDisplay,
+                    _settings.NotificationsEnabled,
+                    Enabled: _openSettings is null),
+                SetTrayProvider: id => ApplyQuickSetting(() => _settings.TrayProviderId = id),
+                SetQuotaDisplay: display => ApplyQuickSetting(() => _settings.QuotaDisplay = display),
+                SetNotifications: enabled => ApplyQuickSetting(() => _settings.NotificationsEnabled = enabled)));
 
         _currentIcon = TrayIconFactory.CreateTank(0, 0);
         _trayIcon = new NotifyIcon
@@ -673,6 +683,28 @@ internal sealed class UsageApplicationContext : ApplicationContext
         }
     }
 
+    /// <summary>
+    /// Saves a setting changed from the tray menu and redraws from the cached snapshots. These are
+    /// presentation choices, so nothing is polled. Ignored while Settings is open: its OK writes
+    /// every value it shows and would undo the change.
+    /// </summary>
+    private void ApplyQuickSetting(Action change)
+    {
+        if (_isExiting || _openSettings is not null)
+        {
+            return;
+        }
+
+        change();
+        _settings.Save();
+        PushStateToPopup();
+        UpdateTray();
+    }
+
+    /// <summary>The shown providers and accounts the tray icon can follow, for Settings and the tray menu.</summary>
+    private (string Id, string Name)[] TrayChoices() =>
+        _service.Statuses.Select(status => (status.ProviderId, status.ProviderName)).ToArray();
+
     private void OpenSettings() => OpenSettings(null);
 
     private void OpenSettings(string? section)
@@ -689,7 +721,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
             popupGroups: PopupGroups(_service.Statuses),
             accounts: _accounts is null ? null : new SettingsAccountActions(this, _accounts),
             accountStatuses: _service.AllStatuses,
-            trayChoices: _service.Statuses.Select(status => (status.ProviderId, status.ProviderName)).ToArray());
+            trayChoices: TrayChoices());
         if (section is not null)
         {
             dialog.Shown += (_, _) => dialog.ShowSection(section);
