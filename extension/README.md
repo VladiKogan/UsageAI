@@ -82,9 +82,10 @@ accounts), **Open Settings**, and the **…** menu with **Choose Status Bar Item
 Open **UsageAI: Open Settings** to personalize the extension. The settings are in four groups:
 **Providers and Accounts**, **Status Bar**, **Display** and **Refresh**.
 
-- **Providers** enables providers and sets their order in both the dashboard and Status Bar.
-  The quicker way to reorder is to drag a dashboard card by its header (or focus it and press
-  Alt+Up / Alt+Down). A provider's accounts stay together, and the Status Bar follows the same order.
+- **Providers** enables providers and gives their starting order in both the dashboard and Status Bar.
+  To arrange them, drag a dashboard card by its header (or focus it and press Alt+Up / Alt+Down).
+  Each card, a second account included, goes exactly where you drop it, and the Status Bar
+  follows the same order.
 - **UsageAI: Choose Status Bar Items…** (also in the dashboard's **…** menu) lists every provider
   and every Claude Code and Codex account with a checkbox. Each one you tick gets its own compact
   reading, so two Claude Code accounts can sit side by side.

@@ -284,10 +284,20 @@ internal sealed class UsagePopupForm : Form
         };
         KeyDown += (_, eventArgs) =>
         {
-            if (eventArgs.KeyCode == Keys.Escape)
+            if (eventArgs.KeyCode != Keys.Escape)
             {
-                Hide();
+                return;
             }
+
+            // This handler sees the key before the card does. Esc during a card drag gives up
+            // the drag and leaves the window open.
+            if (CancelCardDrag())
+            {
+                eventArgs.Handled = true;
+                return;
+            }
+
+            Hide();
         };
         Theme.Changed += OnThemeChanged;
 
@@ -367,6 +377,9 @@ internal sealed class UsagePopupForm : Form
 
     /// <summary>A stale provider's Retry: refresh that provider alone.</summary>
     public event EventHandler<ProviderCardActionEventArgs>? ProviderRefreshRequested;
+
+    /// <summary>A tile or a dashboard provider was dragged, or moved with Alt and an arrow key, to a new place.</summary>
+    public event EventHandler<CardReorderEventArgs>? ReorderRequested;
 
     public DashboardMode Mode => _mode;
 
@@ -766,6 +779,14 @@ internal sealed class UsagePopupForm : Form
 
     private void RebuildCards()
     {
+        if (_tileDragActive || _content.Controls.OfType<UsageLedger>().Any(table => table.IsDragging))
+        {
+            // A reading that lands mid-drag is drawn once the drag ends: rebuilding would dispose
+            // the tile being dragged.
+            _rebuildDeferred = true;
+            return;
+        }
+
         // Held until the window has its new size, so the rebuild shows as one finished frame.
         using var redraw = WindowThemeHelpers.SuspendRedraw(_content);
         _content.SuspendLayout();
@@ -800,6 +821,8 @@ internal sealed class UsagePopupForm : Form
         {
             GrowDashboardToFit();
         }
+
+        RestoreMovedFocus();
     }
 
     private void ReplaceContent(IReadOnlyList<UsageSample> forecastHistory)
@@ -825,6 +848,16 @@ internal sealed class UsagePopupForm : Form
                 Motion = _motion,
             };
             ledger.ActionInvoked += OnCardActionInvoked;
+            ledger.ReorderRequested += (_, eventArgs) => ReorderRequested?.Invoke(this, eventArgs);
+            // Providers publish one at a time during a refresh; each would end a drag in progress.
+            ledger.DragEnded += (_, _) =>
+            {
+                if (_rebuildDeferred)
+                {
+                    _rebuildDeferred = false;
+                    RebuildCards();
+                }
+            };
             _content.Controls.Add(ledger);
         }
         else
@@ -886,6 +919,8 @@ internal sealed class UsagePopupForm : Form
                 Motion = _motion,
             };
             tile.ActionInvoked += OnCardActionInvoked;
+            tile.Dragged += OnTileDragged;
+            tile.MoveRequested += OnTileMoveRequested;
             _content.Controls.Add(tile);
         }
     }
@@ -908,6 +943,108 @@ internal sealed class UsagePopupForm : Form
                 break;
             default:
                 break;
+        }
+    }
+
+    private bool _tileDragActive;
+    private bool _rebuildDeferred;
+    private CardReorderEventArgs? _pendingDrop;
+    private string? _movedKey;
+
+    /// <summary>
+    /// Fades the tile being dragged, shows where it would land, and on release asks for the move.
+    /// Tiles read left to right, so the pointer's side of the tile under it decides before or after.
+    /// </summary>
+    private void OnTileDragged(object? sender, TileDragEventArgs eventArgs)
+    {
+        if (sender is not ProviderTile dragged)
+        {
+            return;
+        }
+
+        var tiles = _content.Controls.OfType<ProviderTile>().ToArray();
+        CardReorder.Drop? drop = null;
+        ProviderTile? target = null;
+        if (eventArgs.Phase == TileDragPhase.Move)
+        {
+            _tileDragActive = true;
+            var point = _content.PointToClient(eventArgs.ScreenPoint);
+            target = tiles.FirstOrDefault(tile => tile != dragged && tile.Bounds.Contains(point));
+            drop = target is null
+                ? null
+                : CardReorder.Resolve(
+                    tiles.Length,
+                    Array.IndexOf(tiles, dragged),
+                    Array.IndexOf(tiles, target),
+                    pastMiddle: point.X > target.Left + target.Width / 2);
+        }
+
+        for (var index = 0; index < tiles.Length; index++)
+        {
+            tiles[index].Dimmed = eventArgs.Phase == TileDragPhase.Move && tiles[index] == dragged;
+            tiles[index].DropMark = drop?.MarkIndex == index
+                ? drop.After ? DropMark.After : DropMark.Before
+                : DropMark.None;
+        }
+
+        if (eventArgs.Phase == TileDragPhase.Move)
+        {
+            _pendingDrop = drop is null || target is null
+                ? null
+                : new CardReorderEventArgs(dragged.UnitKey, target.UnitKey, drop.After);
+            return;
+        }
+
+        var request = eventArgs.Phase == TileDragPhase.Drop ? _pendingDrop : null;
+        _pendingDrop = null;
+        _tileDragActive = false;
+        var deferred = _rebuildDeferred;
+        _rebuildDeferred = false;
+        // First the reading that waited for the drag, since a drop that changes nothing redraws nothing.
+        if (deferred)
+        {
+            RebuildCards();
+        }
+
+        if (request is not null)
+        {
+            ReorderRequested?.Invoke(this, request);
+        }
+    }
+
+    /// <summary>Gives up the tile or dashboard provider being dragged, if one is.</summary>
+    private bool CancelCardDrag() =>
+        // Copied first: ending a tile's drag can rebuild the tiles.
+        _content.Controls.Cast<Control>().ToArray().Any(control => control switch
+        {
+            ProviderTile tile => tile.CancelDrag(),
+            UsageLedger ledger => ledger.CancelDrag(),
+            _ => false,
+        });
+
+    private void OnTileMoveRequested(object? sender, bool forward)
+    {
+        var tiles = _content.Controls.OfType<ProviderTile>().ToArray();
+        var index = Array.IndexOf(tiles, sender as ProviderTile);
+        var neighbour = CardReorder.Neighbour(tiles.Length, index, forward);
+        if (neighbour < 0)
+        {
+            return;
+        }
+
+        // The tiles are rebuilt by the move; the moved one takes the focus back afterwards.
+        _movedKey = tiles[index].UnitKey;
+        ReorderRequested?.Invoke(this, new CardReorderEventArgs(_movedKey, tiles[neighbour].UnitKey, forward));
+        _movedKey = null;
+    }
+
+    private void RestoreMovedFocus()
+    {
+        if (_movedKey is { } key &&
+            _content.Controls.OfType<ProviderTile>().FirstOrDefault(tile =>
+                tile.UnitKey.Equals(key, StringComparison.OrdinalIgnoreCase)) is { } moved)
+        {
+            moved.Focus();
         }
     }
 

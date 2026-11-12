@@ -1078,6 +1078,328 @@ internal static class RedesignTests
     private static string Names(IEnumerable<UsageMetric> metrics) => string.Join('|', metrics.Select(metric => metric.Name));
 
     /// <summary>
+    /// Cards are reordered by dragging: a popup tile, or a dashboard provider by its heading row,
+    /// and with Alt and an arrow key. Each card moves on its own, so a provider's accounts need not
+    /// stay together, and a line shows where the card would land before the drop.
+    /// </summary>
+    public static Task TestCardReorderAsync()
+    {
+        const string Team = "claude@1a2b3c4d";
+        static void Raise(Control control, string name, EventArgs eventArgs) =>
+            control.GetType().GetMethod(name, BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(control, new object[] { eventArgs });
+        static MouseEventArgs Mouse(int x, int y, MouseButtons button = MouseButtons.Left) => new(button, 1, x, y, 0);
+
+        // What a card held over another shows: the line on the side of that card the pointer is on.
+        var keys = new[] { "codex", "claude", Team, "gemini" };
+        Equal(new CardReorder.Drop(1, false), CardReorder.Resolve(4, 3, 1, pastMiddle: false));
+        Equal(new CardReorder.Drop(2, true), CardReorder.Resolve(4, 0, 2, pastMiddle: true));
+        Null(CardReorder.Resolve(4, 1, 1, pastMiddle: true));
+        Null(CardReorder.Resolve(4, 1, -1, pastMiddle: true));
+        Null(CardReorder.Resolve(4, 4, 1, pastMiddle: true));
+        Equal("1,-1,2,-1", string.Join(',', new[]
+        {
+            CardReorder.Neighbour(4, 0, forward: true), CardReorder.Neighbour(4, 0, forward: false),
+            CardReorder.Neighbour(4, 3, forward: false), CardReorder.Neighbour(4, 3, forward: true),
+        }));
+
+        // The saved order: until a card is dragged a provider's accounts sit together; a dragged
+        // card goes exactly where it was dropped, between another provider's accounts included.
+        var settings = new AppSettings { IsEphemeral = true };
+        settings.EnsureAccount(Team);
+        string Order() => string.Join('|', settings.OrderUnits(keys));
+        Equal("codex|claude|claude@1a2b3c4d|gemini", Order());
+        True(settings.MoveUnit(keys, "gemini", Team, after: false));
+        Equal("codex|claude|gemini|claude@1a2b3c4d", Order());
+        True(settings.MoveUnit(keys, Team, "codex", after: false));
+        Equal("claude@1a2b3c4d|codex|claude|gemini", Order());
+        True(settings.MoveUnit(keys, "codex", "gemini", after: true));
+        Equal("claude@1a2b3c4d|claude|gemini|codex", Order());
+        // Account labels are told apart in the grouped order, so a dragged card keeps its name.
+        Equal("codex|claude|claude@1a2b3c4d|gemini", string.Join('|', settings.GroupUnits(keys)));
+        False(settings.MoveUnit(keys, "codex", "gemini", after: true));
+        False(settings.MoveUnit(keys, "claude", Team, after: true));
+        False(settings.MoveUnit(keys, "codex", "codex", after: true));
+        False(settings.MoveUnit(keys, "copilot", "codex", after: true));
+
+        // A card the order does not name yet follows the last card of its provider, or goes last;
+        // one that is not shown now keeps its place for when it is.
+        const string Lab = "claude@0a0b0c0d";
+        Equal("claude@1a2b3c4d|claude|claude@0a0b0c0d|gemini|codex|copilot",
+            string.Join('|', settings.OrderUnits(new[] { "copilot", Lab, "codex", "claude", Team, "gemini" })));
+        var shownNow = new[] { "claude", "codex" };
+        var others = new[] { "gemini", "codex" };
+        True(settings.MoveUnit(shownNow, "codex", "claude", after: false));
+        Equal("claude@1a2b3c4d|codex|claude|gemini", Order());
+        Equal("codex|gemini", string.Join('|', settings.OrderUnits(others)));
+
+        // A hand-edited file is cleaned up, and reordering in Settings starts from its own order again.
+        settings.UnitOrder = new[] { "claude", " ", "CLAUDE", "gemini" };
+        settings.Save();
+        Equal("claude,gemini", string.Join(',', settings.UnitOrder));
+        settings.UnitOrder = Array.Empty<string>();
+        Equal("codex|claude|claude@1a2b3c4d|gemini", Order());
+
+        var states = keys
+            .Select(key => Status(key, key, new UsageMetric("Weekly", UsageMetricKind.Rolling, 40)) with
+            {
+                AccountUrl = new Uri("https://example.com/"),
+            })
+            .ToArray();
+
+        // A tile: a press becomes a drag past the threshold, the release is then not a click, and
+        // Alt with an arrow asks for a move.
+        using (var tile = Tile(states[0], 96))
+        {
+            var phases = new List<TileDragPhase>();
+            var opened = 0;
+            var moves = new List<bool>();
+            tile.Dragged += (_, eventArgs) => phases.Add(eventArgs.Phase);
+            tile.ActionInvoked += (_, _) => opened++;
+            tile.MoveRequested += (_, forward) => moves.Add(forward);
+            Equal("codex", tile.UnitKey);
+
+            Raise(tile, "OnMouseDown", Mouse(20, 20));
+            Raise(tile, "OnMouseMove", Mouse(21, 20));
+            Equal(0, phases.Count);
+            Raise(tile, "OnMouseClick", Mouse(21, 20));
+            Raise(tile, "OnMouseUp", Mouse(21, 20));
+            Equal(1, opened);
+            Equal(0, phases.Count);
+
+            Raise(tile, "OnMouseDown", Mouse(20, 20));
+            Raise(tile, "OnMouseMove", Mouse(90, 30));
+            Raise(tile, "OnMouseMove", Mouse(120, 30));
+            Raise(tile, "OnMouseClick", Mouse(120, 30));
+            Raise(tile, "OnMouseUp", Mouse(120, 30));
+            Equal(1, opened);
+            Equal("Move,Move,Drop", string.Join(',', phases));
+
+            // Losing the capture mid-drag (Alt+Tab, Esc) cancels it.
+            phases.Clear();
+            Raise(tile, "OnMouseDown", Mouse(20, 20));
+            Raise(tile, "OnMouseMove", Mouse(90, 30));
+            Raise(tile, "OnKeyDown", new KeyEventArgs(Keys.Escape));
+            Raise(tile, "OnMouseCaptureChanged", EventArgs.Empty);
+            Equal("Move,Cancel", string.Join(',', phases));
+            // The button is still down: its release is not a click on the tile either.
+            Raise(tile, "OnMouseClick", Mouse(90, 30));
+            Raise(tile, "OnMouseUp", Mouse(90, 30));
+            Equal(1, opened);
+            Raise(tile, "OnMouseMove", Mouse(60, 30, MouseButtons.None));
+
+            Raise(tile, "OnKeyDown", new KeyEventArgs(Keys.Alt | Keys.Right));
+            Raise(tile, "OnKeyDown", new KeyEventArgs(Keys.Alt | Keys.Up));
+            Equal("True,False", string.Join(',', moves));
+
+            // The fade and the drop line are painted over the tile.
+            using var plain = new Bitmap(tile.Width, tile.Height);
+            tile.DrawToBitmap(plain, new Rectangle(Point.Empty, plain.Size));
+            tile.Dimmed = true;
+            tile.DropMark = DropMark.After;
+            using var marked = new Bitmap(tile.Width, tile.Height);
+            tile.DrawToBitmap(marked, new Rectangle(Point.Empty, marked.Size));
+            Equal(Theme.Accent.ToArgb(), marked.GetPixel(tile.Width - 1, tile.Height / 2).ToArgb());
+            True(plain.GetPixel(tile.Width - 1, tile.Height / 2).ToArgb() != Theme.Accent.ToArgb());
+            tile.DropMark = DropMark.Before;
+            using var leading = new Bitmap(tile.Width, tile.Height);
+            tile.DrawToBitmap(leading, new Rectangle(Point.Empty, leading.Size));
+            Equal(Theme.Accent.ToArgb(), leading.GetPixel(0, tile.Height / 2).ToArgb());
+        }
+
+        // The popup: dragging Gemini's tile onto the first Claude tile marks the Claude group's
+        // leading edge, and the release asks for Gemini to go before Claude.
+        using (var popup = new UsagePopupForm(new AppSettings { IsEphemeral = true }, 96) { StaysOpenWhenInactive = true })
+        {
+            var requests = new List<string>();
+            popup.ReorderRequested += (_, eventArgs) => requests.Add($"{eventArgs.Moved}>{eventArgs.Target}:{eventArgs.After}");
+            popup.SetStates(states, isRefreshing: false, lastRefreshed: DateTimeOffset.Now, history: Array.Empty<UsageSample>());
+            popup.ShowNearTray(DashboardMode.Compact);
+            Application.DoEvents();
+            var tiles = popup.PreviewTiles!.Value.Tiles.Select(entry => entry.Tile).ToArray();
+            Equal(4, tiles.Length);
+            // Two to a row, in reading order.
+            True(tiles[0].Left < tiles[1].Left && tiles[0].Top == tiles[1].Top && tiles[2].Top > tiles[0].Top);
+            var (gemini, claude, team) = (tiles[3], tiles[1], tiles[2]);
+            Point Over(ProviderTile from, ProviderTile to, int share) =>
+                new(to.Left - from.Left + to.Width * share / 4, to.Top - from.Top + to.Height / 2);
+
+            Raise(gemini, "OnMouseDown", Mouse(20, 20));
+            var overClaude = Over(gemini, claude, 1);
+            Raise(gemini, "OnMouseMove", Mouse(overClaude.X, overClaude.Y));
+            True(gemini.Dimmed);
+            False(claude.Dimmed);
+            Equal(DropMark.Before, claude.DropMark);
+            Equal(DropMark.None, team.DropMark);
+
+            // A reading that lands mid-drag waits for the drag to end.
+            popup.SetStates(states, isRefreshing: false, lastRefreshed: DateTimeOffset.Now, history: Array.Empty<UsageSample>());
+            True(ReferenceEquals(gemini, popup.PreviewTiles!.Value.Tiles[3].Tile));
+            True(gemini.Dimmed);
+
+            // Past the middle of the group's last tile the line moves to the group's trailing edge.
+            var overTeam = Over(gemini, team, 3);
+            Raise(gemini, "OnMouseMove", Mouse(overTeam.X, overTeam.Y));
+            Equal(DropMark.After, team.DropMark);
+            Equal(DropMark.None, claude.DropMark);
+            Raise(gemini, "OnMouseMove", Mouse(overClaude.X, overClaude.Y));
+            Raise(gemini, "OnMouseUp", Mouse(overClaude.X, overClaude.Y));
+            Equal("gemini>claude:False", string.Join(',', requests));
+            // The reading that waited is drawn now, on new tiles.
+            Application.DoEvents();
+            False(ReferenceEquals(gemini, popup.PreviewTiles!.Value.Tiles[3].Tile));
+            False(popup.PreviewTiles!.Value.Tiles.Any(entry => entry.Tile.Dimmed || entry.Tile.DropMark != DropMark.None));
+
+            // A sibling account: only the dragged tile dims, and the line stands beside the sibling.
+            tiles = popup.PreviewTiles!.Value.Tiles.Select(entry => entry.Tile).ToArray();
+            (claude, team) = (tiles[1], tiles[2]);
+            Raise(team, "OnMouseDown", Mouse(20, 20));
+            var overSibling = Over(team, claude, 1);
+            Raise(team, "OnMouseMove", Mouse(overSibling.X, overSibling.Y));
+            True(team.Dimmed);
+            False(claude.Dimmed);
+            Equal(DropMark.Before, claude.DropMark);
+            // Released over no tile, nothing moves.
+            Raise(team, "OnMouseMove", Mouse(-4000, -4000));
+            Equal(DropMark.None, claude.DropMark);
+            Raise(team, "OnMouseUp", Mouse(-4000, -4000));
+            Equal(1, requests.Count);
+
+            // Esc during a drag gives up the drag and leaves the popup open; otherwise it closes it.
+            tiles = popup.PreviewTiles!.Value.Tiles.Select(entry => entry.Tile).ToArray();
+            Raise(tiles[3], "OnMouseDown", Mouse(20, 20));
+            var overFirst = Over(tiles[3], tiles[0], 1);
+            Raise(tiles[3], "OnMouseMove", Mouse(overFirst.X, overFirst.Y));
+            True(tiles[3].Dimmed);
+            Raise(popup, "OnKeyDown", new KeyEventArgs(Keys.Escape));
+            True(popup.Visible);
+            False(tiles[3].Dimmed);
+            Equal(DropMark.None, tiles[0].DropMark);
+            Raise(tiles[3], "OnMouseUp", Mouse(overFirst.X, overFirst.Y));
+            Equal(1, requests.Count);
+
+            Raise(tiles[0], "OnKeyDown", new KeyEventArgs(Keys.Alt | Keys.Right));
+            Raise(tiles[0], "OnKeyDown", new KeyEventArgs(Keys.Alt | Keys.Left));
+            Equal("gemini>claude:False,codex>claude:True", string.Join(',', requests));
+            Raise(popup, "OnKeyDown", new KeyEventArgs(Keys.Escape));
+            False(popup.Visible);
+        }
+
+        // The dashboard: a provider is picked up by its heading row.
+        using (var ledger = new UsageLedger(states, MetricDisplayMode.All, QuotaDisplay.Used, Array.Empty<UsageSample>(), 96) { Width = 720 })
+        {
+            var requests = new List<string>();
+            ledger.ReorderRequested += (_, eventArgs) => requests.Add($"{eventArgs.Moved}>{eventArgs.Target}:{eventArgs.After}");
+            var tops = new Dictionary<string, (int Top, int Bottom)>();
+            var top = 0;
+            foreach (var row in ledger.Rows)
+            {
+                if (row.Status is { } status)
+                {
+                    tops[status.ProviderId] = (tops.TryGetValue(status.ProviderId, out var block) ? block.Top : top, top + row.BaselineHeight);
+                }
+
+                top += row.BaselineHeight;
+            }
+
+            int Heading(string key) => tops[key].Top + 10;
+            int Low(string key) => tops[key].Bottom - 4;
+
+            // A press on a metric row, or a release without a drag, moves nothing.
+            Raise(ledger, "OnMouseDown", Mouse(300, Low("codex")));
+            Raise(ledger, "OnMouseMove", Mouse(300, Low("gemini")));
+            Raise(ledger, "OnMouseUp", Mouse(300, Low("gemini")));
+            Raise(ledger, "OnMouseDown", Mouse(300, Heading("codex")));
+            Raise(ledger, "OnMouseUp", Mouse(300, Heading("codex")));
+            Equal(0, requests.Count);
+
+            // Codex dropped on the lower half of the second Claude account lands after Claude.
+            Raise(ledger, "OnMouseDown", Mouse(300, Heading("codex")));
+            Raise(ledger, "OnMouseMove", Mouse(300, Low(Team)));
+            using (var dragging = new Bitmap(ledger.Width, ledger.Height))
+            {
+                ledger.DrawToBitmap(dragging, new Rectangle(Point.Empty, dragging.Size));
+                Equal(Theme.Accent.ToArgb(), dragging.GetPixel(300, tops[Team].Bottom).ToArgb());
+            }
+
+            Raise(ledger, "OnMouseClick", Mouse(300, Low(Team)));
+            Raise(ledger, "OnMouseUp", Mouse(300, Low(Team)));
+            Equal("codex>claude@1a2b3c4d:True", string.Join(',', requests));
+
+            // The second Claude account dropped on the first one's upper half goes before it.
+            Raise(ledger, "OnMouseDown", Mouse(300, Heading(Team)));
+            Raise(ledger, "OnMouseMove", Mouse(300, Heading("claude")));
+            Raise(ledger, "OnMouseUp", Mouse(300, Heading("claude")));
+            Equal("claude@1a2b3c4d>claude:False", requests[^1]);
+
+            // The gap under a provider, where the line is drawn, drops after that provider.
+            Raise(ledger, "OnMouseDown", Mouse(300, Heading("codex")));
+            Raise(ledger, "OnMouseMove", Mouse(300, tops["claude"].Bottom + 4));
+            Raise(ledger, "OnMouseUp", Mouse(300, tops["claude"].Bottom + 4));
+            Equal("codex>claude:True", requests[^1]);
+            Equal(3, requests.Count);
+
+            // New rows, or a lost capture, end a drag without a move.
+            Raise(ledger, "OnMouseDown", Mouse(300, Heading("gemini")));
+            Raise(ledger, "OnMouseMove", Mouse(300, Heading("codex")));
+            ledger.SetData(states, MetricDisplayMode.All, QuotaDisplay.Used, Array.Empty<UsageSample>());
+            Raise(ledger, "OnMouseUp", Mouse(300, Heading("codex")));
+            Raise(ledger, "OnMouseDown", Mouse(300, Heading("gemini")));
+            Raise(ledger, "OnMouseMove", Mouse(300, Heading("codex")));
+            Raise(ledger, "OnMouseCaptureChanged", EventArgs.Empty);
+            Raise(ledger, "OnMouseDown", Mouse(300, Heading("gemini")));
+            Raise(ledger, "OnMouseMove", Mouse(300, Heading("codex")));
+            True(ledger.CancelDrag());
+            False(ledger.CancelDrag());
+            Raise(ledger, "OnMouseUp", Mouse(300, Heading("codex")));
+            Equal(3, requests.Count);
+
+            // Alt+Down moves the provider whose link has the focus.
+            using (var painted = new Bitmap(ledger.Width, ledger.Height))
+            {
+                ledger.DrawToBitmap(painted, new Rectangle(Point.Empty, painted.Size));
+            }
+
+            UsageLedger.SetShiftProbe(static () => false);
+            try
+            {
+                Raise(ledger, "OnGotFocus", EventArgs.Empty);
+                Raise(ledger, "OnKeyDown", new KeyEventArgs(Keys.Alt | Keys.Down));
+                Raise(ledger, "OnKeyDown", new KeyEventArgs(Keys.Alt | Keys.Up));
+            }
+            finally
+            {
+                UsageLedger.SetShiftProbe(null);
+            }
+
+            Equal("codex>claude:True", requests[^1]);
+            Equal(4, requests.Count);
+        }
+
+        // In the dashboard window a reading that lands mid-drag waits, as in the popup: providers
+        // publish one at a time during a refresh, and each would otherwise end the drag.
+        using (var dashboard = new UsagePopupForm(new AppSettings { IsEphemeral = true }, 96) { StaysOpenWhenInactive = true })
+        {
+            var requests = 0;
+            dashboard.ReorderRequested += (_, _) => requests++;
+            dashboard.SetStates(states, isRefreshing: false, lastRefreshed: DateTimeOffset.Now, history: Array.Empty<UsageSample>());
+            dashboard.ShowNearTray(DashboardMode.Full);
+            Application.DoEvents();
+            var table = dashboard.PreviewTable!.Value.Table;
+            var heading = table.Rows.TakeWhile(row => row.Kind != UsageLedger.RowKind.Provider).Sum(row => row.BaselineHeight) + 10;
+            Raise(table, "OnMouseDown", Mouse(300, heading));
+            Raise(table, "OnMouseMove", Mouse(300, table.Height - 6));
+            True(table.IsDragging);
+            dashboard.SetStates(states, isRefreshing: true, lastRefreshed: DateTimeOffset.Now, history: Array.Empty<UsageSample>());
+            True(table.IsDragging);
+            Raise(table, "OnMouseUp", Mouse(300, table.Height - 6));
+            False(table.IsDragging);
+            Equal(1, requests);
+        }
+
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
     /// The secondary surfaces: the themed prompt that replaced the system message boxes, the
     /// Windows 11-style tray menu, the ring-only tray icon, and What's New's sentence-case sections.
     /// </summary>

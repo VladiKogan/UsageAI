@@ -83,6 +83,7 @@ internal static class Program
         ("dashboard keeps focus and scroll across updates and retries one provider", RedesignTests.TestDashboardKeepsStateAcrossUpdatesAsync),
         ("settings page sections, toggles and previews", RedesignTests.TestSettingsPageAsync),
         ("prompt dialog, tray menu and ring-only tray icon", RedesignTests.TestPromptMenuAndTrayAsync),
+        ("cards drag to a new order in the popup and dashboard", RedesignTests.TestCardReorderAsync),
         ("gauges ease to new values and respect reduced motion", RedesignTests.TestMotionAsync),
         ("controls measure at their window's DPI and repaint once after a rebuild", RedesignTests.TestWindowDpiAndRedrawAsync),
         ("windows stay cloaked until painted, also when the popup becomes the dashboard", RedesignTests.TestWindowsRevealOnlyWhenPaintedAsync),

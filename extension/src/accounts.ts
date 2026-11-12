@@ -126,6 +126,23 @@ export function isKnownUnitKey(value: unknown, providerIds: readonly string[]): 
     && (!value.includes("@") || isAccountUnitKey(value));
 }
 
+/**
+ * Cards in the order the user dragged them into. `units` is the default order (providers as the
+ * setting lists them, each followed by its accounts); a unit `saved` does not name goes after
+ * the last card of its provider, or last when the provider has none placed.
+ */
+export function orderUnits(units: readonly string[], saved: readonly string[]): string[] {
+  const ordered = [...new Set(saved.filter((unit) => units.includes(unit)))];
+  for (const unit of units) {
+    if (ordered.includes(unit)) {
+      continue;
+    }
+    const sibling = ordered.map(providerKindOf).lastIndexOf(providerKindOf(unit));
+    ordered.splice(sibling < 0 ? ordered.length : sibling + 1, 0, unit);
+  }
+  return ordered;
+}
+
 export function isUncPath(folder: string): boolean {
   return /^[\\/]{2}/.test(folder.trim());
 }

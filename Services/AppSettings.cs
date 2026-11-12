@@ -264,13 +264,50 @@ internal sealed class AppSettings
         (FindAccount(unitKey) is not { } account ||
          (!account.Hidden && !account.Pending && account.DuplicateOf is null));
 
-    public bool AccountAlertsEnabled(string unitKey) => FindAccount(unitKey)?.Alerts ?? true;
+    /// <summary>
+    /// The order cards were dragged into, as provider keys; empty until one is dragged. A key it
+    /// does not name yet is placed by <see cref="OrderUnits"/>. Reordering in Settings clears it.
+    /// </summary>
+    public string[] UnitOrder { get; set; } = Array.Empty<string>();
+
+    /// <summary>How many dragged cards are remembered.</summary>
+    public const int MaxUnitOrder = 64;
 
     /// <summary>
-    /// Orders provider keys by provider (the saved provider order), then each provider's accounts by
-    /// their position, so one provider's accounts always sit together.
+    /// Orders provider keys for display. Until a card is dragged: by provider (the saved provider
+    /// order), then each provider's accounts by their position, so one provider's accounts sit
+    /// together. After that <see cref="UnitOrder"/> decides, each card on its own; a key it does
+    /// not name goes after the last card of its provider, or last when the provider has none.
     /// </summary>
     public IReadOnlyList<string> OrderUnits(IReadOnlyList<string> unitKeys)
+    {
+        var comparer = StringComparer.OrdinalIgnoreCase;
+        var grouped = GroupUnits(unitKeys);
+        if (UnitOrder.Length == 0)
+        {
+            return grouped;
+        }
+
+        var ordered = UnitOrder
+            .Select(saved => grouped.FirstOrDefault(key => comparer.Equals(key, saved)))
+            .OfType<string>()
+            .Distinct(comparer)
+            .ToList();
+        foreach (var key in grouped.Where(key => !ordered.Contains(key, comparer)))
+        {
+            var sibling = ordered.FindLastIndex(other => comparer.Equals(ProviderKey.ProviderOf(other), ProviderKey.ProviderOf(key)));
+            ordered.Insert(sibling < 0 ? ordered.Count : sibling + 1, key);
+        }
+
+        return ordered;
+    }
+
+    /// <summary>
+    /// Provider keys by provider (the saved provider order), then each provider's accounts by
+    /// their position: the order before any card is dragged. Account labels are told apart in
+    /// this order whatever was dragged, so moving a card never renames it.
+    /// </summary>
+    public IReadOnlyList<string> GroupUnits(IReadOnlyList<string> unitKeys)
     {
         var providers = OrderProviders(unitKeys
             .Select(ProviderKey.ProviderOf)
@@ -286,6 +323,34 @@ internal sealed class AppSettings
                 .Select(entry => entry.Key))
             .ToArray();
     }
+
+    /// <summary>
+    /// Moves a shown card before or after another, as a drag in the popup or dashboard asks. Each
+    /// card moves on its own, so a provider's accounts need not stay together. Cards that are not
+    /// shown now keep their saved place. False when nothing changed.
+    /// </summary>
+    public bool MoveUnit(IReadOnlyList<string> unitKeys, string moved, string target, bool after)
+    {
+        var comparer = StringComparer.OrdinalIgnoreCase;
+        if (comparer.Equals(moved, target) || !unitKeys.Contains(moved, comparer) || !unitKeys.Contains(target, comparer))
+        {
+            return false;
+        }
+
+        var all = OrderUnits(UnitOrder.Concat(unitKeys).Distinct(comparer).ToArray()).ToList();
+        var previous = all.ToArray();
+        all.RemoveAll(key => comparer.Equals(key, moved));
+        all.Insert(all.FindIndex(key => comparer.Equals(key, target)) + (after ? 1 : 0), moved);
+        if (all.SequenceEqual(previous, comparer))
+        {
+            return false;
+        }
+
+        UnitOrder = all.Take(MaxUnitOrder).ToArray();
+        return true;
+    }
+
+    public bool AccountAlertsEnabled(string unitKey) => FindAccount(unitKey)?.Alerts ?? true;
 
     /// <summary>
     /// Keeps these settings in memory only. The interactive preview uses throwaway settings
@@ -409,6 +474,11 @@ internal sealed class AppSettings
             : DefaultThresholds;
         HiddenProviders = NormalizeIds(HiddenProviders);
         ProviderOrder = NormalizeIds(ProviderOrder);
+        UnitOrder = (UnitOrder ?? Array.Empty<string>())
+            .Where(key => !string.IsNullOrWhiteSpace(key) && key.Length <= 64)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(MaxUnitOrder)
+            .ToArray();
         TrayProviderId = NormalizeId(TrayProviderId);
         if (LastUpdateCheckUtc is { } lastUpdateCheck)
         {

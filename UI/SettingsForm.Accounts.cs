@@ -462,6 +462,7 @@ internal sealed partial class SettingsForm
             _accountDrafts[siblings[index]].Order = index;
         }
 
+        _accountOrderEdited = true;
         ReloadAccounts();
     }
 

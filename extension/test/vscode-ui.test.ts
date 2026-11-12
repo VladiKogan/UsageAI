@@ -6,6 +6,7 @@ import * as path from "node:path";
 import test, { mock } from "node:test";
 import vm from "node:vm";
 import type { AccountEntry } from "../src/accounts";
+import { orderUnits } from "../src/accounts";
 import type { ProviderState, UsageClient, UsageSnapshot } from "../src/model";
 
 const localRequire = createRequire(__filename);
@@ -684,12 +685,12 @@ test("activation helpers sanitize configuration and activation registers its sur
     assert.equal(stateUpdates.some(([key]) => key === dashboardModule.dashboardUnitOrderKey), false);
     assert.ok(updates.some((value) => Array.isArray(value) && value.length === 0));
     assert.deepEqual(configurationUpdates, [{ key: "metricDisplayMode", value: "important", target: 1 }]);
-    // A card dropped on another provider's card moves the provider: only the provider order is
-    // written, and the accounts' order, which did not change, is left alone.
+    // A dropped card is saved in the extension's own state, each card on its own, and never
+    // rewrites the providers setting.
     configurationValues.set("providers", ["codex", "claude"]);
     await dashboardMessage?.({ type: "moveCard", providerId: "codex", targetId: "claude", after: true });
-    assert.deepEqual(configurationUpdates.at(-1), { key: "providers", value: ["claude", "codex"], target: 1 });
-    assert.equal(stateUpdates.some(([key]) => key === dashboardModule.dashboardUnitOrderKey), false);
+    assert.deepEqual(stateUpdates.filter(([key]) => key === dashboardModule.dashboardUnitOrderKey), [[dashboardModule.dashboardUnitOrderKey, ["claude", "codex"]]]);
+    assert.equal(configurationUpdates.some((update) => update.key === "providers"), false);
     configurationValues.set("providers", ["codex", "unknown"]);
     await registeredCommands.get("usageai.rescanAccounts")?.();
     assert.ok(informationMessages.includes("UsageAI found no new accounts."));
@@ -903,29 +904,28 @@ test("account clients, Status Bar account names, and cached readings are keyed b
   assert.equal(created, 2);
   extensionModule.buildUsageClients(base, accounts.slice(0, 1), create, cache);
   assert.equal(cache.size, 0);
-  // Cards dragged into an order keep it within their provider; a unit the order does not name follows.
-  assert.deepEqual(
-    extensionModule.buildUsageClients(base, [...accounts, account("claude", "0a0b0c0d", "found", "lab")], create, new Map(), ["claude@1a2b3c4d", "claude", "gemini"])
-      .map((entry) => entry.id),
-    ["codex@5e6f7a8b", "claude@1a2b3c4d", "claude", "claude@0a0b0c0d", "copilot", "gemini"],
-  );
-
-  // Dropping a card on one of the same provider reorders that provider's accounts; dropping it on
-  // another provider's card moves the whole provider before or after that provider.
+  // A dropped card goes exactly where it was dropped, between another provider's accounts included.
   const shownUnits = ["codex", "codex@5e6f7a8b", "claude", "claude@1a2b3c4d", "gemini"];
-  const shownProviders = ["codex", "claude", "gemini"];
-  assert.deepEqual(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "codex@5e6f7a8b", "codex", false), {
-    providers: shownProviders,
-    units: ["codex@5e6f7a8b", "codex", "claude", "claude@1a2b3c4d", "gemini"],
-  });
-  assert.deepEqual(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "gemini", "codex@5e6f7a8b", false)?.providers, ["gemini", "codex", "claude"]);
-  assert.deepEqual(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "codex@5e6f7a8b", "claude@1a2b3c4d", true)?.providers, ["claude", "codex", "gemini"]);
-  assert.equal(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "codex", "codex@5e6f7a8b", false), undefined);
-  assert.equal(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "claude", "codex@5e6f7a8b", true), undefined);
-  assert.equal(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "copilot", "codex", true), undefined);
-  assert.equal(dashboardModule.moveDashboardCard(shownProviders, shownUnits, "codex", "codex", true), undefined);
+  assert.deepEqual(dashboardModule.moveDashboardCard(shownUnits, "gemini", "codex@5e6f7a8b", false), ["codex", "gemini", "codex@5e6f7a8b", "claude", "claude@1a2b3c4d"]);
+  assert.deepEqual(dashboardModule.moveDashboardCard(shownUnits, "codex", "claude@1a2b3c4d", true), ["codex@5e6f7a8b", "claude", "claude@1a2b3c4d", "codex", "gemini"]);
+  assert.equal(dashboardModule.moveDashboardCard(shownUnits, "codex", "codex@5e6f7a8b", false), undefined);
+  assert.equal(dashboardModule.moveDashboardCard(shownUnits, "copilot", "codex", true), undefined);
+  assert.equal(dashboardModule.moveDashboardCard(shownUnits, "codex", "codex", true), undefined);
+  // The saved order decides; a card it does not name follows the last card of its provider, or goes last.
+  assert.deepEqual(orderUnits(shownUnits, []), shownUnits);
+  assert.deepEqual(orderUnits(shownUnits, ["gemini", "claude", "codex", "nope", "gemini"]), ["gemini", "claude", "claude@1a2b3c4d", "codex", "codex@5e6f7a8b"]);
+  assert.deepEqual(orderUnits(["copilot", ...shownUnits], ["claude", "codex"]), ["claude", "claude@1a2b3c4d", "codex", "codex@5e6f7a8b", "copilot", "gemini"]);
   assert.deepEqual(dashboardModule.sanitizeUnitOrder(["claude", "claude@1a2b3c4d", "claude", "nope", "gemini@1a2b3c4d", 4]), ["claude", "claude@1a2b3c4d"]);
   assert.deepEqual(dashboardModule.sanitizeUnitOrder("claude"), []);
+  // 0.1.24's list ordered the cards within each provider only, and the providers followed the
+  // setting; it applies that way until a card is dragged in this version.
+  const savedOrders = new Map<string, unknown>([[dashboardModule.legacyDashboardUnitOrderKey, ["codex", "claude@1a2b3c4d", "claude", "gemini"]]]);
+  const readOrder = (providers: readonly string[]) => dashboardModule.loadUnitOrder((key: string) => savedOrders.get(key), providers);
+  assert.deepEqual(readOrder(["gemini", "claude", "codex"]), ["gemini", "claude@1a2b3c4d", "claude", "codex"]);
+  assert.deepEqual(readOrder(["claude"]), ["claude@1a2b3c4d", "claude"]);
+  savedOrders.set(dashboardModule.dashboardUnitOrderKey, ["claude", "gemini", "nope", "claude@1a2b3c4d"]);
+  assert.deepEqual(readOrder(["gemini", "claude", "codex"]), ["claude", "gemini", "claude@1a2b3c4d"]);
+  assert.deepEqual(dashboardModule.loadUnitOrder(() => undefined, ["codex"]), []);
 
   assert.deepEqual(extensionModule.resolveStatusBarAccounts(["TEAM", "work@example.com", "claude@0a0b0c0d", "nobody", 4, "TEAM"], accounts), [
     "claude@1a2b3c4d",
@@ -954,8 +954,8 @@ test("account clients, Status Bar account names, and cached readings are keyed b
     ["gemini", "codex", "codex@5e6f7a8b", "claude", "claude@1a2b3c4d"],
   );
   assert.deepEqual(
-    extensionModule.getStatusBarProviderSelection(configuration as never, ["gemini", "codex", "claude"], accounts, ["claude@1a2b3c4d", "codex@5e6f7a8b"], ["claude@1a2b3c4d", "claude"]),
-    ["gemini", "codex", "codex@5e6f7a8b", "claude@1a2b3c4d", "claude"],
+    extensionModule.getStatusBarProviderSelection(configuration as never, ["gemini", "codex", "claude"], accounts, ["claude@1a2b3c4d", "codex@5e6f7a8b"], ["claude@1a2b3c4d", "codex", "claude", "gemini", "codex@5e6f7a8b"]),
+    ["claude@1a2b3c4d", "codex", "claude", "gemini", "codex@5e6f7a8b"],
   );
   configurationValues.clear();
   inspectedConfiguration.clear();
