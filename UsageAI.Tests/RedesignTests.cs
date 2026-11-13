@@ -1010,7 +1010,9 @@ internal static class RedesignTests
         // The tab order follows the screen: page list, then the page. The page sits in its
         // slim-scrollbar frame, which is what the window orders. There are no Save or Cancel
         // buttons any more: every change is saved as it is made.
-        True(sectionNav.TabIndex < Field<SlimScrollHost>(dialog, "_scrollFrame").TabIndex);
+        var navColumn = Field<TableLayoutPanel>(dialog, "_navColumn");
+        True(navColumn.TabIndex < Field<SlimScrollHost>(dialog, "_scrollFrame").TabIndex);
+        True(Field<SettingsSearchBox>(dialog, "_search").TabIndex < sectionNav.TabIndex);
         False(Descendants(dialog).OfType<Button>().Any(button => button.Text is "Save" or "Cancel"));
         Null(dialog.AcceptButton);
         Null(dialog.CancelButton);

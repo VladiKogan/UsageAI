@@ -87,6 +87,8 @@ internal sealed partial class SettingsForm : Form
     private readonly SegmentedControl _metricDisplayMode;
     private readonly SegmentedControl _quotaDisplay;
     private readonly SectionNav _nav;
+    private readonly TableLayoutPanel _navColumn;
+    private const int SearchRowHeight = 50;
     private readonly SettingPreview _quotaPreview;
     private readonly SettingPreview _thresholdPreview;
     private UpdateTone _updateTone = UpdateTone.Neutral;
@@ -209,17 +211,35 @@ internal sealed partial class SettingsForm : Form
         };
         _shell.Controls.Add(_scrollFrame, 1, 0);
 
-        // One page at a time; the list on the left chooses it and marks the one shown.
+        // One page at a time; the list on the left chooses it and marks the one shown, under the
+        // search box that finds a setting on any of them.
+        _navColumn = new TableLayoutPanel
+        {
+            ColumnCount = 1,
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            RowCount = 2,
+        };
+        _navColumn.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _navColumn.RowStyles.Add(new RowStyle(SizeType.Absolute, scale[SearchRowHeight]));
+        _navColumn.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+        CreateSearch(scale);
         _nav = new SectionNav(PageNames)
         {
             Dock = DockStyle.Fill,
             DpiOverride = _dpiOverride,
-            Margin = scale.Pad(8, 12, 4, 8),
+            Glyphs = PageGlyphs,
+            Margin = scale.Pad(8, 6, 4, 8),
         };
         _nav.SectionChosen += (_, _) => ShowPage(_nav.SelectedIndex);
         _nav.SectionEntered += (_, _) => EnterPage(_nav.SelectedIndex);
-        _shell.Controls.Add(_nav, 0, 0);
-        _nav.TabIndex = 0;
+        _navColumn.Controls.Add(_search, 0, 0);
+        _navColumn.Controls.Add(_nav, 0, 1);
+        _shell.Controls.Add(_navColumn, 0, 0);
+        _search.TabIndex = 0;
+        _nav.TabIndex = 1;
+        _navColumn.TabIndex = 0;
         _scrollFrame.TabIndex = 1;
 
         _numberTimer = new System.Windows.Forms.Timer { Interval = NumberCommitDelayMilliseconds };
@@ -1159,6 +1179,12 @@ internal sealed partial class SettingsForm : Form
             return true;
         }
 
+        if (keyData is (Keys.Control | Keys.F) or (Keys.Control | Keys.E))
+        {
+            FocusSearch();
+            return true;
+        }
+
         if (_pages.Count > 0)
         {
             switch (keyData)
@@ -1179,13 +1205,18 @@ internal sealed partial class SettingsForm : Form
 
     /// <summary>
     /// Escape closes the window, as Cancel did; every change is already saved. It is handled as a
-    /// dialog key so an open drop-down list closes first, as with a form's CancelButton.
+    /// dialog key so an open drop-down list closes first, as with a form's CancelButton. In the
+    /// search box it steps back through the search instead.
     /// </summary>
     protected override bool ProcessDialogKey(Keys keyData)
     {
         if (keyData == Keys.Escape)
         {
-            Close();
+            if (!EscapeSearch())
+            {
+                Close();
+            }
+
             return true;
         }
 
@@ -1242,6 +1273,7 @@ internal sealed partial class SettingsForm : Form
         PageLayout.SetColumnSpan(label, 2);
         PageLayout.RowCount = row + 1;
         page.Sections.Add(new Section(label, row + 1));
+        Index(title, label);
     }
 
     private void CloseSection()
@@ -1269,6 +1301,7 @@ internal sealed partial class SettingsForm : Form
             return;
         }
 
+        EndFlash();
         using (WindowThemeHelpers.SuspendRedraw(_scrollHost))
         {
             for (var page = 0; page < _pages.Count; page++)
@@ -1465,6 +1498,8 @@ internal sealed partial class SettingsForm : Form
                 tops[last + 1] + scale[4]);
             DrawingHelpers.FillCard(eventArgs.Graphics, card, Theme.Surface, Theme.Divider, scale.Exact(8));
         }
+
+        PaintFlash(eventArgs.Graphics, layout, tops);
     }
 
     private const int CardInset = 12;
@@ -1494,14 +1529,32 @@ internal sealed partial class SettingsForm : Form
         PageLayout.Controls.Add(caption, 0, row);
         PageLayout.Controls.Add(control, 1, row);
         PageLayout.RowCount = row + 1;
+        Index(label, control);
     }
 
+    /// <summary>
+    /// Adds a row across both columns. A switch or button is found by the search under its own
+    /// text, and so is each button in a row of them; hints and other text are not.
+    /// </summary>
     private void AddSpan(Control control)
     {
         var row = PageLayout.RowCount;
         PageLayout.Controls.Add(control, 0, row);
         PageLayout.SetColumnSpan(control, 2);
         PageLayout.RowCount = row + 1;
+        switch (control)
+        {
+            case CheckBox or Button:
+                Index(control.Text, control);
+                break;
+            case FlowLayoutPanel buttons:
+                foreach (var button in buttons.Controls.OfType<Button>())
+                {
+                    Index(button.Text, button);
+                }
+
+                break;
+        }
     }
 
     private ToggleSwitch CreateCheckBox(string text) => new()
@@ -1624,6 +1677,19 @@ internal sealed partial class SettingsForm : Form
         Bounds = WindowBounds.FitToWorkingArea(Bounds, Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea);
         _scrollHost.AutoScrollPosition = new Point(0, scrollY);
         _scrollFrame.Sync();
+        if (_results.Visible)
+        {
+            PlaceResults();
+        }
+    }
+
+    protected override void OnResize(EventArgs e)
+    {
+        base.OnResize(e);
+        if (_results is { Visible: true })
+        {
+            PlaceResults();
+        }
     }
 
     protected override void OnResizeBegin(EventArgs e)
@@ -1687,7 +1753,9 @@ internal sealed partial class SettingsForm : Form
             Math.Min(scale[560], workingArea.Width),
             Math.Min(scale[420], workingArea.Height));
         _shell.ColumnStyles[0] = new ColumnStyle(SizeType.Absolute, scale[NavWidthBaseline]);
-        _nav.Margin = scale.Pad(8, 12, 4, 8);
+        _navColumn.RowStyles[0] = new RowStyle(SizeType.Absolute, scale[SearchRowHeight]);
+        _search.Margin = scale.Pad(8, 12, 4, 4);
+        _nav.Margin = scale.Pad(8, 6, 4, 8);
         foreach (var page in _pages)
         {
             page.Layout.Padding = LayoutPadding(scale);
@@ -1748,6 +1816,7 @@ internal sealed partial class SettingsForm : Form
         _startupHint.ForeColor = StartupHintColor();
         _versionLabel.ForeColor = Theme.Text;
         _nav.Invalidate();
+        _results.Invalidate();
         _quotaPreview.Invalidate();
         _thresholdPreview.Invalidate();
         WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
@@ -1764,6 +1833,9 @@ internal sealed partial class SettingsForm : Form
         var surface = onCard ? Theme.Surface : Theme.Night;
         switch (control)
         {
+            case SettingsSearchBox search:
+                search.ApplyColors();
+                return;
             case NumericUpDown numeric:
                 numeric.BackColor = Theme.SurfaceRaised;
                 numeric.ForeColor = Theme.Text;
@@ -1829,6 +1901,7 @@ internal sealed partial class SettingsForm : Form
             _resourcesDisposed = true;
             Theme.Changed -= OnThemeChanged;
             _numberTimer.Dispose();
+            _flashTimer.Dispose();
             _lifetime.Cancel();
             _lifetime.Dispose();
             foreach (var font in _ownedFonts)

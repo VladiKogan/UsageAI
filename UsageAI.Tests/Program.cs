@@ -90,6 +90,8 @@ internal static class Program
         ("settings number fields draw themed spin buttons", RedesignTests.TestThemedStepperAsync),
         ("settings window resizes and remembers a size the user chose", RedesignTests.TestSettingsWindowSizeAsync),
         ("settings is its own window and stays visible beside the popup", RedesignTests.TestSettingsWindowStaysVisibleAsync),
+        ("settings search matches labels, keywords and page names", SettingsSearchTests.TestSearchMatchingAsync),
+        ("settings search drops down, goes to a setting and marks it", SettingsSearchTests.TestSearchInSettingsAsync),
         ("scrolling views use a slim scrollbar", RedesignTests.TestSlimScrollBarAsync),
         ("model formatting and provider status states", CoverageExpansionTests.TestModelFormattingAsync),
         ("refresh orchestration, alerts, history, and backoff", CoverageExpansionTests.TestRefreshOrchestrationAsync),
@@ -1397,7 +1399,10 @@ internal static class Program
 
         // The page list sits beside the page, which runs to the bottom of the window: there is
         // no footer, since every change is saved as it is made.
-        True(shell.GetControlFromPosition(0, 0) is SectionNav);
+        var navColumn = shell.GetControlFromPosition(0, 0) as TableLayoutPanel
+            ?? throw new InvalidOperationException("The search and page list column is missing.");
+        True(navColumn.GetControlFromPosition(0, 0) is SettingsSearchBox);
+        True(navColumn.GetControlFromPosition(0, 1) is SectionNav);
         // The page scrolls inside a slim-scrollbar frame, which is what the shell lays out.
         var frame = shell.GetControlFromPosition(1, 0) as SlimScrollHost
             ?? throw new InvalidOperationException("The settings content frame is missing.");

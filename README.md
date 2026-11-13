@@ -224,7 +224,9 @@ The key is kept in memory, is never forwarded to provider CLI child processes, a
 ## ⚙️ Make it yours
 
 **Settings…** in the tray menu opens a window with one page per subject. Every change applies as
-you make it — there is no Save button — and **Ctrl+Tab** moves between the pages:
+you make it — there is no Save button — and **Ctrl+Tab** moves between the pages. The search box
+above the page list (**Ctrl+F**) finds any setting by name, or by a word such as "dark", "login"
+or "startup", and takes you straight to it:
 
 - **General** — how often it refreshes and whether to ease off while no window is open, whether
   UsageAI starts with Windows, the global hotkey, and whether history is recorded and the
@@ -335,7 +337,7 @@ Both render at 192 DPI from sample data, with no accounts needed. Add `--quota-d
 dotnet run --project .\UsageAI.csproj -- --preview-window popup --theme dark --states mixed
 ```
 
-`--preview-window` also takes `dashboard`, `settings`, `whatsnew`, `prompt`, `warning`, `menu` and `update` (an in-app update played from download to "UsageAI updated"; `--states failed` ends it in a failed install). In the popup and dashboard, **Refresh** alternates between two sets of readings, so the gauges have somewhere to move.
+`--preview-window` also takes `dashboard`, `settings`, `whatsnew`, `prompt`, `warning`, `menu` and `update` (an in-app update played from download to "UsageAI updated"; `--states failed` ends it in a failed install). With `settings`, `--page <name>` opens that page and `--search <text>` types into its search box, so the results show. In the popup and dashboard, **Refresh** alternates between two sets of readings, so the gauges have somewhere to move.
 
 **Film the tray** with the whole app running on sample providers — tray icon, tooltip, popup, dashboard, Settings and alerts, with no accounts, update checks or startup registration:
 

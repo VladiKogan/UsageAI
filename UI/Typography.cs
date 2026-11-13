@@ -41,6 +41,25 @@ internal static class Typography
         "Tahoma",
     };
 
+    // Windows' own icon fonts: Fluent on Windows 11, MDL2 on Windows 10. Same code points.
+    private static readonly string[] IconStack =
+    {
+        "Segoe Fluent Icons",
+        "Segoe MDL2 Assets",
+    };
+
+    private static readonly string? IconFamily = IconStack.FirstOrDefault(Installed);
+
+    /// <summary>Whether an icon font is installed; without one, icons are left out rather than drawn as boxes.</summary>
+    public static bool HasIcons => IconFamily is not null;
+
+    /// <summary>
+    /// The Windows icon face realised for one monitor's DPI, or null with no icon font
+    /// installed. The caller owns the returned font.
+    /// </summary>
+    public static Font? Icons(float points, int dpi) =>
+        IconFamily is null ? null : Create(IconFamily, points, dpi, FontStyle.Regular);
+
     private static readonly string DisplayFamily = Resolve(DisplayStack);
     private static readonly string TextFamily = Resolve(TextStack);
     private static readonly string MonoFamily = Resolve(MonoStack);
@@ -141,6 +160,19 @@ internal static class Typography
         catch (ArgumentException)
         {
             return style;
+        }
+    }
+
+    private static bool Installed(string familyName)
+    {
+        try
+        {
+            using var family = new FontFamily(familyName);
+            return string.Equals(family.Name, familyName, StringComparison.OrdinalIgnoreCase);
+        }
+        catch (ArgumentException)
+        {
+            return false;
         }
     }
 

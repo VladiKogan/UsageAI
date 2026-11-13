@@ -19,7 +19,17 @@ internal sealed class SectionNav : Control
     private int _selectedIndex;
     private int _hoverIndex = -1;
     private Font? _font;
+    private Font? _iconFont;
     private int _fontDpi;
+
+    /// <summary>
+    /// One icon per page, as code points in the Windows icon font, drawn before each name. Left
+    /// out when no icon font is installed, so no page is marked with an empty box.
+    /// </summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal IReadOnlyList<string>? Glyphs { get; init; }
+
+    private bool ShowsGlyphs => Glyphs is { } glyphs && glyphs.Count == _sections.Length && Typography.HasIcons;
 
     public SectionNav(IReadOnlyList<string> sections)
     {
@@ -228,12 +238,26 @@ internal sealed class SectionNav : Control
                 graphics.FillPath(pill, pillShape);
             }
 
+            var color = highContrast ? (selected ? SystemColors.HighlightText : SystemColors.WindowText) : Theme.Text;
+            var textLeft = item.Left + scale[14];
+            if (ShowsGlyphs && IconFontForDpi() is { } icons)
+            {
+                DrawingHelpers.DrawText(
+                    graphics,
+                    Glyphs![index],
+                    icons,
+                    color,
+                    new Rectangle(textLeft, item.Top, scale[20], item.Height),
+                    TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding);
+                textLeft += scale[30];
+            }
+
             DrawingHelpers.DrawText(
                 graphics,
                 _sections[index],
                 font,
-                highContrast ? (selected ? SystemColors.HighlightText : SystemColors.WindowText) : Theme.Text,
-                Rectangle.FromLTRB(item.Left + scale[14], item.Top, item.Right - scale[6], item.Bottom),
+                color,
+                Rectangle.FromLTRB(textLeft, item.Top, item.Right - scale[6], item.Bottom),
                 TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
 
@@ -250,6 +274,7 @@ internal sealed class SectionNav : Control
         if (disposing)
         {
             _font?.Dispose();
+            _iconFont?.Dispose();
         }
 
         base.Dispose(disposing);
@@ -287,10 +312,19 @@ internal sealed class SectionNav : Control
         if (_font is null || _fontDpi != dpi)
         {
             _font?.Dispose();
+            _iconFont?.Dispose();
             _font = Typography.Text(9F, dpi);
+            _iconFont = null;
             _fontDpi = dpi;
         }
 
         return _font;
+    }
+
+    /// <summary>The icon face at the same DPI as the names, made on first use.</summary>
+    private Font? IconFontForDpi()
+    {
+        FontForDpi();
+        return _iconFont ??= Typography.Icons(10.5F, _fontDpi);
     }
 }

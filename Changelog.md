@@ -6,6 +6,17 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Search Settings from the box above the page list.** Type part of a setting's name, or a
+  word people use for it such as "dark", "login" or "startup", and the results drop down under
+  the box, grouped by page. Choosing one opens its page, scrolls the setting into view, moves the
+  focus to it, and marks it with a band in the accent colour that fades. Ctrl+F or Ctrl+E jumps
+  to the box; Up, Down and Enter pick a result, and Escape closes the results, then clears the
+  box. Provider and account names are found too.
+- **Each page in Settings has an icon**, drawn with Windows' own icon font, in the page list and
+  in the search results.
+
 ### Changed
 
 - **Settings shows one page at a time instead of one long scrolling page.** The list on the
