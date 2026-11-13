@@ -4,6 +4,17 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Settings opened from the popup stays on screen and answers clicks again.** The popup hides
+  when Settings takes the focus, and since 0.19.0 a hidden window is kept invisible to Windows
+  until it next paints. Windows applied that to Settings too, because it belongs to the popup,
+  so it vanished while still holding the app. A window that owns one on screen is no longer
+  hidden that way, and a dialog uncovers its owner as it appears. The same covered What's New,
+  Add account and the update prompts when opened from the popup.
+
 ## [0.19.1] - 2026-11-13
 
 ### Fixed

@@ -2024,6 +2024,63 @@ internal static class RedesignTests
         True(!canCloak || IsCloaked(form));
         Application.DoEvents();
         False(IsCloaked(form));
+
+        // A dialog the form owns stays on screen when the form hides under it. Settings opened
+        // from the popup is owned by it (ShowDialog takes the active window), and the popup hides
+        // when Settings takes the focus; DWM cloaks owned windows with their owner, which left
+        // Settings modal but invisible to every click.
+        bool? dialogCloaked = null;
+        using (var dialog = new Form
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-10_000, -10_000),
+        })
+        {
+            WindowThemeHelpers.RevealWhenPainted(dialog);
+            dialog.Shown += (_, _) => dialog.BeginInvoke(() =>
+            {
+                form.Hide();
+                Application.DoEvents();
+                dialogCloaked = IsCloaked(dialog);
+                dialog.Close();
+            });
+            dialog.ShowDialog(form);
+        }
+
+        Equal(false, dialogCloaked);
+
+        // Hidden, and cloaked, before the dialog counted as on screen: the dialog's reveal
+        // uncloaks its hidden owner, or the dialog would stay cloaked with it.
+        form.Show();
+        Application.DoEvents();
+        form.Hide();
+        True(!canCloak || IsCloaked(form));
+        dialogCloaked = null;
+        using (var late = new Form
+        {
+            ShowInTaskbar = false,
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-10_000, -10_000),
+        })
+        {
+            WindowThemeHelpers.RevealWhenPainted(late);
+            late.Shown += (_, _) => late.BeginInvoke(() =>
+            {
+                Application.DoEvents();
+                dialogCloaked = IsCloaked(late);
+                late.Close();
+            });
+            late.ShowDialog(form);
+        }
+
+        Equal(false, dialogCloaked);
+        False(IsCloaked(form));
+        // Left uncovered then, the form is still cloaked on its next opening until it has painted.
+        form.Show();
+        True(!canCloak || IsCloaked(form));
+        Application.DoEvents();
+        False(IsCloaked(form));
         form.Hide();
 
         using var popup = new UsagePopupForm(new AppSettings { IsEphemeral = true }, 96)
@@ -2051,6 +2108,55 @@ internal static class RedesignTests
         Application.DoEvents();
         False(IsCloaked(popup));
         popup.Hide();
+
+        // The real chain: the compact popup's Settings button opens a window the way
+        // OpenSettings does, ShowDialog with no owner, so the active popup owns it, and the popup
+        // hides from Deactivate as the window takes the focus. Activation needs the test process
+        // to be allowed the foreground; without it there is no Deactivate to test.
+        using var compact = new UsagePopupForm(new AppSettings { IsEphemeral = true }, 96)
+        {
+            StartPosition = FormStartPosition.Manual,
+            Location = new Point(-10_000, -10_000),
+        };
+        compact.SetStates(
+            new[] { Status("codex", "Codex", Metric("5-hour", UsageMetricKind.Session, 20)) },
+            false,
+            DateTimeOffset.Now,
+            Array.Empty<UsageSample>());
+        compact.Show();
+        compact.Activate();
+        Application.DoEvents();
+        if (Form.ActiveForm == compact)
+        {
+            bool? popupHidden = null;
+            bool? settingsCloaked = null;
+            compact.SettingsRequested += (_, _) =>
+            {
+                using var settings = new Form
+                {
+                    ShowInTaskbar = false,
+                    StartPosition = FormStartPosition.Manual,
+                    Location = new Point(-10_000, -10_000),
+                };
+                WindowThemeHelpers.RevealWhenPainted(settings);
+                settings.Shown += (_, _) => settings.BeginInvoke(() =>
+                {
+                    Application.DoEvents();
+                    popupHidden = !compact.Visible;
+                    settingsCloaked = IsCloaked(settings);
+                    settings.Close();
+                });
+                settings.ShowDialog();
+            };
+            Field<IconButton>(compact, "_settingsButton").PerformClick();
+            Equal(true, popupHidden);
+            Equal(false, settingsCloaked);
+        }
+        else
+        {
+            Console.WriteLine("  (popup could not be activated here; the Settings-button chain was skipped)");
+        }
+
         return Task.CompletedTask;
     }
 

@@ -194,17 +194,76 @@ internal static class WindowThemeHelpers
 
     private const int DWMWA_CLOAK = 13;
 
-    internal static bool SetCloak(Control control, bool cloaked)
+    private delegate bool EnumWindowsProc(IntPtr window, IntPtr state);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool EnumThreadWindows(uint threadId, EnumWindowsProc callback, IntPtr state);
+
+    [DllImport("user32.dll")]
+    private static extern uint GetWindowThreadProcessId(IntPtr window, out uint processId);
+
+    [DllImport("user32.dll")]
+    private static extern IntPtr GetWindow(IntPtr window, uint command);
+
+    [DllImport("user32.dll")]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool IsWindowVisible(IntPtr window);
+
+    /// <summary>
+    /// A window <paramref name="form"/> owns is on screen: a dialog, a message box, a tooltip.
+    /// Owned windows share their owner's thread, so only that thread's windows are looked at.
+    /// </summary>
+    internal static bool OwnsVisibleWindow(Form form)
     {
-        if (!OperatingSystem.IsWindows() || !control.IsHandleCreated)
+        if (!OperatingSystem.IsWindows() || !form.IsHandleCreated)
         {
             return false;
         }
 
+        var owner = form.Handle;
+        var found = false;
+        _ = EnumThreadWindows(
+            GetWindowThreadProcessId(owner, out _),
+            (window, _) =>
+            {
+                found = GetWindow(window, GW_OWNER) == owner && IsWindowVisible(window);
+                return !found;
+            },
+            IntPtr.Zero);
+        return found;
+    }
+
+    private const uint GW_OWNER = 4;
+
+    /// <summary>
+    /// Uncloaks the hidden window that owns <paramref name="form"/>: one cloaked when it hid
+    /// would cloak <paramref name="form"/> with it. Hidden, it shows nothing either way, and it is
+    /// cloaked again as it is next shown.
+    /// </summary>
+    private static void UncloakHiddenOwner(Form form)
+    {
+        if (!OperatingSystem.IsWindows() || !form.IsHandleCreated)
+        {
+            return;
+        }
+
+        var owner = GetWindow(form.Handle, GW_OWNER);
+        if (owner != IntPtr.Zero && !IsWindowVisible(owner))
+        {
+            _ = SetCloak(owner, cloaked: false);
+        }
+    }
+
+    internal static bool SetCloak(Control control, bool cloaked) =>
+        OperatingSystem.IsWindows() && control.IsHandleCreated && SetCloak(control.Handle, cloaked);
+
+    private static bool SetCloak(IntPtr window, bool cloaked)
+    {
         try
         {
             var value = cloaked ? 1 : 0;
-            return DwmSetWindowAttribute(control.Handle, DWMWA_CLOAK, ref value, sizeof(int)) == 0;
+            return DwmSetWindowAttribute(window, DWMWA_CLOAK, ref value, sizeof(int)) == 0;
         }
         catch (Exception exception) when (exception is DllNotFoundException or EntryPointNotFoundException)
         {
@@ -245,13 +304,19 @@ internal static class WindowThemeHelpers
 
         private void OnVisibleChanged(object? sender, EventArgs eventArgs)
         {
+            // DWM cloaks a window's owned windows with it, so a form that owns one on screen is
+            // never cloaked: the compact popup hides when the Settings window it owns (opened
+            // from it, ShowDialog takes the active window as owner) takes the focus, and cloaking
+            // it left Settings modal and invisible. Cloaking again when shown, which WinForms
+            // reports from WM_SHOWWINDOW before the window appears, covers a form left uncloaked.
+            if (!OwnsVisibleWindow(_form))
+            {
+                SetCloak(_form, cloaked: true);
+            }
+
             if (_form.Visible)
             {
                 Schedule();
-            }
-            else
-            {
-                SetCloak(_form, cloaked: true);
             }
         }
 
@@ -279,6 +344,8 @@ internal static class WindowThemeHelpers
 
             const uint RDW_UPDATENOW = 0x0100, RDW_ALLCHILDREN = 0x0080, RDW_ERASENOW = 0x0200;
             _ = RedrawWindow(_form.Handle, IntPtr.Zero, IntPtr.Zero, RDW_ERASENOW | RDW_UPDATENOW | RDW_ALLCHILDREN);
+            // The owner may have hidden, and been cloaked, before this window counted as on screen.
+            UncloakHiddenOwner(_form);
             SetCloak(_form, cloaked: false);
         }
     }
