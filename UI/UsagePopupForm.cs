@@ -935,6 +935,12 @@ internal sealed class UsagePopupForm : Form
             case ProviderCardAction.OpenAccount when eventArgs.Status.AccountUrl is { } url:
                 TryOpen(url);
                 break;
+            case ProviderCardAction.OpenDetails when IsHandleCreated:
+                // After the click or key that asked: the switch disposes every tile, and the one
+                // that raised this is still handling its message (WinForms raises MouseUp after
+                // MouseClick, and capture changes after both).
+                BeginInvoke(() => ShowNearTray(DashboardMode.Full));
+                break;
             case ProviderCardAction.OpenDetails:
                 ShowNearTray(DashboardMode.Full);
                 break;

@@ -235,6 +235,12 @@ internal sealed class ProviderTile : Control
     protected override void OnMouseUp(MouseEventArgs e)
     {
         base.OnMouseUp(e);
+        if (!_dragging)
+        {
+            _pressedAt = null;
+            return;
+        }
+
         EndDrag(PointToScreen(e.Location), TileDragPhase.Drop);
     }
 
@@ -287,6 +293,12 @@ internal sealed class ProviderTile : Control
         if (e.KeyCode == Keys.Escape && CancelDrag())
         {
             e.Handled = true;
+            return;
+        }
+
+        // Mid-drag the keys that open the dashboard or move the card would act under the drag.
+        if (_dragging)
+        {
             return;
         }
 

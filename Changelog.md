@@ -4,6 +4,15 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- **Clicking a tile in the popup no longer crashes UsageAI.** In 0.19.0 the click opened the
+  dashboard, which replaces the popup's tiles, and the button's release then reached the tile
+  that had just been removed, so Windows showed an unhandled-exception dialog instead of the
+  dashboard.
+
 ## [0.19.0] - 2026-11-13
 
 ### Added

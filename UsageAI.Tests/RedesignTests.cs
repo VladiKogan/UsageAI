@@ -1280,6 +1280,40 @@ internal static class RedesignTests
             Raise(tiles[0], "OnKeyDown", new KeyEventArgs(Keys.Alt | Keys.Right));
             Raise(tiles[0], "OnKeyDown", new KeyEventArgs(Keys.Alt | Keys.Left));
             Equal("gemini>claude:False,codex>claude:True", string.Join(',', requests));
+
+            // Enter mid-drag does not open the dashboard under the drag.
+            tiles = popup.PreviewTiles!.Value.Tiles.Select(entry => entry.Tile).ToArray();
+            Raise(tiles[3], "OnMouseDown", Mouse(20, 20));
+            Raise(tiles[3], "OnMouseMove", Mouse(overFirst.X, overFirst.Y));
+            Raise(tiles[3], "OnKeyDown", new KeyEventArgs(Keys.Enter));
+            Application.DoEvents();
+            True(popup.PreviewTable is null);
+            True(tiles[3].CancelDrag());
+
+            // A plain click opens the dashboard, which disposes every tile. WinForms delivers the
+            // click's MouseUp (raised after MouseClick) to the clicked tile, so the switch waits
+            // for that message to finish; it used to dispose the tile under its own MouseUp.
+            var clicked = popup.PreviewTiles!.Value.Tiles[0].Tile;
+            Raise(clicked, "OnMouseDown", Mouse(20, 20));
+            Raise(clicked, "OnMouseClick", Mouse(20, 20));
+            False(clicked.IsDisposed);
+            Raise(clicked, "OnMouseUp", Mouse(20, 20));
+            Raise(clicked, "OnMouseCaptureChanged", EventArgs.Empty);
+            Application.DoEvents();
+            True(clicked.IsDisposed);
+            True(popup.PreviewTable is not null);
+            Equal(2, requests.Count);
+
+            // Enter on a focused tile does the same from inside its own KeyDown.
+            popup.ShowNearTray(DashboardMode.Compact);
+            Application.DoEvents();
+            var pressed = popup.PreviewTiles!.Value.Tiles[0].Tile;
+            Raise(pressed, "OnKeyDown", new KeyEventArgs(Keys.Enter));
+            False(pressed.IsDisposed);
+            Application.DoEvents();
+            True(pressed.IsDisposed);
+            True(popup.PreviewTable is not null);
+
             Raise(popup, "OnKeyDown", new KeyEventArgs(Keys.Escape));
             False(popup.Visible);
         }
