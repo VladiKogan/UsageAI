@@ -20,9 +20,11 @@ internal sealed class WhatsNewForm : Form
     private readonly Label _subheading;
     private readonly RichTextBox _content;
     private readonly SlimScrollHost _contentFrame;
+    private readonly TableLayoutPanel _footer;
     private readonly FlowLayoutPanel _buttons;
     private readonly Button _viewComplete;
     private readonly Button _close;
+    private readonly Button _star;
     private readonly int? _dpiOverride;
 
     /// <summary>The window's right margin, which the notes keep as an indent, at 96 DPI.</summary>
@@ -97,19 +99,45 @@ internal sealed class WhatsNewForm : Form
             ScrollBars = RichTextBoxScrollBars.Vertical,
             TabStop = true,
         };
+        // The footer: a quiet line to star the project on the left, the buttons on the right.
+        _footer = new TableLayoutPanel
+        {
+            ColumnCount = 2,
+            Dock = DockStyle.Fill,
+            Margin = Padding.Empty,
+            Padding = Padding.Empty,
+            RowCount = 1,
+        };
+        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));
+        _footer.ColumnStyles.Add(new ColumnStyle(SizeType.AutoSize));
+        _footer.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
         _buttons = new FlowLayoutPanel
         {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
             Dock = DockStyle.Fill,
             FlowDirection = FlowDirection.RightToLeft,
             Margin = Padding.Empty,
+            WrapContents = false,
         };
         _close = CreateButton("Got it", primary: true);
         _close.DialogResult = DialogResult.OK;
         _viewComplete = CreateButton("View full changelog", primary: false);
+        // The rule runs across the whole footer; the button row paints its own part of it.
+        _footer.Paint += OnButtonsPaint;
         _buttons.Paint += OnButtonsPaint;
         _viewComplete.Click += (_, _) => OpenCompleteChangelog();
         _buttons.Controls.Add(_close);
         _buttons.Controls.Add(_viewComplete);
+        // Shown every time, never asked: one line, in the quiet colour, that opens the project's page.
+        _star = CreateButton("★ Enjoying UsageAI? Star it on GitHub", primary: false);
+        _star.AccessibleName = "Enjoying UsageAI? Star it on GitHub";
+        _star.Anchor = AnchorStyles.Left | AnchorStyles.Top;
+        _star.AutoEllipsis = true;
+        _star.TextAlign = ContentAlignment.MiddleLeft;
+        _star.Click += (_, _) => ProjectLinks.Open(ProjectLinks.Repository);
+        _footer.Controls.Add(_star, 0, 0);
+        _footer.Controls.Add(_buttons, 1, 0);
         _shell.Controls.Add(_heading, 0, 0);
         _shell.Controls.Add(_subheading, 0, 1);
         // The notes scroll behind a slim scrollbar at the window's right edge.
@@ -119,7 +147,7 @@ internal sealed class WhatsNewForm : Form
             Margin = Padding.Empty,
         };
         _shell.Controls.Add(_contentFrame, 0, 2);
-        _shell.Controls.Add(_buttons, 0, 3);
+        _shell.Controls.Add(_footer, 0, 3);
         AcceptButton = _close;
         CancelButton = _close;
         Theme.Changed += OnThemeChanged;
@@ -175,9 +203,11 @@ internal sealed class WhatsNewForm : Form
         {
             Theme.Changed -= OnThemeChanged;
             _content.HandleCreated -= OnContentHandleCreated;
+            _footer.Paint -= OnButtonsPaint;
             _buttons.Paint -= OnButtonsPaint;
             _close.Font.Dispose();
             _viewComplete.Font.Dispose();
+            _star.Font.Dispose();
             _heading.Font.Dispose();
             _subheading.Font.Dispose();
             _bodyFont.Dispose();
@@ -377,11 +407,11 @@ internal sealed class WhatsNewForm : Form
         UseVisualStyleBackColor = false,
     };
 
-    /// <summary>A hairline between the notes and the buttons, now that the notes have no border.</summary>
+    /// <summary>A hairline between the notes and the footer, now that the notes have no border.</summary>
     private void OnButtonsPaint(object? sender, PaintEventArgs eventArgs)
     {
         using var pen = new Pen(Theme.IsHighContrast ? SystemColors.WindowText : Theme.Divider);
-        eventArgs.Graphics.DrawLine(pen, 0, 0, _buttons.Width, 0);
+        eventArgs.Graphics.DrawLine(pen, 0, 0, ((Control)sender!).Width, 0);
     }
 
     private void ApplyScaledLayout()
@@ -401,8 +431,15 @@ internal sealed class WhatsNewForm : Form
         _subheading.Margin = scale.Pad(0, 0, RightInset, 8);
         _content.Margin = Padding.Empty;
         _contentFrame.Margin = Padding.Empty;
-        _buttons.Margin = scale.Pad(0, 0, RightInset, 0);
+        _footer.Margin = scale.Pad(0, 0, RightInset, 0);
+        _buttons.Margin = Padding.Empty;
         _buttons.Padding = scale.Pad(0, 12, 0, 0);
+        // Up to its text's width, and shorter with an ellipsis when the window is narrower, so it
+        // never runs under the buttons.
+        _star.Margin = scale.Pad(0, 12, 12, 0);
+        _star.Size = new Size(TextRenderer.MeasureText(_star.Text, _star.Font).Width + scale[20], scale[32]);
+        _star.MaximumSize = new Size(_star.Width, scale[32]);
+        _star.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
         _close.Margin = scale.Pad(8, 0, 0, 0);
         _close.Size = new Size(Math.Max(scale[92], TextRenderer.MeasureText(_close.Text, _close.Font).Width + scale[28]), scale[32]);
         _viewComplete.Margin = Padding.Empty;
@@ -453,6 +490,14 @@ internal sealed class WhatsNewForm : Form
         // text colour and hide the link text. Its border is the cue instead.
         _viewComplete.FlatAppearance.MouseOverBackColor = Theme.IsHighContrast ? SystemColors.Window : Theme.Blend(Theme.Text, Theme.Night, 0.06);
         _viewComplete.FlatAppearance.MouseDownBackColor = Theme.IsHighContrast ? SystemColors.Window : Theme.Blend(Theme.Text, Theme.Night, 0.1);
+        // The star line is a link too, in the quiet colour: an invitation, not a call to action.
+        _star.BackColor = Theme.Night;
+        _star.ForeColor = Theme.IsHighContrast ? SystemColors.HotTrack : Theme.Muted;
+        _star.FlatAppearance.BorderSize = Theme.IsHighContrast ? 1 : 0;
+        _star.FlatAppearance.BorderColor = Theme.IsHighContrast ? SystemColors.WindowText : Theme.Night;
+        _star.FlatAppearance.MouseOverBackColor = _viewComplete.FlatAppearance.MouseOverBackColor;
+        _star.FlatAppearance.MouseDownBackColor = _viewComplete.FlatAppearance.MouseDownBackColor;
+        _footer.BackColor = Theme.Night;
         WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);
         WindowThemeHelpers.ApplyDarkScrollbar(_content, Theme.IsDark && !Theme.IsHighContrast);
         Invalidate(invalidateChildren: true);

@@ -71,6 +71,9 @@ internal static class SettingsSearch
             ["Show burn-rate forecast"] = new[] { "prediction", "estimate", "run out" },
             ["Dashboard rows"] = new[] { "metered", "important", "metrics", "table" },
             ["Find logins in my user folder automatically"] = new[] { "scan", "discover", "detect" },
+            ["Support the project"] = new[] { "star", "github", "feedback", "bug", "issue", "help" },
+            ["★ Star on GitHub"] = new[] { "star", "github", "support", "like" },
+            ["Report a problem"] = new[] { "bug", "issue", "feedback", "crash", "github", "support" },
         };
 
     /// <summary>The keywords for a label, or none.</summary>

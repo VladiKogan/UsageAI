@@ -16,6 +16,12 @@ The project follows [Semantic Versioning](https://semver.org/).
   box. Provider and account names are found too.
 - **Each page in Settings has an icon**, drawn with Windows' own icon font, in the page list and
   in the search results.
+- **Settings' About page has a Support the project card.** Star on GitHub opens the project's
+  page, where the star is given, and Report a problem opens a new GitHub issue that already
+  states the UsageAI and Windows versions, with a reminder that diagnostics can include your
+  account email. Nothing is sent from UsageAI, and it never asks on its own.
+- **What's New ends with a line to star UsageAI on GitHub.** It sits quietly beside the buttons
+  and only opens the project's page.
 
 ### Changed
 

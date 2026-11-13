@@ -241,7 +241,9 @@ or "startup", and takes you straight to it:
 - **Providers** — which providers appear and in what order, and which model group the popup
   shows for a provider that reports several, such as Gemini
 - **Accounts** — every Claude Code and Codex login, as described above
-- **About** — the installed desktop-app version, with **What's new** and **Check for updates**
+- **About** — the installed desktop-app version, with **What's new** and **Check for updates**,
+  and links to **star UsageAI on GitHub** or **report a problem** (a new issue that starts with
+  your UsageAI and Windows versions)
 
 After a real upgrade, UsageAI queues bundled release notes and shows them on the first time you open
 the popup, dashboard, or Settings. A clean first install stays quiet. Windows High Contrast always

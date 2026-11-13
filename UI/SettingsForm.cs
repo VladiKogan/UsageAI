@@ -241,6 +241,9 @@ internal sealed partial class SettingsForm : Form
         _nav.TabIndex = 1;
         _navColumn.TabIndex = 0;
         _scrollFrame.TabIndex = 1;
+        // Opens with the page list focused, as before the search box sat above it: the box is
+        // one Shift+Tab or Ctrl+F away, and an empty box under focus read as a prompt to type.
+        ActiveControl = _nav;
 
         _numberTimer = new System.Windows.Forms.Timer { Interval = NumberCommitDelayMilliseconds };
         _numberTimer.Tick += (_, _) => FlushPendingChanges();
@@ -418,6 +421,9 @@ internal sealed partial class SettingsForm : Form
         AddSpan(_checkForUpdatesButton);
         AddSpan(CreateLinkButton("What's new", (_, _) => WhatsNewForm.ShowCurrent(this)));
         AddSpan(_updateStatus);
+        AddSection("Support the project");
+        AddSpan(CreateHint("UsageAI is free and open source. If it helps you, a star on GitHub helps others find it."));
+        AddSpan(CreateSupportLinks(scale));
         FinishPages();
 
         LoadValues();
@@ -878,6 +884,31 @@ internal sealed partial class SettingsForm : Form
     }
 
     private sealed record PopupGroupPicker(string ProviderId, ComboBox Control, IReadOnlyList<string> Groups);
+
+    /// <summary>
+    /// About's two ways to give back: star the repository, which opens its page (the star is
+    /// given there), and report a problem, which opens a new issue started with the versions.
+    /// No count is fetched and nothing is asked unprompted.
+    /// </summary>
+    private FlowLayoutPanel CreateSupportLinks(LayoutScale scale)
+    {
+        var panel = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            FlowDirection = FlowDirection.LeftToRight,
+            Margin = scale.Pad(0, 0, 0, 4),
+            WrapContents = true,
+        };
+        var star = CreateLinkButton("★ Star on GitHub", (_, _) => ProjectLinks.Open(ProjectLinks.Repository));
+        star.AccessibleName = "Star UsageAI on GitHub";
+        var report = CreateLinkButton(
+            "Report a problem",
+            (_, _) => ProjectLinks.Open(ProjectLinks.NewIssue(AppIdentity.Version, ProjectLinks.WindowsVersion)));
+        report.AccessibleName = "Report a problem on GitHub";
+        panel.Controls.Add(star);
+        panel.Controls.Add(report);
+        return panel;
+    }
 
     private FlowLayoutPanel CreateOrderButtons(LayoutScale scale)
     {

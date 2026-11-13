@@ -957,7 +957,7 @@ internal static class RedesignTests
         Equal("Theme|Quota|Colours|Dashboard|Tray icon", CardHeadings(dialog, 2));
         Equal("Shown providers", CardHeadings(dialog, 3));
         Equal("Accounts|Finding logins", CardHeadings(dialog, 4));
-        Equal("UsageAI", CardHeadings(dialog, 5));
+        Equal("UsageAI|Support the project", CardHeadings(dialog, 5));
         Equal(0, dialog.CurrentPage);
         True(Field<NumericUpDown>(dialog, "_refreshInterval").Visible);
         True(Field<CheckBox>(dialog, "_historyEnabled").Visible);
