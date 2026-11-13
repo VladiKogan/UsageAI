@@ -396,6 +396,26 @@ internal static class SettingsSearchTests
         Equal("Claude Code · work", tray.SelectedItem!.ToString());
         Equal("Claude Code · me", tray.Items[3]!.ToString());
 
+        // A question whose yes cannot be taken back answers no on Enter, and draws that button as
+        // the primary one so the destructive button never looks like the default.
+        using (var prompt = new PromptDialog("Delete recorded history", "Delete?", "Cannot be undone.", "Delete", "Cancel", PromptKind.Warning, 96))
+        {
+            Equal(Theme.Accent, prompt.AcceptControl.BackColor);
+            prompt.MakeDeclineDefault();
+            True(prompt.DeclineIsDefault);
+            True(ReferenceEquals(prompt.DeclineControl, prompt.AcceptButton));
+            Equal(Theme.Accent, prompt.DeclineControl!.BackColor);
+            Equal(Theme.SurfaceRaised, prompt.AcceptControl.BackColor);
+            True(prompt.DeclineControl.Font.Bold);
+            False(prompt.AcceptControl.Font.Bold);
+        }
+
+        using (var single = new PromptDialog("UsageAI", "Done", "Nothing to choose.", "OK", null))
+        {
+            single.MakeDeclineDefault();
+            False(single.DeclineIsDefault);
+        }
+
         // The same choices again leave the list as it is.
         var item = tray.Items[3];
         dialog.UpdateTrayChoices(new[] { ("codex", "Codex"), ("claude", "Claude Code · me"), ("claude@1a2b3c4d", "Claude Code · work") });

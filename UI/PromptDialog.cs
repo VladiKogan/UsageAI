@@ -116,13 +116,36 @@ internal sealed class PromptDialog : Form
         bool declineIsDefault = false)
     {
         using var dialog = new PromptDialog(caption, title, body, acceptText, declineText, kind);
-        if (declineIsDefault && dialog._decline is { } decline)
+        if (declineIsDefault)
         {
-            dialog.AcceptButton = decline;
-            dialog.ActiveControl = decline;
+            dialog.MakeDeclineDefault();
         }
 
         return (owner is null ? dialog.ShowDialog() : dialog.ShowDialog(owner)) == DialogResult.Yes;
+    }
+
+    /// <summary>Whether the decline button is the one Enter presses, and so the one drawn as primary.</summary>
+    internal bool DeclineIsDefault { get; private set; }
+
+    /// <summary>
+    /// Makes "no" the answer Enter gives, for a question whose yes cannot be taken back, and draws
+    /// that button as the primary one: a filled accent on the destructive button read as the
+    /// default even when it was not.
+    /// </summary>
+    internal void MakeDeclineDefault()
+    {
+        if (_decline is null)
+        {
+            return;
+        }
+
+        DeclineIsDefault = true;
+        AcceptButton = _decline;
+        ActiveControl = _decline;
+        _accept.Font = Font;
+        _decline.Font = _primaryFont;
+        ApplyLayout();
+        ApplyTheme();
     }
 
     protected override void OnHandleCreated(EventArgs e)
@@ -257,10 +280,10 @@ internal sealed class PromptDialog : Form
         ForeColor = Theme.Text;
         _title.ForeColor = Theme.Text;
         _body.ForeColor = Theme.TextSecondary;
-        StyleButton(_accept, primary: true);
+        StyleButton(_accept, primary: !DeclineIsDefault);
         if (_decline is not null)
         {
-            StyleButton(_decline, primary: false);
+            StyleButton(_decline, primary: DeclineIsDefault);
         }
 
         WindowThemeHelpers.ApplyDarkTitleBar(this, Theme.IsDark && !Theme.IsHighContrast);

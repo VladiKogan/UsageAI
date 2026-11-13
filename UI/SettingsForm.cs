@@ -1764,6 +1764,13 @@ internal sealed partial class SettingsForm : Form
         base.OnDpiChanged(eventArgs);
         ApplyScaledLayout();
         Bounds = WindowBounds.FitToWorkingArea(Bounds, Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea);
+        // Wrapped text was measured while the window still had its old width; measured again at
+        // the new one, a one-line hint stops keeping the height of two.
+        foreach (var page in _pages)
+        {
+            page.Layout.PerformLayout();
+        }
+
         _scrollHost.AutoScrollPosition = new Point(0, scrollY);
         _scrollFrame.Sync();
         if (_results.Visible)
