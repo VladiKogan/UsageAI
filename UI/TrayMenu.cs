@@ -5,13 +5,11 @@ namespace UsageAI.UI;
 
 /// <summary>What the tray menu's quick settings show as chosen, read each time the menu opens.</summary>
 /// <param name="TrayChoices">The shown providers and accounts the tray icon can follow.</param>
-/// <param name="Enabled">False while the Settings window is open, whose OK would undo a change made here.</param>
 internal sealed record TrayQuickState(
     IReadOnlyList<(string Id, string Name)> TrayChoices,
     string? TrayProviderId,
     QuotaDisplay QuotaDisplay,
-    bool NotificationsEnabled,
-    bool Enabled = true);
+    bool NotificationsEnabled);
 
 /// <summary>The settings the tray menu changes without opening Settings.</summary>
 internal sealed record TrayQuickSettings(
@@ -118,7 +116,6 @@ internal static class TrayMenu
             AddChoice(quota, "Used", state.QuotaDisplay == QuotaDisplay.Used, () => quick.SetQuotaDisplay(QuotaDisplay.Used));
             AddChoice(quota, "Remaining", state.QuotaDisplay == QuotaDisplay.Remaining, () => quick.SetQuotaDisplay(QuotaDisplay.Remaining));
             notifications.Text = state.NotificationsEnabled ? "Pause notifications" : "Resume notifications";
-            tray.Enabled = quota.Enabled = notifications.Enabled = state.Enabled;
         }
 
         Fill();

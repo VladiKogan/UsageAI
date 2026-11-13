@@ -712,35 +712,54 @@ internal static class AccountTests
                 "Codex|Claude Code",
                 string.Join("|", Field<CheckedListBox>(dialog, "_providers").Items.Cast<object>().Select(item => item.ToString())));
 
-            // Selecting an account shows where it is read from; edits wait for Save.
+            // Selecting an account shows where it is read from; each change is saved as it is made.
+            var changes = SettingsChanges.None;
+            dialog.SettingsChanged += (_, eventArgs) => changes |= eventArgs.Changes;
             list.SelectedIndex = Array.FindIndex(items, item => item.StartsWith("Claude · work", StringComparison.Ordinal));
             Application.DoEvents();
             True(Field<Label>(dialog, "_accountDetails").Text.Contains("Found in", StringComparison.Ordinal));
             Equal("Forget", Field<Button>(dialog, "_removeAccount").Text);
+            Equal(SettingsChanges.None, changes);
             Field<ToggleSwitch>(dialog, "_accountAlerts").Checked = false;
+            False(settings.FindAccount(workKey)!.Alerts);
             list.SetItemChecked(list.SelectedIndex, false);
+            True(settings.FindAccount(workKey)!.Hidden);
+            // Hiding an account changes what is read, so the app rebuilds its clients and polls.
+            True(changes.HasFlag(SettingsChanges.Accounts) && changes.HasFlag(SettingsChanges.Polling));
             Invoke(dialog, "MoveSelectedAccount", -1);
-            True(settings.FindAccount(workKey)!.Alerts);
+            Equal(0, settings.FindAccount(workKey)!.Order);
+            Equal(1, settings.FindAccount("claude")!.Order);
 
             list.SelectedIndex = Array.FindIndex(list.Items.Cast<object>().Select(item => item.ToString()!).ToArray(), item => item.StartsWith("Codex · lab", StringComparison.Ordinal));
             Application.DoEvents();
             Equal("Remove", Field<Button>(dialog, "_removeAccount").Text);
             True(Field<Label>(dialog, "_accountDetails").Text.Contains("Created by UsageAI", StringComparison.Ordinal));
             list.SetItemChecked(list.SelectedIndex, true);
-            Field<ToggleSwitch>(dialog, "_askBeforeShowing").Checked = false;
-            tray.SelectedIndex = 3;
-            Field<Button>(dialog, "_saveButton").PerformClick();
-            Application.DoEvents();
-
-            var saved = settings.FindAccount(workKey)!;
-            False(saved.Alerts);
-            True(saved.Hidden);
-            Equal(0, saved.Order);
-            Equal(1, settings.FindAccount("claude")!.Order);
             False(settings.FindAccount(labKey)!.Pending);
             True(settings.IsUnitVisible(labKey));
+            Field<ToggleSwitch>(dialog, "_askBeforeShowing").Checked = false;
             False(settings.AskBeforeShowingNewAccounts);
+            tray.SelectedIndex = 3;
             Equal("claude", settings.TrayProviderId);
+
+            // Removing an account UsageAI created asks first, with No as Enter's answer.
+            SettingsPrompt? asked = null;
+            dialog.Confirm = prompt =>
+            {
+                asked = prompt;
+                return false;
+            };
+            Invoke(dialog, "RemoveSelectedAccount");
+            True(asked!.DeclineIsDefault);
+            NotNull(settings.FindAccount(labKey));
+
+            // An account change made elsewhere — a scan, the popup's Add account — reaches the
+            // list once the event that raised it has finished.
+            settings.FindAccount(workKey)!.Label = "Renamed elsewhere";
+            dialog.AccountsChangedElsewhere();
+            dialog.AccountsChangedElsewhere();
+            Application.DoEvents();
+            True(list.Items.Cast<object>().Any(item => item.ToString()!.StartsWith("Claude · Renamed elsewhere", StringComparison.Ordinal)));
 
             // The popup's banner shows the first notice and reports the answer.
             manager.NotifyIdentityChanged("claude", null, "team@example.com");
@@ -1443,8 +1462,10 @@ internal static class AccountTests
 
             // The page paints its antialiased section cards off screen: drawn on the window itself
             // they cost a whole frame per scroll step and flashed bare background first.
+            var shownPage = Field<Panel>(dialog, "_scrollHost").Controls.OfType<TableLayoutPanel>().Single(candidate => candidate.Visible);
+            Equal(SettingsForm.AccountsSection, shownPage.AccessibleName);
             True((bool)typeof(Control).GetProperty("DoubleBuffered", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)!
-                .GetValue(Field<TableLayoutPanel>(dialog, "_layout"))!);
+                .GetValue(shownPage)!);
 
             var list = Field<CheckedListBox>(dialog, "_accountList");
             var accounts = IsType<SettingsCheckList>(list);
@@ -1474,8 +1495,13 @@ internal static class AccountTests
             Application.DoEvents();
             True(list.GetItemChecked(index));
 
-            // With nothing to scroll in the list, the wheel scrolls the page instead.
+            // With nothing to scroll in the list, the wheel scrolls the page instead — here a page
+            // longer than a window squeezed onto a small screen, scrolled part way down.
             var page = Field<Panel>(dialog, "_scrollHost");
+            dialog.ClientSize = new Size(dialog.ClientSize.Width, 300);
+            Application.DoEvents();
+            page.AutoScrollPosition = new Point(0, 40);
+            Application.DoEvents();
             False(accounts.CanScroll(up: true));
             var before = page.AutoScrollPosition.Y;
             True(before < 0);

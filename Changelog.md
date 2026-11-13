@@ -4,6 +4,32 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Settings shows one page at a time instead of one long scrolling page.** The list on the
+  left now switches between General, Alerts, Appearance, Providers, Accounts and About;
+  Ctrl+Tab and Ctrl+Page Down move to the next page. History moved onto General, and what the
+  tray icon shows moved to Appearance. Each page opens at its top, and the window opens tall
+  enough for the longest page; a size you choose is remembered from then on.
+- **Every change in Settings applies as you make it, so Save and Cancel are gone.** A theme or
+  quota change shows in the popup and tray at once; number boxes save once you stop changing
+  them, and providers ticked in a row lead to one refresh, not one each. Escape still closes the
+  window. Deleting recorded history, and removing an account UsageAI created, now ask first,
+  with No as the answer Enter gives. Reordering providers or accounts in Settings asks before it
+  replaces the card order you dragged in the popup.
+- **Settings is a window of its own, with a taskbar button, and can be minimized.** Opening it
+  again brings back the one already open, on the page asked for. The tray menu's quick settings
+  stay available while it is open, and Settings shows what they change.
+
+### Fixed
+
+- **Settings opened on a monitor at a different scale is laid out for that monitor.** It opens
+  on the monitor under the mouse, and opened there its text took that monitor's scale while the
+  window, its columns and its buttons kept the other one, so labels were cut short and "Move
+  down" lost a word.
+
 ## [0.19.2] - 2026-11-13
 
 ### Fixed

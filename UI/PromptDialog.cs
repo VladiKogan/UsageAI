@@ -96,10 +96,33 @@ internal sealed class PromptDialog : Form
         string body,
         string acceptText,
         string? declineText,
-        PromptKind kind = PromptKind.Question)
+        PromptKind kind = PromptKind.Question) =>
+        Ask(null, caption, title, body, acceptText, declineText, kind);
+
+    /// <summary>
+    /// Asks the question as a dialog of <paramref name="owner"/>, so it stays over the window that
+    /// asked rather than whichever window happened to be active. With
+    /// <paramref name="declineIsDefault"/> Enter answers no, for a question whose yes cannot be
+    /// taken back.
+    /// </summary>
+    public static bool Ask(
+        IWin32Window? owner,
+        string caption,
+        string title,
+        string body,
+        string acceptText,
+        string? declineText,
+        PromptKind kind = PromptKind.Question,
+        bool declineIsDefault = false)
     {
         using var dialog = new PromptDialog(caption, title, body, acceptText, declineText, kind);
-        return dialog.ShowDialog() == DialogResult.Yes;
+        if (declineIsDefault && dialog._decline is { } decline)
+        {
+            dialog.AcceptButton = decline;
+            dialog.ActiveControl = decline;
+        }
+
+        return (owner is null ? dialog.ShowDialog() : dialog.ShowDialog(owner)) == DialogResult.Yes;
     }
 
     protected override void OnHandleCreated(EventArgs e)

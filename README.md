@@ -223,22 +223,23 @@ The key is kept in memory, is never forwarded to provider CLI child processes, a
 
 ## ⚙️ Make it yours
 
-**Settings…** in the tray menu lets you tune:
+**Settings…** in the tray menu opens a window with one page per subject. Every change applies as
+you make it — there is no Save button — and **Ctrl+Tab** moves between the pages:
 
-- How often it refreshes — and whether to ease off while no window is open
-- Alert thresholds, and whether resets get announced
-- Theme, and where the warning and critical colours kick in
-- Whether meters, headlines, the tray icon, and alert wording show quota **used** (the default) or
-  **remaining** — colours and alert thresholds always follow usage
-- Which metrics the full dashboard shows: all reported metrics, metered limits only, or the most
-  important Session, Rolling, and Monthly limit
-- Whether history is recorded, and whether the burn-rate forecast is shown
-- Which provider drives the tray icon (or let it follow whichever is running hottest, or list
-  **All connected** in its tooltip), which providers appear, and in what order
-- Which model group the popup shows for a provider that reports several, such as Gemini
-- The global hotkey, and whether UsageAI starts with Windows
-- The installed desktop-app version, with manual **What's new** and **Check for updates** actions
-  under **About**
+- **General** — how often it refreshes and whether to ease off while no window is open, whether
+  UsageAI starts with Windows, the global hotkey, and whether history is recorded and the
+  burn-rate forecast shown (with a button to delete the history, which asks first)
+- **Alerts** — alert thresholds, whether resets get announced, and provider incidents
+- **Appearance** — theme; whether meters, headlines, the tray icon, and alert wording show quota
+  **used** (the default) or **remaining** — colours and alert thresholds always follow usage;
+  where the warning and critical colours kick in; which metrics the full dashboard shows (all
+  reported metrics, metered limits only, or the most important Session, Rolling, and Monthly
+  limit); and which provider drives the tray icon (or let it follow whichever is running
+  hottest, or list **All connected** in its tooltip)
+- **Providers** — which providers appear and in what order, and which model group the popup
+  shows for a provider that reports several, such as Gemini
+- **Accounts** — every Claude Code and Codex login, as described above
+- **About** — the installed desktop-app version, with **What's new** and **Check for updates**
 
 After a real upgrade, UsageAI queues bundled release notes and shows them on the first time you open
 the popup, dashboard, or Settings. A clean first install stays quiet. Windows High Contrast always
@@ -269,7 +270,7 @@ restart it automatically.
 - **"Copilot is not signed in"** — sign in through a Copilot IDE extension or Copilot CLI, then hit **Refresh**.
 - **A provider says "stale"** — its latest check failed, so you're looking at its previous good reading. The dashboard shows when that reading succeeded, the provider's error, and when UsageAI will retry automatically. The retry runs independently as soon as its backoff or provider-supplied wait time expires; **Retry** beside it, or **Refresh** for every provider, checks immediately.
 - **The hotkey does nothing** — another app already owns Win+Alt+U. Turn it off in **Settings…** to release it.
-- **It didn't start with Windows** — open **Settings…** ▸ **General**. **Start with Windows** shows what Windows would actually do, so if it reads off with a warning underneath, Windows Startup Apps has switched UsageAI off or the entry belongs to another copy of it. Turn it on and save to repair it.
+- **It didn't start with Windows** — open **Settings…** ▸ **General**. **Start with Windows** shows what Windows would actually do, so if it reads off with a warning underneath, Windows Startup Apps has switched UsageAI off or the entry belongs to another copy of it. Turn it on to repair it.
 - **No tray icon** — open the Windows tray overflow menu and pin UsageAI.
 
 </details>

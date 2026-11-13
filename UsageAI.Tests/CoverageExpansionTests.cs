@@ -3592,17 +3592,23 @@ internal static class CoverageExpansionTests
     private static Task RunSettingsStartupPreference()
     {
         var providers = new[] { ("codex", "Codex") };
+        const string Installed = @"C:\Program Files\UsageAI\UsageAI.exe";
         var written = new List<bool>();
         var state = new StartupState(StartupStatus.NotRegistered, null);
 
+        // Like the real registry, a write changes what is read back.
         SettingsForm Open() => new(
-            new AppSettings(),
+            new AppSettings { IsEphemeral = true },
             providers,
             _ => Task.FromResult(new UpdateCheckResult(true, null)),
             _ => Task.CompletedTask,
             96,
             () => state,
-            value => written.Add(value));
+            value =>
+            {
+                written.Add(value);
+                state = value ? new StartupState(StartupStatus.Enabled, Installed) : new StartupState(StartupStatus.NotRegistered, null);
+            });
 
         using (var dialog = Open())
         {
@@ -3611,71 +3617,67 @@ internal static class CoverageExpansionTests
             False(box.Checked);
             Equal(Theme.Muted, hint.ForeColor);
 
-            // Nothing was touched, so saving is not a registry write.
-            True(InvokePrivate<bool>(dialog, "TryApplyStartupPreference"));
+            // Opening the window is not a registry write; flipping the switch is, at once.
             Equal(0, written.Count);
-
             box.Checked = true;
-            True(InvokePrivate<bool>(dialog, "TryApplyStartupPreference"));
             Equal(1, written.Count);
             True(written[0]);
+            True(box.Checked);
+            True(hint.Text.Contains("starts in the tray", StringComparison.Ordinal));
         }
 
         written.Clear();
-        state = new StartupState(StartupStatus.Enabled, @"C:\Program Files\UsageAI\UsageAI.exe");
+        state = new StartupState(StartupStatus.Enabled, Installed);
         using (var dialog = Open())
         {
             var box = GetPrivateField<CheckBox>(dialog, "_startWithWindows");
             var hint = GetPrivateField<Label>(dialog, "_startupHint");
             True(box.Checked);
             Equal(Theme.Muted, hint.ForeColor);
-            True(InvokePrivate<bool>(dialog, "TryApplyStartupPreference"));
             Equal(0, written.Count);
 
             box.Checked = false;
-            True(InvokePrivate<bool>(dialog, "TryApplyStartupPreference"));
             Equal(1, written.Count);
             False(written[0]);
 
-            // Returning the tick to where it started is not a change to save.
+            // A switch already showing what Windows will do is not a change to write.
             written.Clear();
-            box.Checked = true;
-            True(InvokePrivate<bool>(dialog, "TryApplyStartupPreference"));
+            InvokePrivate(dialog, "ApplyStartupPreference");
             Equal(0, written.Count);
         }
 
-        // Both broken states read as off, explain themselves, and are repaired by ticking — the
-        // registration already exists, so this is the case a presence check would call satisfied.
+        // Both broken states read as off, explain themselves, and are repaired by turning the
+        // switch on — the registration already exists, so this is the case a presence check
+        // would call satisfied.
         foreach (var broken in new[] { StartupStatus.BlockedByWindows, StartupStatus.PathMismatch })
         {
             written.Clear();
-            state = new StartupState(broken, @"C:\Program Files\UsageAI\UsageAI.exe");
+            state = new StartupState(broken, Installed);
             using var dialog = Open();
             var box = GetPrivateField<CheckBox>(dialog, "_startWithWindows");
             var hint = GetPrivateField<Label>(dialog, "_startupHint");
             False(box.Checked);
             Equal(Theme.WarningText, hint.ForeColor);
-            True(hint.Text.Length > 0);
-
-            // Left alone, the entry another copy of UsageAI owns is not deleted by a Save the
-            // person made for some unrelated preference.
-            True(InvokePrivate<bool>(dialog, "TryApplyStartupPreference"));
-            Equal(0, written.Count);
-
-            box.Checked = true;
-            True(InvokePrivate<bool>(dialog, "TryApplyStartupPreference"));
-            Equal(1, written.Count);
-            True(written[0]);
+            True(hint.Text.Contains("Turn this on", StringComparison.Ordinal));
 
             // A theme change must not repaint the warning as ordinary body text.
             InvokePrivate(dialog, "ApplyThemeColors");
             Equal(Theme.WarningText, hint.ForeColor);
+
+            // Left alone, the entry another copy of UsageAI owns is never deleted.
+            Equal(0, written.Count);
+
+            box.Checked = true;
+            Equal(1, written.Count);
+            True(written[0]);
+            Equal(Theme.Muted, hint.ForeColor);
         }
 
-        // A registry the user cannot write is reported, not thrown out of the dialog.
+        // A registry the user cannot write is reported beside the switch, which goes back to what
+        // Windows will really do, rather than thrown out of the window.
         state = new StartupState(StartupStatus.NotRegistered, null);
         using (var failing = new SettingsForm(
-                   new AppSettings(),
+                   new AppSettings { IsEphemeral = true },
                    providers,
                    _ => Task.FromResult(new UpdateCheckResult(true, null)),
                    _ => Task.CompletedTask,
@@ -3683,8 +3685,14 @@ internal static class CoverageExpansionTests
                    () => state,
                    _ => throw new UnauthorizedAccessException("denied")))
         {
-            GetPrivateField<CheckBox>(failing, "_startWithWindows").Checked = true;
-            False(InvokePrivate<bool>(failing, "TryApplyStartupPreference"));
+            var box = GetPrivateField<CheckBox>(failing, "_startWithWindows");
+            var hint = GetPrivateField<Label>(failing, "_startupHint");
+            box.Checked = true;
+            False(box.Checked);
+            True(hint.Text.Contains("did not accept", StringComparison.Ordinal));
+            Equal(Theme.WarningText, hint.ForeColor);
+            InvokePrivate(failing, "ApplyThemeColors");
+            Equal(Theme.WarningText, hint.ForeColor);
         }
 
         return Task.CompletedTask;
@@ -3737,6 +3745,11 @@ internal static class CoverageExpansionTests
         False(list.GetItemChecked(1));
         Equal(3, list.CheckedItems.Count);
 
+        // The drop is saved as it lands; nothing waits for a Save.
+        Application.DoEvents();
+        Equal("claude,copilot,codex,gemini", string.Join(',', settings.ProviderOrder));
+        False(settings.IsProviderVisible("copilot"));
+
         // The drag is over, so a stray move must not keep dragging.
         MoveOver(dialog, list, 0);
         True(reordered.SequenceEqual(ProviderNames(list)));
@@ -3751,9 +3764,8 @@ internal static class CoverageExpansionTests
         ClickProvider(list, 0);
         Equal(ticked, list.GetItemChecked(0));
 
-        // Escape abandons a drag in flight. It has to be claimed by ProcessCmdKey: the form sets
-        // CancelButton, so a list box never sees the key, and letting it through would close
-        // Settings and discard every edit in it.
+        // Escape abandons a drag in flight. It has to be claimed by ProcessCmdKey: Escape
+        // otherwise closes Settings, and the half-dragged order would be left as it stood.
         Press(list, 0);
         MoveOver(dialog, list, 3);
         Equal("Claude Code", list.Items[3].ToString());
@@ -3762,7 +3774,7 @@ internal static class CoverageExpansionTests
         Equal(-1, GetPrivateFieldValue<int>(dialog, "_dragIndex"));
         Release(list, 0);
 
-        // With no drag running Escape is not ours, and must fall through to the Cancel button.
+        // With no drag running Escape is not ours, and falls through to closing the window.
         False(InvokeProcessCmdKey(dialog, Keys.Escape));
 
         // A drag that lost the mouse without a button-up must not still be armed: the next press
@@ -3832,14 +3844,48 @@ internal static class CoverageExpansionTests
 
         False(InvokeProcessCmdKey(dialog, Keys.Alt | Keys.Right));
 
-        // Whatever the list shows at the end is what gets saved, ticks included.
+        // Whatever the list shows is what is saved, ticks included, as each change is made.
         var saved = list.Items.Cast<object>()
             .Select(item => GetProperty<string>(item, "Id"))
             .ToArray();
-        InvokePrivate(dialog, "Apply");
         True(saved.SequenceEqual(settings.ProviderOrder));
         False(settings.IsProviderVisible("copilot"));
         True(settings.IsProviderVisible("codex"));
+
+        // A card order made by dragging in the popup is replaced only after asking. Kept, the drop
+        // goes back where it came from; replaced, the dragged order is cleared once, so the next
+        // reorder does not ask again.
+        var asked = 0;
+        var answer = false;
+        dialog.Confirm = prompt =>
+        {
+            asked++;
+            True(prompt.Title.Contains("card order", StringComparison.Ordinal));
+            return answer;
+        };
+        settings.UnitOrder = new[] { "codex", "claude" };
+        var before = ProviderNames(list);
+        DragProvider(dialog, list, 0, 3);
+        Application.DoEvents();
+        Equal(1, asked);
+        True(before.SequenceEqual(ProviderNames(list)));
+        True(saved.SequenceEqual(settings.ProviderOrder));
+        Equal(2, settings.UnitOrder.Length);
+
+        list.SelectedIndex = 0;
+        InvokePrivate(dialog, "MoveSelected", 1);
+        Equal(2, asked);
+        True(before.SequenceEqual(ProviderNames(list)));
+
+        answer = true;
+        DragProvider(dialog, list, 0, 3);
+        Application.DoEvents();
+        Equal(3, asked);
+        Equal(before[0], list.Items[3].ToString());
+        Equal(0, settings.UnitOrder.Length);
+        list.SelectedIndex = 0;
+        InvokePrivate(dialog, "MoveSelected", 1);
+        Equal(3, asked);
 
         dialog.Hide();
         return Task.CompletedTask;
@@ -5708,13 +5754,28 @@ internal static class CoverageExpansionTests
             InvokePrivate(settingsForm, "MoveSelected", -1);
             InvokePrivate(settingsForm, "MoveSelected", 10);
 
+            // Deleting history asks first, with No as the answer Enter gives, and deletes only on yes.
+            var prompts = new List<SettingsPrompt>();
+            var answer = false;
+            settingsForm.Confirm = prompt =>
+            {
+                prompts.Add(prompt);
+                return answer;
+            };
+            UsageHistoryStore.Append(new[] { new UsageSample(DateTimeOffset.UtcNow, "codex", "5-hour", 10) });
             var deleteHistory = Descendants(settingsForm)
                 .OfType<Button>()
                 .Single(button => button.Text == "Delete recorded history");
             InvokeProtected(deleteHistory, "OnClick", EventArgs.Empty);
+            Equal(1, prompts.Count);
+            True(prompts[0].DeclineIsDefault);
+            Equal(PromptKind.Warning, prompts[0].Kind);
+            True(UsageHistoryStore.Load(TimeSpan.FromDays(1)).Count > 0);
+            answer = true;
+            InvokeProtected(deleteHistory, "OnClick", EventArgs.Empty);
+            Equal(0, UsageHistoryStore.Load(TimeSpan.FromDays(1)).Count);
 
             GetPrivateField<SegmentedControl>(settingsForm, "_theme").SelectedIndex = 1;
-            InvokePrivate(settingsForm, "Apply");
             Equal(ThemeMode.Dark, darkSettings.Theme);
         }
 
@@ -5722,7 +5783,6 @@ internal static class CoverageExpansionTests
         using (var settingsForm = new SettingsForm(lightSettings, providerEntries))
         {
             GetPrivateField<SegmentedControl>(settingsForm, "_theme").SelectedIndex = 2;
-            InvokePrivate(settingsForm, "Apply");
             Equal(ThemeMode.Light, lightSettings.Theme);
         }
 
@@ -6234,7 +6294,6 @@ internal static class CoverageExpansionTests
         var settingsMode = GetPrivateField<SegmentedControl>(dialog, "_metricDisplayMode");
         Equal(0, settingsMode.SelectedIndex);
         settingsMode.SelectedIndex = 2;
-        InvokePrivate(dialog, "Apply");
         Equal(MetricDisplayMode.ImportantOnly, settingsCopy.MetricDisplayMode);
 
         AppPaths.WriteAllTextAtomic(
@@ -6477,6 +6536,7 @@ internal static class CoverageExpansionTests
             dialog.StartPosition = FormStartPosition.Manual;
             dialog.Location = new Point(-10_000, -10_000);
             dialog.Show();
+            dialog.ShowSection("About");
             Application.DoEvents();
             var whatsNew = Descendants(dialog).OfType<Button>().Single(button => button.Text == "What's new");
             closer.Start();
@@ -6659,10 +6719,11 @@ internal static class CoverageExpansionTests
             Application.DoEvents();
             var settingsArea = Screen.FromControl(settings).WorkingArea;
             True(settings.Width <= settingsArea.Width && settings.Height <= settingsArea.Height);
-            var settingsPadding = GetPrivateField<TableLayoutPanel>(settings, "_layout").Padding;
+            var settingsPage = GetPrivateField<Panel>(settings, "_scrollHost").Controls.OfType<TableLayoutPanel>().Single(page => page.Visible);
+            var settingsPadding = settingsPage.Padding;
             var settingsSize = settings.ClientSize;
             InvokePrivate(settings, "ApplyScaledLayout");
-            Equal(settingsPadding, GetPrivateField<TableLayoutPanel>(settings, "_layout").Padding);
+            Equal(settingsPadding, settingsPage.Padding);
             Equal(settingsSize, settings.ClientSize);
             AssertVisibleActionsInBounds(settings);
             var scrollHost = GetPrivateField<Panel>(settings, "_scrollHost");
@@ -6852,9 +6913,12 @@ internal static class CoverageExpansionTests
         {
             var combo = GetPrivateField<SegmentedControl>(dialog, "_quotaDisplay");
             Equal(0, combo.SelectedIndex);
+            var changes = new List<SettingsChanges>();
+            dialog.SettingsChanged += (_, eventArgs) => changes.Add(eventArgs.Changes);
             combo.SelectedIndex = 1;
-            InvokePrivate(dialog, "Apply");
             Equal(QuotaDisplay.Remaining, dialogSettings.QuotaDisplay);
+            // Presentation only: the app redraws from its cached readings and polls nothing.
+            Equal(SettingsChanges.Display, changes.Single());
         }
 
         using (var reopened = new SettingsForm(
