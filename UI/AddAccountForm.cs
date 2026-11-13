@@ -464,11 +464,7 @@ internal sealed class AddAccountForm : Form
             return;
         }
 
-        try
-        {
-            using var process = Process.Start(new ProcessStartInfo(link.AbsoluteUri) { UseShellExecute = true });
-        }
-        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
+        if (!Browser.Open(link))
         {
             SetStatus("Windows could not open the browser. Copy the link instead.", isProblem: true);
         }

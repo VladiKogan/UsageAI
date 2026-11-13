@@ -92,6 +92,7 @@ internal static class Program
         ("settings is its own window and stays visible beside the popup", RedesignTests.TestSettingsWindowStaysVisibleAsync),
         ("settings search matches labels, keywords and page names", SettingsSearchTests.TestSearchMatchingAsync),
         ("settings search drops down, goes to a setting and marks it", SettingsSearchTests.TestSearchInSettingsAsync),
+        ("settings shows thresholds and tray choices as the app has them", SettingsSearchTests.TestSettingsShowsWhatIsSavedAsync),
         ("About and What's New link to star the project and report a problem", SupportLinkTests.TestSupportLinksAsync),
         ("scrolling views use a slim scrollbar", RedesignTests.TestSlimScrollBarAsync),
         ("model formatting and provider status states", CoverageExpansionTests.TestModelFormattingAsync),

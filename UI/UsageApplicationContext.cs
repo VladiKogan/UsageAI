@@ -406,6 +406,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         PushStateToPopup();
         UpdateTray();
         _openSettings?.AccountsChangedElsewhere();
+        _openSettings?.UpdateTrayChoices(TrayChoices());
     });
 
     private void OnNoticesChanged(object? sender, EventArgs eventArgs) => RunOnUi(() =>
@@ -498,7 +499,12 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
         PushStateToPopup();
         UpdateTray();
-        _openSettings?.UpdateAccountStatuses(_service.AllStatuses);
+        if (_openSettings is { } settings)
+        {
+            settings.UpdateAccountStatuses(_service.AllStatuses);
+            // A provider or account shown since Settings opened can be chosen for the tray icon.
+            settings.UpdateTrayChoices(TrayChoices());
+        }
     });
 
     private void OnAlertsRaised(object? sender, UsageAlertEventArgs eventArgs) => RunOnUi(() =>
@@ -704,7 +710,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _settings.Save();
         PushStateToPopup();
         UpdateTray();
-        _openSettings?.ReloadQuickSettings();
+        _openSettings?.ReloadQuickSettings(TrayChoices());
     }
 
     /// <summary>The shown providers and accounts the tray icon can follow, for Settings and the tray menu.</summary>
@@ -816,14 +822,14 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
         if (changes.HasFlag(SettingsChanges.Accounts) && _accounts is not null)
         {
-            // An account shown for the first time is due, and read once the changes settle.
             _clients = _accounts.CreateClients(_defaultClients).ToArray();
             _service.ReplaceClients(_clients);
             _popup.SetNotices(_accounts.Notices);
-            _accountsShownInSettings = true;
         }
 
-        if (changes.HasFlag(SettingsChanges.Polling) || changes.HasFlag(SettingsChanges.Accounts))
+        // An account shown is due, and read once the changes settle.
+        _accountsShownInSettings |= changes.HasFlag(SettingsChanges.AccountShown);
+        if (changes.HasFlag(SettingsChanges.Polling) || changes.HasFlag(SettingsChanges.Accounts) || changes.HasFlag(SettingsChanges.AccountShown))
         {
             _settingsPollingTimer.Stop();
             _settingsPollingTimer.Start();
@@ -975,7 +981,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         }
     }
 
-    private async Task PromptForUpdateAsync(UpdateRelease release) => await PromptForUpdateAsync(release, owner: null);
+    private Task PromptForUpdateAsync(UpdateRelease release) => PromptForUpdateAsync(release, owner: null);
 
     /// <summary>
     /// Offers an update. <paramref name="owner"/> is the Settings window when its Check for
@@ -1144,15 +1150,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     private static void OpenReleasePage(Uri releasePageUrl)
     {
-        try
-        {
-            using var process = Process.Start(new ProcessStartInfo(releasePageUrl.AbsoluteUri)
-            {
-                UseShellExecute = true,
-            });
-        }
-        catch (Exception exception) when (exception is InvalidOperationException
-                                              or System.ComponentModel.Win32Exception)
+        if (!Browser.Open(releasePageUrl))
         {
             PromptDialog.Ask(
                 "UsageAI update",

@@ -1075,11 +1075,7 @@ internal sealed class UsagePopupForm : Form
             return;
         }
 
-        try
-        {
-            using var process = Process.Start(new ProcessStartInfo(url.AbsoluteUri) { UseShellExecute = true });
-        }
-        catch (Exception exception) when (exception is System.ComponentModel.Win32Exception or InvalidOperationException)
+        if (!Browser.Open(url))
         {
             _updatedLabel.Text = "Windows could not open the provider page.";
         }

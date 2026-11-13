@@ -215,8 +215,26 @@ internal static class SettingsSearchTests
         dialog.GoTo(account);
         Equal(4, dialog.CurrentPage);
         Equal(account.ListIndex, Field<CheckedListBox>(dialog, "_accountList").SelectedIndex);
-        var pickerRow = dialog.SearchEntries().First(entry => entry.Text == "Google Gemini" && entry.ListIndex < 0);
+        var pickerRow = dialog.SearchEntries().Single(entry => entry.Text == "Google Gemini popup rings");
         True(pickerRow.Target is ComboBox);
+
+        // Searching the name finds both the provider and its popup rings: the two rows no longer
+        // share a label, so neither hides the other.
+        var geminiHits = SettingsSearch.Find(dialog.SearchEntries(), SettingsForm.PageNames, "gemini").Single().Hits;
+        True(geminiHits.Any(found => found.Entry.ListKey == "gemini"));
+        True(geminiHits.Any(found => found.Entry.Text == "Google Gemini popup rings"));
+
+        // A list entry is found again by its key when chosen, wherever the list now holds it; one
+        // no longer listed selects nothing rather than whatever took its place.
+        var accounts = Field<CheckedListBox>(dialog, "_accountList");
+        var codexAccount = dialog.SearchEntries().Single(entry => entry.ListKey == "codex" && entry.Page == 4);
+        accounts.SelectedIndex = 0;
+        dialog.GoTo(codexAccount with { ListIndex = 0 });
+        Equal(codexAccount.ListIndex, accounts.SelectedIndex);
+        True(codexAccount.ListIndex != 0);
+        accounts.SelectedIndex = 0;
+        dialog.GoTo(codexAccount with { ListKey = "codex@00000000" });
+        Equal(0, accounts.SelectedIndex);
 
         // A page row opens the page itself, and "+N more" lists the rest of a page in place.
         dialog.Search("appear");
@@ -313,6 +331,75 @@ internal static class SettingsSearchTests
         }
 
         dialog.Close();
+        return Task.CompletedTask;
+    }
+
+    /// <summary>
+    /// Settings shows what the app uses: thresholds that saving tidies are shown as saved, and a
+    /// tray-icon choice made from the tray menu for an account added since it opened is shown.
+    /// </summary>
+    public static Task TestSettingsShowsWhatIsSavedAsync()
+    {
+        var settings = new AppSettings { IsEphemeral = true, GlobalHotkeyEnabled = false, WarningPercent = 72, CriticalPercent = 90 };
+        using var dialog = new SettingsForm(
+            settings,
+            new[] { ("codex", "Codex"), ("claude", "Claude Code") },
+            _ => Task.FromResult(new UpdateCheckResult(true, null)),
+            _ => Task.CompletedTask,
+            96,
+            trayChoices: new[] { ("codex", "Codex"), ("claude", "Claude Code") });
+        var warning = Field<NumericUpDown>(dialog, "_warningPercent");
+        var critical = Field<NumericUpDown>(dialog, "_criticalPercent");
+
+        // Critical cannot be set below warning in the box itself, so what it shows is what is
+        // saved; lowering warning first then lets critical follow, in either order.
+        Equal(73M, critical.Minimum);
+        critical.Text = "60";
+        _ = critical.Value;
+        Equal(73M, critical.Value);
+        warning.Value = 50;
+        Equal(51M, critical.Minimum);
+        critical.Value = 60;
+        dialog.FlushPendingChanges();
+        Equal(50, settings.WarningPercent);
+        Equal(60, settings.CriticalPercent);
+        Equal(60M, critical.Value);
+
+        // Raising warning past critical carries critical along, and both are saved together.
+        warning.Value = 95;
+        Equal(96M, critical.Value);
+        dialog.FlushPendingChanges();
+        Equal(95, settings.WarningPercent);
+        Equal(96, settings.CriticalPercent);
+
+        // Alert thresholds are sorted when saved, and a repeated one dropped; the boxes show that.
+        var first = Field<NumericUpDown>(dialog, "_firstAlert");
+        var second = Field<NumericUpDown>(dialog, "_secondAlert");
+        first.Value = 97;
+        second.Value = 85;
+        dialog.FlushPendingChanges();
+        Equal("85,97", string.Join(',', settings.NotifyAtPercent));
+        Equal(85M, first.Value);
+        Equal(97M, second.Value);
+        second.Value = 85;
+        dialog.FlushPendingChanges();
+        Equal("85", string.Join(',', settings.NotifyAtPercent));
+        Equal(85M, first.Value);
+        Equal(95M, second.Value);
+
+        // An account the tray menu shows now, chosen there, is shown in Settings too.
+        var tray = Field<ComboBox>(dialog, "_trayProvider");
+        var count = tray.Items.Count;
+        settings.TrayProviderId = "claude@1a2b3c4d";
+        dialog.ReloadQuickSettings(new[] { ("codex", "Codex"), ("claude", "Claude Code · me"), ("claude@1a2b3c4d", "Claude Code · work") });
+        Equal(count + 1, tray.Items.Count);
+        Equal("Claude Code · work", tray.SelectedItem!.ToString());
+        Equal("Claude Code · me", tray.Items[3]!.ToString());
+
+        // The same choices again leave the list as it is.
+        var item = tray.Items[3];
+        dialog.UpdateTrayChoices(new[] { ("codex", "Codex"), ("claude", "Claude Code · me"), ("claude@1a2b3c4d", "Claude Code · work") });
+        True(ReferenceEquals(item, tray.Items[3]));
         return Task.CompletedTask;
     }
 

@@ -11,9 +11,6 @@ namespace UsageAI.UI;
 /// </summary>
 internal sealed class WhatsNewForm : Form
 {
-    private static readonly Uri CompleteChangelogUrl =
-        new("https://github.com/VladiKogan/UsageAI/blob/main/Changelog.md");
-
     private readonly WhatsNewSummary _summary;
     private readonly TableLayoutPanel _shell;
     private readonly Label _heading;
@@ -135,7 +132,7 @@ internal sealed class WhatsNewForm : Form
         _star.Anchor = AnchorStyles.Left | AnchorStyles.Top;
         _star.AutoEllipsis = true;
         _star.TextAlign = ContentAlignment.MiddleLeft;
-        _star.Click += (_, _) => ProjectLinks.Open(ProjectLinks.Repository);
+        _star.Click += (_, _) => Browser.Open(ProjectLinks.Repository);
         _footer.Controls.Add(_star, 0, 0);
         _footer.Controls.Add(_buttons, 1, 0);
         _shell.Controls.Add(_heading, 0, 0);
@@ -437,8 +434,11 @@ internal sealed class WhatsNewForm : Form
         // Up to its text's width, and shorter with an ellipsis when the window is narrower, so it
         // never runs under the buttons.
         _star.Margin = scale.Pad(0, 12, 12, 0);
-        _star.Size = new Size(TextRenderer.MeasureText(_star.Text, _star.Font).Width + scale[20], scale[32]);
-        _star.MaximumSize = new Size(_star.Width, scale[32]);
+        // The limit first: a Size set under the previous scale's limit would be cut to it, and
+        // the line stayed the old width at 200%.
+        var starSize = new Size(TextRenderer.MeasureText(_star.Text, _star.Font).Width + scale[20], scale[32]);
+        _star.MaximumSize = starSize;
+        _star.Size = starSize;
         _star.Anchor = AnchorStyles.Left | AnchorStyles.Top | AnchorStyles.Right;
         _close.Margin = scale.Pad(8, 0, 0, 0);
         _close.Size = new Size(Math.Max(scale[92], TextRenderer.MeasureText(_close.Text, _close.Font).Width + scale[28]), scale[32]);
@@ -505,14 +505,7 @@ internal sealed class WhatsNewForm : Form
 
     private static void OpenCompleteChangelog()
     {
-        try
-        {
-            using var process = Process.Start(new ProcessStartInfo(CompleteChangelogUrl.AbsoluteUri)
-            {
-                UseShellExecute = true,
-            });
-        }
-        catch (Exception exception) when (exception is InvalidOperationException or System.ComponentModel.Win32Exception)
+        if (!Browser.Open(ProjectLinks.Changelog))
         {
             PromptDialog.Ask(
                 "UsageAI",

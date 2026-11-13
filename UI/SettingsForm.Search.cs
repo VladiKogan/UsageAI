@@ -90,7 +90,10 @@ internal sealed partial class SettingsForm
         var providersPage = Array.IndexOf(PageNames, "Providers");
         for (var index = 0; index < _providers.Items.Count; index++)
         {
-            entries.Add(new SettingsSearchEntry(providersPage, _providers.Items[index]!.ToString()!, _providers, Array.Empty<string>(), index));
+            if (_providers.Items[index] is ProviderEntry provider)
+            {
+                entries.Add(new SettingsSearchEntry(providersPage, provider.Name, _providers, Array.Empty<string>(), index, provider.Id));
+            }
         }
 
         var accountsPage = Array.IndexOf(PageNames, AccountsSection);
@@ -98,7 +101,7 @@ internal sealed partial class SettingsForm
         {
             if (_accountList.Items[index] is AccountEntry account)
             {
-                entries.Add(new SettingsSearchEntry(accountsPage, account.Text, _accountList, Array.Empty<string>(), index));
+                entries.Add(new SettingsSearchEntry(accountsPage, account.Text, _accountList, Array.Empty<string>(), index, account.Key));
             }
         }
 
@@ -236,9 +239,9 @@ internal sealed partial class SettingsForm
     internal void GoTo(SettingsSearchEntry entry)
     {
         ShowPage(entry.Page);
-        if (entry.ListIndex >= 0 && entry.Target is ListBox list && entry.ListIndex < list.Items.Count)
+        if (entry.Target is ListBox list && ListPosition(list, entry) is { } position)
         {
-            list.SelectedIndex = entry.ListIndex;
+            list.SelectedIndex = position;
         }
 
         var layout = _pages[entry.Page].Layout;
@@ -264,6 +267,35 @@ internal sealed partial class SettingsForm
         }
 
         Flash(layout, row);
+    }
+
+    /// <summary>
+    /// Where a found list entry is now, by its key: an account list rebuilt since the search (a
+    /// scan, an account added elsewhere) can hold it at another position, or no longer at all,
+    /// and selecting by the old position would act on a different account.
+    /// </summary>
+    private static int? ListPosition(ListBox list, SettingsSearchEntry entry)
+    {
+        if (entry.ListKey is { } key)
+        {
+            for (var index = 0; index < list.Items.Count; index++)
+            {
+                var itemKey = list.Items[index] switch
+                {
+                    AccountEntry account => account.Key,
+                    ProviderEntry provider => provider.Id,
+                    _ => null,
+                };
+                if (string.Equals(itemKey, key, StringComparison.OrdinalIgnoreCase))
+                {
+                    return index;
+                }
+            }
+
+            return null;
+        }
+
+        return entry.ListIndex >= 0 && entry.ListIndex < list.Items.Count ? entry.ListIndex : null;
     }
 
     /// <summary>Marks a row of a page with the accent band, which fades over <see cref="FlashMilliseconds"/>.</summary>

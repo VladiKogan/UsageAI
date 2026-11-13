@@ -734,9 +734,14 @@ internal static class AccountTests
             Application.DoEvents();
             Equal("Remove", Field<Button>(dialog, "_removeAccount").Text);
             True(Field<Label>(dialog, "_accountDetails").Text.Contains("Created by UsageAI", StringComparison.Ordinal));
+            changes = SettingsChanges.None;
             list.SetItemChecked(list.SelectedIndex, true);
             False(settings.FindAccount(labKey)!.Pending);
             True(settings.IsUnitVisible(labKey));
+            // The account manager committed the answer and the app rebuilds its clients from that,
+            // so Settings asks only for the account to be read, not for a second rebuild.
+            True(changes.HasFlag(SettingsChanges.AccountShown));
+            False(changes.HasFlag(SettingsChanges.Accounts));
             Field<ToggleSwitch>(dialog, "_askBeforeShowing").Checked = false;
             False(settings.AskBeforeShowingNewAccounts);
             tray.SelectedIndex = 3;

@@ -8,13 +8,18 @@ namespace UsageAI.UI;
 /// <param name="Text">What the result shows, and what the search matches first.</param>
 /// <param name="Target">The control choosing it moves to.</param>
 /// <param name="Keywords">Other words that find it: "dark" finds the theme, "login" the accounts.</param>
-/// <param name="ListIndex">For an entry in a list, which entry; otherwise -1.</param>
+/// <param name="ListIndex">For an entry in a list, where it was when the results were found; otherwise -1.</param>
+/// <param name="ListKey">
+/// For an entry in a list, the provider id or account key it stands for, which choosing it looks
+/// up again: the list can be rebuilt, and reordered, between finding it and choosing it.
+/// </param>
 internal sealed record SettingsSearchEntry(
     int Page,
     string Text,
     Control Target,
     IReadOnlyList<string> Keywords,
-    int ListIndex = -1);
+    int ListIndex = -1,
+    string? ListKey = null);
 
 /// <summary>A found entry, with where the search text sits in its label, if it does.</summary>
 internal sealed record SettingsSearchHit(SettingsSearchEntry Entry, int MatchStart, int MatchLength);

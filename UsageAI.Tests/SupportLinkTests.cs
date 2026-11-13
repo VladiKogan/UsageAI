@@ -15,8 +15,12 @@ internal static class SupportLinkTests
     public static Task TestSupportLinksAsync()
     {
         var opened = new List<Uri>();
-        var original = ProjectLinks.Open;
-        ProjectLinks.Open = opened.Add;
+        var original = Browser.Opener;
+        Browser.Opener = link =>
+        {
+            opened.Add(link);
+            return true;
+        };
         try
         {
             // A new issue starts with the versions and a warning about diagnostics, and nothing else.
@@ -93,6 +97,16 @@ internal static class SupportLinkTests
                 True(star.Left < 40);
                 star.PerformClick();
                 Equal(ProjectLinks.Repository, opened[^1]);
+
+                // The changelog link beside it opens through the same opener.
+                viewComplete.PerformClick();
+                Equal(ProjectLinks.Changelog, opened[^1]);
+
+                // Laid out again under a smaller limit left from another scale, the line takes its
+                // full size rather than being held to the old limit.
+                star.MaximumSize = new Size(10, 10);
+                typeof(WhatsNewForm).GetMethod("ApplyScaledLayout", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(notes, null);
+                True(star.MaximumSize.Width > 10 && star.MaximumSize.Height == 32);
                 using var bitmap = new Bitmap(notes.ClientSize.Width, notes.ClientSize.Height);
                 notes.DrawToBitmap(bitmap, notes.ClientRectangle);
                 notes.Close();
@@ -116,7 +130,7 @@ internal static class SupportLinkTests
         }
         finally
         {
-            ProjectLinks.Open = original;
+            Browser.Opener = original;
         }
 
         // Settings opens with the page list focused.

@@ -262,10 +262,17 @@ internal sealed partial class SettingsForm
     private void SetAccountShown(string key, bool shown)
     {
         var account = _settings.EnsureAccount(key);
+        var answered = false;
         if (account.Pending && shown)
         {
             account.Pending = false;
-            _accountActions?.Manager.AnswerNewAccount(key, show: true);
+            if (_accountActions is not null)
+            {
+                // The manager commits the answer itself, and the app rebuilds its clients from
+                // that; rebuilding them again here did the same work twice in one click.
+                _accountActions.Manager.AnswerNewAccount(key, show: true);
+                answered = true;
+            }
         }
 
         var hidden = !shown && !account.Pending;
@@ -275,7 +282,10 @@ internal sealed partial class SettingsForm
         }
 
         account.Hidden = hidden;
-        Commit(SettingsChanges.Accounts | SettingsChanges.Polling | SettingsChanges.Display);
+        var changes = SettingsChanges.Polling | SettingsChanges.Display;
+        changes |= answered ? SettingsChanges.None : SettingsChanges.Accounts;
+        changes |= shown ? SettingsChanges.AccountShown : SettingsChanges.None;
+        Commit(changes);
     }
 
     private string AccountText(string key)

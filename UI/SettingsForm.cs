@@ -23,6 +23,12 @@ internal enum SettingsChanges
 
     /// <summary>Which accounts are read changed, so the clients are built again.</summary>
     Accounts = 16,
+
+    /// <summary>
+    /// An account is shown that was not, so it is read once the changes settle. Said on its own
+    /// when the account manager already rebuilt the clients for it.
+    /// </summary>
+    AccountShown = 32,
 }
 
 internal sealed class SettingsChangedEventArgs(SettingsChanges changes) : EventArgs
@@ -290,6 +296,10 @@ internal sealed partial class SettingsForm : Form
             Height = scale[ThresholdPreviewHeight],
             Margin = scale.Pad(0, 0, 0, 8),
         };
+        // Critical starts at least a point above warning, the rule the saved setting follows, so
+        // the boxes never hold a pair that would be saved as something else.
+        _warningPercent.ValueChanged += (_, _) =>
+            _criticalPercent.Minimum = Math.Min(_criticalPercent.Maximum, _warningPercent.Value + 1);
         _warningPercent.ValueChanged += (_, _) => UpdateThresholdPreview();
         _criticalPercent.ValueChanged += (_, _) => UpdateThresholdPreview();
 
@@ -301,8 +311,6 @@ internal sealed partial class SettingsForm : Form
             ForeColor = Theme.Text,
             Margin = scale.Pad(0, 4, 0, 4),
         };
-        _trayProvider.Items.Add(new ProviderEntry(string.Empty, "Automatic"));
-        _trayProvider.Items.Add(new ProviderEntry(AppSettings.AllProvidersTrayId, "All connected"));
 
         _providers = new SettingsCheckList
         {
@@ -323,7 +331,6 @@ internal sealed partial class SettingsForm : Form
         _providers.MouseMove += OnProvidersMouseMove;
         _providers.MouseUp += OnProvidersMouseUp;
         _providers.ItemCheck += OnProvidersItemCheck;
-        var choices = trayChoices ?? Array.Empty<(string Id, string DisplayName)>();
         foreach (var id in _settings.OrderProviders(providers.Select(provider => provider.Id).ToArray()))
         {
             var provider = providers.First(candidate =>
@@ -331,18 +338,11 @@ internal sealed partial class SettingsForm : Form
             _providers.Items.Add(
                 new ProviderEntry(provider.Id, provider.DisplayName),
                 _settings.IsProviderVisible(provider.Id));
-            AddTrayChoices(provider.Id, provider.DisplayName, choices);
+            _trayProviders.Add((provider.Id, provider.DisplayName));
         }
 
         _committedProviderOrder = ProviderIdsInList();
-
-        // An account whose provider is not in the list above still gets its entry.
-        foreach (var (id, displayName) in choices.Where(choice =>
-            !ProviderKey.IsDefault(choice.Id) &&
-            !providers.Any(provider => provider.Id.Equals(ProviderKey.ProviderOf(choice.Id), StringComparison.OrdinalIgnoreCase))))
-        {
-            _trayProvider.Items.Add(new ProviderEntry(id, displayName));
-        }
+        FillTrayChoices(trayChoices ?? Array.Empty<(string Id, string DisplayName)>());
 
         _checkForUpdatesButton = CreateDialogButton("Check for updates", scale, primary: false);
         _checkForUpdatesButton.AutoSize = true;
@@ -538,7 +538,6 @@ internal sealed partial class SettingsForm : Form
                 AppSettings.MinimumRefreshMinutes,
                 AppSettings.MaximumRefreshMinutes);
             _slowWhenHidden.Checked = _settings.SlowRefreshWhenHidden;
-            _notificationsEnabled.Checked = _settings.NotificationsEnabled;
             _firstAlert.Value = _settings.AlertThreshold(0, 80);
             _secondAlert.Value = _settings.AlertThreshold(1, 95);
             _notifyOnReset.Checked = _settings.NotifyOnReset;
@@ -547,20 +546,30 @@ internal sealed partial class SettingsForm : Form
             _criticalPercent.Value = _settings.CriticalPercent;
             _theme.SelectedIndex = (int)_settings.Theme;
             _metricDisplayMode.SelectedIndex = (int)_settings.MetricDisplayMode;
-            _quotaDisplay.SelectedIndex = (int)_settings.QuotaDisplay;
-            _quotaPreview.ShowRemaining = _settings.QuotaDisplay == QuotaDisplay.Remaining;
             UpdateThresholdPreview();
             _historyEnabled.Checked = _settings.HistoryEnabled;
             _forecastEnabled.Checked = _settings.ForecastEnabled;
             _hotkeyEnabled.Checked = _settings.GlobalHotkeyEnabled;
             LoadStartupState();
             LoadAccountValues();
-            SelectTrayProvider();
+            LoadQuickValues();
         }
         finally
         {
             _loading = false;
         }
+    }
+
+    /// <summary>
+    /// The values the tray menu's quick settings also change: one loader for opening the window
+    /// and for a change made from the tray while it is open, so the two never drift apart.
+    /// </summary>
+    private void LoadQuickValues()
+    {
+        _notificationsEnabled.Checked = _settings.NotificationsEnabled;
+        _quotaDisplay.SelectedIndex = (int)_settings.QuotaDisplay;
+        _quotaPreview.ShowRemaining = _settings.QuotaDisplay == QuotaDisplay.Remaining;
+        SelectTrayProvider();
     }
 
     private void SelectTrayProvider()
@@ -587,15 +596,17 @@ internal sealed partial class SettingsForm : Form
     /// used or remaining, notifications — after one changed while this window was open, so the
     /// window never shows, or later saves, a value that is no longer the setting.
     /// </summary>
-    internal void ReloadQuickSettings()
+    internal void ReloadQuickSettings(IReadOnlyList<(string Id, string DisplayName)>? trayChoices = null)
     {
+        if (trayChoices is not null)
+        {
+            UpdateTrayChoices(trayChoices);
+        }
+
         _loading = true;
         try
         {
-            _notificationsEnabled.Checked = _settings.NotificationsEnabled;
-            _quotaDisplay.SelectedIndex = (int)_settings.QuotaDisplay;
-            _quotaPreview.ShowRemaining = _settings.QuotaDisplay == QuotaDisplay.Remaining;
-            SelectTrayProvider();
+            LoadQuickValues();
         }
         finally
         {
@@ -617,8 +628,8 @@ internal sealed partial class SettingsForm : Form
         WireNumber(_secondAlert, WriteAlertThresholds, SettingsChanges.None);
         WireToggle(_notifyOnReset, on => _settings.NotifyOnReset = on, SettingsChanges.None);
         WireToggle(_showIncidents, on => _settings.ShowProviderIncidents = on, SettingsChanges.Display);
-        WireNumber(_warningPercent, () => _settings.WarningPercent = (int)_warningPercent.Value, SettingsChanges.Theme | SettingsChanges.Display);
-        WireNumber(_criticalPercent, () => _settings.CriticalPercent = (int)_criticalPercent.Value, SettingsChanges.Theme | SettingsChanges.Display);
+        WireNumber(_warningPercent, WriteColourThresholds, SettingsChanges.Theme | SettingsChanges.Display);
+        WireNumber(_criticalPercent, WriteColourThresholds, SettingsChanges.Theme | SettingsChanges.Display);
         _theme.SelectedIndexChanged += (_, _) => Write(
             () => _settings.Theme = _theme.SelectedIndex switch
             {
@@ -668,6 +679,45 @@ internal sealed partial class SettingsForm : Form
 
     private void WriteAlertThresholds() =>
         _settings.NotifyAtPercent = new[] { (int)_firstAlert.Value, (int)_secondAlert.Value };
+
+    /// <summary>
+    /// Writes warning and critical together, as the old Save did. Written one at a time, a pair
+    /// passing through an order the saved setting does not allow (critical below warning) was
+    /// clamped on the way and stayed clamped.
+    /// </summary>
+    private void WriteColourThresholds()
+    {
+        _settings.WarningPercent = (int)_warningPercent.Value;
+        _settings.CriticalPercent = (int)_criticalPercent.Value;
+    }
+
+    /// <summary>
+    /// Shows the numbers just saved as the app now has them. Saving tidies them — alert
+    /// thresholds are sorted and a repeated one dropped — so a pair is shown again whole. Only
+    /// the boxes saved and their partners are touched, never one still being typed in.
+    /// </summary>
+    private void ShowSavedNumbers(IReadOnlyCollection<NumericUpDown> saved)
+    {
+        _loading = true;
+        try
+        {
+            if (saved.Contains(_firstAlert) || saved.Contains(_secondAlert))
+            {
+                _firstAlert.Value = _settings.AlertThreshold(0, 80);
+                _secondAlert.Value = _settings.AlertThreshold(1, 95);
+            }
+
+            if (saved.Contains(_warningPercent) || saved.Contains(_criticalPercent))
+            {
+                _warningPercent.Value = _settings.WarningPercent;
+                _criticalPercent.Value = Math.Max(_criticalPercent.Minimum, _settings.CriticalPercent);
+            }
+        }
+        finally
+        {
+            _loading = false;
+        }
+    }
 
     private void WireToggle(CheckBox toggle, Action<bool> write, SettingsChanges changes) =>
         toggle.CheckedChanged += (_, _) => Write(() => write(toggle.Checked), changes);
@@ -723,8 +773,10 @@ internal sealed partial class SettingsForm : Form
             changes |= kind;
         }
 
+        var saved = _pendingNumbers.Keys.ToArray();
         _pendingNumbers.Clear();
         Commit(changes);
+        ShowSavedNumbers(saved);
     }
 
     private void Write(Action write, SettingsChanges changes)
@@ -874,7 +926,9 @@ internal sealed partial class SettingsForm : Form
                 .Select(entry => entry.index + 1)
                 .FirstOrDefault();
             _popupGroupPickers.Add(new PopupGroupPicker(id, picker, groups));
-            AddRow(displayName, picker);
+            // Found as "Google Gemini popup rings": the bare name is the provider list's entry,
+            // and two results of one name on a page would be shown as one.
+            AddRow(displayName, picker, picker.AccessibleName);
         }
 
         if (_popupGroupPickers.Count > 0)
@@ -899,11 +953,11 @@ internal sealed partial class SettingsForm : Form
             Margin = scale.Pad(0, 0, 0, 4),
             WrapContents = true,
         };
-        var star = CreateLinkButton("★ Star on GitHub", (_, _) => ProjectLinks.Open(ProjectLinks.Repository));
+        var star = CreateLinkButton("★ Star on GitHub", (_, _) => Browser.Open(ProjectLinks.Repository));
         star.AccessibleName = "Star UsageAI on GitHub";
         var report = CreateLinkButton(
             "Report a problem",
-            (_, _) => ProjectLinks.Open(ProjectLinks.NewIssue(AppIdentity.Version, ProjectLinks.WindowsVersion)));
+            (_, _) => Browser.Open(ProjectLinks.NewIssue(AppIdentity.Version, ProjectLinks.WindowsVersion)));
         report.AccessibleName = "Report a problem on GitHub";
         panel.Controls.Add(star);
         panel.Controls.Add(report);
@@ -1541,7 +1595,11 @@ internal sealed partial class SettingsForm : Form
 
     private sealed record Section(Label Header, int FirstRow, int LastRow = -1);
 
-    private void AddRow(string label, Control control)
+    /// <summary>
+    /// Adds a caption and its control. The search finds it by the caption, or by
+    /// <paramref name="searchText"/> where the caption alone would read as something else.
+    /// </summary>
+    private void AddRow(string label, Control control, string? searchText = null)
     {
         var scale = Scale();
         // The caption fills its cell and centres vertically, so it lines up with a control of
@@ -1560,7 +1618,7 @@ internal sealed partial class SettingsForm : Form
         PageLayout.Controls.Add(caption, 0, row);
         PageLayout.Controls.Add(control, 1, row);
         PageLayout.RowCount = row + 1;
-        Index(label, control);
+        Index(searchText ?? label, control);
     }
 
     /// <summary>
@@ -1944,6 +2002,68 @@ internal sealed partial class SettingsForm : Form
         }
 
         base.Dispose(disposing);
+    }
+
+    /// <summary>The providers the tray-icon list offers, in the order Settings opened with.</summary>
+    private readonly List<(string Id, string DisplayName)> _trayProviders = new();
+
+    /// <summary>The shown providers and accounts the tray-icon list was last filled from.</summary>
+    private (string Id, string DisplayName)[] _trayChoices = Array.Empty<(string Id, string DisplayName)>();
+
+    /// <summary>
+    /// Fills the tray-icon list: Automatic, All connected, then each provider with its shown
+    /// accounts, then any account whose provider is not listed. Filled again when the shown
+    /// accounts change while the window is open, so a choice made from the tray menu for an
+    /// account added since can be shown.
+    /// </summary>
+    private void FillTrayChoices(IReadOnlyList<(string Id, string DisplayName)> choices)
+    {
+        _trayChoices = choices.ToArray();
+        _trayProvider.BeginUpdate();
+        try
+        {
+            _trayProvider.Items.Clear();
+            _trayProvider.Items.Add(new ProviderEntry(string.Empty, "Automatic"));
+            _trayProvider.Items.Add(new ProviderEntry(AppSettings.AllProvidersTrayId, "All connected"));
+            foreach (var (id, displayName) in _trayProviders)
+            {
+                AddTrayChoices(id, displayName, _trayChoices);
+            }
+
+            foreach (var (id, displayName) in _trayChoices.Where(choice =>
+                !ProviderKey.IsDefault(choice.Id) &&
+                !_trayProviders.Any(provider => provider.Id.Equals(ProviderKey.ProviderOf(choice.Id), StringComparison.OrdinalIgnoreCase))))
+            {
+                _trayProvider.Items.Add(new ProviderEntry(id, displayName));
+            }
+        }
+        finally
+        {
+            _trayProvider.EndUpdate();
+        }
+    }
+
+    /// <summary>
+    /// Takes the shown providers and accounts as they are now, refilling the tray-icon list only
+    /// when they changed, and keeps the saved choice selected.
+    /// </summary>
+    internal void UpdateTrayChoices(IReadOnlyList<(string Id, string DisplayName)> choices)
+    {
+        if (choices.SequenceEqual(_trayChoices))
+        {
+            return;
+        }
+
+        _loading = true;
+        try
+        {
+            FillTrayChoices(choices);
+            SelectTrayProvider();
+        }
+        finally
+        {
+            _loading = false;
+        }
     }
 
     /// <summary>
