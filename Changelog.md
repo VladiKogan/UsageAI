@@ -4,7 +4,7 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.21.0] - 2026-11-14
 
 ### Added
 
@@ -13,14 +13,8 @@ The project follows [Semantic Versioning](https://semver.org/).
   "Weekly Fable": keep "Closest to its limit", or pin "Weekly" or the model's limit. The choice
   also decides the tray icon's tank and tooltip for that account, as a Gemini model group does.
   Only week-long limits are offered, so a Codex account that reports a second bucket's weekly
-  limit gets the same choice, and daily limits never do.
-
-### Fixed
-
-- **Tray menu submenus open against the menu again.** "Tray icon shows" and "Show quota as"
-  opened their lists a gap to the right of the menu, and the hover highlight ran into the menu's
-  right edge. Each row's side padding made it wider than the menu window, and Windows places a
-  submenu at the row's edge; the padding never moved any text, so it is gone.
+  limit gets the same choice, and daily limits never do. The editor extension 0.1.26 offers the
+  same choice for its Status Bar items, which now show the same limits as these rings.
 
 ### Changed
 
@@ -37,6 +31,13 @@ The project follows [Semantic Versioning](https://semver.org/).
 - **Settings spells "color" the American way.** The Appearance page's card is now "Colors", with
   "Warning color from" and "Critical color from" rows, matching Windows' own Settings. Searching for
   "colour" still finds it.
+
+### Fixed
+
+- **Tray menu submenus open against the menu again.** "Tray icon shows" and "Show quota as"
+  opened their lists a gap to the right of the menu, and the hover highlight ran into the menu's
+  right edge. Each row's side padding made it wider than the menu window, and Windows places a
+  submenu at the row's edge; the padding never moved any text, so it is gone.
 
 ## [0.20.0] - 2026-11-14
 
