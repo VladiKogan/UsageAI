@@ -42,6 +42,8 @@ internal sealed partial class SettingsForm
     private Button _locateAccount = null!;
     private Button _openFolder = null!;
     private Button _terminalCommand = null!;
+    private Button _moveAccountUp = null!;
+    private Button _moveAccountDown = null!;
     private SettingsAccountActions? _accountActions;
     private IReadOnlyList<ProviderStatus> _accountStatuses = Array.Empty<ProviderStatus>();
     private bool _loadingAccounts;
@@ -80,6 +82,11 @@ internal sealed partial class SettingsForm
         _accountList.SelectedIndexChanged += (_, _) => ShowSelectedAccount();
         AddSpan(_accountList);
 
+        // Reordering sits right under the list it reorders.
+        _moveAccountUp = CreateActionButton("Move up", ActionButton.Glyphs.Up, (_, _) => MoveSelectedAccount(-1));
+        _moveAccountDown = CreateActionButton("Move down", ActionButton.Glyphs.Down, (_, _) => MoveSelectedAccount(1));
+        AddSpan(CreateActionRow(new Padding(0, 2, 0, 8), _moveAccountUp, _moveAccountDown));
+
         _accountDetails = new Label
         {
             AutoSize = true,
@@ -93,53 +100,33 @@ internal sealed partial class SettingsForm
         _accountAlerts = CreateCheckBox("Alerts for this account");
         AddSpan(_accountAlerts);
 
-        var rowButtons = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            FlowDirection = FlowDirection.LeftToRight,
-            Margin = scale.Pad(0, 0, 0, 4),
-            WrapContents = true,
-        };
-        rowButtons.Controls.Add(CreateLinkButton("Rename…", (_, _) => RenameSelectedAccount()));
-        rowButtons.Controls.Add(CreateLinkButton("Move up", (_, _) => MoveSelectedAccount(-1)));
-        rowButtons.Controls.Add(CreateLinkButton("Move down", (_, _) => MoveSelectedAccount(1)));
-        _reauthenticate = CreateLinkButton("Re-authenticate", (_, _) => ReauthenticateSelectedAccount());
-        rowButtons.Controls.Add(_reauthenticate);
-        _openFolder = CreateLinkButton("Open folder", (_, _) => OpenSelectedAccountFolder());
-        rowButtons.Controls.Add(_openFolder);
-        _locateAccount = CreateLinkButton("Locate…", (_, _) => LocateSelectedAccount());
-        rowButtons.Controls.Add(_locateAccount);
-        _terminalCommand = CreateLinkButton("Terminal command…", (_, _) => SetSelectedAccountCommand());
-        rowButtons.Controls.Add(_terminalCommand);
-        _removeAccount = CreateLinkButton("Remove", (_, _) => RemoveSelectedAccount(), destructive: true);
-        rowButtons.Controls.Add(_removeAccount);
-        AddSpan(rowButtons);
+        // What any login can do, then what only an account in its own folder can, with Forget
+        // set apart at the end of that row.
+        _reauthenticate = CreateActionButton("Re-authenticate", ActionButton.Glyphs.SignIn, (_, _) => ReauthenticateSelectedAccount());
+        _openFolder = CreateActionButton("Open folder", ActionButton.Glyphs.Folder, (_, _) => OpenSelectedAccountFolder());
+        AddSpan(CreateActionRow(
+            new Padding(0, 6, 0, 0),
+            CreateActionButton("Rename…", ActionButton.Glyphs.Rename, (_, _) => RenameSelectedAccount()),
+            _reauthenticate,
+            _openFolder));
+        _locateAccount = CreateActionButton("Locate…", ActionButton.Glyphs.Locate, (_, _) => LocateSelectedAccount());
+        _terminalCommand = CreateActionButton("Terminal command…", ActionButton.Glyphs.Terminal, (_, _) => SetSelectedAccountCommand());
+        _removeAccount = CreateActionButton("Remove", ActionButton.Glyphs.Delete, (_, _) => RemoveSelectedAccount(), destructive: true);
+        ScaledMargin(_removeAccount, new Padding(ActionGap * 3, ActionGap, 0, 0));
+        AddSpan(CreateActionRow(new Padding(0, 0, 0, 4), _locateAccount, _terminalCommand, _removeAccount));
 
-        var pageButtons = new FlowLayoutPanel
-        {
-            AutoSize = true,
-            FlowDirection = FlowDirection.LeftToRight,
-            Margin = scale.Pad(0, 6, 0, 2),
-        };
-        var add = CreateDialogButton("Add account…", scale, primary: false);
-        add.AutoSize = true;
-        add.Margin = scale.Pad(0, 0, 8, 0);
-        add.Click += (_, _) =>
+        var add = CreateActionButton("Add account…", ActionButton.Glyphs.AddPerson, (_, _) =>
         {
             _accountActions?.OpenAddAccount(owner: this);
             ReloadAccounts();
-        };
-        var rescan = CreateDialogButton("Rescan", scale, primary: false);
-        rescan.Margin = Padding.Empty;
-        rescan.Click += (_, _) =>
+        });
+        var rescan = CreateActionButton("Rescan", ActionButton.Glyphs.Refresh, (_, _) =>
         {
             _accountActions?.Manager.Scan(DateTimeOffset.UtcNow);
             ReloadAccounts();
-        };
+        });
         add.Enabled = rescan.Enabled = _accountActions is not null;
-        pageButtons.Controls.Add(add);
-        pageButtons.Controls.Add(rescan);
-        AddSpan(pageButtons);
+        AddSpan(CreateActionRow(new Padding(0, 14, 0, 2), add, rescan));
 
         _lastScan = CreateHint(string.Empty);
         AddSpan(_lastScan);
@@ -323,6 +310,8 @@ internal sealed partial class SettingsForm
         _terminalCommand.Enabled = isFolder && _accountActions?.Manager.Terminal is not null;
         _reauthenticate.Enabled = key is not null;
         _openFolder.Enabled = key is not null;
+        var (siblings, position) = key is null ? (new List<string>(), -1) : AccountSiblings(key);
+        ShowMoveButtons(position > 0, position >= 0 && position < siblings.Count - 1);
         if (key is null)
         {
             _accountDetails.Text = string.Empty;
@@ -470,6 +459,41 @@ internal sealed partial class SettingsForm
         ReloadAccounts();
     }
 
+    /// <summary>
+    /// The accounts of <paramref name="key"/>'s provider in their order, and its place among them:
+    /// what Move up and Move down reorder, and so also when each of them can.
+    /// </summary>
+    private (List<string> Siblings, int Position) AccountSiblings(string key)
+    {
+        var siblings = OrderedAccountKeys()
+            .Where(other => ProviderKey.ProviderOf(other).Equals(ProviderKey.ProviderOf(key), StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        return (siblings, siblings.FindIndex(other => other.Equals(key, StringComparison.OrdinalIgnoreCase)));
+    }
+
+    /// <summary>
+    /// Turns Move up and Move down on or off. A focused one about to turn off hands the focus on
+    /// first, to the other when it can still move the account, else to the list: disabled while
+    /// focused, it dropped the focus wherever Windows put it, and the next key press acted there.
+    /// </summary>
+    private void ShowMoveButtons(bool canMoveUp, bool canMoveDown)
+    {
+        var upFocused = _moveAccountUp.Focused || ReferenceEquals(ActiveControl, _moveAccountUp);
+        var downFocused = _moveAccountDown.Focused || ReferenceEquals(ActiveControl, _moveAccountDown);
+        if ((upFocused && !canMoveUp) || (downFocused && !canMoveDown))
+        {
+            var other = upFocused ? _moveAccountDown : _moveAccountUp;
+            var otherCanMove = upFocused ? canMoveDown : canMoveUp;
+            other.Enabled = otherCanMove;
+            Control next = otherCanMove ? other : _accountList;
+            next.Focus();
+            ActiveControl = next;
+        }
+
+        _moveAccountUp.Enabled = canMoveUp;
+        _moveAccountDown.Enabled = canMoveDown;
+    }
+
     private void MoveSelectedAccount(int offset)
     {
         if (SelectedAccountKey() is not { } key)
@@ -477,10 +501,7 @@ internal sealed partial class SettingsForm
             return;
         }
 
-        var siblings = OrderedAccountKeys()
-            .Where(other => ProviderKey.ProviderOf(other).Equals(ProviderKey.ProviderOf(key), StringComparison.OrdinalIgnoreCase))
-            .ToList();
-        var from = siblings.FindIndex(other => other.Equals(key, StringComparison.OrdinalIgnoreCase));
+        var (siblings, from) = AccountSiblings(key);
         var to = from + offset;
         if (from < 0 || to < 0 || to >= siblings.Count || !ConfirmReplaceCardOrder())
         {
@@ -633,4 +654,44 @@ internal sealed partial class SettingsForm
 
         ReloadAccounts();
     }
+
+    /// <summary>The gap between the buttons of a row, at 96 DPI.</summary>
+    private const int ActionGap = 6;
+
+    private ActionButton CreateActionButton(string text, string glyph, EventHandler onClick, bool destructive = false)
+    {
+        var button = new ActionButton(text, glyph, destructive) { DpiOverride = _dpiOverride };
+        ScaledMargin(button, new Padding(0, ActionGap, ActionGap, 0));
+        button.Click += onClick;
+        return button;
+    }
+
+    /// <summary>A row of buttons that wraps when the window is too narrow for it; margin at 96 DPI.</summary>
+    private FlowLayoutPanel CreateActionRow(Padding margin, params Control[] buttons)
+    {
+        var row = new FlowLayoutPanel
+        {
+            AutoSize = true,
+            AutoSizeMode = AutoSizeMode.GrowAndShrink,
+            FlowDirection = FlowDirection.LeftToRight,
+            Padding = Padding.Empty,
+            WrapContents = true,
+        };
+        ScaledMargin(row, margin);
+        row.Controls.AddRange(buttons);
+        return row;
+    }
+
+    /// <summary>
+    /// Gives a control a margin given at 96 DPI, at the window's scale, and again at each scale
+    /// it moves to (<see cref="ApplyScaledLayout"/>): set once in pixels, the gaps between the
+    /// account buttons kept the first monitor's size while the buttons took the new one's.
+    /// </summary>
+    private void ScaledMargin(Control control, Padding baseline)
+    {
+        _scaledMargins.Add((control, baseline));
+        control.Margin = Scale().Pad(baseline.Left, baseline.Top, baseline.Right, baseline.Bottom);
+    }
+
+    private readonly List<(Control Control, Padding Baseline)> _scaledMargins = new();
 }

@@ -22,7 +22,9 @@ internal sealed record PopupRings(
 /// tile has room for two rings, so both rings come from one group: the one the user picked, or
 /// else whichever group holds the busiest limit. Within the group the rings follow the dashboard's
 /// Important selection (busiest session, then rolling, then monthly limit), so the popup and the
-/// Important view never disagree about which limits matter.
+/// Important view never disagree about which limits matter. A provider with one group but several
+/// weekly limits — Claude reports its all-models "Weekly" beside model limits such as "Weekly
+/// Fable" — lets the user pin which of them the longer ring shows, the same way.
 /// </summary>
 internal static class PopupMetricSelection
 {
@@ -61,17 +63,65 @@ internal static class PopupMetricSelection
         return groups.Length > 1 ? groups : Array.Empty<string>();
     }
 
-    public static PopupRings Select(IReadOnlyList<UsageMetric> metrics, string? preferredGroup)
+    /// <summary>The length of a weekly window, which every limit offered as a weekly choice has.</summary>
+    public const long WeekMinutes = 10_080;
+
+    /// <summary>
+    /// The weekly limits a provider without model groups reports more than one of, in reported
+    /// order: Claude's all-models "Weekly" and its model limits, any of which can be the ring.
+    /// Only week-long windows count, so daily limits (the Gemini CLI's per-model quotas) are never
+    /// offered as a weekly choice.
+    /// </summary>
+    public static IReadOnlyList<string> WeeklyLimits(IReadOnlyList<UsageMetric> metrics)
+    {
+        ArgumentNullException.ThrowIfNull(metrics);
+        if (Groups(metrics).Count > 0)
+        {
+            return Array.Empty<string>();
+        }
+
+        var limits = metrics
+            .Where(metric => metric.HasQuota && metric.Kind == UsageMetricKind.Rolling && metric.DurationMinutes == WeekMinutes)
+            .Select(metric => metric.Name.Trim())
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+        return limits.Length > 1 ? limits : Array.Empty<string>();
+    }
+
+    /// <summary>
+    /// What Settings offers to pin a provider's rings to: its model groups, or else its weekly
+    /// limits. Empty when the provider leaves nothing to choose.
+    /// </summary>
+    public static IReadOnlyList<string> Choices(IReadOnlyList<UsageMetric> metrics) =>
+        Groups(metrics) is { Count: > 0 } groups ? groups : WeeklyLimits(metrics);
+
+    /// <param name="preferred">
+    /// The pinned choice: a model group, or for a provider without groups one of its weekly limits.
+    /// Anything the provider no longer reports means automatic.
+    /// </param>
+    public static PopupRings Select(IReadOnlyList<UsageMetric> metrics, string? preferred)
     {
         ArgumentNullException.ThrowIfNull(metrics);
         var metered = metrics.Where(metric => metric.HasQuota).ToArray();
         var groups = Groups(metrics);
         string? group = null;
         var automatic = false;
+        if (groups.Count == 0 &&
+            WeeklyLimits(metrics).FirstOrDefault(limit =>
+                string.Equals(limit, preferred?.Trim(), StringComparison.OrdinalIgnoreCase)) is { } weekly)
+        {
+            // The other weekly limits step aside, so the Important selection below keeps the
+            // pinned one in the rolling slot whichever is busiest.
+            metered = metered
+                .Where(metric => metric.Kind != UsageMetricKind.Rolling ||
+                                 string.Equals(metric.Name.Trim(), weekly, StringComparison.OrdinalIgnoreCase))
+                .ToArray();
+        }
+
         if (groups.Count > 0)
         {
             group = groups.FirstOrDefault(candidate =>
-                string.Equals(candidate, preferredGroup?.Trim(), StringComparison.OrdinalIgnoreCase));
+                string.Equals(candidate, preferred?.Trim(), StringComparison.OrdinalIgnoreCase));
             if (group is null)
             {
                 automatic = true;

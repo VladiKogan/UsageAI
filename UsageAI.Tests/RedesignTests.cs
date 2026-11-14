@@ -74,6 +74,41 @@ internal static class RedesignTests
             new UsageMetric("Chat", UsageMetricKind.Monthly, 0, IsUnlimited: true),
         };
         Equal("Session high|Weekly", Names(PopupMetricSelection.Select(mixed, null).Rings));
+        Equal(0, PopupMetricSelection.Choices(mixed).Count);
+
+        // Claude's model weekly limits beside its all-models one: the longer ring shows the one
+        // closest to its limit, or the one pinned, matched without regard to case or spaces.
+        var claude = new[]
+        {
+            Metric("5-hour", UsageMetricKind.Session, 30),
+            Weekly("Weekly", 40),
+            Weekly("Weekly Fable", 70),
+            new UsageMetric("Fable reset", UsageMetricKind.Balance, null, RemainingText: "1"),
+        };
+        Equal("Weekly|Weekly Fable", string.Join('|', PopupMetricSelection.WeeklyLimits(claude)));
+        Equal("Weekly|Weekly Fable", string.Join('|', PopupMetricSelection.Choices(claude)));
+        Equal("5-hour|Weekly Fable", Names(PopupMetricSelection.Select(claude, null).Rings));
+        Equal("5-hour|Weekly", Names(PopupMetricSelection.Select(claude, " weekly ").Rings));
+        Equal("5-hour|Weekly Fable", Names(PopupMetricSelection.Select(claude, "Weekly Fable").Rings));
+        False(PopupMetricSelection.Select(claude, "Weekly").HasGroupChoice);
+
+        // A pinned limit the provider stopped reporting, or a group name, falls back to automatic.
+        Equal("5-hour|Weekly Fable", Names(PopupMetricSelection.Select(claude, "Weekly Opus").Rings));
+        Equal("5-hour|Weekly Fable", Names(PopupMetricSelection.Select(claude, "Gemini Models").Rings));
+
+        // Model groups are the choice where a provider has them, and a weekly-limit name pins nothing.
+        Equal(0, PopupMetricSelection.WeeklyLimits(gemini).Count);
+        Equal("Gemini Models|Claude and GPT models", string.Join('|', PopupMetricSelection.Choices(gemini)));
+        True(PopupMetricSelection.Select(gemini, "Claude and GPT models (Weekly)").GroupIsAutomatic);
+
+        // Only week-long limits are a weekly choice: the Gemini CLI's daily per-model quotas are not.
+        var daily = new[]
+        {
+            new UsageMetric("Gemini Pro", UsageMetricKind.Rolling, 30, DurationMinutes: 1_440),
+            new UsageMetric("Gemini Flash", UsageMetricKind.Rolling, 60, DurationMinutes: 1_440),
+        };
+        Equal(0, PopupMetricSelection.Choices(daily).Count);
+        Equal("Gemini Flash", Names(PopupMetricSelection.Select(daily, "Gemini Pro").Rings));
 
         // Metered limits outside the three windows still ring, busiest first.
         var balances = new[]
@@ -346,15 +381,23 @@ internal static class RedesignTests
             Metric("Gemini Models (5-hour)", UsageMetricKind.Session, 14),
             Metric("Claude and GPT models (5-hour)", UsageMetricKind.Session, 94));
         var codex = Status("codex", "Codex", Metric("Weekly", UsageMetricKind.Rolling, 92));
+        var claude = Status(
+            "claude",
+            "Claude Code",
+            Metric("5-hour", UsageMetricKind.Session, 30),
+            Weekly("Weekly", 40),
+            Weekly("Weekly Fable", 70));
         var groups = UsageApplicationContext.PopupGroups(new[]
         {
             gemini,
             codex,
-            new ProviderStatus("claude", "Claude Code", null, "Signed out", false),
+            claude,
+            new ProviderStatus("claude@1a2b3c4d", "Claude Code", null, "Signed out", false),
         });
         Equal("Gemini Models|Claude and GPT models", string.Join('|', groups["GEMINI"]));
         Equal(0, groups["codex"].Count);
-        False(groups.ContainsKey("claude"));
+        Equal("Weekly|Weekly Fable", string.Join('|', groups["claude"]));
+        False(groups.ContainsKey("claude@1a2b3c4d"));
 
         var settings = new AppSettings { GlobalHotkeyEnabled = false };
         settings.SetPopupMetricGroup("gemini", "Retired models");
@@ -380,6 +423,19 @@ internal static class RedesignTests
         }
 
         Null(settings.PopupMetricGroup("gemini"));
+
+        // Claude's weekly limits get a picker of their own, choosing what the longer ring shows.
+        using (var weekly = Settings(settings, groups))
+        {
+            var picker = Descendants(weekly).OfType<ComboBox>().Single(box => box.AccessibleName == "Claude Code popup rings");
+            Equal(0, picker.SelectedIndex);
+            Equal("Closest to its limit|Weekly|Weekly Fable", string.Join('|', picker.Items.Cast<object>()));
+            picker.SelectedIndex = 1;
+            Save(weekly);
+        }
+
+        Equal("Weekly", settings.PopupMetricGroup("claude"));
+        Equal("5-hour|Weekly", Names(PopupMetricSelection.Select(claude.Snapshot!.Metrics, settings.PopupMetricGroup("claude")).Rings));
 
         // Without readings there is nothing to pick from, so no picker appears.
         using (var empty = Settings(settings, null))
@@ -1113,11 +1169,14 @@ internal static class RedesignTests
 
     private static UsageMetric Metric(string name, UsageMetricKind kind, int used) => new(name, kind, used);
 
+    private static UsageMetric Weekly(string name, int used) =>
+        new(name, UsageMetricKind.Rolling, used, DurationMinutes: PopupMetricSelection.WeekMinutes);
+
     private static SettingsForm Settings(AppSettings settings, IReadOnlyDictionary<string, IReadOnlyList<string>>? groups)
     {
         var dialog = new SettingsForm(
             settings,
-            new[] { ("codex", "Codex"), ("gemini", "Google Gemini") },
+            new[] { ("codex", "Codex"), ("claude", "Claude Code"), ("gemini", "Google Gemini") },
             _ => Task.FromResult(new UpdateCheckResult(true, null)),
             _ => Task.CompletedTask,
             96,
@@ -1611,10 +1670,10 @@ internal static class RedesignTests
         using (var scaled = TrayMenu.Create(static () => { }, static () => { }, static () => { }, static () => { }))
         {
             TrayMenu.ApplyMetrics(scaled, 96);
-            Equal(new Padding(10, 5, 10, 5), scaled.Items[0].Padding);
+            Equal(new Padding(0, 5, 0, 5), scaled.Items[0].Padding);
             Equal(Padding.Empty, scaled.Items[2].Padding);
             TrayMenu.ApplyMetrics(scaled, 192);
-            Equal(new Padding(20, 10, 20, 10), scaled.Items[0].Padding);
+            Equal(new Padding(0, 10, 0, 10), scaled.Items[0].Padding);
 
             // The bold default and the plain rows share one face and one size, made for the DPI the
             // menu is at now: WinForms rescales them itself when the menu lands on another monitor,
@@ -1648,6 +1707,10 @@ internal static class RedesignTests
             centred.CreateControl();
             centred.PerformLayout();
             centred.Size = centred.GetPreferredSize(Size.Empty);
+
+            // Every row ends inside the menu's window. A row wider than the window opened its
+            // submenu past the menu's edge, with a gap between the two.
+            True(centred.Items.Cast<ToolStripItem>().All(item => item.Bounds.Right <= centred.Width));
             using var bitmap = new Bitmap(Math.Max(1, centred.Width), Math.Max(1, centred.Height));
             centred.DrawToBitmap(bitmap, new Rectangle(Point.Empty, bitmap.Size));
             foreach (var item in new[] { centred.Items[0], centred.Items[^1] })
@@ -1735,10 +1798,19 @@ internal static class RedesignTests
             Equal("Automatic|All connected||Codex|[Claude Code · R&&D]", Rows(quickMenu.Items[3]));
             Equal("[Used]|Remaining", Rows(quickMenu.Items[4]));
 
+            // A submenu opens against the menu's edge, not a row's width past it.
+            quickMenu.Show(new Point(400, 300));
+            var quotaRow = (ToolStripMenuItem)quickMenu.Items[4];
+            quotaRow.ShowDropDown();
+            Application.DoEvents();
+            True(quotaRow.DropDown.Left <= quickMenu.Right);
+            True(quotaRow.DropDown.Left >= quickMenu.Right - new LayoutScale(quickMenu.DeviceDpi)[4]);
+            quickMenu.Close();
+
             // A list's rows get the menu's spacing and face.
             TrayMenu.ApplyMetrics(quickMenu, 192);
             var list = ((ToolStripMenuItem)quickMenu.Items[3]).DropDown;
-            Equal(new Padding(20, 10, 20, 10), list.Items[0].Padding);
+            Equal(new Padding(0, 10, 0, 10), list.Items[0].Padding);
             Equal(Padding.Empty, list.Items[2].Padding);
             Equal(Typography.PixelSize(TrayMenu.FontPoints, list.DeviceDpi), list.Items[0].Font.Size);
             var face = list.Items[0].Font;
@@ -2500,7 +2572,7 @@ internal static class RedesignTests
         using (var dialog = Open(remembered, 96))
         {
             Equal(FormBorderStyle.Sizable, dialog.FormBorderStyle);
-            False(dialog.MaximizeBox);
+            True(dialog.MaximizeBox);
             True(dialog.MinimizeBox);
             True(dialog.ShowInTaskbar);
             // The title bar carries the UsageAI logo, embedded so a single-file copy has it too.
@@ -2529,6 +2601,31 @@ internal static class RedesignTests
 
         Equal("820,700", string.Join(',', remembered.SettingsPageSize!));
         Equal("820,700", string.Join(',', AppSettings.Load().SettingsPageSize!));
+
+        // Maximized, a page's cards stop at MaxPageWidth rather than stretching across the
+        // screen, and closing it keeps the size the window returns to, not the screen's.
+        using (var dialog = Open(remembered, 96))
+        {
+            dialog.Show();
+            Invoke(dialog, "OnResizeBegin", EventArgs.Empty);
+            dialog.ClientSize = new Size(780, 640);
+            Invoke(dialog, "OnResizeEnd", EventArgs.Empty);
+            dialog.WindowState = FormWindowState.Maximized;
+            Application.DoEvents();
+            var page = Field<Panel>(dialog, "_scrollHost").Controls.OfType<TableLayoutPanel>().Single(candidate => candidate.Visible);
+            True(page.Width - page.Padding.Horizontal <= SettingsForm.MaxPageWidth);
+            True(dialog.ClientSize.Width > 780);
+
+            // A DPI change leaves a maximized window's bounds to Windows rather than fitting them
+            // into the working area, which kept the state but drew a normal window.
+            var maximized = dialog.Bounds;
+            DpiChanged(dialog, maximized);
+            Equal(FormWindowState.Maximized, dialog.WindowState);
+            Equal(maximized, dialog.Bounds);
+            dialog.Close();
+        }
+
+        Equal("780,640", string.Join(',', remembered.SettingsPageSize!));
 
         // It is stored at 96 DPI, so a size chosen at 200% opens the same on any monitor.
         using (var scaled = Open(remembered, 192))

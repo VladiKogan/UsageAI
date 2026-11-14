@@ -6,8 +6,34 @@ The project follows [Semantic Versioning](https://semver.org/).
 
 ## [Unreleased]
 
+### Added
+
+- **Choose which weekly limit a Claude card's popup rings show.** Settings' Popup rings now has
+  a picker for each Claude Code account that reports a model limit beside its weekly one, such as
+  "Weekly Fable": keep "Closest to its limit", or pin "Weekly" or the model's limit. The choice
+  also decides the tray icon's tank and tooltip for that account, as a Gemini model group does.
+  Only week-long limits are offered, so a Codex account that reports a second bucket's weekly
+  limit gets the same choice, and daily limits never do.
+
+### Fixed
+
+- **Tray menu submenus open against the menu again.** "Tray icon shows" and "Show quota as"
+  opened their lists a gap to the right of the menu, and the hover highlight ran into the menu's
+  right edge. Each row's side padding made it wider than the menu window, and Windows places a
+  submenu at the row's edge; the padding never moved any text, so it is gone.
+
 ### Changed
 
+- **Settings' Accounts page has proper buttons for its account actions.** The row of text links
+  is now a set of buttons with icons, grouped by what they do: Move up and Move down sit right
+  under the list they reorder, and turn off at either end of a provider's accounts. Rename,
+  Re-authenticate and Open folder share a row, and Locate, Terminal command and Forget, which
+  only apply to an extra account, share the next. An action that does not apply is now drawn
+  dimmed but legible; the old links were drawn in the system's dark grey, which read as black
+  on the dark theme. Add account and Rescan match.
+- **Settings can be maximized.** Its maximize button was turned off so rows would not stretch
+  across a whole screen; instead, a page's cards now stop growing at a readable width beside the
+  page list, as in Windows' own Settings. Closing it maximized keeps the size it returns to.
 - **Settings spells "color" the American way.** The Appearance page's card is now "Colors", with
   "Warning color from" and "Critical color from" rows, matching Windows' own Settings. Searching for
   "colour" still finds it.

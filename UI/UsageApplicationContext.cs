@@ -895,14 +895,17 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _ = CheckForUpdatesIfDueAsync();
     }
 
-    /// <summary>The model groups each provider reported last, for Settings' popup-ring pickers.</summary>
+    /// <summary>
+    /// What each provider's popup rings can be pinned to, from its last reading: model groups, or
+    /// weekly limits for a provider without groups. For Settings' popup-ring pickers.
+    /// </summary>
     internal static IReadOnlyDictionary<string, IReadOnlyList<string>> PopupGroups(IReadOnlyList<ProviderStatus> statuses) =>
         statuses
             .Where(status => status.Snapshot is not null)
             .GroupBy(status => status.ProviderId, StringComparer.OrdinalIgnoreCase)
             .ToDictionary(
                 group => group.Key,
-                group => PopupMetricSelection.Groups(group.First().Snapshot!.Metrics),
+                group => PopupMetricSelection.Choices(group.First().Snapshot!.Metrics),
                 StringComparer.OrdinalIgnoreCase);
 
     /// <summary>The settings that decide which providers are fetched and how often.</summary>
@@ -1359,7 +1362,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     /// <summary>
     /// The popup tile's rings, so the tooltip, the tank and the popup agree on which limits and
-    /// which model group matter.
+    /// which model group or weekly limit matter.
     /// </summary>
     private static IReadOnlyList<UsageMetric> TrayRings(ProviderStatus status, AppSettings settings) =>
         PopupMetricSelection.Select(status.Snapshot!.Metrics, settings.PopupMetricGroup(status.ProviderId)).Rings;

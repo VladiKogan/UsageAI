@@ -190,8 +190,11 @@ internal static class TrayMenu
         var scale = new LayoutScale(dpi);
         foreach (ToolStripItem item in menu.Items)
         {
-            // Windows 11 menus have roomier rows than the WinForms default.
-            item.Padding = item is ToolStripSeparator ? Padding.Empty : scale.Pad(10, 5, 10, 5);
+            // Windows 11 menus have taller rows than the WinForms default. The padding is vertical
+            // only: a drop-down sizes its window without its rows' side padding but still widens
+            // the rows by it, so side padding ran every row past the window's right edge, which cut
+            // off the hover highlight's corners and opened each submenu that far from the menu.
+            item.Padding = item is ToolStripSeparator ? Padding.Empty : scale.Pad(0, 5, 0, 5);
             if (item is ToolStripMenuItem { HasDropDown: true } submenu)
             {
                 ApplyMetrics(submenu.DropDown, dpi);
