@@ -954,7 +954,7 @@ internal static class RedesignTests
         Equal("General|Alerts|Appearance|Providers|Accounts|About", string.Join('|', sectionNav.Sections));
         Equal("Refresh|Startup|History", CardHeadings(dialog, 0));
         Equal("Notifications|Provider status", CardHeadings(dialog, 1));
-        Equal("Theme|Quota|Colours|Dashboard|Tray icon", CardHeadings(dialog, 2));
+        Equal("Theme|Quota|Colors|Dashboard|Tray icon", CardHeadings(dialog, 2));
         Equal("Shown providers", CardHeadings(dialog, 3));
         Equal("Accounts|Finding logins", CardHeadings(dialog, 4));
         Equal("UsageAI|Support the project", CardHeadings(dialog, 5));

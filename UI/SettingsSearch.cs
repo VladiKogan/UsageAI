@@ -56,7 +56,7 @@ internal static class SettingsSearch
         {
             ["Theme"] = new[] { "dark", "light", "mode", "appearance" },
             ["Mode"] = new[] { "dark", "light", "theme", "system" },
-            ["Colours"] = new[] { "color", "colors", "red", "yellow", "amber", "orange", "warning", "critical", "threshold" },
+            ["Colors"] = new[] { "colour", "colours", "red", "yellow", "amber", "orange", "warning", "critical", "threshold" },
             ["Accounts"] = new[] { "login", "logins", "profile", "sign in", "sign-in", "email", "folder" },
             ["Notifications"] = new[] { "notify", "notification", "alert", "balloon", "toast" },
             ["Show tray notifications"] = new[] { "notify", "notification", "pause", "mute", "quiet" },

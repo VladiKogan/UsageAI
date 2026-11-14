@@ -290,7 +290,7 @@ internal sealed partial class SettingsForm : Form
         _quotaDisplay.SelectedIndexChanged += (_, _) => _quotaPreview.ShowRemaining = _quotaDisplay.SelectedIndex == 1;
         _thresholdPreview = new SettingPreview(SettingPreviewKind.ThresholdBand)
         {
-            AccessibleName = "Status colour preview",
+            AccessibleName = "Status color preview",
             Dock = DockStyle.Fill,
             DpiOverride = _dpiOverride,
             Height = scale[ThresholdPreviewHeight],
@@ -386,10 +386,10 @@ internal sealed partial class SettingsForm : Form
         AddSection("Quota");
         AddRow("Show quota as", _quotaDisplay);
         AddSpan(_quotaPreview);
-        AddSpan(CreateHint("Remaining shows what is left on meters, headlines, the tray icon and alerts. Colours and alert thresholds still follow usage."));
-        AddSection("Colours");
-        AddRow("Warning colour from (% used)", _warningPercent);
-        AddRow("Critical colour from (% used)", _criticalPercent);
+        AddSpan(CreateHint("Remaining shows what is left on meters, headlines, the tray icon and alerts. Colors and alert thresholds still follow usage."));
+        AddSection("Colors");
+        AddRow("Warning color from (% used)", _warningPercent);
+        AddRow("Critical color from (% used)", _criticalPercent);
         AddSpan(_thresholdPreview);
         AddSection("Dashboard");
         AddRow("Dashboard rows", _metricDisplayMode);
@@ -628,8 +628,8 @@ internal sealed partial class SettingsForm : Form
         WireNumber(_secondAlert, WriteAlertThresholds, SettingsChanges.None);
         WireToggle(_notifyOnReset, on => _settings.NotifyOnReset = on, SettingsChanges.None);
         WireToggle(_showIncidents, on => _settings.ShowProviderIncidents = on, SettingsChanges.Display);
-        WireNumber(_warningPercent, WriteColourThresholds, SettingsChanges.Theme | SettingsChanges.Display);
-        WireNumber(_criticalPercent, WriteColourThresholds, SettingsChanges.Theme | SettingsChanges.Display);
+        WireNumber(_warningPercent, WriteColorThresholds, SettingsChanges.Theme | SettingsChanges.Display);
+        WireNumber(_criticalPercent, WriteColorThresholds, SettingsChanges.Theme | SettingsChanges.Display);
         _theme.SelectedIndexChanged += (_, _) => Write(
             () => _settings.Theme = _theme.SelectedIndex switch
             {
@@ -685,7 +685,7 @@ internal sealed partial class SettingsForm : Form
     /// passing through an order the saved setting does not allow (critical below warning) was
     /// clamped on the way and stayed clamped.
     /// </summary>
-    private void WriteColourThresholds()
+    private void WriteColorThresholds()
     {
         _settings.WarningPercent = (int)_warningPercent.Value;
         _settings.CriticalPercent = (int)_criticalPercent.Value;
