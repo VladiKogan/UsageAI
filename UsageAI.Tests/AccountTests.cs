@@ -346,7 +346,10 @@ internal static class AccountTests
             Equal(@"The login in %USERPROFILE%\.claude is always read; hide it instead.", manager.Remove("claude", deleteCreatedFolder: true));
             Equal(null, manager.Remove(added.UnitKey!, deleteCreatedFolder: true));
             False(Directory.Exists(elsewhere));
+            settings.SetPopupMetricGroup(workKey, "Weekly Fable");
             Equal(null, manager.Remove(workKey, deleteCreatedFolder: true));
+            // A removed account's popup-ring choice goes with it.
+            True(settings.PopupMetricGroup(workKey) is null);
             True(Directory.Exists(work));
             True(settings.ForgottenAccounts.Contains(workKey));
             manager.Scan(DateTimeOffset.UtcNow);
@@ -1478,6 +1481,50 @@ internal static class AccountTests
             True(index >= 0);
             True(list.GetItemChecked(index));
             False(Field<Button>(dialog, "_terminalCommand").Enabled);
+
+            // Move up and Move down follow the selected account's place among its provider's.
+            list.SelectedIndex = index;
+            True(Field<Button>(dialog, "_moveAccountUp").Enabled);
+            False(Field<Button>(dialog, "_moveAccountDown").Enabled);
+            list.SelectedIndex = index - 1;
+            False(Field<Button>(dialog, "_moveAccountUp").Enabled);
+            True(Field<Button>(dialog, "_moveAccountDown").Enabled);
+
+            // A focused Move button that turns off at the end hands the focus to the other one,
+            // so the next key press still acts on the list's order; moving back restores it.
+            var moveUp = Field<Button>(dialog, "_moveAccountUp");
+            var moveDown = Field<Button>(dialog, "_moveAccountDown");
+            moveDown.Focus();
+            dialog.ActiveControl = moveDown;
+            moveDown.PerformClick();
+            Application.DoEvents();
+            False(moveDown.Enabled);
+            True(moveUp.Enabled);
+            True(ReferenceEquals(dialog.ActiveControl, moveUp));
+            moveUp.PerformClick();
+            Application.DoEvents();
+            False(moveUp.Enabled);
+            True(ReferenceEquals(dialog.ActiveControl, moveDown));
+            Equal(index - 1, list.SelectedIndex);
+
+            // The gaps around the account buttons are set again at each scale, not kept in pixels.
+            moveUp.Margin = Padding.Empty;
+            typeof(SettingsForm).GetMethod("ApplyScaledLayout", System.Reflection.BindingFlags.Instance | System.Reflection.BindingFlags.NonPublic)!
+                .Invoke(dialog, null);
+            Equal(new Padding(0, 6, 6, 0), moveUp.Margin);
+
+            // An unavailable action still shows its label: the flat buttons it replaced drew it in
+            // the system's dark grey, black on the dark card.
+            var unavailable = IsType<ActionButton>(Field<Button>(dialog, "_terminalCommand"));
+            using (var face = new Bitmap(unavailable.Width, unavailable.Height))
+            {
+                unavailable.DrawToBitmap(face, new Rectangle(Point.Empty, face.Size));
+                var card = unavailable.Parent!.BackColor.GetBrightness();
+                var strongest = Enumerable.Range(0, face.Width)
+                    .SelectMany(x => Enumerable.Range(0, face.Height).Select(y => Math.Abs(face.GetPixel(x, y).GetBrightness() - card)))
+                    .Max();
+                True(strongest > 0.25F);
+            }
 
             // A click on the name selects the account and leaves its tick; a second click too.
             var row = list.GetItemRectangle(index);

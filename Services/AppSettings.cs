@@ -168,15 +168,17 @@ internal sealed class AppSettings
     public int[]? SettingsPageSize { get; set; }
 
     /// <summary>
-    /// The model group each provider's popup rings show, keyed by provider id. A provider with no
-    /// entry, or an entry naming a group it no longer reports, shows its busiest group.
+    /// The model group each provider's popup rings show, keyed by provider id, or for a provider
+    /// without groups the weekly limit its longer ring shows (Claude's "Weekly" or "Weekly Fable").
+    /// A provider with no entry, or an entry naming something it no longer reports, shows its
+    /// busiest. The name stays for settings files already saved.
     /// </summary>
     public Dictionary<string, string> PopupMetricGroups { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     public string? PopupMetricGroup(string providerId) =>
         PopupMetricGroups.TryGetValue(providerId, out var group) ? group : null;
 
-    /// <summary>Pins a provider's popup rings to <paramref name="group"/>; null returns to automatic.</summary>
+    /// <summary>Pins a provider's popup rings to <paramref name="group"/>, a model group or weekly limit; null returns to automatic.</summary>
     public void SetPopupMetricGroup(string providerId, string? group)
     {
         var groups = new Dictionary<string, string>(PopupMetricGroups, StringComparer.OrdinalIgnoreCase);

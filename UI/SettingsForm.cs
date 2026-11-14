@@ -175,9 +175,10 @@ internal sealed partial class SettingsForm : Form
         // nothing to confirm, and the tray app shows it with no owner, so it is never hidden along
         // with the popup it was opened from (0.19.0–0.19.1). Its taskbar button and minimize box
         // keep it findable once other windows cover it. Resizable, since a page can be longer than
-        // the window; not maximizable, because rows stretched across a whole screen are hard to read.
+        // the window, and maximizable: a page's cards stop growing at MaxPageWidth, as Windows' own
+        // Settings does, so rows never stretch across a whole screen.
         FormBorderStyle = FormBorderStyle.Sizable;
-        MaximizeBox = false;
+        MaximizeBox = true;
         MinimizeBox = true;
         SizeGripStyle = SizeGripStyle.Hide;
         ShowInTaskbar = true;
@@ -879,8 +880,9 @@ internal sealed partial class SettingsForm : Form
 
     /// <summary>
     /// One picker per provider that reports more than one model group, choosing which group the
-    /// popup's rings show. Groups come from the provider's last reading, so a provider that has
-    /// not reported yet has no picker until it does.
+    /// popup's rings show, or more than one weekly limit (Claude's "Weekly" and "Weekly Fable"),
+    /// choosing which the longer ring shows. Choices come from the provider's last reading, so a
+    /// provider that has not reported yet has no picker until it does.
     /// </summary>
     private void AddPopupGroupPickers(
         IReadOnlyList<(string Id, string DisplayName)> providers,
@@ -933,7 +935,7 @@ internal sealed partial class SettingsForm : Form
 
         if (_popupGroupPickers.Count > 0)
         {
-            AddSpan(CreateHint("Which model group's limits the popup's rings show.", belowRow: true));
+            AddSpan(CreateHint("Which model group, or which weekly limit, the popup's rings show.", belowRow: true));
         }
     }
 
@@ -1327,6 +1329,7 @@ internal sealed partial class SettingsForm : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
         layout.Paint += PaintSectionCards;
+        layout.SizeChanged += (_, _) => FitPagePadding(layout, Scale());
         _scrollHost.Controls.Add(layout);
         _building = new SettingsPage(name, layout);
         _pages.Add(_building);
@@ -1593,6 +1596,25 @@ internal sealed partial class SettingsForm : Form
 
     private static Padding LayoutPadding(LayoutScale scale) => scale.Pad(14 + CardInset, 8, 18 + CardInset, 12);
 
+    /// <summary>The widest a page's cards grow, at 96 DPI; a wider window leaves the rest empty.</summary>
+    internal const int MaxPageWidth = 800;
+
+    /// <summary>
+    /// Gives a page its padding, widened on the right once the window is wider than
+    /// <see cref="MaxPageWidth"/> allows. The cards are painted inside the padding, so they stop
+    /// growing there and stay beside the page list rather than stretching across a maximized
+    /// window. Setting the padding never changes the page's width, so this cannot loop.
+    /// </summary>
+    private static void FitPagePadding(Control layout, LayoutScale scale)
+    {
+        var padding = LayoutPadding(scale);
+        padding.Right += Math.Max(0, layout.Width - padding.Horizontal - scale[MaxPageWidth]);
+        if (layout.Padding != padding)
+        {
+            layout.Padding = padding;
+        }
+    }
+
     private sealed record Section(Label Header, int FirstRow, int LastRow = -1);
 
     /// <summary>
@@ -1763,7 +1785,12 @@ internal sealed partial class SettingsForm : Form
             eventArgs.DeviceDpiNew);
         base.OnDpiChanged(eventArgs);
         ApplyScaledLayout();
-        Bounds = WindowBounds.FitToWorkingArea(Bounds, Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea);
+        // A maximized window already fills its monitor, and its bounds overhang the working area by
+        // the frame on purpose; fitted, it kept the state but lost the geometry, borders and all.
+        if (WindowState == FormWindowState.Normal)
+        {
+            Bounds = WindowBounds.FitToWorkingArea(Bounds, Screen.FromRectangle(eventArgs.SuggestedRectangle).WorkingArea);
+        }
         // Wrapped text was measured while the window still had its old width; measured again at
         // the new one, a one-line hint stops keeping the height of two.
         foreach (var page in _pages)
@@ -1826,10 +1853,14 @@ internal sealed partial class SettingsForm : Form
         }
 
         var dpi = _dpiOverride ?? DeviceDpi;
+        // Closed maximized or minimized, the size to keep is the one the window returns to.
+        var client = WindowState == FormWindowState.Normal
+            ? ClientSize
+            : RestoreBounds.Size - SizeFromClientSize(Size.Empty);
         int[] size =
         [
-            LayoutScale.ScaleBetweenDpis(ClientSize.Width, dpi, LayoutScale.BaselineDpi),
-            LayoutScale.ScaleBetweenDpis(ClientSize.Height, dpi, LayoutScale.BaselineDpi),
+            LayoutScale.ScaleBetweenDpis(client.Width, dpi, LayoutScale.BaselineDpi),
+            LayoutScale.ScaleBetweenDpis(client.Height, dpi, LayoutScale.BaselineDpi),
         ];
         if (_settings.SettingsPageSize is not [var width, var height] || width != size[0] || height != size[1])
         {
@@ -1854,11 +1885,16 @@ internal sealed partial class SettingsForm : Form
         _nav.Margin = scale.Pad(8, 6, 4, 8);
         foreach (var page in _pages)
         {
-            page.Layout.Padding = LayoutPadding(scale);
+            FitPagePadding(page.Layout, scale);
         }
 
         _providers.Height = scale[104];
         _accountList.Height = scale[160];
+        foreach (var (control, baseline) in _scaledMargins)
+        {
+            control.Margin = scale.Pad(baseline.Left, baseline.Top, baseline.Right, baseline.Bottom);
+        }
+
         foreach (var button in _pages.SelectMany(page => Descendants(page.Layout)).OfType<Button>().Where(button => Equals(button.Tag, DialogButtonTag)))
         {
             button.MinimumSize = new Size(scale[DialogButtonWidth], scale[DialogButtonHeight]);
@@ -1961,6 +1997,11 @@ internal sealed partial class SettingsForm : Form
             case Label label:
                 label.BackColor = surface;
                 label.ForeColor = Equals(label.Tag, HintTag) ? Theme.Muted : Theme.Text;
+                break;
+            case ActionButton action:
+                // Painted from the palette itself; its corners show its row's colour, the card's.
+                action.BackColor = Theme.Surface;
+                action.Invalidate();
                 break;
             case Button button when button.FlatAppearance.BorderSize == 0:
                 button.BackColor = Theme.Surface;

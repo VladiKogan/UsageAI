@@ -5,14 +5,17 @@ import {
   highestUsedPercent,
   normalizeStatusBarProviders,
   segmentedUsageBar,
-  statusBarMetrics,
+  selectStatusBarLimits,
+  statusBarMetricLabel,
   type ProviderState,
   type QuotaDisplay,
+  type StatusBarLimits,
   type StatusBarProviderId,
   type StatusBarSelectionId,
   type UsageMetric,
   type UsageSnapshot,
 } from "./model";
+import { statusBarLimitFor } from "./status-bar-limits";
 
 const providerLabels: Record<Exclude<StatusBarProviderId, "hottest">, string> = {
   codex: "Codex",
@@ -31,8 +34,16 @@ const providerIcons: Record<Exclude<StatusBarProviderId, "hottest">, string> = {
 export class StatusBarController implements vscode.Disposable {
   private readonly items = new Map<StatusBarSelectionId, vscode.StatusBarItem>();
   private selectionSignature = "";
+  private limits: Readonly<Record<string, string>> = {};
 
-  update(states: readonly ProviderState[], rawSelection: unknown, quotaDisplay: QuotaDisplay = "used"): void {
+  /** `limits` holds each item's chosen model group or weekly limit, by unit key. */
+  update(
+    states: readonly ProviderState[],
+    rawSelection: unknown,
+    quotaDisplay: QuotaDisplay = "used",
+    limits: Readonly<Record<string, string>> = {},
+  ): void {
+    this.limits = limits;
     const selectedProviders = normalizeStatusBarProviders(rawSelection);
     const nextSignature = selectedProviders.join(",");
     if (nextSignature !== this.selectionSignature) {
@@ -83,6 +94,7 @@ export class StatusBarController implements vscode.Disposable {
           hottest,
           shortProviderName(hottest),
           quotaDisplay,
+          statusBarLimitFor(this.limits, hottest.id),
           states.some((state) => state.refreshing),
         );
         return;
@@ -101,6 +113,7 @@ export class StatusBarController implements vscode.Disposable {
         state as ProviderState & { snapshot: UsageSnapshot },
         label,
         quotaDisplay,
+        statusBarLimitFor(this.limits, state.id),
       );
       return;
     }
@@ -125,15 +138,18 @@ function renderSnapshot(
   state: ProviderState & { snapshot: UsageSnapshot },
   label: string,
   quotaDisplay: QuotaDisplay,
+  preferred: string | undefined,
   refreshing = state.refreshing,
 ): void {
-  const metrics = statusBarMetrics(state.snapshot);
+  // The same limits the desktop popup's rings show for this account, from the same choice.
+  const limits = selectStatusBarLimits(state.snapshot.metrics, preferred);
+  const { metrics } = limits;
   const icon = refreshing ? "$(sync~spin)" : providerIcon(providerKindOf(state.id));
   // An incident on the provider's status page adds a marker, the Status Bar's counterpart of the
   // desktop tray dot; the tooltip names it.
   const incident = state.incident ? ` ${state.incidentIsOutage ? "$(error)" : "$(warning)"}` : "";
   item.text = `${icon} ${label} ${statusBarReadings(state.snapshot, metrics, quotaDisplay)}${incident}`;
-  item.tooltip = snapshotTooltip(state, metrics, quotaDisplay, refreshing);
+  item.tooltip = snapshotTooltip(state, limits, quotaDisplay, refreshing);
 }
 
 function statusBarReadings(
@@ -155,10 +171,11 @@ function statusBarReadings(
 
 function snapshotTooltip(
   state: ProviderState & { snapshot: UsageSnapshot },
-  metrics: readonly UsageMetric[],
+  limits: StatusBarLimits,
   quotaDisplay: QuotaDisplay,
   refreshing: boolean,
 ): vscode.MarkdownString {
+  const { metrics } = limits;
   const tooltip = new vscode.MarkdownString(undefined, true);
   tooltip.appendMarkdown(`${providerIcon(providerKindOf(state.id))} **`);
   tooltip.appendText(state.displayName);
@@ -174,9 +191,16 @@ function snapshotTooltip(
     tooltip.appendMarkdown("\n\n$(sync~spin) *Refreshing usage…*");
   }
 
+  if (limits.group) {
+    // Which of the provider's model groups the readings are, as the desktop tile says.
+    tooltip.appendMarkdown("\n\n*");
+    tooltip.appendText(limits.pinned ? limits.group : `${limits.group} (closest to its limit)`);
+    tooltip.appendMarkdown("*");
+  }
+
   if (metrics.length > 0) {
     tooltip.appendMarkdown("\n\n");
-    tooltip.appendCodeblock(formatMeterRows(metrics, quotaDisplay), "text");
+    tooltip.appendCodeblock(formatMeterRows(metrics, quotaDisplay, limits.group !== undefined), "text");
   }
 
   const fetchedAt = new Date(state.snapshot.fetchedAt);
@@ -191,7 +215,14 @@ function snapshotTooltip(
   }
 
   tooltip.appendMarkdown("\n\n[Open UsageAI](command:usageai.show) · [Refresh](command:usageai.refresh)");
-  tooltip.isTrusted = { enabledCommands: ["usageai.show", "usageai.refresh"] };
+  const commands = ["usageai.show", "usageai.refresh"];
+  if (limits.choices.length > 0) {
+    // Straight to this item's choices: a model group for Gemini, a weekly limit for Claude.
+    const args = encodeURIComponent(JSON.stringify([state.id]));
+    tooltip.appendMarkdown(` · [Choose limits](command:usageai.chooseStatusBarLimits?${args})`);
+    commands.push("usageai.chooseStatusBarLimits");
+  }
+  tooltip.isTrusted = { enabledCommands: commands };
   return tooltip;
 }
 
@@ -207,12 +238,14 @@ function appendTimestamp(tooltip: vscode.MarkdownString, label: string, value: s
   tooltip.appendText(timestamp.toLocaleTimeString());
 }
 
-function formatMeterRows(metrics: readonly UsageMetric[], quotaDisplay: QuotaDisplay): string {
-  const labelWidth = Math.max(...metrics.map((metric) => metric.name.length));
+/** One row per reading. Within a named model group a row carries only its window, as a ring does. */
+function formatMeterRows(metrics: readonly UsageMetric[], quotaDisplay: QuotaDisplay, grouped = false): string {
+  const name = (metric: UsageMetric) => grouped ? statusBarMetricLabel(metric) : metric.name;
+  const labelWidth = Math.max(...metrics.map((metric) => name(metric).length));
   const unit = quotaDisplay === "remaining" ? " left" : "";
   return metrics.map((metric) => {
     const percent = displayedPercent(metric.usedPercent ?? 0, quotaDisplay);
-    return `${metric.name.padEnd(labelWidth)}  ${segmentedUsageBar(percent)}  ${percent}%${unit}`;
+    return `${name(metric).padEnd(labelWidth)}  ${segmentedUsageBar(percent)}  ${percent}%${unit}`;
   }).join("\n");
 }
 

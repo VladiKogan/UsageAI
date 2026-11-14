@@ -77,7 +77,7 @@ as not signed in there because its sign-in usually stays with your local VS Code
 ## Choose what appears
 
 The dashboard's title bar has four buttons: **Refresh**, **Accounts** (add, manage and rescan
-accounts), **Open Settings**, and the **…** menu with **Choose Status Bar Items…**.
+accounts), **Open Settings**, and the **…** menu with **Choose Status Bar Items…** and **Choose Status Bar Limits…**.
 
 Open **UsageAI: Open Settings** to personalize the extension. The settings are in four groups:
 **Providers and Accounts**, **Status Bar**, **Display** and **Refresh**.
@@ -89,6 +89,12 @@ Open **UsageAI: Open Settings** to personalize the extension. The settings are i
 - **UsageAI: Choose Status Bar Items…** (also in the dashboard's **…** menu) lists every provider
   and every Claude Code and Codex account with a checkbox. Each one you tick gets its own compact
   reading, so two Claude Code accounts can sit side by side.
+- **UsageAI: Choose Status Bar Limits…** (also in the dashboard's **…** menu, and as **Choose
+  limits** in an item's tooltip) picks which limits an item shows, as the desktop app's Popup rings
+  setting does. Gemini reports two model groups, "Gemini Models" and "Claude and GPT models", and an
+  item shows one group's 5-hour and weekly limits; Claude can report a model's weekly limit, such as
+  "Weekly Fable", beside its all-models "Weekly", and an item shows one of them. **Closest to its
+  limit**, the default, shows whichever is busiest; or pin one, separately for each account.
 - The **Status Bar** settings hold a checkbox for each provider's main login. Extra Claude Code
   and Codex accounts are chosen in **Choose Status Bar Items…** only, and are not a setting.
 - If nothing is chosen, **Hottest When None Selected** shows the provider with the highest current usage. Turn it off to hide UsageAI from the Status Bar.

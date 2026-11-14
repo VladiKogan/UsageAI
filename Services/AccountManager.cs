@@ -485,6 +485,8 @@ internal sealed class AccountManager
         }
 
         _settings.Accounts.Remove(account);
+        // Its popup-ring choice goes with it; a later account never inherits a removed one's key.
+        _settings.SetPopupMetricGroup(unitKey, null);
         if (account.Command is { } command)
         {
             Terminal?.Remove(command);

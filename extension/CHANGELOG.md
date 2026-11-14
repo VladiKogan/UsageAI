@@ -2,7 +2,27 @@
 
 ## Unreleased
 
+### Added
+
+- **Choose which limits a Status Bar item shows.** The new **UsageAI: Choose Status Bar
+  Limits…** command, also in the dashboard's **…** menu and as **Choose limits** in an item's
+  tooltip, pins Gemini to one model group ("Gemini Models" or "Claude and GPT models") and Claude
+  to one weekly limit ("Weekly" or a model's, such as "Weekly Fable"), separately for each
+  account, or leaves it on **Closest to its limit**. A Codex account that reports a second
+  bucket's weekly limit gets the same choice; daily limits never do. It matches the desktop app's
+  Popup rings setting, and is the extension's own state, so nothing changes in the Settings editor.
+  A removed account's choice is dropped the next time one is saved.
+
 ### Changed
+
+- **The Status Bar shows the limits closest to running out.** An item showed the first 5-hour and
+  weekly limit its provider reported, so Gemini always showed "Gemini Models" and Claude its
+  all-models "Weekly", and a nearly full "Claude and GPT models" or "Weekly Fable" limit never
+  appeared there. It now chooses as the desktop popup does: Gemini shows the model group holding
+  the busiest limit, both its readings from that group (the tooltip names it), and Claude the
+  busiest of its weekly limits. When Gemini is read through a fallback (the Gemini CLI login, or
+  Antigravity before its quota summary answers), its two limits are the same kind, so the item now
+  shows only the busier one, as the desktop tray always has, instead of both.
 
 - **The warning and critical threshold settings spell "color" the American way.** Their
   descriptions in the Settings editor now match VS Code's own spelling.

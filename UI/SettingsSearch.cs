@@ -69,7 +69,7 @@ internal static class SettingsSearch
             ["Global hotkey (Win+Alt+U)"] = new[] { "shortcut", "keyboard", "key" },
             ["Refresh every (minutes)"] = new[] { "interval", "poll", "polling", "frequency", "how often" },
             ["Shown providers"] = new[] { "order", "reorder", "hide", "show", "provider" },
-            ["Popup rings"] = new[] { "model group", "rings", "gemini models" },
+            ["Popup rings"] = new[] { "model group", "rings", "gemini models", "weekly limit" },
             ["Provider status"] = new[] { "incident", "incidents", "outage", "status page" },
             ["Delete recorded history"] = new[] { "clear", "erase", "remove", "privacy" },
             ["Record usage history on this machine"] = new[] { "privacy", "data", "store" },
