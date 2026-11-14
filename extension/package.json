@@ -150,6 +150,11 @@
         "command": "usageai.chooseStatusBarItems",
         "title": "Choose Status Bar Items…",
         "category": "UsageAI"
+      },
+      {
+        "command": "usageai.chooseStatusBarLimits",
+        "title": "Choose Status Bar Limits…",
+        "category": "UsageAI"
       }
     ],
     "submenus": [
@@ -180,6 +185,11 @@
           "command": "usageai.chooseStatusBarItems",
           "when": "view == usageai.dashboard",
           "group": "statusbar@1"
+        },
+        {
+          "command": "usageai.chooseStatusBarLimits",
+          "when": "view == usageai.dashboard",
+          "group": "statusbar@2"
         }
       ],
       "usageai.accountsMenu": [

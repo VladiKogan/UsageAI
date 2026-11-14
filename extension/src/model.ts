@@ -159,19 +159,130 @@ export function highestUsedPercent(snapshot: UsageSnapshot): number {
     .reduce((highest, metric) => Math.max(highest, metric.usedPercent ?? 0), 0);
 }
 
-export function statusBarMetrics(snapshot: UsageSnapshot): UsageMetric[] {
-  const quotaMetrics = snapshot.metrics.filter(hasQuota);
-  const session = quotaMetrics.find((metric) => metric.kind === "session");
-  const rolling = quotaMetrics.find((metric) => metric.kind === "rolling");
-  const preferred = [session, rolling].filter((metric): metric is UsageMetric => Boolean(metric));
+/** The most limits one Status Bar item shows, as the desktop popup tile has two rings. */
+export const maxStatusBarMetrics = 2;
 
-  for (const metric of quotaMetrics) {
-    if (!preferred.includes(metric)) {
-      preferred.push(metric);
+/**
+ * Splits a name such as "Claude and GPT models (Weekly)" into its model group and window. A name
+ * without a trailing parenthesis has no group and is its own window. Mirrors the desktop
+ * `PopupMetricSelection.Split`.
+ */
+export function splitMetricName(name: string): { readonly group?: string; readonly window: string } {
+  const trimmed = name.trim();
+  const open = trimmed.lastIndexOf("(");
+  if (open <= 0 || !trimmed.endsWith(")") || open + 2 >= trimmed.length) {
+    return { window: trimmed };
+  }
+  const group = trimmed.slice(0, open).trim();
+  const window = trimmed.slice(open + 1, -1).trim();
+  return group.length === 0 || window.length === 0 ? { window: trimmed } : { group, window };
+}
+
+/** The model groups among a provider's metered limits, in reported order, when there are several. */
+export function metricGroups(metrics: readonly UsageMetric[]): string[] {
+  const groups: string[] = [];
+  for (const metric of metrics) {
+    const group = hasQuota(metric) ? splitMetricName(metric.name).group : undefined;
+    if (group && !groups.some((known) => sameName(known, group))) {
+      groups.push(group);
     }
   }
+  return groups.length > 1 ? groups : [];
+}
 
-  return preferred.slice(0, 2);
+/** The length of a weekly window, which every limit offered as a weekly choice has. */
+export const weekMinutes = 10_080;
+
+/**
+ * The weekly limits a provider without model groups reports more than one of, in reported order:
+ * Claude's all-models "Weekly" and its model limits such as "Weekly Fable". Only week-long windows
+ * count, so daily limits (the Gemini CLI's per-model quotas) are never offered. Mirrors the desktop.
+ */
+export function weeklyLimits(metrics: readonly UsageMetric[]): string[] {
+  if (metricGroups(metrics).length > 0) {
+    return [];
+  }
+  const limits: string[] = [];
+  for (const metric of metrics) {
+    const name = metric.name.trim();
+    if (hasQuota(metric) && metric.kind === "rolling" && metric.durationMinutes === weekMinutes && !limits.some((known) => sameName(known, name))) {
+      limits.push(name);
+    }
+  }
+  return limits.length > 1 ? limits : [];
+}
+
+/** What a Status Bar item's limits can be pinned to: model groups, else weekly limits. */
+export function statusBarLimitChoices(metrics: readonly UsageMetric[]): string[] {
+  const groups = metricGroups(metrics);
+  return groups.length > 0 ? groups : weeklyLimits(metrics);
+}
+
+/** The limits a Status Bar item shows, and where they came from. */
+export interface StatusBarLimits {
+  /** At most two metered limits, shortest window first. */
+  readonly metrics: readonly UsageMetric[];
+  /** The model group the limits belong to, when the provider reports several. */
+  readonly group?: string;
+  /** The pinned choice in use, or undefined when the busiest is shown. */
+  readonly pinned?: string;
+  /** Everything the item could be pinned to; empty when there is no choice. */
+  readonly choices: readonly string[];
+}
+
+/**
+ * Chooses what a Status Bar item shows, as the desktop popup tile chooses its rings
+ * (`PopupMetricSelection.Select`). A provider reporting several model groups — Gemini's "Gemini
+ * Models" and "Claude and GPT models" — shows one group: the pinned one, else whichever holds the
+ * busiest limit. A provider with one group but several weekly limits — Claude's "Weekly" beside
+ * "Weekly Fable" — shows the pinned weekly limit, else the busiest. Within that the limits are the
+ * dashboard's Important selection, busiest session then rolling then monthly, two at most; with
+ * none of those, the busiest metered limits. A pinned choice the provider no longer reports means
+ * automatic.
+ */
+export function selectStatusBarLimits(metrics: readonly UsageMetric[], preferred?: string): StatusBarLimits {
+  let metered = metrics.filter(hasQuota);
+  const groups = metricGroups(metrics);
+  const choices = groups.length > 0 ? groups : weeklyLimits(metrics);
+  const wanted = preferred?.trim();
+  const pinned = wanted ? choices.find((choice) => sameName(choice, wanted)) : undefined;
+  let group: string | undefined;
+  if (groups.length > 0) {
+    group = pinned ?? [...metered]
+      .filter((metric) => splitMetricName(metric.name).group !== undefined)
+      .sort((left, right) => (right.usedPercent ?? 0) - (left.usedPercent ?? 0))
+      .map((metric) => splitMetricName(metric.name).group)[0];
+    metered = metered.filter((metric) => sameName(splitMetricName(metric.name).group ?? "", group ?? ""));
+  } else if (pinned) {
+    // The other weekly limits step aside, so the Important selection keeps the pinned one.
+    metered = metered.filter((metric) => metric.kind !== "rolling" || sameName(metric.name.trim(), pinned));
+  }
+
+  let selected = selectDashboardMetrics(metered, "important");
+  if (selected.length === 0) {
+    // Metered limits that are not session, rolling or monthly windows still deserve a reading.
+    selected = [...metered].sort((left, right) => (right.usedPercent ?? 0) - (left.usedPercent ?? 0));
+  }
+  return {
+    metrics: selected.slice(0, maxStatusBarMetrics),
+    ...(group ? { group } : {}),
+    ...(pinned ? { pinned } : {}),
+    choices,
+  };
+}
+
+/** The limits a Status Bar item shows; see `selectStatusBarLimits`. */
+export function statusBarMetrics(snapshot: UsageSnapshot, preferred?: string): UsageMetric[] {
+  return [...selectStatusBarLimits(snapshot.metrics, preferred).metrics];
+}
+
+/** The short label a Status Bar reading carries: the window when the name has a group, else the name. */
+export function statusBarMetricLabel(metric: UsageMetric): string {
+  return splitMetricName(metric.name).window;
+}
+
+function sameName(left: string, right: string): boolean {
+  return left.toLowerCase() === right.toLowerCase();
 }
 
 export function segmentedUsageBar(usedPercent: number, segmentCount = 10): string {

@@ -106,7 +106,7 @@ test("extension manifest keeps local hosting and a compact view toolbar", async 
     ["usageai.refresh", "usageai.accountsMenu", "usageai.openSettings"],
   );
   // Every account command sits under the one Accounts button, never as a toolbar button of its
-  // own; the "…" menu keeps only the Status Bar picker.
+  // own; the "…" menu keeps only the Status Bar pickers.
   const submenus = new Map((packageJson.contributes?.submenus ?? []).map((entry) => [entry.id, entry]));
   assert.deepEqual(
     (packageJson.contributes?.menus?.["usageai.accountsMenu"] ?? []).map((entry) => entry.command),
@@ -114,7 +114,7 @@ test("extension manifest keeps local hosting and a compact view toolbar", async 
   );
   assert.deepEqual(
     viewMenu.filter((entry) => !entry.group?.startsWith("navigation")).map((entry) => entry.command),
-    ["usageai.chooseStatusBarItems"],
+    ["usageai.chooseStatusBarItems", "usageai.chooseStatusBarLimits"],
   );
   for (const entry of toolbar) {
     const icon = entry.command ? commands.get(entry.command)?.icon : submenus.get(entry.submenu ?? "")?.icon;
@@ -174,8 +174,9 @@ test("dashboard metric modes mirror the desktop selection contract", () => {
     { name: "Future kind", kind: "future" as never, usedPercent: 99 },
     { name: "Balance only", kind: "balance", usedPercent: null },
   ], "important"), []);
+  // The Status Bar takes the same Important selection, two at most, as the desktop popup's rings.
   assert.deepEqual(statusBarMetrics({ ...snapshot, metrics }).map((metric) => metric.name), [
-    "Session first", "Rolling lower",
+    "Session first", "Rolling high",
   ]);
 });
 

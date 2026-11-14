@@ -32,6 +32,12 @@ import { UsageRefreshService } from "./refresh-service";
 import { userHome } from "./security";
 import { StatusBarController } from "./status-bar";
 import {
+  chooseStatusBarLimits,
+  sanitizeStatusBarLimits,
+  statusBarLimitsKey,
+  type StatusBarLimitsUi,
+} from "./status-bar-limits";
+import {
   chooseStatusBarItems,
   resolveStatusBarAccounts,
   type StatusBarPickerUi,
@@ -202,6 +208,8 @@ export function activate(context: vscode.ExtensionContext): void {
    */
   const statusBarAccounts = (): unknown => context.globalState.get<unknown>(statusBarAccountsKey)
     ?? configuration().get<unknown>("statusBarProviders.accounts", []);
+  /** Each Status Bar item's chosen model group or weekly limit; the extension's own state too. */
+  const statusBarLimits = (): Record<string, string> => sanitizeStatusBarLimits(context.globalState.get<unknown>(statusBarLimitsKey));
   const refreshManually = () => vscode.window.withProgress(
     {
       location: vscode.ProgressLocation.Window,
@@ -215,6 +223,7 @@ export function activate(context: vscode.ExtensionContext): void {
       states,
       getStatusBarProviderSelection(configuration(), enabledProviderIds(), accounts.accounts, statusBarAccounts(), states.map((state) => state.id)),
       normalizeQuotaDisplay(configuration().get<unknown>("quotaDisplay", "used")),
+      statusBarLimits(),
     );
     // Until the accounts are read, the cached readings of the other accounts are kept, not dropped.
     const snapshots = {
@@ -357,6 +366,17 @@ export function activate(context: vscode.ExtensionContext): void {
         updateUi(refreshService.getStates());
       },
     })),
+    vscode.commands.registerCommand("usageai.chooseStatusBarLimits", (unit?: unknown) => chooseStatusBarLimits({
+      ui: vscodeStatusBarLimitsUi(),
+      states: () => refreshService.getStates(),
+      choices: statusBarLimits,
+      knownAccounts: () => accounts.catalog().map((entry) => entry.account.unitKey),
+      save: async (choices) => {
+        // The extension's own state, so nothing changes in the Settings editor; redrawn here.
+        await context.globalState.update(statusBarLimitsKey, choices);
+        updateUi(refreshService.getStates());
+      },
+    }, typeof unit === "string" ? unit : undefined)),
     vscode.commands.registerCommand("usageai.rescanAccounts", async () => {
       const result = await accounts.scan();
       if (result.pending === 0) {
@@ -455,6 +475,15 @@ function vscodeStatusBarPickerUi(): StatusBarPickerUi {
       const chosen = await vscode.window.showQuickPick(entries, { canPickMany: true, title, placeHolder, ignoreFocusOut: true });
       return chosen?.flatMap((entry) => entry.choice ? [entry.choice] : []);
     },
+  };
+}
+
+/** The Status Bar limits flow's editor surfaces: single-choice lists. */
+function vscodeStatusBarLimitsUi(): StatusBarLimitsUi {
+  return {
+    pick: (items, title, placeHolder) => vscode.window.showQuickPick([...items], { title, placeHolder, ignoreFocusOut: true }),
+    info: (message) => void vscode.window.showInformationMessage(message),
+    error: (message) => void vscode.window.showErrorMessage(message),
   };
 }
 

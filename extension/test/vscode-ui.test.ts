@@ -312,6 +312,66 @@ test("status bar shows remaining quota with one trailing unit when asked", () =>
   controller.dispose();
 });
 
+test("status bar shows one Gemini model group and Claude's chosen weekly limit, as the desktop popup does", () => {
+  statusItems.length = 0;
+  const provider = (id: string, displayName: string, metrics: UsageSnapshot["metrics"]): ProviderState => ({
+    id,
+    displayName,
+    signInCommand: id,
+    accountUrl: `https://example.com/${id}`,
+    snapshot: { ...snapshot(id, 0), metrics },
+    stale: false,
+    refreshing: false,
+  });
+  const states: ProviderState[] = [
+    provider("gemini", "Google Gemini", [
+      { name: "Gemini Models (5-hour)", kind: "session", usedPercent: 14 },
+      { name: "Gemini Models (Weekly)", kind: "rolling", usedPercent: 48 },
+      { name: "Claude and GPT models (5-hour)", kind: "session", usedPercent: 94 },
+      { name: "Claude and GPT models (Weekly)", kind: "rolling", usedPercent: 83 },
+    ]),
+    provider("claude@1a2b3c4d", "Claude Code · team", [
+      { name: "5-hour", kind: "session", usedPercent: 30 },
+      { name: "Weekly", kind: "rolling", usedPercent: 40, durationMinutes: 10_080 },
+      { name: "Weekly Fable", kind: "rolling", usedPercent: 70, durationMinutes: 10_080 },
+    ]),
+    provider("codex", "Codex", snapshot("codex", 45).metrics),
+  ];
+  const controller = new StatusBarController();
+
+  // Automatic: the busiest group, and the busiest weekly limit.
+  controller.update(states, ["gemini", "claude@1a2b3c4d", "codex"]);
+  assert.match(statusItems[0]?.text ?? "", /Gemini 94% \| 83%$/);
+  assert.match(statusItems[1]?.text ?? "", /30% \| 70%$/);
+  const gemini = statusItems[0]?.tooltip;
+  assert.ok(gemini instanceof FakeMarkdownString);
+  assert.match(gemini.value, /\*Claude and GPT models \(closest to its limit\)\*/);
+  // Within a group each row carries only its window, as a ring does.
+  assert.match(gemini.value, /\n5-hour {2}■/);
+  assert.match(gemini.value, /\[Choose limits\]\(command:usageai\.chooseStatusBarLimits\?%5B%22gemini%22%5D\)/);
+  assert.deepEqual((gemini.isTrusted as { enabledCommands: string[] }).enabledCommands, ["usageai.show", "usageai.refresh", "usageai.chooseStatusBarLimits"]);
+  const claude = statusItems[1]?.tooltip;
+  assert.ok(claude instanceof FakeMarkdownString);
+  assert.match(claude.value, /Weekly Fable {2}■/);
+  assert.doesNotMatch(claude.value, /closest to its limit/);
+  // A provider with nothing to choose offers no link.
+  const codex = statusItems[2]?.tooltip;
+  assert.ok(codex instanceof FakeMarkdownString);
+  assert.doesNotMatch(codex.value, /Choose limits/);
+  assert.deepEqual((codex.isTrusted as { enabledCommands: string[] }).enabledCommands, ["usageai.show", "usageai.refresh"]);
+
+  // Pinned, by unit key: the chosen group and weekly limit, also for the hottest item.
+  controller.update(states, ["gemini", "claude@1a2b3c4d", "codex"], "used", { gemini: "Gemini Models", "claude@1a2b3c4d": "Weekly" });
+  assert.match(statusItems[0]?.text ?? "", /Gemini 14% \| 48%$/);
+  assert.match(statusItems[1]?.text ?? "", /30% \| 40%$/);
+  const pinned = statusItems[0]?.tooltip;
+  assert.ok(pinned instanceof FakeMarkdownString);
+  assert.match(pinned.value, /\*Gemini Models\*/);
+  controller.update(states, ["hottest"], "used", { gemini: "Gemini Models" });
+  assert.match(statusItems.at(-1)?.text ?? "", /Gemini 14% \| 48%$/);
+  controller.dispose();
+});
+
 test("dashboard wires visibility, safe messages, state posting, and CSP", async () => {
   executedCommands.length = 0;
   openedUris.length = 0;
@@ -645,6 +705,7 @@ test("activation helpers sanitize configuration and activation registers its sur
     assert.deepEqual([...registeredCommands.keys()].sort(), [
       "usageai.addAccount",
       "usageai.chooseStatusBarItems",
+      "usageai.chooseStatusBarLimits",
       "usageai.manageAccounts",
       "usageai.openSettings",
       "usageai.refresh",
@@ -721,6 +782,12 @@ test("activation helpers sanitize configuration and activation registers its sur
     assert.ok(informationMessages.some((message) => message.startsWith("VS Code has not loaded UsageAI's newest settings")));
     unregisteredConfigurationKey = undefined;
     quickPickAnswer = undefined;
+
+    // With no reading that offers a choice, the limits picker says so and saves nothing.
+    stateUpdates.length = 0;
+    await registeredCommands.get("usageai.chooseStatusBarLimits")?.();
+    assert.ok(informationMessages.some((message) => message.startsWith("No provider reports more than one model group")));
+    assert.deepEqual(stateUpdates, []);
   } finally {
     mock.restoreAll();
     for (const subscription of subscriptions) subscription.dispose();
