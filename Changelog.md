@@ -4,6 +4,14 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **Settings spells "color" the American way.** The Appearance page's card is now "Colors", with
+  "Warning color from" and "Critical color from" rows, matching Windows' own Settings. Searching for
+  "colour" still finds it.
+
 ## [0.20.0] - 2026-11-14
 
 ### Added

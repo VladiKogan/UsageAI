@@ -88,7 +88,7 @@ Gemini 60% | 30%
 
 **Reset countdowns, plan and account** for each provider, so you always know what you're on and how long until it refills.
 
-**The providers look like themselves.** Codex, Claude, GitHub Copilot, and Gemini carry their recognizable brand marks in the popup and dashboard, and monochrome versions coloured by the theme in the editor Status Bar.
+**The providers look like themselves.** Codex, Claude, GitHub Copilot, and Gemini carry their recognizable brand marks in the popup and dashboard, and monochrome versions colored by the theme in the editor Status Bar.
 
 **One glance or the full picture.** Left-click for a compact popup of ring gauges, two providers to a row; open the dashboard for one table of every limit from Codex, Claude Code, GitHub Copilot, and Google Gemini, in columns that line up — usage, what is used or left, when it resets, and where the current pace lands.
 
@@ -98,7 +98,7 @@ Gemini 60% | 30%
 
 **It never goes blank.** If a refresh fails, UsageAI keeps the last good reading and marks it **stale**, with the provider's own error message attached. The dashboard says when that good reading was captured and when the next automatic retry is due, with a **Retry** link for that provider alone; the popup dims its rings and explains on hover. Each failed provider wakes independently after its backoff, instead of waiting for the regular polling interval or hammering a rate-limited API.
 
-**It looks like it belongs on your desktop.** Windows 11 rounded corners, context menus and slim scrollbars, native dark title bars, light/dark/follow-Windows themes, your Windows accent colour, Windows High Contrast, and window size and position remembered between runs. Gauges ease to new readings, and stay still when Windows' animation effects are off.
+**It looks like it belongs on your desktop.** Windows 11 rounded corners, context menus and slim scrollbars, native dark title bars, light/dark/follow-Windows themes, your Windows accent color, Windows High Contrast, and window size and position remembered between runs. Gauges ease to new readings, and stay still when Windows' animation effects are off.
 
 ## 🖱️ Living in the tray
 
@@ -233,8 +233,8 @@ or "startup", and takes you straight to it:
   burn-rate forecast shown (with a button to delete the history, which asks first)
 - **Alerts** — alert thresholds, whether resets get announced, and provider incidents
 - **Appearance** — theme; whether meters, headlines, the tray icon, and alert wording show quota
-  **used** (the default) or **remaining** — colours and alert thresholds always follow usage;
-  where the warning and critical colours kick in; which metrics the full dashboard shows (all
+  **used** (the default) or **remaining** — colors and alert thresholds always follow usage;
+  where the warning and critical colors kick in; which metrics the full dashboard shows (all
   reported metrics, metered limits only, or the most important Session, Rolling, and Monthly
   limit); and which provider drives the tray icon (or let it follow whichever is running
   hottest, or list **All connected** in its tooltip)
@@ -347,7 +347,7 @@ dotnet run --project .\UsageAI.csproj -- --preview-window popup --theme dark --s
 dotnet run --project .\UsageAI.csproj -- --preview-tray --theme dark
 ```
 
-The tray starts on **All connected** with every limit calm. Each **Refresh** steps the readings to between the warning and critical thresholds, then past critical, then back to calm, so the tank fills and changes colour on cue. The stages aim at whatever thresholds Settings holds, and automatic polls or a refresh after sleep never change them. Exit the installed copy first so there is one UsageAI icon, and drag the new icon out of the taskbar's overflow (`^`), where Windows puts every new tray icon. **Exit** in the tray menu ends the preview.
+The tray starts on **All connected** with every limit calm. Each **Refresh** steps the readings to between the warning and critical thresholds, then past critical, then back to calm, so the tank fills and changes color on cue. The stages aim at whatever thresholds Settings holds, and automatic polls or a refresh after sleep never change them. Exit the installed copy first so there is one UsageAI icon, and drag the new icon out of the taskbar's overflow (`^`), where Windows puts every new tray icon. **Exit** in the tray menu ends the preview.
 
 **Build the portable executable:**
 

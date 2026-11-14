@@ -29,11 +29,11 @@ internal static class SettingsSearchTests
             Entry(1, "Show tray notifications", host),
             Entry(1, "Notifications", host),
             Entry(2, "Theme", host, "dark"),
-            Entry(2, "Warning colour", host),
-            Entry(2, "Critical colour", host),
-            Entry(2, "Dashboard colour", host),
-            Entry(2, "Background colour", host),
-            Entry(2, "Accent colour", host),
+            Entry(2, "Warning color", host),
+            Entry(2, "Critical color", host),
+            Entry(2, "Dashboard color", host),
+            Entry(2, "Background color", host),
+            Entry(2, "Accent color", host),
         };
 
         // Nothing typed, or only spaces, finds nothing and shows nothing.
@@ -75,10 +75,10 @@ internal static class SettingsSearchTests
         Equal(0, page.Hits.Count);
 
         // A page shows four results and counts the rest; expanded, it shows them all.
-        var colours = SettingsSearch.Find(entries, pages, "colour").Single();
-        Equal(SettingsSearch.PerPage, colours.Hits.Count);
-        Equal(1, colours.More);
-        var all = SettingsSearch.Find(entries, pages, "colour", new HashSet<int> { 2 }).Single();
+        var colors = SettingsSearch.Find(entries, pages, "color").Single();
+        Equal(SettingsSearch.PerPage, colors.Hits.Count);
+        Equal(1, colors.More);
+        var all = SettingsSearch.Find(entries, pages, "color", new HashSet<int> { 2 }).Single();
         Equal(5, all.Hits.Count);
         Equal(0, all.More);
 
@@ -87,6 +87,7 @@ internal static class SettingsSearchTests
 
         // The keyword table finds what people call things, and only through its own labels.
         True(SettingsSearch.KeywordsFor("Mode").Contains("dark"));
+        True(SettingsSearch.KeywordsFor("Colors").Contains("colour"));
         True(SettingsSearch.KeywordsFor("Accounts").Contains("login"));
         True(SettingsSearch.KeywordsFor("Start with Windows").Contains("startup"));
         Equal(0, SettingsSearch.KeywordsFor("Nothing like this").Count);

@@ -1,5 +1,12 @@
 # Changelog
 
+## Unreleased
+
+### Changed
+
+- **The warning and critical threshold settings spell "color" the American way.** Their
+  descriptions in the Settings editor now match VS Code's own spelling.
+
 ## 0.1.25
 
 ### Changed
