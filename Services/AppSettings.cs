@@ -161,9 +161,11 @@ internal sealed class AppSettings
 
     /// <summary>
     /// The Settings window's client size as width, height at 96 DPI, so a size chosen on one
-    /// monitor opens the same on another at a different scale. Null opens the default size.
+    /// monitor opens the same on another at a different scale. Null opens it at the height of its
+    /// tallest page. A new key since Settings became pages: a size chosen for the old single
+    /// scrolling page does not fit them, so the old <c>SettingsWindowSize</c> is ignored.
     /// </summary>
-    public int[]? SettingsWindowSize { get; set; }
+    public int[]? SettingsPageSize { get; set; }
 
     /// <summary>
     /// The model group each provider's popup rings show, keyed by provider id. A provider with no
@@ -500,9 +502,9 @@ internal sealed class AppSettings
         }
 
         // Within any plausible screen; the window keeps itself on the screen it opens on.
-        if (SettingsWindowSize is not [>= 200 and <= 8000, >= 200 and <= 8000])
+        if (SettingsPageSize is not [>= 200 and <= 8000, >= 200 and <= 8000])
         {
-            SettingsWindowSize = null;
+            SettingsPageSize = null;
         }
 
         Accounts = NormalizeAccounts(Accounts);

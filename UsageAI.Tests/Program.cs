@@ -45,7 +45,7 @@ internal static class Program
         ("Gemini JWT claims extraction", TestGeminiJwtExtractionAsync),
         ("Antigravity candidates stay PID-bound", TestAntigravityCandidateBindingAsync),
         ("settings validation and round trip", TestSettingsAsync),
-        ("settings content clears the fixed footer", TestSettingsScrollLayoutAsync),
+        ("settings pages fill the window and scroll only when longer", TestSettingsScrollLayoutAsync),
         ("provider order and visibility", TestProviderOrderAsync),
         ("tray provider selection, tooltip, and empty icon", TestTrayProviderSelectionAsync),
         ("tray preview steps sample providers on requested refreshes", TestTrayPreviewStagesAsync),
@@ -89,6 +89,11 @@ internal static class Program
         ("windows stay cloaked until painted, also when the popup becomes the dashboard", RedesignTests.TestWindowsRevealOnlyWhenPaintedAsync),
         ("settings number fields draw themed spin buttons", RedesignTests.TestThemedStepperAsync),
         ("settings window resizes and remembers a size the user chose", RedesignTests.TestSettingsWindowSizeAsync),
+        ("settings is its own window and stays visible beside the popup", RedesignTests.TestSettingsWindowStaysVisibleAsync),
+        ("settings search matches labels, keywords and page names", SettingsSearchTests.TestSearchMatchingAsync),
+        ("settings search drops down, goes to a setting and marks it", SettingsSearchTests.TestSearchInSettingsAsync),
+        ("settings shows thresholds and tray choices as the app has them", SettingsSearchTests.TestSettingsShowsWhatIsSavedAsync),
+        ("About and What's New link to star the project and report a problem", SupportLinkTests.TestSupportLinksAsync),
         ("scrolling views use a slim scrollbar", RedesignTests.TestSlimScrollBarAsync),
         ("model formatting and provider status states", CoverageExpansionTests.TestModelFormattingAsync),
         ("refresh orchestration, alerts, history, and backoff", CoverageExpansionTests.TestRefreshOrchestrationAsync),
@@ -1384,25 +1389,29 @@ internal static class Program
         form.StartPosition = FormStartPosition.Manual;
         form.Location = new Point(-10_000, -10_000);
         form.Show();
+        // Shorter than its longest page, as on a small screen.
+        form.ClientSize = new Size(form.ClientSize.Width, 300);
+        form.ShowSection("Appearance");
         Application.DoEvents();
         form.PerformLayout();
 
         var shell = form.Controls.OfType<TableLayoutPanel>().Single();
         shell.PerformLayout();
-        Equal(2, shell.RowCount);
+        Equal(1, shell.RowCount);
 
-        // The section list sits beside the scrolling page, and the footer spans both.
-        True(shell.GetControlFromPosition(0, 0) is SectionNav);
+        // The page list sits beside the page, which runs to the bottom of the window: there is
+        // no footer, since every change is saved as it is made.
+        var navColumn = shell.GetControlFromPosition(0, 0) as TableLayoutPanel
+            ?? throw new InvalidOperationException("The search and page list column is missing.");
+        True(navColumn.GetControlFromPosition(0, 0) is SettingsSearchBox);
+        True(navColumn.GetControlFromPosition(0, 1) is SectionNav);
         // The page scrolls inside a slim-scrollbar frame, which is what the shell lays out.
         var frame = shell.GetControlFromPosition(1, 0) as SlimScrollHost
             ?? throw new InvalidOperationException("The settings content frame is missing.");
         var content = frame.Target as Panel
             ?? throw new InvalidOperationException("The settings content area is missing.");
-        var footer = shell.GetControlFromPosition(0, 1)
-            ?? throw new InvalidOperationException("The settings footer is missing.");
-        Equal(frame.Bottom, footer.Top);
         Equal(frame.Height, content.Height);
-        Equal(shell.ClientSize.Height, footer.Bottom);
+        Equal(shell.ClientSize.Height, frame.Bottom);
 
         content.PerformLayout();
         if (!content.VerticalScroll.Visible)
@@ -1417,7 +1426,8 @@ internal static class Program
             throw new InvalidOperationException("The settings content unexpectedly requires horizontal scrolling.");
         }
 
-        var settingsTable = content.Controls.OfType<TableLayoutPanel>().Single();
+        var settingsTable = content.Controls.OfType<TableLayoutPanel>().Single(table => table.Visible);
+        Equal("Appearance", settingsTable.AccessibleName);
         var trayProvider = settingsTable.Controls
             .OfType<ComboBox>()
             .Single(combo => combo.Items.Cast<object>().Any(item => item.ToString() == "Automatic"));
@@ -1437,15 +1447,12 @@ internal static class Program
                 $"outside the {content.ClientSize.Height}px viewport.");
         }
 
+        // Choosing is saving.
         trayProvider.SelectedIndex = trayProvider.Items
             .Cast<object>()
             .Select((item, index) => (Item: item, Index: index))
             .Single(entry => entry.Item.ToString() == "GitHub Copilot")
             .Index;
-        var save = footer.Controls
-            .OfType<Button>()
-            .Single(button => button.Text == "Save");
-        save.PerformClick();
         Equal("copilot", settings.TrayProviderId);
         return Task.CompletedTask;
     }

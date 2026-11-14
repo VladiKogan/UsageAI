@@ -892,6 +892,32 @@ internal static class RedesignTests
             nav.SelectedIndex = 9;
             Equal(2, nav.SelectedIndex);
             True(nav.AccessibleDescription!.StartsWith("History, 3 of 3", StringComparison.Ordinal));
+
+            // A screen reader meets a tab list whose tabs are the pages, the shown one selected,
+            // and can switch page from it.
+            var tabs = nav.AccessibilityObject;
+            Equal(AccessibleRole.PageTabList, tabs.Role);
+            Equal(3, tabs.GetChildCount());
+            var history = tabs.GetChild(2)!;
+            Equal("History", history.Name);
+            Equal(AccessibleRole.PageTab, history.Role);
+            Equal("Tab 3 of 3", history.Description);
+            True(history.State.HasFlag(AccessibleStates.Selected));
+            False(tabs.GetChild(0)!.State.HasFlag(AccessibleStates.Selected));
+            Null(tabs.GetChild(3));
+            Equal("History", tabs.GetSelected()!.Name);
+            Null(tabs.GetFocused());
+            Equal("Switch", history.DefaultAction);
+            True(ReferenceEquals(tabs, history.Parent));
+            True(history.Bounds.Height > 0);
+            var beforeTab = chosen;
+            tabs.GetChild(0)!.DoDefaultAction();
+            Equal(0, nav.SelectedIndex);
+            tabs.GetChild(1)!.Select(AccessibleSelection.TakeSelection);
+            Equal(1, nav.SelectedIndex);
+            tabs.GetChild(1)!.Select(AccessibleSelection.None);
+            Equal(beforeTab + 2, chosen);
+            nav.SelectedIndex = 2;
             Invoke(nav, "OnGotFocus", EventArgs.Empty);
             Draw(nav);
             Invoke(nav, "OnLostFocus", EventArgs.Empty);
@@ -918,35 +944,78 @@ internal static class RedesignTests
             Draw(band);
         }
 
-        // The settings page jumps to a section, and follows the scroll back to the list.
+        // Settings shows one page at a time, chosen in the list on the left; History lives on
+        // General now, and every page starts with a card heading rather than a page title.
         using var dialog = Settings(new AppSettings { IsEphemeral = true }, null);
         dialog.Show();
         Application.DoEvents();
         var sectionNav = Field<SectionNav>(dialog, "_nav");
         var scrollHost = Field<Panel>(dialog, "_scrollHost");
-        Equal("General|Alerts|Appearance|Providers|Accounts|History|About", string.Join('|', sectionNav.Sections));
-        var appearance = 2;
-        sectionNav.SelectedIndex = appearance;
-        typeof(SettingsForm).GetMethod("ScrollToSection", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dialog, new object[] { appearance });
-        True(-scrollHost.AutoScrollPosition.Y > 0);
-        sectionNav.SelectedIndex = 0;
-        typeof(SettingsForm).GetMethod("SyncNavToScroll", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dialog, null);
-        Equal(appearance, sectionNav.SelectedIndex);
+        Equal("General|Alerts|Appearance|Providers|Accounts|About", string.Join('|', sectionNav.Sections));
+        Equal("Refresh|Startup|History", CardHeadings(dialog, 0));
+        Equal("Notifications|Provider status", CardHeadings(dialog, 1));
+        Equal("Theme|Quota|Colours|Dashboard|Tray icon", CardHeadings(dialog, 2));
+        Equal("Shown providers", CardHeadings(dialog, 3));
+        Equal("Accounts|Finding logins", CardHeadings(dialog, 4));
+        Equal("UsageAI|Support the project", CardHeadings(dialog, 5));
+        Equal(0, dialog.CurrentPage);
+        True(Field<NumericUpDown>(dialog, "_refreshInterval").Visible);
+        True(Field<CheckBox>(dialog, "_historyEnabled").Visible);
+        False(Field<CheckBox>(dialog, "_notificationsEnabled").Visible);
 
-        // At the bottom of the page the last section is the one marked, though it never reaches the top.
-        scrollHost.AutoScrollPosition = new Point(0, scrollHost.DisplayRectangle.Height);
-        typeof(SettingsForm).GetMethod("SyncNavToScroll", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dialog, null);
-        Equal(sectionNav.Sections.Count - 1, sectionNav.SelectedIndex);
-        typeof(SettingsForm).GetMethod("ScrollToSection", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dialog, new object[] { 99 });
+        // Choosing a page in the list shows it from the top; the page left keeps its values.
+        Field<CheckBox>(dialog, "_historyEnabled").Checked = false;
+        Invoke(sectionNav, "OnKeyDown", new KeyEventArgs(Keys.Down));
+        Invoke(sectionNav, "OnKeyDown", new KeyEventArgs(Keys.Down));
+        Equal(2, dialog.CurrentPage);
+        True(Field<SegmentedControl>(dialog, "_theme").Visible);
+        False(Field<NumericUpDown>(dialog, "_refreshInterval").Visible);
+        scrollHost.AutoScrollPosition = new Point(0, 200);
+        dialog.ShowPage(3);
+        Equal(0, -scrollHost.AutoScrollPosition.Y);
+        Equal(3, sectionNav.SelectedIndex);
+        dialog.ShowPage(0);
+        False(Field<CheckBox>(dialog, "_historyEnabled").Checked);
+        dialog.ShowPage(99);
+        dialog.ShowPage(-1);
+        Equal(0, dialog.CurrentPage);
 
-        // Enter on a section moves the focus to its first control.
-        typeof(SettingsForm).GetMethod("EnterSection", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dialog, new object[] { 1 });
+        // Ctrl+Tab and Ctrl+Page Down step forward through the pages, with Shift or Page Up back,
+        // wrapping at either end, from anywhere in the window.
+        bool Command(Keys keys) => (bool)typeof(SettingsForm)
+            .GetMethod("ProcessCmdKey", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(dialog, new object?[] { default(Message), keys })!;
+        True(Command(Keys.Control | Keys.Shift | Keys.Tab));
+        Equal(5, dialog.CurrentPage);
+        True(Command(Keys.Control | Keys.Tab));
+        Equal(0, dialog.CurrentPage);
+        True(Command(Keys.Control | Keys.PageDown));
+        Equal(1, dialog.CurrentPage);
+        True(Command(Keys.Control | Keys.PageUp));
+        Equal(0, dialog.CurrentPage);
+        False(Command(Keys.Control | Keys.A));
+
+        // The account banner's Choose… and reopening the window ask for a page by name.
+        dialog.ShowSection("accounts");
+        Equal(4, dialog.CurrentPage);
+        dialog.ShowSection("History");
+        Equal(4, dialog.CurrentPage);
+
+        // Enter on a page moves the focus to its first control.
+        typeof(SettingsForm).GetMethod("EnterPage", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dialog, new object[] { 1 });
+        Equal(1, dialog.CurrentPage);
         True(Field<CheckBox>(dialog, "_notificationsEnabled").Focused);
-        typeof(SettingsForm).GetMethod("EnterSection", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dialog, new object[] { -1 });
+        typeof(SettingsForm).GetMethod("EnterPage", BindingFlags.Instance | BindingFlags.NonPublic)!.Invoke(dialog, new object[] { -1 });
 
-        // The tab order follows the screen: section list, then the page, then the buttons. The
-        // page sits in its slim-scrollbar frame, which is what the window orders.
-        True(sectionNav.TabIndex < Field<SlimScrollHost>(dialog, "_scrollFrame").TabIndex);
+        // The tab order follows the screen: page list, then the page. The page sits in its
+        // slim-scrollbar frame, which is what the window orders. There are no Save or Cancel
+        // buttons any more: every change is saved as it is made.
+        var navColumn = Field<TableLayoutPanel>(dialog, "_navColumn");
+        True(navColumn.TabIndex < Field<SlimScrollHost>(dialog, "_scrollFrame").TabIndex);
+        True(Field<SettingsSearchBox>(dialog, "_search").TabIndex < sectionNav.TabIndex);
+        False(Descendants(dialog).OfType<Button>().Any(button => button.Text is "Save" or "Cancel"));
+        Null(dialog.AcceptButton);
+        Null(dialog.CancelButton);
 
         // A theme change keeps the update status's meaning, and High Contrast restores the
         // borders that are the number fields' only edge on a card.
@@ -977,8 +1046,20 @@ internal static class RedesignTests
         Field<NumericUpDown>(dialog, "_criticalPercent").Value = 90;
         True(Field<SettingPreview>(dialog, "_thresholdPreview").AccessibleDescription!.Contains("warning from 60%", StringComparison.Ordinal));
         Draw(dialog);
-        dialog.Hide();
+
+        // Escape closes the window, as Cancel did; nothing is left unsaved by it.
+        True((bool)typeof(SettingsForm).GetMethod("ProcessDialogKey", BindingFlags.Instance | BindingFlags.NonPublic)!
+            .Invoke(dialog, new object[] { Keys.Escape })!);
+        True(dialog.IsDisposed || !dialog.Visible);
         return Task.CompletedTask;
+    }
+
+    /// <summary>The card headings of one Settings page, in order.</summary>
+    private static string CardHeadings(SettingsForm dialog, int page)
+    {
+        var pages = (System.Collections.IList)typeof(SettingsForm).GetField("_pages", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(dialog)!;
+        var sections = (System.Collections.IEnumerable)pages[page]!.GetType().GetProperty("Sections")!.GetValue(pages[page])!;
+        return string.Join('|', sections.Cast<object>().Select(section => ((Label)section.GetType().GetProperty("Header")!.GetValue(section)!).Text));
     }
 
     private sealed class CountingClient : IUsageClient
@@ -1051,11 +1132,11 @@ internal static class RedesignTests
         return dialog;
     }
 
-    private static void Save(SettingsForm dialog)
-    {
-        var save = Descendants(dialog).OfType<Button>().Single(button => button.Text == "Save");
-        Invoke(save, "OnClick", EventArgs.Empty);
-    }
+    /// <summary>
+    /// Settings saves each change as it is made; this only settles a number still waiting out
+    /// its short pause, as closing the window would.
+    /// </summary>
+    private static void Save(SettingsForm dialog) => dialog.FlushPendingChanges();
 
     private static IEnumerable<Control> Descendants(Control root)
     {
@@ -1691,27 +1772,26 @@ internal static class RedesignTests
             quickMenu.Items[5].PerformClick();
             Equal("tray:automatic,tray:all,tray:codex,quota:Remaining,notify:False", string.Join(',', changes));
 
-            // A pinned provider that is no longer shown reads as Automatic, and Settings being open
-            // switches the quick settings off.
+            // A pinned provider that is no longer shown reads as Automatic. The quick settings stay
+            // usable whatever else is open: Settings saves only what is changed in it.
             quickState = new TrayQuickState(
                 new[] { ("codex", "Codex") },
                 "claude@1a2b3c4d",
                 QuotaDisplay.Remaining,
-                NotificationsEnabled: false,
-                Enabled: false);
+                NotificationsEnabled: false);
             opening.Invoke(quickMenu, new object[] { new System.ComponentModel.CancelEventArgs() });
             Equal("[Automatic]|All connected||Codex", Rows(quickMenu.Items[3]));
             Equal("Used|[Remaining]", Rows(quickMenu.Items[4]));
             Equal("Resume notifications", quickMenu.Items[5].Text);
-            False(quickMenu.Items[3].Enabled || quickMenu.Items[4].Enabled || quickMenu.Items[5].Enabled);
+            True(quickMenu.Items[3].Enabled && quickMenu.Items[4].Enabled && quickMenu.Items[5].Enabled);
 
-            quickState = quickState with { TrayProviderId = AppSettings.AllProvidersTrayId, Enabled = true };
+            quickState = quickState with { TrayProviderId = AppSettings.AllProvidersTrayId };
             opening.Invoke(quickMenu, new object[] { new System.ComponentModel.CancelEventArgs() });
             Equal("Automatic|[All connected]||Codex", Rows(quickMenu.Items[3]));
         }
 
-        // The app's own wiring: a quick setting lands in the settings the app runs on, and is
-        // ignored while the Settings window is open, whose Save would write over it.
+        // The app's own wiring: a quick setting lands in the settings the app runs on, also while
+        // the Settings window is open, which then shows the new value.
         var appSettings = new AppSettings
         {
             IsEphemeral = true,
@@ -1736,11 +1816,23 @@ internal static class RedesignTests
             False(appSettings.NotificationsEnabled);
 
             using var openSettings = Settings(appSettings, null);
+            var saved = 0;
+            openSettings.SettingsChanged += (_, _) => saved++;
             typeof(UsageApplicationContext).GetField("_openSettings", Private)!.SetValue(context, openSettings);
             Row("Tray icon shows").DropDownItems[0].PerformClick();
             Row("Show quota as").DropDownItems[0].PerformClick();
-            Equal(AppSettings.AllProvidersTrayId, appSettings.TrayProviderId);
-            Equal(QuotaDisplay.Remaining, appSettings.QuotaDisplay);
+            typeof(ToolStripDropDown)
+                .GetMethod("OnOpening", BindingFlags.Instance | BindingFlags.NonPublic)!
+                .Invoke(appMenu, new object[] { new System.ComponentModel.CancelEventArgs() });
+            Row("Resume notifications").PerformClick();
+            Null(appSettings.TrayProviderId);
+            Equal(QuotaDisplay.Used, appSettings.QuotaDisplay);
+            True(appSettings.NotificationsEnabled);
+            Equal(0, Field<ComboBox>(openSettings, "_trayProvider").SelectedIndex);
+            Equal(0, Field<SegmentedControl>(openSettings, "_quotaDisplay").SelectedIndex);
+            True(Field<CheckBox>(openSettings, "_notificationsEnabled").Checked);
+            // Showing the new values is not a change made in Settings, so nothing is saved back.
+            Equal(0, saved);
             typeof(UsageApplicationContext).GetField("_openSettings", Private)!.SetValue(context, null);
         }
 
@@ -2160,6 +2252,140 @@ internal static class RedesignTests
         return Task.CompletedTask;
     }
 
+    /// <summary>
+    /// Re-checks the 0.19.2 fix now that Settings is a window of its own: opened from the popup
+    /// it has no owner, so the popup hiding never takes it along; the dialogs it opens are its
+    /// own and stay on screen with it; and reopening it — minimized, after closing, while the
+    /// popup becomes the dashboard — always ends with one visible, uncloaked window.
+    /// </summary>
+    public static Task TestSettingsWindowStaysVisibleAsync()
+    {
+        const BindingFlags Private = BindingFlags.Instance | BindingFlags.NonPublic;
+        Theme.Apply(ThemeMode.Dark, 72, 90);
+        var settings = new AppSettings
+        {
+            IsEphemeral = true,
+            Theme = ThemeMode.Dark,
+            GlobalHotkeyEnabled = false,
+            LastRunVersion = AppIdentity.Version,
+        };
+        var (samples, _, _) = PreviewRenderer.SampleData(DateTimeOffset.Now);
+        using var context = new UsageApplicationContext(
+            new IUsageClient[] { new PreviewUsageClient(samples[0], new PreviewTrayStages(settings), TimeSpan.Zero) },
+            settings,
+            showTrayIcon: false,
+            profileExisted: true,
+            readStartup: static () => new StartupState(StartupStatus.NotRegistered, null),
+            writeStartup: static _ => { });
+        var popup = Field<UsagePopupForm>(context, "_popup");
+        void Open(string? section) =>
+            typeof(UsageApplicationContext).GetMethod("OpenSettings", Private, new[] { typeof(string) })!.Invoke(context, new object?[] { section });
+
+        // The popup's Settings button opens it with no owner; the popup hiding, as it does when
+        // Settings takes the focus, leaves it on screen.
+        popup.ShowNearTray(DashboardMode.Compact);
+        Application.DoEvents();
+        Field<IconButton>(popup, "_settingsButton").PerformClick();
+        Application.DoEvents();
+        var window = context.OpenSettingsWindow ?? throw new InvalidOperationException("Settings did not open.");
+        Null(window.Owner);
+        True(window.ShowInTaskbar && window.MinimizeBox);
+        popup.Hide();
+        Application.DoEvents();
+        True(window.Visible);
+        False(IsCloaked(window));
+        Equal(0, window.CurrentPage);
+
+        // A question it asks and a window it opens are its own, and it stays on screen behind them.
+        (bool Cloaked, Form? Owner, bool OwnerShown)? Inspect<TDialog>(Action open)
+            where TDialog : Form
+        {
+            (bool, Form?, bool)? seen = null;
+            var ticks = 0;
+            using var inspector = new System.Windows.Forms.Timer { Interval = 25 };
+            inspector.Tick += (_, _) =>
+            {
+                if (Application.OpenForms.OfType<TDialog>().FirstOrDefault(form => form.Visible) is not { } dialog || ++ticks < 4)
+                {
+                    return;
+                }
+
+                inspector.Stop();
+                seen = (IsCloaked(dialog), dialog.Owner, window.Visible && !IsCloaked(window));
+                dialog.Close();
+            };
+            inspector.Start();
+            open();
+            inspector.Stop();
+            return seen;
+        }
+
+        var prompt = Inspect<PromptDialog>(() => typeof(SettingsForm).GetMethod("DeleteRecordedHistory", Private)!.Invoke(window, null));
+        Equal(false, prompt?.Cloaked);
+        True(ReferenceEquals(window, prompt?.Owner));
+        Equal(true, prompt?.OwnerShown);
+        var notes = Inspect<WhatsNewForm>(() => WhatsNewForm.ShowCurrent(window));
+        Equal(false, notes?.Cloaked);
+        True(ReferenceEquals(window, notes?.Owner));
+        Equal(true, notes?.OwnerShown);
+
+        // Minimized, opening it again restores the same window on the page asked for.
+        window.WindowState = FormWindowState.Minimized;
+        Application.DoEvents();
+        Open(SettingsForm.AccountsSection);
+        Application.DoEvents();
+        True(ReferenceEquals(window, context.OpenSettingsWindow));
+        Equal(FormWindowState.Normal, window.WindowState);
+        Equal(4, window.CurrentPage);
+        False(IsCloaked(window));
+        Open(null);
+        Equal(4, window.CurrentPage);
+
+        // The popup recreating its handle to become the dashboard leaves Settings alone.
+        typeof(UsageApplicationContext).GetMethod("OpenDashboard", Private)!.Invoke(context, null);
+        Application.DoEvents();
+        True(window.Visible);
+        False(IsCloaked(window));
+        popup.Hide();
+
+        // A change is reported to the app as it is made: the theme applies at once, and a change
+        // to what is polled waits for the changes to settle.
+        Field<SegmentedControl>(window, "_theme").SelectedIndex = 2;
+        False(Theme.IsDark);
+        Field<SegmentedControl>(window, "_theme").SelectedIndex = 1;
+        True(Theme.IsDark);
+        var pollingTimer = Field<System.Windows.Forms.Timer>(context, "_settingsPollingTimer");
+        False(pollingTimer.Enabled);
+        Field<CheckBox>(window, "_slowWhenHidden").Checked = !settings.SlowRefreshWhenHidden;
+        True(pollingTimer.Enabled);
+        context.ApplySettingsPolling();
+        False(pollingTimer.Enabled);
+
+        // Closed and opened again, each opening is a new window that ends uncloaked, and closing
+        // applies a polling change still waiting.
+        for (var round = 0; round < 3; round++)
+        {
+            Field<CheckBox>(window, "_slowWhenHidden").Checked = !settings.SlowRefreshWhenHidden;
+            True(pollingTimer.Enabled);
+            window.Close();
+            Application.DoEvents();
+            False(pollingTimer.Enabled);
+            True(window.IsDisposed);
+            Null(context.OpenSettingsWindow);
+            Open(null);
+            Application.DoEvents();
+            var reopened = context.OpenSettingsWindow ?? throw new InvalidOperationException("Settings did not reopen.");
+            False(ReferenceEquals(window, reopened));
+            window = reopened;
+            True(window.Visible);
+            False(IsCloaked(window));
+        }
+
+        window.Close();
+        Application.DoEvents();
+        return Task.CompletedTask;
+    }
+
     private static bool IsCloaked(Control control)
     {
         const int DWMWA_CLOAKED = 14;
@@ -2237,8 +2463,10 @@ internal static class RedesignTests
     }
 
     /// <summary>
-    /// Settings is resizable but not maximizable, opens at the size it was left at, and stores
-    /// that size at 96 DPI however the window closed.
+    /// Settings is a window of its own — taskbar button, minimizable, resizable but not
+    /// maximizable — that opens at the size it was left at, or with none saved at the height of
+    /// its tallest page, and stores a chosen size at 96 DPI. A size saved for the old single
+    /// scrolling page is ignored.
     /// </summary>
     public static Task TestSettingsWindowSizeAsync()
     {
@@ -2258,15 +2486,23 @@ internal static class RedesignTests
         // Out-of-range or malformed sizes are dropped, so the default opens instead.
         foreach (var invalid in new[] { new[] { 100, 600 }, new[] { 800, 9000 }, new[] { 800 } })
         {
-            new AppSettings { SettingsWindowSize = invalid }.Save();
-            Null(AppSettings.Load().SettingsWindowSize);
+            new AppSettings { SettingsPageSize = invalid }.Save();
+            Null(AppSettings.Load().SettingsPageSize);
         }
 
-        var remembered = new AppSettings { GlobalHotkeyEnabled = false, SettingsWindowSize = new[] { 760, 600 } };
+        // The single scrolling page's size is not carried over: it was chosen to see more of a
+        // long page, and the pages open at their own height instead.
+        Directory.CreateDirectory(Path.GetDirectoryName(AppPaths.SettingsFile)!);
+        File.WriteAllText(AppPaths.SettingsFile, """{ "SettingsWindowSize": [760, 900] }""");
+        Null(AppSettings.Load().SettingsPageSize);
+
+        var remembered = new AppSettings { GlobalHotkeyEnabled = false, SettingsPageSize = new[] { 760, 600 } };
         using (var dialog = Open(remembered, 96))
         {
             Equal(FormBorderStyle.Sizable, dialog.FormBorderStyle);
             False(dialog.MaximizeBox);
+            True(dialog.MinimizeBox);
+            True(dialog.ShowInTaskbar);
             // The title bar carries the UsageAI logo, embedded so a single-file copy has it too.
             True(AppIcon.Window is not null);
             True(dialog.ShowIcon && ReferenceEquals(AppIcon.Window, dialog.Icon));
@@ -2279,9 +2515,9 @@ internal static class RedesignTests
             dialog.Close();
         }
 
-        Equal("760,600", string.Join(',', remembered.SettingsWindowSize!));
+        Equal("760,600", string.Join(',', remembered.SettingsPageSize!));
 
-        // Resized by the user, the size is kept whether Settings was saved or cancelled.
+        // Resized by the user, the size is kept for next time.
         using (var dialog = Open(remembered, 96))
         {
             dialog.Show();
@@ -2291,8 +2527,8 @@ internal static class RedesignTests
             dialog.Close();
         }
 
-        Equal("820,700", string.Join(',', remembered.SettingsWindowSize!));
-        Equal("820,700", string.Join(',', AppSettings.Load().SettingsWindowSize!));
+        Equal("820,700", string.Join(',', remembered.SettingsPageSize!));
+        Equal("820,700", string.Join(',', AppSettings.Load().SettingsPageSize!));
 
         // It is stored at 96 DPI, so a size chosen at 200% opens the same on any monitor.
         using (var scaled = Open(remembered, 192))
@@ -2304,13 +2540,32 @@ internal static class RedesignTests
             scaled.Close();
         }
 
-        Equal("600,500", string.Join(',', remembered.SettingsWindowSize!));
+        Equal("600,500", string.Join(',', remembered.SettingsPageSize!));
 
-        // A window opened with no saved size uses the default.
-        using (var fresh = Open(new AppSettings { GlobalHotkeyEnabled = false }, 96))
+        // A window opened with no saved size is as tall as its tallest page, kept on the screen,
+        // so at that size no page scrolls; and fitting it is not a size choice.
+        var unsized = new AppSettings { GlobalHotkeyEnabled = false };
+        using (var fresh = Open(unsized, 96))
         {
             Equal(new Size(700, 640), fresh.ClientSize);
+            fresh.Show();
+            var available = Screen.FromControl(fresh).WorkingArea.Height - (fresh.Height - fresh.ClientSize.Height) - 24;
+            Equal(Math.Min(fresh.TallestPageHeight(), available), fresh.ClientSize.Height);
+            Equal(700, fresh.ClientSize.Width);
+            if (fresh.TallestPageHeight() <= available)
+            {
+                for (var page = 0; page < SettingsForm.PageNames.Length; page++)
+                {
+                    fresh.ShowPage(page);
+                    var host = Field<Panel>(fresh, "_scrollHost");
+                    False(host.DisplayRectangle.Height > host.ClientSize.Height);
+                }
+            }
+
+            fresh.Close();
         }
+
+        Null(unsized.SettingsPageSize);
 
         File.Delete(AppPaths.SettingsFile);
         return Task.CompletedTask;

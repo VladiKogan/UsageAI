@@ -153,7 +153,7 @@ internal static class PreviewRenderer
         switch (window)
         {
             case "settings":
-                ShowSettings(settings);
+                ShowSettings(settings, Program.ValueAfter(args, "--page"), Program.ValueAfter(args, "--search"));
                 return;
             case "whatsnew":
                 ShowWhatsNew();
@@ -323,10 +323,12 @@ internal static class PreviewRenderer
     }
 
     /// <summary>
-    /// The real Settings dialog with the sample providers' model groups. Startup registration and
-    /// the update check are stubbed, so the preview never touches the Run key or the network.
+    /// The real Settings window with the sample providers' model groups, on the page --page names
+    /// (General when it names none), with --search typed into its search box so the results show.
+    /// Startup registration and the update check are stubbed, so the preview never touches the Run
+    /// key or the network.
     /// </summary>
-    private static void ShowSettings(AppSettings settings)
+    private static void ShowSettings(AppSettings settings, string? page, string? search)
     {
         var (states, _, _) = SampleData(DateTimeOffset.Now);
         using var dialog = new SettingsForm(
@@ -337,6 +339,16 @@ internal static class PreviewRenderer
             readStartup: static () => new StartupState(StartupStatus.Enabled, null),
             writeStartup: static _ => { },
             popupGroups: UsageApplicationContext.PopupGroups(states));
+        if (page is not null)
+        {
+            dialog.ShowSection(page);
+        }
+
+        if (!string.IsNullOrEmpty(search))
+        {
+            dialog.Shown += (_, _) => dialog.Search(search);
+        }
+
         Application.Run(dialog);
     }
 

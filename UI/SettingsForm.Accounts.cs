@@ -18,9 +18,12 @@ internal sealed class SettingsAccountActions
 
     public AccountManager Manager { get; }
 
-    /// <summary>Opens Add account… (or, with an account, signs that account's folder in again).</summary>
-    public void OpenAddAccount(string? providerId = null, ProviderAccount? reauthenticate = null) =>
-        _context?.OpenAddAccount(providerId, reauthenticate);
+    /// <summary>
+    /// Opens Add account… (or, with an account, signs that account's folder in again) as a dialog
+    /// owned by <paramref name="owner"/>, the Settings window it was asked from.
+    /// </summary>
+    public void OpenAddAccount(string? providerId = null, ProviderAccount? reauthenticate = null, IWin32Window? owner = null) =>
+        _context?.OpenAddAccount(providerId, reauthenticate, owner);
 }
 
 /// <summary>Settings → Accounts: every Claude and Codex login, what to show, and the account actions.</summary>
@@ -41,21 +44,8 @@ internal sealed partial class SettingsForm
     private Button _terminalCommand = null!;
     private SettingsAccountActions? _accountActions;
     private IReadOnlyList<ProviderStatus> _accountStatuses = Array.Empty<ProviderStatus>();
-
-    /// <summary>Edits waiting for Save, keyed by provider key.</summary>
-    private readonly Dictionary<string, AccountDraft> _accountDrafts = new(StringComparer.OrdinalIgnoreCase);
     private bool _loadingAccounts;
-
-    private sealed class AccountDraft
-    {
-        public string? Label { get; set; }
-
-        public bool Shown { get; set; }
-
-        public bool Alerts { get; set; }
-
-        public int Order { get; set; }
-    }
+    private bool _accountReloadQueued;
 
     private sealed record AccountEntry(string Key, string Text)
     {
@@ -64,7 +54,8 @@ internal sealed partial class SettingsForm
 
     private void AddAccountsSection(LayoutScale scale)
     {
-        AddSection(AccountsSection);
+        AddPage(AccountsSection);
+        AddSection("Accounts");
         AddSpan(CreateHint(
             "Every Claude Code and Codex login UsageAI reads. Tick to show an account in the popup and dashboard; " +
             "a provider with one account keeps its plain tile."));
@@ -80,21 +71,13 @@ internal sealed partial class SettingsForm
             WheelTarget = _scrollHost,
             Dock = DockStyle.Fill,
             ForeColor = Theme.Text,
-            Height = scale[120],
+            Height = scale[160],
             HorizontalScrollbar = true,
             IntegralHeight = false,
             Margin = scale.Pad(0, 4, 0, 4),
         };
         _accountList.HandleCreated += OnScrollableControlHandleCreated;
         _accountList.SelectedIndexChanged += (_, _) => ShowSelectedAccount();
-        _accountList.ItemCheck += (_, eventArgs) =>
-        {
-            if (!_loadingAccounts && _accountList.Items[eventArgs.Index] is AccountEntry entry &&
-                _accountDrafts.TryGetValue(entry.Key, out var draft))
-            {
-                draft.Shown = eventArgs.NewValue == CheckState.Checked;
-            }
-        };
         AddSpan(_accountList);
 
         _accountDetails = new Label
@@ -108,13 +91,6 @@ internal sealed partial class SettingsForm
         AddSpan(_accountDetails);
 
         _accountAlerts = CreateCheckBox("Alerts for this account");
-        _accountAlerts.CheckedChanged += (_, _) =>
-        {
-            if (!_loadingAccounts && SelectedAccountKey() is { } key && _accountDrafts.TryGetValue(key, out var draft))
-            {
-                draft.Alerts = _accountAlerts.Checked;
-            }
-        };
         AddSpan(_accountAlerts);
 
         var rowButtons = new FlowLayoutPanel
@@ -150,7 +126,7 @@ internal sealed partial class SettingsForm
         add.Margin = scale.Pad(0, 0, 8, 0);
         add.Click += (_, _) =>
         {
-            _accountActions?.OpenAddAccount();
+            _accountActions?.OpenAddAccount(owner: this);
             ReloadAccounts();
         };
         var rescan = CreateDialogButton("Rescan", scale, primary: false);
@@ -168,6 +144,7 @@ internal sealed partial class SettingsForm
         _lastScan = CreateHint(string.Empty);
         AddSpan(_lastScan);
 
+        AddSection("Finding logins");
         _findAccounts = CreateCheckBox("Find logins in my user folder automatically");
         AddSpan(_findAccounts);
         AddSpan(CreateHint("Looks for folders whose name starts with .claude or .codex, at startup and once a day. No other folder is searched."));
@@ -175,15 +152,26 @@ internal sealed partial class SettingsForm
         AddSpan(_askBeforeShowing);
     }
 
-    /// <summary>Scrolls to a section by name, for the account banner's Choose….</summary>
-    public void ShowSection(string name)
+    private void WireAccountChanges()
     {
-        var index = Array.FindIndex(SectionNames, section => section.Equals(name, StringComparison.OrdinalIgnoreCase));
-        if (index >= 0)
+        _accountList.ItemCheck += (_, eventArgs) =>
         {
-            _nav.SelectedIndex = index;
-            ScrollToSection(index);
-        }
+            if (!_loadingAccounts && !_loading && eventArgs.NewValue != eventArgs.CurrentValue &&
+                _accountList.Items[eventArgs.Index] is AccountEntry entry)
+            {
+                SetAccountShown(entry.Key, eventArgs.NewValue == CheckState.Checked);
+            }
+        };
+        _accountAlerts.CheckedChanged += (_, _) =>
+        {
+            if (!_loadingAccounts && !_loading && SelectedAccountKey() is { } key)
+            {
+                _settings.EnsureAccount(key).Alerts = _accountAlerts.Checked;
+                Commit(SettingsChanges.None);
+            }
+        };
+        WireToggle(_findAccounts, on => _settings.FindAccountsAutomatically = on, SettingsChanges.None);
+        WireToggle(_askBeforeShowing, on => _settings.AskBeforeShowingNewAccounts = on, SettingsChanges.None);
     }
 
     private void LoadAccountValues()
@@ -194,10 +182,29 @@ internal sealed partial class SettingsForm
     }
 
     /// <summary>
-    /// Fills the list from the settings, keeping edits not saved yet for accounts still listed. An
-    /// action that adds or removes an account (Add, Rescan, Remove, Locate) applies at once, so
-    /// the list is read again after it.
+    /// The accounts changed outside this page — a scan, Add account from the popup, a sign-in
+    /// noticed by a refresh. Read again once the current event has finished, since the change can
+    /// arrive from inside a tick on this very list.
     /// </summary>
+    internal void AccountsChangedElsewhere()
+    {
+        if (_accountReloadQueued || IsDisposed || !IsHandleCreated)
+        {
+            return;
+        }
+
+        _accountReloadQueued = true;
+        BeginInvoke(() =>
+        {
+            _accountReloadQueued = false;
+            if (!IsDisposed)
+            {
+                ReloadAccounts();
+            }
+        });
+    }
+
+    /// <summary>Fills the list from the settings, keeping the selection on the same account.</summary>
     private void ReloadAccounts()
     {
         var selected = SelectedAccountKey();
@@ -205,30 +212,13 @@ internal sealed partial class SettingsForm
         try
         {
             _accountList.Items.Clear();
-            var keys = AccountKeys();
-            foreach (var key in keys.Where(key => !_accountDrafts.ContainsKey(key)))
+            var ordered = OrderedAccountKeys().ToList();
+            foreach (var key in ordered)
             {
-                var account = _settings.FindAccount(key);
-                _accountDrafts[key] = new AccountDraft
-                {
-                    Label = account?.Label,
-                    Shown = account is null || (!account.Hidden && !account.Pending),
-                    Alerts = account?.Alerts ?? true,
-                    Order = account?.Order ?? (ProviderKey.IsDefault(key) ? 0 : int.MaxValue / 2),
-                };
+                _accountList.Items.Add(new AccountEntry(key, AccountText(key)), AccountShown(key));
             }
 
-            foreach (var stale in _accountDrafts.Keys.Where(key => !keys.Contains(key, StringComparer.OrdinalIgnoreCase)).ToArray())
-            {
-                _accountDrafts.Remove(stale);
-            }
-
-            foreach (var key in OrderedAccountKeys())
-            {
-                _accountList.Items.Add(new AccountEntry(key, AccountText(key)), _accountDrafts[key].Shown);
-            }
-
-            var index = selected is null ? -1 : OrderedAccountKeys().ToList().FindIndex(key => key.Equals(selected, StringComparison.OrdinalIgnoreCase));
+            var index = selected is null ? -1 : ordered.FindIndex(key => key.Equals(selected, StringComparison.OrdinalIgnoreCase));
             _accountList.SelectedIndex = index >= 0 ? index : _accountList.Items.Count > 0 ? 0 : -1;
             _lastScan.Text = _settings.LastAccountScanUtc is { } scanned
                 ? $"Last checked {scanned.ToLocalTime().ToString("g", CultureInfo.CurrentCulture)}."
@@ -253,15 +243,56 @@ internal sealed partial class SettingsForm
     private IEnumerable<string> OrderedAccountKeys() =>
         AccountKeys()
             .OrderBy(key => Array.IndexOf(AccountDiscovery.MultiAccountProviders.ToArray(), ProviderKey.ProviderOf(key)))
-            .ThenBy(key => _accountDrafts[key].Order)
+            .ThenBy(AccountOrder)
             .ThenBy(key => key, StringComparer.OrdinalIgnoreCase);
+
+    private bool AccountShown(string key) =>
+        _settings.FindAccount(key) is not { } account || (!account.Hidden && !account.Pending);
+
+    private bool AccountAlerts(string key) => _settings.FindAccount(key)?.Alerts ?? true;
+
+    private int AccountOrder(string key) =>
+        _settings.FindAccount(key)?.Order ?? (ProviderKey.IsDefault(key) ? 0 : int.MaxValue / 2);
+
+    /// <summary>
+    /// Shows or hides an account. Showing one still waiting for the banner's answer answers it;
+    /// hiding one that is waiting leaves the question open, as unticking it did before. Either is
+    /// the user's own choice, so a login appearing no longer brings the account back by itself.
+    /// </summary>
+    private void SetAccountShown(string key, bool shown)
+    {
+        var account = _settings.EnsureAccount(key);
+        var answered = false;
+        if (account.Pending && shown)
+        {
+            account.Pending = false;
+            if (_accountActions is not null)
+            {
+                // The manager commits the answer itself, and the app rebuilds its clients from
+                // that; rebuilding them again here did the same work twice in one click.
+                _accountActions.Manager.AnswerNewAccount(key, show: true);
+                answered = true;
+            }
+        }
+
+        var hidden = !shown && !account.Pending;
+        if (hidden != account.Hidden)
+        {
+            account.HiddenUntilSignedIn = false;
+        }
+
+        account.Hidden = hidden;
+        var changes = SettingsChanges.Polling | SettingsChanges.Display;
+        changes |= answered ? SettingsChanges.None : SettingsChanges.Accounts;
+        changes |= shown ? SettingsChanges.AccountShown : SettingsChanges.None;
+        Commit(changes);
+    }
 
     private string AccountText(string key)
     {
         var account = _settings.FindAccount(key);
-        var draft = _accountDrafts[key];
         var name = AccountDiscovery.ProviderName(ProviderKey.ProviderOf(key));
-        var label = !string.IsNullOrWhiteSpace(draft.Label) ? draft.Label
+        var label = !string.IsNullOrWhiteSpace(account?.Label) ? account.Label
             : account?.Email ?? Path.GetFileName(account?.Path ?? AccountDiscovery.DefaultFolder(ProviderKey.ProviderOf(key)));
         var state = account?.DuplicateOf is { } duplicate ? $"Duplicate of {duplicate}"
             : account?.Pending == true ? "New — not shown yet"
@@ -299,7 +330,7 @@ internal sealed partial class SettingsForm
         }
 
         _loadingAccounts = true;
-        _accountAlerts.Checked = _accountDrafts[key].Alerts;
+        _accountAlerts.Checked = AccountAlerts(key);
         _loadingAccounts = false;
         var folder = account?.Path ?? _accountActions?.Manager.DefaultFolder(ProviderKey.ProviderOf(key)) ?? AccountDiscovery.DefaultFolder(ProviderKey.ProviderOf(key));
         var source = account?.Source switch
@@ -322,12 +353,12 @@ internal sealed partial class SettingsForm
             command += $"Your own terminal command{(account.UserCommandNames.Count > 1 ? "s" : string.Empty)}: {string.Join("; ", yours)}\n";
         }
 
-        _accountDetails.Text =$"{email}{source}\n{command}{StatusText(key)}{(status?.Error is { } error ? $": {error}" : string.Empty)}";
+        _accountDetails.Text = $"{email}{source}\n{command}{StatusText(key)}{(status?.Error is { } error ? $": {error}" : string.Empty)}";
     }
 
     /// <summary>
     /// Takes the latest readings while Settings is open, so an account added or signed in again
-    /// here reads Connected without reopening the window. Ticks, selection and edits stay.
+    /// here reads Connected without reopening the window. Ticks and selection stay.
     /// </summary>
     internal void UpdateAccountStatuses(IReadOnlyList<ProviderStatus> statuses)
     {
@@ -344,7 +375,7 @@ internal sealed partial class SettingsForm
             var top = _accountList.TopIndex;
             for (var index = 0; index < _accountList.Items.Count; index++)
             {
-                if (_accountList.Items[index] is not AccountEntry entry || !_accountDrafts.ContainsKey(entry.Key))
+                if (_accountList.Items[index] is not AccountEntry entry)
                 {
                     continue;
                 }
@@ -379,9 +410,8 @@ internal sealed partial class SettingsForm
         }
 
         var providerName = AccountDiscovery.ProviderName(account.ProviderId);
-        var label = _accountDrafts.TryGetValue(key, out var draft) && draft.Label is { } drafted ? drafted : account.Label;
         var suggested = account.Command ?? TerminalCommands.SuggestFree(
-            TerminalCommands.Suggest(account.ProviderId, label ?? account.Email?.Split('@')[0], folder),
+            TerminalCommands.Suggest(account.ProviderId, account.Label ?? account.Email?.Split('@')[0], folder),
             account.UserCommandNames);
         var name = TextPrompt.Ask(
             this,
@@ -400,7 +430,7 @@ internal sealed partial class SettingsForm
         var result = manager.SetTerminalCommand(key, name);
         if (result.Problem is { } problem)
         {
-            PromptDialog.Ask("Terminal command", "The command was not saved", problem, "OK", declineText: null, PromptKind.Warning);
+            Confirm(new SettingsPrompt("Terminal command", "The command was not saved", problem, "OK", null, PromptKind.Warning));
         }
         else if (result.Command is { } command)
         {
@@ -409,12 +439,12 @@ internal sealed partial class SettingsForm
                 : result.PathChanged
                     ? $"UsageAI wrote {result.FilePath} and added {terminal.Folder} to your PATH."
                     : $"UsageAI wrote {result.FilePath}.";
-            PromptDialog.Ask(
+            Confirm(new SettingsPrompt(
                 "Terminal command",
                 $"Run {command} in a new terminal",
                 $"{where}\n\nOpen a new terminal window (one already open keeps its old PATH) and run {command} to use {providerName} with this account. Forget the account here to delete the command.",
                 "OK",
-                declineText: null);
+                null));
         }
 
         ShowSelectedAccount();
@@ -429,13 +459,14 @@ internal sealed partial class SettingsForm
             return;
         }
 
-        var name = TextPrompt.Ask(this, "Rename account", "Name shown on the account's tile:", _accountDrafts[key].Label ?? string.Empty);
+        var name = TextPrompt.Ask(this, "Rename account", "Name shown on the account's tile:", _settings.FindAccount(key)?.Label ?? string.Empty);
         if (name is null)
         {
             return;
         }
 
-        _accountDrafts[key].Label = string.IsNullOrWhiteSpace(name) ? null : name.Trim()[..Math.Min(name.Trim().Length, 64)];
+        _settings.EnsureAccount(key).Label = string.IsNullOrWhiteSpace(name) ? null : name.Trim()[..Math.Min(name.Trim().Length, 64)];
+        Commit(SettingsChanges.Display);
         ReloadAccounts();
     }
 
@@ -451,7 +482,7 @@ internal sealed partial class SettingsForm
             .ToList();
         var from = siblings.FindIndex(other => other.Equals(key, StringComparison.OrdinalIgnoreCase));
         var to = from + offset;
-        if (from < 0 || to < 0 || to >= siblings.Count)
+        if (from < 0 || to < 0 || to >= siblings.Count || !ConfirmReplaceCardOrder())
         {
             return;
         }
@@ -459,10 +490,12 @@ internal sealed partial class SettingsForm
         (siblings[from], siblings[to]) = (siblings[to], siblings[from]);
         for (var index = 0; index < siblings.Count; index++)
         {
-            _accountDrafts[siblings[index]].Order = index;
+            _settings.EnsureAccount(siblings[index]).Order = index;
         }
 
-        _accountOrderEdited = true;
+        // An order chosen here replaces one made by dragging cards, which this list cannot show.
+        _settings.UnitOrder = Array.Empty<string>();
+        Commit(SettingsChanges.Accounts | SettingsChanges.Display);
         ReloadAccounts();
     }
 
@@ -477,7 +510,7 @@ internal sealed partial class SettingsForm
         var account = _settings.FindAccount(key);
         if (account is { Source: AccountSource.Created } && _accountActions is not null)
         {
-            _accountActions.OpenAddAccount(providerId, account);
+            _accountActions.OpenAddAccount(providerId, account, this);
             ReloadAccounts();
             return;
         }
@@ -489,12 +522,12 @@ internal sealed partial class SettingsForm
             : account?.Command is { } own && _accountActions?.Manager.Terminal is { } terminal &&
               terminal.IsOnUserPath() && File.Exists(terminal.FilePath(own)) ? own + login
             : AccountCommands.SignIn(providerId, folder);
-        if (PromptDialog.Ask(
+        if (Confirm(new SettingsPrompt(
                 "Re-authenticate",
                 $"Sign {AccountDiscovery.ProviderName(providerId)} in again in a terminal",
                 $"Run this in PowerShell, then refresh UsageAI:\n\n{command}",
                 "Copy command",
-                "Close"))
+                "Close")))
         {
             try
             {
@@ -552,7 +585,7 @@ internal sealed partial class SettingsForm
         if (result.Problem is { } problem)
         {
             var heading = result.UnitKey is null ? "That folder cannot be used" : "The terminal command was removed";
-            PromptDialog.Ask("Locate account", heading, problem, "OK", declineText: null, PromptKind.Warning);
+            Confirm(new SettingsPrompt("Locate account", heading, problem, "OK", null, PromptKind.Warning));
         }
 
         ReloadAccounts();
@@ -574,19 +607,20 @@ internal sealed partial class SettingsForm
                 : $"\n\nYour own commands, {string.Join(", ", yours)}, are left as they are.";
         }
         var confirmed = created
-            ? PromptDialog.Ask(
+            ? Confirm(new SettingsPrompt(
                 "Remove account",
                 $"Remove {account.DisplayLabel} and delete its login?",
                 $"UsageAI created {account.Path} for this account. Removing it deletes that folder, and the login saved in it is removed. A terminal using it would need to sign in again.{commandNote}",
                 "Remove and delete",
                 "Cancel",
-                PromptKind.Warning)
-            : PromptDialog.Ask(
+                PromptKind.Warning,
+                DeclineIsDefault: true))
+            : Confirm(new SettingsPrompt(
                 "Forget account",
                 $"Forget {account.DisplayLabel}?",
                 $"UsageAI stops reading {account.Path}. The folder and its login are not touched.{commandNote}",
                 "Forget",
-                "Cancel");
+                "Cancel"));
         if (!confirmed)
         {
             return;
@@ -594,44 +628,9 @@ internal sealed partial class SettingsForm
 
         if (_accountActions.Manager.Remove(key, deleteCreatedFolder: created) is { } problem)
         {
-            PromptDialog.Ask("Remove account", "The account was not removed", problem, "OK", declineText: null, PromptKind.Warning);
+            Confirm(new SettingsPrompt("Remove account", "The account was not removed", problem, "OK", null, PromptKind.Warning));
         }
 
         ReloadAccounts();
-    }
-
-    /// <summary>Writes the page's edits into the settings, as part of Save.</summary>
-    private void ApplyAccounts()
-    {
-        _settings.FindAccountsAutomatically = _findAccounts.Checked;
-        _settings.AskBeforeShowingNewAccounts = _askBeforeShowing.Checked;
-        foreach (var (key, draft) in _accountDrafts)
-        {
-            var account = _settings.FindAccount(key);
-            var isDefaultUnchanged = account is null && draft.Shown && draft.Alerts && draft.Label is null && draft.Order == 0;
-            if (isDefaultUnchanged)
-            {
-                continue;
-            }
-
-            account ??= _settings.EnsureAccount(key);
-            if (account.Pending && draft.Shown)
-            {
-                account.Pending = false;
-                _accountActions?.Manager.AnswerNewAccount(key, show: true);
-            }
-
-            account.Label = draft.Label;
-            var hidden = !draft.Shown && !account.Pending;
-            if (hidden != account.Hidden)
-            {
-                // The user's own choice now; UsageAI no longer shows it on a login appearing.
-                account.HiddenUntilSignedIn = false;
-            }
-
-            account.Hidden = hidden;
-            account.Alerts = draft.Alerts;
-            account.Order = Math.Clamp(draft.Order, 0, 1000);
-        }
     }
 }

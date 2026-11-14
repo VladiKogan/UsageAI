@@ -27,6 +27,9 @@ internal sealed class UsageApplicationContext : ApplicationContext
     /// <summary>Extra logins of Claude and Codex. Null in tests and previews that do not use them.</summary>
     private readonly AccountManager? _accounts;
     private SettingsForm? _openSettings;
+    private readonly System.Windows.Forms.Timer _settingsPollingTimer = new() { Interval = (int)SettingsPollingDelay.TotalMilliseconds };
+    private string _settingsPollingBaseline = string.Empty;
+    private bool _accountsShownInSettings;
     private readonly UsageRefreshService _service;
     private readonly ContextMenuStrip _menu;
     private readonly NotifyIcon _trayIcon;
@@ -150,8 +153,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
                     TrayChoices(),
                     _settings.TrayProviderId,
                     _settings.QuotaDisplay,
-                    _settings.NotificationsEnabled,
-                    Enabled: _openSettings is null),
+                    _settings.NotificationsEnabled),
                 SetTrayProvider: id => ApplyQuickSetting(() => _settings.TrayProviderId = id),
                 SetQuotaDisplay: display => ApplyQuickSetting(() => _settings.QuotaDisplay = display),
                 SetNotifications: enabled => ApplyQuickSetting(() => _settings.NotificationsEnabled = enabled)));
@@ -193,6 +195,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
             await incidentCheck;
         };
         _tickTimer.Start();
+        _settingsPollingTimer.Tick += (_, _) => ApplySettingsPolling();
 
         _refreshAnimationTimer = new System.Windows.Forms.Timer { Interval = 110 };
         _refreshAnimationTimer.Tick += (_, _) =>
@@ -402,6 +405,8 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _service.ReplaceClients(_clients);
         PushStateToPopup();
         UpdateTray();
+        _openSettings?.AccountsChangedElsewhere();
+        _openSettings?.UpdateTrayChoices(TrayChoices());
     });
 
     private void OnNoticesChanged(object? sender, EventArgs eventArgs) => RunOnUi(() =>
@@ -469,7 +474,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
     /// folder the user already has. With <paramref name="reauthenticate"/>, signs that account's
     /// own folder in again.
     /// </summary>
-    internal void OpenAddAccount(string? providerId = null, ProviderAccount? reauthenticate = null)
+    internal void OpenAddAccount(string? providerId = null, ProviderAccount? reauthenticate = null, IWin32Window? owner = null)
     {
         if (_isExiting || _accounts is null)
         {
@@ -479,7 +484,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         ShowPendingWhatsNew();
         _popup.Hide();
         using var dialog = new AddAccountForm(_accounts, providerId, reauthenticate);
-        if (dialog.ShowDialog() == DialogResult.OK && dialog.AddedKey is { } added)
+        if ((owner is null ? dialog.ShowDialog() : dialog.ShowDialog(owner)) == DialogResult.OK && dialog.AddedKey is { } added)
         {
             _ = _service.RefreshProviderAsync(added, _popup.Visible);
         }
@@ -494,7 +499,12 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
         PushStateToPopup();
         UpdateTray();
-        _openSettings?.UpdateAccountStatuses(_service.AllStatuses);
+        if (_openSettings is { } settings)
+        {
+            settings.UpdateAccountStatuses(_service.AllStatuses);
+            // A provider or account shown since Settings opened can be chosen for the tray icon.
+            settings.UpdateTrayChoices(TrayChoices());
+        }
     });
 
     private void OnAlertsRaised(object? sender, UsageAlertEventArgs eventArgs) => RunOnUi(() =>
@@ -686,12 +696,12 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     /// <summary>
     /// Saves a setting changed from the tray menu and redraws from the cached snapshots. These are
-    /// presentation choices, so nothing is polled. Ignored while Settings is open: its OK writes
-    /// every value it shows and would undo the change.
+    /// presentation choices, so nothing is polled. An open Settings window shows the new value,
+    /// since it saves each of its settings only as that one is changed there.
     /// </summary>
     private void ApplyQuickSetting(Action change)
     {
-        if (_isExiting || _openSettings is not null)
+        if (_isExiting)
         {
             return;
         }
@@ -700,6 +710,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _settings.Save();
         PushStateToPopup();
         UpdateTray();
+        _openSettings?.ReloadQuickSettings(TrayChoices());
     }
 
     /// <summary>The shown providers and accounts the tray icon can follow, for Settings and the tray menu.</summary>
@@ -726,15 +737,43 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     private void OpenSettings() => OpenSettings(null);
 
+    /// <summary>
+    /// Opens Settings, or brings the open one forward — restored if minimized — on the page
+    /// asked for. It is a window of its own with no owner: an owner-less dialog was owned by
+    /// whichever window was active, the compact popup, and hidden with it as the popup closed
+    /// (0.19.0–0.19.1). Every change in it is saved as it is made and reported through
+    /// <see cref="SettingsForm.SettingsChanged"/>.
+    /// </summary>
     private void OpenSettings(string? section)
     {
+        if (_isExiting)
+        {
+            return;
+        }
+
         ShowPendingWhatsNew();
-        var pollingBefore = PollingInputs(_settings);
-        using var dialog = new SettingsForm(
+        if (_openSettings is { IsDisposed: false } open)
+        {
+            if (section is not null)
+            {
+                open.ShowSection(section);
+            }
+
+            if (open.WindowState == FormWindowState.Minimized)
+            {
+                open.WindowState = FormWindowState.Normal;
+            }
+
+            open.Activate();
+            return;
+        }
+
+        SettingsForm window = null!;
+        window = new SettingsForm(
             _settings,
             _defaultClients.Select(client => (client.Id, client.DisplayName)).ToArray(),
             _checkForUpdates,
-            PromptForUpdateAsync,
+            release => PromptForUpdateAsync(release, window),
             readStartup: _readStartup,
             writeStartup: _writeStartup,
             popupGroups: PopupGroups(_service.Statuses),
@@ -743,62 +782,117 @@ internal sealed class UsageApplicationContext : ApplicationContext
             trayChoices: TrayChoices());
         if (section is not null)
         {
-            dialog.Shown += (_, _) => dialog.ShowSection(section);
+            window.ShowSection(section);
         }
 
-        // Open while a refresh lands (an account just added here is read straight away), so the
+        // Open while refreshes land (an account added here is read straight away), so the
         // Accounts page shows the new readings instead of the ones it opened with.
-        // Settings can be opened again from the tray while one is open; the outer one gets updates back.
-        var outerSettings = _openSettings;
-        _openSettings = dialog;
-        DialogResult answer;
-        try
-        {
-            answer = dialog.ShowDialog();
-        }
-        finally
-        {
-            _openSettings = outerSettings;
-        }
+        _settingsPollingBaseline = PollingInputs(_settings);
+        window.SettingsChanged += OnSettingsChanged;
+        window.FormClosed += (_, _) => OnSettingsClosed(window);
+        _openSettings = window;
+        window.Show();
+    }
 
-        if (answer != DialogResult.OK)
+    /// <summary>The window Settings is open in, if it is.</summary>
+    internal SettingsForm? OpenSettingsWindow => _openSettings;
+
+    /// <summary>
+    /// A change saved in Settings. Presentation — theme, colours, metric or quota display, the
+    /// tray icon — re-renders from the cached snapshots at once. What is polled waits for the
+    /// changes to stop for a moment, so ticking several providers is one refresh, not several.
+    /// </summary>
+    private void OnSettingsChanged(object? sender, SettingsChangedEventArgs eventArgs)
+    {
+        if (_isExiting)
         {
             return;
         }
 
-        var accountsShown = false;
-        if (_accounts is not null)
+        var changes = eventArgs.Changes;
+        if (changes.HasFlag(SettingsChanges.Theme))
         {
-            // An account shown for the first time is due, and read straight after.
+            Theme.Apply(_settings.Theme, _settings.WarningPercent, _settings.CriticalPercent);
+        }
+
+        if (changes.HasFlag(SettingsChanges.Hotkey))
+        {
+            ApplyHotkeySetting();
+        }
+
+        if (changes.HasFlag(SettingsChanges.Accounts) && _accounts is not null)
+        {
             _clients = _accounts.CreateClients(_defaultClients).ToArray();
             _service.ReplaceClients(_clients);
             _popup.SetNotices(_accounts.Notices);
-            accountsShown = true;
         }
 
-        // A presentation-only change — theme, colours, metric or quota display — re-renders from
-        // the cached snapshots. Only a change to which providers are polled, or how often, polls.
-        var pollingChanged = !PollingInputs(_settings).Equals(pollingBefore, StringComparison.Ordinal);
-        Theme.Apply(_settings.Theme, _settings.WarningPercent, _settings.CriticalPercent);
-        ApplyHotkeySetting();
-        if (pollingChanged)
+        // An account shown is due, and read once the changes settle.
+        _accountsShownInSettings |= changes.HasFlag(SettingsChanges.AccountShown);
+        if (changes.HasFlag(SettingsChanges.Polling) || changes.HasFlag(SettingsChanges.Accounts) || changes.HasFlag(SettingsChanges.AccountShown))
         {
+            _settingsPollingTimer.Stop();
+            _settingsPollingTimer.Start();
+        }
+
+        if (changes != SettingsChanges.None)
+        {
+            PushStateToPopup();
+            UpdateTray();
+        }
+
+        _ = RefreshIncidentsIfDueAsync();
+    }
+
+    /// <summary>How long Settings' polling changes wait for the next change before they apply.</summary>
+    internal static readonly TimeSpan SettingsPollingDelay = TimeSpan.FromMilliseconds(1500);
+
+    /// <summary>
+    /// Applies what Settings changed about polling once its changes have settled: polls only if
+    /// which providers are fetched, or how often, really changed since the last time.
+    /// </summary>
+    internal void ApplySettingsPolling()
+    {
+        _settingsPollingTimer.Stop();
+        if (_isExiting)
+        {
+            return;
+        }
+
+        var accountsShown = _accountsShownInSettings;
+        _accountsShownInSettings = false;
+        var inputs = PollingInputs(_settings);
+        if (!inputs.Equals(_settingsPollingBaseline, StringComparison.Ordinal))
+        {
+            _settingsPollingBaseline = inputs;
             _service.ApplySettings();
-        }
-
-        PushStateToPopup();
-        UpdateTray();
-        if (pollingChanged)
-        {
             _ = RefreshAsync(force: false);
         }
         else if (accountsShown)
         {
             _ = RefreshIfDueAsync();
         }
+    }
+
+    private void OnSettingsClosed(SettingsForm window)
+    {
+        window.SettingsChanged -= OnSettingsChanged;
+        if (ReferenceEquals(_openSettings, window))
+        {
+            _openSettings = null;
+        }
+
+        if (_isExiting)
+        {
+            return;
+        }
+
+        if (_settingsPollingTimer.Enabled)
+        {
+            ApplySettingsPolling();
+        }
 
         _ = CheckForUpdatesIfDueAsync();
-        _ = RefreshIncidentsIfDueAsync();
     }
 
     /// <summary>The model groups each provider reported last, for Settings' popup-ring pickers.</summary>
@@ -887,10 +981,17 @@ internal sealed class UsageApplicationContext : ApplicationContext
         }
     }
 
-    private async Task PromptForUpdateAsync(UpdateRelease release)
+    private Task PromptForUpdateAsync(UpdateRelease release) => PromptForUpdateAsync(release, owner: null);
+
+    /// <summary>
+    /// Offers an update. <paramref name="owner"/> is the Settings window when its Check for
+    /// updates found it, so the question stays over that window.
+    /// </summary>
+    private async Task PromptForUpdateAsync(UpdateRelease release, IWin32Window? owner)
     {
         var canInstall = release.Installer is not null && release.Checksum is not null;
         var accepted = PromptDialog.Ask(
+            owner,
             "UsageAI update",
             $"UsageAI {release.Version} is available",
             canInstall
@@ -1049,15 +1150,7 @@ internal sealed class UsageApplicationContext : ApplicationContext
 
     private static void OpenReleasePage(Uri releasePageUrl)
     {
-        try
-        {
-            using var process = Process.Start(new ProcessStartInfo(releasePageUrl.AbsoluteUri)
-            {
-                UseShellExecute = true,
-            });
-        }
-        catch (Exception exception) when (exception is InvalidOperationException
-                                              or System.ComponentModel.Win32Exception)
+        if (!Browser.Open(releasePageUrl))
         {
             PromptDialog.Ask(
                 "UsageAI update",
@@ -1150,6 +1243,9 @@ internal sealed class UsageApplicationContext : ApplicationContext
         _tickTimer.Stop();
         _refreshAnimationTimer.Stop();
         _trayIcon.Visible = false;
+        _settingsPollingTimer.Stop();
+        // Settings is a window of its own now, not a dialog the exit waits behind.
+        _openSettings?.Close();
         _popup.CloseForExit();
         ExitThread();
     }
@@ -1174,7 +1270,9 @@ internal sealed class UsageApplicationContext : ApplicationContext
             }
 
             _shutdown.Cancel();
+            _openSettings?.Close();
             _refreshAnimationTimer.Dispose();
+            _settingsPollingTimer.Dispose();
             _tickTimer.Dispose();
             _messageWindow.Dispose();
             _trayIcon.Dispose();

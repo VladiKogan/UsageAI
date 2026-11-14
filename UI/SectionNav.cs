@@ -4,10 +4,10 @@ using System.Drawing.Text;
 namespace UsageAI.UI;
 
 /// <summary>
-/// The vertical list of section names beside a long page — Settings' General, Alerts, … — with
-/// the current one marked by a raised fill and an accent pill, the Windows 11 navigation look.
-/// Choosing a section raises <see cref="SectionChosen"/>; the host scrolls to it and reports back
-/// through <see cref="SelectedIndex"/> as the reader scrolls. Up and Down move between sections.
+/// The vertical list of Settings' pages — General, Alerts, … — with the one shown marked by a
+/// raised fill and an accent pill, the Windows 11 navigation look. Choosing a page raises
+/// <see cref="SectionChosen"/> and the host shows it. Up and Down move between pages. Screen
+/// readers meet it as a tab list, one tab per page ("Accounts, tab 5 of 6").
 /// </summary>
 internal sealed class SectionNav : Control
 {
@@ -19,7 +19,17 @@ internal sealed class SectionNav : Control
     private int _selectedIndex;
     private int _hoverIndex = -1;
     private Font? _font;
+    private Font? _iconFont;
     private int _fontDpi;
+
+    /// <summary>
+    /// One icon per page, as code points in the Windows icon font, drawn before each name. Left
+    /// out when no icon font is installed, so no page is marked with an empty box.
+    /// </summary>
+    [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
+    internal IReadOnlyList<string>? Glyphs { get; init; }
+
+    private bool ShowsGlyphs => Glyphs is { } glyphs && glyphs.Count == _sections.Length && Typography.HasIcons;
 
     public SectionNav(IReadOnlyList<string> sections)
     {
@@ -29,15 +39,15 @@ internal sealed class SectionNav : Control
         ResizeRedraw = true;
         TabStop = true;
         SetStyle(ControlStyles.Selectable, true);
-        AccessibleRole = AccessibleRole.List;
-        AccessibleName = "Settings sections";
+        AccessibleRole = AccessibleRole.PageTabList;
+        AccessibleName = "Settings pages";
         UpdateAccessibility();
     }
 
-    /// <summary>A section was chosen with the mouse or keyboard.</summary>
+    /// <summary>A page was chosen with the mouse or keyboard.</summary>
     public event EventHandler? SectionChosen;
 
-    /// <summary>Enter was pressed on the marked section: move into it.</summary>
+    /// <summary>Enter was pressed on the marked page: move into it.</summary>
     public event EventHandler? SectionEntered;
 
     [System.ComponentModel.DesignerSerializationVisibility(System.ComponentModel.DesignerSerializationVisibility.Hidden)]
@@ -61,6 +71,61 @@ internal sealed class SectionNav : Control
             _selectedIndex = clamped;
             UpdateAccessibility();
             Invalidate();
+            if (IsHandleCreated)
+            {
+                AccessibilityNotifyClients(AccessibleEvents.Selection, clamped);
+                if (Focused)
+                {
+                    AccessibilityNotifyClients(AccessibleEvents.Focus, clamped);
+                }
+            }
+        }
+    }
+
+    protected override AccessibleObject CreateAccessibilityInstance() => new NavAccessibleObject(this);
+
+    /// <summary>The list as a tab list whose tabs are the pages, so a screen reader says which is shown.</summary>
+    private sealed class NavAccessibleObject(SectionNav owner) : ControlAccessibleObject(owner)
+    {
+        public override AccessibleRole Role => AccessibleRole.PageTabList;
+
+        public override int GetChildCount() => owner._sections.Length;
+
+        public override AccessibleObject? GetChild(int index) =>
+            index >= 0 && index < owner._sections.Length ? new PageTabAccessibleObject(owner, index, this) : null;
+
+        public override AccessibleObject? GetFocused() => owner.Focused ? GetChild(owner._selectedIndex) : null;
+
+        public override AccessibleObject? GetSelected() => GetChild(owner._selectedIndex);
+    }
+
+    private sealed class PageTabAccessibleObject(SectionNav owner, int index, AccessibleObject parent) : AccessibleObject
+    {
+        public override string Name => owner._sections[index];
+
+        public override AccessibleRole Role => AccessibleRole.PageTab;
+
+        public override AccessibleObject Parent => parent;
+
+        public override string Description => $"Tab {index + 1} of {owner._sections.Length}";
+
+        public override AccessibleStates State =>
+            AccessibleStates.Selectable | AccessibleStates.Focusable |
+            (index == owner._selectedIndex ? AccessibleStates.Selected : AccessibleStates.None) |
+            (index == owner._selectedIndex && owner.Focused ? AccessibleStates.Focused : AccessibleStates.None);
+
+        public override Rectangle Bounds => owner.RectangleToScreen(owner.ItemBounds(index));
+
+        public override string DefaultAction => "Switch";
+
+        public override void DoDefaultAction() => owner.Choose(index);
+
+        public override void Select(AccessibleSelection flags)
+        {
+            if (flags.HasFlag(AccessibleSelection.TakeSelection) || flags.HasFlag(AccessibleSelection.TakeFocus))
+            {
+                owner.Choose(index);
+            }
         }
     }
 
@@ -173,12 +238,26 @@ internal sealed class SectionNav : Control
                 graphics.FillPath(pill, pillShape);
             }
 
+            var color = highContrast ? (selected ? SystemColors.HighlightText : SystemColors.WindowText) : Theme.Text;
+            var textLeft = item.Left + scale[14];
+            if (ShowsGlyphs && IconFontForDpi() is { } icons)
+            {
+                DrawingHelpers.DrawText(
+                    graphics,
+                    Glyphs![index],
+                    icons,
+                    color,
+                    new Rectangle(textLeft, item.Top, scale[20], item.Height),
+                    TextFormatFlags.VerticalCenter | TextFormatFlags.HorizontalCenter | TextFormatFlags.NoPadding);
+                textLeft += scale[30];
+            }
+
             DrawingHelpers.DrawText(
                 graphics,
                 _sections[index],
                 font,
-                highContrast ? (selected ? SystemColors.HighlightText : SystemColors.WindowText) : Theme.Text,
-                Rectangle.FromLTRB(item.Left + scale[14], item.Top, item.Right - scale[6], item.Bottom),
+                color,
+                Rectangle.FromLTRB(textLeft, item.Top, item.Right - scale[6], item.Bottom),
                 TextFormatFlags.VerticalCenter | TextFormatFlags.EndEllipsis);
         }
 
@@ -195,6 +274,7 @@ internal sealed class SectionNav : Control
         if (disposing)
         {
             _font?.Dispose();
+            _iconFont?.Dispose();
         }
 
         base.Dispose(disposing);
@@ -222,7 +302,7 @@ internal sealed class SectionNav : Control
     private void UpdateAccessibility() =>
         AccessibleDescription = _sections.Length == 0
             ? null
-            : $"{_sections[_selectedIndex]}, {_selectedIndex + 1} of {_sections.Length}. Use Up and Down to move between sections and Enter to go to one.";
+            : $"{_sections[_selectedIndex]}, {_selectedIndex + 1} of {_sections.Length}. Use Up and Down to change pages and Enter to go into one.";
 
     private LayoutScale Scale() => DpiOverride is { } dpi ? new LayoutScale(dpi) : new LayoutScale(this);
 
@@ -232,10 +312,19 @@ internal sealed class SectionNav : Control
         if (_font is null || _fontDpi != dpi)
         {
             _font?.Dispose();
+            _iconFont?.Dispose();
             _font = Typography.Text(9F, dpi);
+            _iconFont = null;
             _fontDpi = dpi;
         }
 
         return _font;
+    }
+
+    /// <summary>The icon face at the same DPI as the names, made on first use.</summary>
+    private Font? IconFontForDpi()
+    {
+        FontForDpi();
+        return _iconFont ??= Typography.Icons(10.5F, _fontDpi);
     }
 }
