@@ -175,8 +175,8 @@ internal sealed partial class SettingsForm : Form
         // nothing to confirm, and the tray app shows it with no owner, so it is never hidden along
         // with the popup it was opened from (0.19.0–0.19.1). Its taskbar button and minimize box
         // keep it findable once other windows cover it. Resizable, since a page can be longer than
-        // the window, and maximizable: a page's cards stop growing at MaxPageWidth, as Windows' own
-        // Settings does, so rows never stretch across a whole screen.
+        // the window, and maximizable: a page's cards run the width of the window at any size, so
+        // a maximized window is filled rather than left half empty.
         FormBorderStyle = FormBorderStyle.Sizable;
         MaximizeBox = true;
         MinimizeBox = true;
@@ -410,8 +410,10 @@ internal sealed partial class SettingsForm : Form
 
         AddPage("About");
         AddSection("UsageAI");
+        // At the card's right edge, where every other row's value sits.
         _versionLabel = new Label
         {
+            Anchor = AnchorStyles.Right,
             AutoSize = true,
             Font = Own(Typography.Figures(10F)),
             ForeColor = Theme.Text,
@@ -1329,7 +1331,6 @@ internal sealed partial class SettingsForm : Form
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 58));
         layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 42));
         layout.Paint += PaintSectionCards;
-        layout.SizeChanged += (_, _) => FitPagePadding(layout, Scale());
         _scrollHost.Controls.Add(layout);
         _building = new SettingsPage(name, layout);
         _pages.Add(_building);
@@ -1595,25 +1596,6 @@ internal sealed partial class SettingsForm : Form
     private const int ThresholdPreviewHeight = 48;
 
     private static Padding LayoutPadding(LayoutScale scale) => scale.Pad(14 + CardInset, 8, 18 + CardInset, 12);
-
-    /// <summary>The widest a page's cards grow, at 96 DPI; a wider window leaves the rest empty.</summary>
-    internal const int MaxPageWidth = 800;
-
-    /// <summary>
-    /// Gives a page its padding, widened on the right once the window is wider than
-    /// <see cref="MaxPageWidth"/> allows. The cards are painted inside the padding, so they stop
-    /// growing there and stay beside the page list rather than stretching across a maximized
-    /// window. Setting the padding never changes the page's width, so this cannot loop.
-    /// </summary>
-    private static void FitPagePadding(Control layout, LayoutScale scale)
-    {
-        var padding = LayoutPadding(scale);
-        padding.Right += Math.Max(0, layout.Width - padding.Horizontal - scale[MaxPageWidth]);
-        if (layout.Padding != padding)
-        {
-            layout.Padding = padding;
-        }
-    }
 
     private sealed record Section(Label Header, int FirstRow, int LastRow = -1);
 
@@ -1885,7 +1867,7 @@ internal sealed partial class SettingsForm : Form
         _nav.Margin = scale.Pad(8, 6, 4, 8);
         foreach (var page in _pages)
         {
-            FitPagePadding(page.Layout, scale);
+            page.Layout.Padding = LayoutPadding(scale);
         }
 
         _providers.Height = scale[104];

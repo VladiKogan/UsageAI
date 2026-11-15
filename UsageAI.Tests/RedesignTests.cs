@@ -2354,12 +2354,36 @@ internal static class RedesignTests
             typeof(UsageApplicationContext).GetMethod("OpenSettings", Private, new[] { typeof(string) })!.Invoke(context, new object?[] { section });
 
         // The popup's Settings button opens it with no owner; the popup hiding, as it does when
-        // Settings takes the focus, leaves it on screen.
+        // Settings takes the focus, leaves it on screen. The popup hides after that change of
+        // focus, never inside it: hidden while Windows still counted it as the active window, it
+        // made Windows activate another app's window in its place and give up on Settings, which
+        // then opened behind that window. Whether this process holds the foreground depends on
+        // how the checks were started, so where Settings ends up is checked only when it does.
         popup.ShowNearTray(DashboardMode.Compact);
         Application.DoEvents();
+        var hadForeground = GetForegroundWindow() == popup.Handle;
+        bool? shownWhileDeactivating = null;
+        void OnPopupDeactivate(object? sender, EventArgs eventArgs) => shownWhileDeactivating ??= popup.Visible;
+        popup.Deactivate += OnPopupDeactivate;
         Field<IconButton>(popup, "_settingsButton").PerformClick();
-        Application.DoEvents();
+        popup.Deactivate -= OnPopupDeactivate;
         var window = context.OpenSettingsWindow ?? throw new InvalidOperationException("Settings did not open.");
+        True(shownWhileDeactivating != false);
+        Application.DoEvents();
+        if (shownWhileDeactivating == true)
+        {
+            False(popup.Visible);
+        }
+
+        if (hadForeground)
+        {
+            True(GetForegroundWindow() == window.Handle);
+        }
+        else
+        {
+            Console.WriteLine("  (the checks do not hold the foreground here; where Settings opens was not checked)");
+        }
+
         Null(window.Owner);
         True(window.ShowInTaskbar && window.MinimizeBox);
         popup.Hide();
@@ -2467,6 +2491,9 @@ internal static class RedesignTests
     [System.Runtime.InteropServices.DllImport("dwmapi.dll")]
     private static extern int DwmGetWindowAttribute(IntPtr window, int attribute, out int value, int size);
 
+    [System.Runtime.InteropServices.DllImport("user32.dll")]
+    private static extern IntPtr GetForegroundWindow();
+
     /// <summary>
     /// Settings' number fields draw their spin buttons in the app's palette rather than the
     /// system's light style, which showed as a white block on a dark card.
@@ -2535,7 +2562,7 @@ internal static class RedesignTests
     }
 
     /// <summary>
-    /// Settings is a window of its own — taskbar button, minimizable, resizable but not
+    /// Settings is a window of its own — taskbar button, minimizable, resizable and
     /// maximizable — that opens at the size it was left at, or with none saved at the height of
     /// its tallest page, and stores a chosen size at 96 DPI. A size saved for the old single
     /// scrolling page is ignored.
@@ -2602,19 +2629,23 @@ internal static class RedesignTests
         Equal("820,700", string.Join(',', remembered.SettingsPageSize!));
         Equal("820,700", string.Join(',', AppSettings.Load().SettingsPageSize!));
 
-        // Maximized, a page's cards stop at MaxPageWidth rather than stretching across the
-        // screen, and closing it keeps the size the window returns to, not the screen's.
+        // Maximized, a page's cards run the width of the window beside the page list rather than
+        // stopping part of the way across, and closing it keeps the size the window returns to,
+        // not the screen's.
         using (var dialog = Open(remembered, 96))
         {
             dialog.Show();
             Invoke(dialog, "OnResizeBegin", EventArgs.Empty);
             dialog.ClientSize = new Size(780, 640);
             Invoke(dialog, "OnResizeEnd", EventArgs.Empty);
+            var page = Field<Panel>(dialog, "_scrollHost").Controls.OfType<TableLayoutPanel>().Single(candidate => candidate.Visible);
+            var padding = page.Padding;
             dialog.WindowState = FormWindowState.Maximized;
             Application.DoEvents();
-            var page = Field<Panel>(dialog, "_scrollHost").Controls.OfType<TableLayoutPanel>().Single(candidate => candidate.Visible);
-            True(page.Width - page.Padding.Horizontal <= SettingsForm.MaxPageWidth);
             True(dialog.ClientSize.Width > 780);
+            Equal(padding, page.Padding);
+            var pageList = Field<TableLayoutPanel>(dialog, "_shell").GetColumnWidths()[0];
+            True(page.Width >= dialog.ClientSize.Width - pageList - 2);
 
             // A DPI change leaves a maximized window's bounds to Windows rather than fitting them
             // into the working area, which kept the state but drew a normal window.

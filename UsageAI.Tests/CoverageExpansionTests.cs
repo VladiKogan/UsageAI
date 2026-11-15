@@ -5670,9 +5670,18 @@ internal static class CoverageExpansionTests
         popup.SetMode(DashboardMode.Compact);
         popup.ShowNearTray(DashboardMode.Compact);
         Application.DoEvents();
+        // Losing the focus closes the popup once the change of focus is over, not inside it, and
+        // not at all when the popup was activated again in between.
         InvokeProtected(popup, "OnDeactivate", EventArgs.Empty);
+        True(popup.Visible);
+        Application.DoEvents();
         False(popup.Visible);
         popup.ShowNearTray(DashboardMode.Compact);
+        Application.DoEvents();
+        InvokeProtected(popup, "OnDeactivate", EventArgs.Empty);
+        InvokeProtected(popup, "OnActivated", EventArgs.Empty);
+        Application.DoEvents();
+        True(popup.Visible);
         InvokeProtected(popup, "OnKeyDown", new KeyEventArgs(Keys.Escape));
         False(popup.Visible);
 

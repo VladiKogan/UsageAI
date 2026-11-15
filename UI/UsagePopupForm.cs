@@ -62,6 +62,7 @@ internal sealed class UsagePopupForm : Form
     private bool _needsScroll;
     private bool _dashboardSizedByUser;
     private Size _sizeAtResizeBegin;
+    private bool _hidesWhenInactive;
     private PopupHeadline? _headline;
     private readonly System.Windows.Forms.Timer _uiTickTimer;
     private readonly ThemedToolTip _tileToolTip = new();
@@ -263,13 +264,31 @@ internal sealed class UsagePopupForm : Form
             _dashboardSizedByUser = _settings.DashboardSizedByUser;
         }
 
+        // The compact popup closes when it loses the focus, but only once the focus has arrived
+        // where it was going. Deactivate is raised in the middle of that change, while Windows
+        // still counts this window as the active one; hiding it there made Windows pick a window
+        // to activate in its place, another app's, and give up on the one being activated. So
+        // Settings opened from the popup's button came up behind whatever was underneath.
         Deactivate += (_, _) =>
         {
-            if (_mode == DashboardMode.Compact && !StaysOpenWhenInactive)
+            if (_mode != DashboardMode.Compact || StaysOpenWhenInactive || _hidesWhenInactive || !IsHandleCreated)
             {
-                Hide();
+                return;
             }
+
+            _hidesWhenInactive = true;
+            BeginInvoke(() =>
+            {
+                // Activated again in the meantime (asked for near the tray): it stays.
+                if (_hidesWhenInactive && !IsDisposed && _mode == DashboardMode.Compact)
+                {
+                    Hide();
+                }
+
+                _hidesWhenInactive = false;
+            });
         };
+        Activated += (_, _) => _hidesWhenInactive = false;
         // ResizeEnd also ends a move, so only a size that actually changed counts as the user
         // sizing the dashboard.
         ResizeBegin += (_, _) => _sizeAtResizeBegin = Size;

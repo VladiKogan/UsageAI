@@ -4,6 +4,24 @@ All notable changes to UsageAI are documented here.
 
 The project follows [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Changed
+
+- **A maximized Settings window is filled.** Its cards stopped at a fixed width beside the page
+  list, which left more than half of a maximized window empty on a large screen. They now run
+  the width of the window at any size, and the About page's version sits at the right edge with
+  the other values.
+
+### Fixed
+
+- **Settings opened from the popup comes to the front.** The gear button in the popup opened
+  Settings behind whatever window was underneath, so it looked as if it had started minimized,
+  while the tray menu's Settings opened it in front. The popup closed itself while the focus was
+  still on its way to Settings, and Windows answered by handing the focus to another app's
+  window. The popup now closes once the focus has arrived; the account banner's link to Settings
+  opened the same way and is fixed with it.
+
 ## [0.21.0] - 2026-11-14
 
 ### Added
