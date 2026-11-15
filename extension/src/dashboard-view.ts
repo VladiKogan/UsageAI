@@ -13,6 +13,7 @@ import {
   type QuotaDisplay,
   type UsageMetric,
 } from "./model";
+import { isProjectLinkId, projectLinks, reviewStoreNames, type ProjectLinks } from "./project-links";
 import type { UsageRefreshService } from "./refresh-service";
 
 /** Expanded cards by unit key (`claude`, `claude@1a2b3c4d`). */
@@ -72,6 +73,8 @@ export interface DashboardViewOptions {
   readonly quotaDisplay?: () => unknown;
   /** A card was dropped before or after another; both are shown unit keys. */
   readonly moveCard?: (moved: string, target: string, after: boolean) => void | PromiseLike<void>;
+  /** The footer's star, report and review links, for the editor the dashboard runs in. */
+  readonly projectLinks?: ProjectLinks;
 }
 
 /** Known unit keys only: a provider id, or an account unit key of a provider that has accounts. */
@@ -144,6 +147,7 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
   private expandEverything: boolean;
   private metricDisplayMode: MetricDisplayMode;
   private quotaDisplay: QuotaDisplay;
+  private readonly projectLinks: ProjectLinks;
 
   public constructor(
     private readonly refreshService: UsageRefreshService,
@@ -156,13 +160,14 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
     this.expandedProviders = new Set(sanitizeExpandedProviderIds(saved));
     this.metricDisplayMode = normalizeMetricDisplayMode(options.metricDisplayMode?.());
     this.quotaDisplay = normalizeQuotaDisplay(options.quotaDisplay?.());
+    this.projectLinks = options.projectLinks ?? projectLinks();
     this.removeUpdateListener = refreshService.onDidUpdate((states) => this.postStates(states));
   }
 
   public resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
     view.webview.options = { enableScripts: true, localResourceRoots: [] };
-    view.webview.html = dashboardHtml(view.webview);
+    view.webview.html = dashboardHtml(reviewStoreNames[this.projectLinks.reviewStore]);
     this.disposables.push(
       view.onDidChangeVisibility(() => {
         this.refreshService.setVisible(view.visible);
@@ -221,6 +226,12 @@ export class UsageDashboardViewProvider implements vscode.WebviewViewProvider, v
     }
     if (message.type === "settings") {
       await vscode.commands.executeCommand("usageai.openSettings");
+      return;
+    }
+    if (message.type === "openProjectLink") {
+      // The webview only names a link; the address is the host's own, never one it was sent.
+      if (!isProjectLinkId(message.link)) return;
+      await vscode.env.openExternal(vscode.Uri.parse(this.projectLinks.urls[message.link]));
       return;
     }
     if (message.type === "setMetricDisplayMode") {
@@ -287,13 +298,15 @@ interface DashboardMessage {
   readonly mode?: unknown;
   readonly targetId?: unknown;
   readonly after?: unknown;
+  readonly link?: unknown;
 }
 
 function isMessage(value: unknown): value is DashboardMessage {
   return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string";
 }
 
-function dashboardHtml(webview: vscode.Webview): string {
+/** `reviewStore` is one of the two fixed store names, so it goes into the markup as it is. */
+function dashboardHtml(reviewStore: string): string {
   const nonce = randomNonce();
   return /* html */ `<!doctype html>
 <html lang="en">
@@ -362,6 +375,10 @@ function dashboardHtml(webview: vscode.Webview): string {
     .action:hover { background: var(--vscode-button-secondaryHoverBackground); }
     .empty { padding: 24px 12px; border: 1px dashed var(--vscode-widget-border); border-radius: 6px; color: var(--vscode-descriptionForeground); text-align: center; }
     .empty strong { display: block; margin-bottom: 5px; color: var(--vscode-foreground); }
+    .support { display: flex; flex-wrap: wrap; justify-content: center; gap: 3px 14px; padding: 14px 2px 2px; font-size: 11px; }
+    .link { appearance: none; border: 0; border-radius: 2px; padding: 1px 2px; color: var(--vscode-descriptionForeground); background: transparent; cursor: pointer; }
+    .link:hover { color: var(--vscode-textLink-activeForeground); text-decoration: underline; }
+    .link:focus-visible { outline: 1px solid var(--vscode-focusBorder); outline-offset: 1px; }
   </style>
 </head>
 <body>
@@ -371,11 +388,17 @@ function dashboardHtml(webview: vscode.Webview): string {
     <button id="collapse-all" class="action" type="button">Collapse all</button><button id="expand-all" class="action" type="button">Expand all</button>
   </div>
   <main id="providers" class="providers" aria-live="polite"></main>
+  <footer class="support" aria-label="Support the project">
+    <button id="link-star" class="link" type="button" aria-label="Star on GitHub" title="Opens UsageAI on GitHub, where a star is given">★ Star on GitHub</button>
+    <button id="link-report" class="link" type="button" aria-label="Report a problem on GitHub" title="Opens a new GitHub issue with your versions filled in">Report a problem</button>
+    <button id="link-review" class="link" type="button" aria-label="Write a review on ${reviewStore}" title="Opens UsageAI's reviews on ${reviewStore}">Write a review</button>
+  </footer>
   <script nonce="${nonce}">
     const vscode = acquireVsCodeApi();
     const providers = document.getElementById('providers'); const stamp = document.getElementById('stamp'); const metricMode = document.getElementById('metric-mode');
     document.getElementById('collapse-all').addEventListener('click', () => vscode.postMessage({ type: 'setAllExpanded', expanded: false }));
     document.getElementById('expand-all').addEventListener('click', () => vscode.postMessage({ type: 'setAllExpanded', expanded: true }));
+    for (const link of ['star', 'report', 'review']) document.getElementById('link-' + link).addEventListener('click', () => vscode.postMessage({ type: 'openProjectLink', link }));
     let latestPayload; let dragging; let deferred; let dropAfter = false;
     // The card whose header holds the keyboard focus. A redraw rebuilds every card, and one move sends several
     // (the new order, then the changed setting), so the focus is put back on each instead of once.

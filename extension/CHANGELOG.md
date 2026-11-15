@@ -1,5 +1,17 @@
 # Changelog
 
+## Unreleased
+
+### Added
+
+- **Star, report and review links under the dashboard.** Three quiet links now sit below the
+  cards: **★ Star on GitHub** opens the project's page, **Report a problem** opens a new GitHub
+  issue with the extension, editor and operating system versions already filled in, and **Write a
+  review** opens UsageAI's reviews on the store your editor installs from — the Visual Studio
+  Marketplace in VS Code, Open VSX in Antigravity, Cursor, VSCodium and other editors. Each one
+  only opens a page in your browser: UsageAI fetches no star or rating counts, never asks
+  unprompted, and adds nothing about your providers or accounts to the issue.
+
 ## 0.1.26
 
 ### Added

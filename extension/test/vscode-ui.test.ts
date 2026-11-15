@@ -113,6 +113,9 @@ class FakeDomElement {
 
 const installedExtensions = new Map<string, unknown>();
 let remoteName: string | undefined;
+/** The editor the fake window says it is; a real one always names itself. */
+let appName: string | undefined;
+let uriScheme: string | undefined;
 
 const vscodeStub = {
   StatusBarAlignment: { Left: 1 },
@@ -120,6 +123,7 @@ const vscodeStub = {
   ConfigurationTarget: { Global: 1, Workspace: 2 },
   QuickPickItemKind: { Separator: -1 },
   MarkdownString: FakeMarkdownString,
+  version: "1.104.2",
   Uri: { parse: (value: string) => ({ value, toString: () => value }) },
   commands: {
     async executeCommand(command: string, ...args: readonly unknown[]) {
@@ -133,6 +137,8 @@ const vscodeStub = {
   ExtensionKind: { UI: 1, Workspace: 2 },
   env: {
     get remoteName() { return remoteName; },
+    get appName() { return appName; },
+    get uriScheme() { return uriScheme; },
     async openExternal(uri: { toString(): string }) { openedUris.push(uri.toString()); },
     clipboard: { async writeText(value: string) { clipboardWrites.push(value); } },
   },
@@ -453,6 +459,9 @@ test("dashboard wires visibility, safe messages, state posting, and CSP", async 
     ["metric-mode", new FakeDomElement("select")],
     ["collapse-all", new FakeDomElement("button")],
     ["expand-all", new FakeDomElement("button")],
+    ["link-star", new FakeDomElement("button")],
+    ["link-report", new FakeDomElement("button")],
+    ["link-review", new FakeDomElement("button")],
   ]);
   const runtimeMessages: unknown[] = [];
   let stateMessage: ((event: { readonly data: unknown }) => void) | undefined;
@@ -470,6 +479,16 @@ test("dashboard wires visibility, safe messages, state posting, and CSP", async 
   });
   new vm.Script(inlineScript).runInContext(runtime);
   assert.ok(stateMessage);
+  // The footer's links only name themselves to the host; the webview holds no address.
+  for (const link of ["star", "report", "review"]) {
+    runtimeElements.get(`link-${link}`)?.dispatch("click");
+    assert.deepEqual({ ...(runtimeMessages.at(-1) as object) }, { type: "openProjectLink", link });
+  }
+  assert.match(webview.html, /<footer class="support" aria-label="Support the project">/);
+  assert.match(webview.html, /id="link-star"[^>]*aria-label="Star on GitHub"/);
+  // No editor named (this fake window): reviews go to Open VSX.
+  assert.match(webview.html, /id="link-review"[^>]*aria-label="Write a review on Open VSX"/);
+  assert.doesNotMatch(inlineScript, /https?:\/\//);
   const filterSnapshot: UsageSnapshot = {
     ...snapshot("codex", 45),
     metrics: [
@@ -593,6 +612,17 @@ test("dashboard wires visibility, safe messages, state posting, and CSP", async 
   await messageHandler?.({ unsafe: true });
   assert.deepEqual(executedCommands.map((entry) => entry.command), ["usageai.refresh", "usageai.openSettings"]);
   assert.deepEqual(openedUris, ["https://example.com/codex"]);
+  // A footer link opens the host's own address for its name, and nothing for any other value.
+  openedUris.length = 0;
+  await messageHandler?.({ type: "openProjectLink", link: "star" });
+  await messageHandler?.({ type: "openProjectLink", link: "review" });
+  await messageHandler?.({ type: "openProjectLink", link: "https://example.com/elsewhere" });
+  await messageHandler?.({ type: "openProjectLink", link: "toString" });
+  await messageHandler?.({ type: "openProjectLink" });
+  assert.deepEqual(openedUris, [
+    "https://github.com/VladiKogan/UsageAI",
+    "https://open-vsx.org/extension/vladikogan/usageai/reviews",
+  ]);
   assert.deepEqual(clipboardWrites, ["codex login"]);
   assert.deepEqual(informationMessages, ["Copied: codex login"]);
   assert.deepEqual(savedExpanded, [
@@ -690,8 +720,12 @@ test("activation helpers sanitize configuration and activation registers its sur
   const emptyHome = mkdtempSync(path.join(os.tmpdir(), "usageai-activation-home-"));
   process.env.USERPROFILE = emptyHome;
   process.env.HOME = emptyHome;
+  appName = "Visual Studio Code - Insiders";
+  uriScheme = "vscode-insiders";
+  remoteName = "wsl";
   const context = {
     subscriptions,
+    extension: { extensionKind: 2, packageJSON: { version: "9.8.7" } },
     globalState: {
       get: (key: string, fallback: unknown) => key === dashboardModule.dashboardExpandedProvidersKey
         ? ["claude"]
@@ -719,17 +753,19 @@ test("activation helpers sanitize configuration and activation registers its sur
     const activatedDashboard = registeredDashboard as InstanceType<typeof UsageDashboardViewProvider>;
     const posted: unknown[] = [];
     let dashboardMessage: ((message: unknown) => Promise<void>) | undefined;
+    const activatedWebview = {
+      options: {},
+      html: "",
+      postMessage(message: unknown) { posted.push(message); return Promise.resolve(true); },
+      onDidReceiveMessage(handler: (message: unknown) => Promise<void>) {
+        dashboardMessage = handler;
+        return { dispose() {} };
+      },
+    };
+    const activatedHtml = (): string => activatedWebview.html;
     activatedDashboard.resolveWebviewView({
       visible: true,
-      webview: {
-        options: {},
-        html: "",
-        postMessage(message: unknown) { posted.push(message); return Promise.resolve(true); },
-        onDidReceiveMessage(handler: (message: unknown) => Promise<void>) {
-          dashboardMessage = handler;
-          return { dispose() {} };
-        },
-      },
+      webview: activatedWebview,
       onDidChangeVisibility() { return { dispose() {} }; },
       onDidDispose() { return { dispose() {} }; },
     } as never);
@@ -752,6 +788,22 @@ test("activation helpers sanitize configuration and activation registers its sur
     await dashboardMessage?.({ type: "moveCard", providerId: "codex", targetId: "claude", after: true });
     assert.deepEqual(stateUpdates.filter(([key]) => key === dashboardModule.dashboardUnitOrderKey), [[dashboardModule.dashboardUnitOrderKey, ["claude", "codex"]]]);
     assert.equal(configurationUpdates.some((update) => update.key === "providers"), false);
+    // The footer links are built for the editor the extension woke up in: VS Code reviews go to
+    // the Visual Studio Marketplace, and a new issue starts with this window's versions.
+    assert.match(activatedHtml(), /aria-label="Write a review on Visual Studio Marketplace"/);
+    openedUris.length = 0;
+    await dashboardMessage?.({ type: "openProjectLink", link: "review" });
+    await dashboardMessage?.({ type: "openProjectLink", link: "report" });
+    assert.equal(openedUris[0], "https://marketplace.visualstudio.com/items?itemName=vladikogan.usageai&ssr=false#review-details");
+    const issueBody = new URL(openedUris[1] ?? "").searchParams.get("body") ?? "";
+    const issueLines = issueBody.split("\n");
+    assert.deepEqual([issueLines[0], issueLines[1], issueLines[3]], [
+      "**UsageAI extension version:** 9.8.7",
+      "**Editor:** Visual Studio Code - Insiders (VS Code 1.104.2)",
+      "**Remote window:** wsl",
+    ]);
+    assert.match(issueLines[2] ?? "", /^\*\*OS:\*\* \S+ \S+ \(\w+\)$/);
+    assert.equal(openedUris.length, 2);
     configurationValues.set("providers", ["codex", "unknown"]);
     await registeredCommands.get("usageai.rescanAccounts")?.();
     assert.ok(informationMessages.includes("UsageAI found no new accounts."));
@@ -791,6 +843,9 @@ test("activation helpers sanitize configuration and activation registers its sur
   } finally {
     mock.restoreAll();
     for (const subscription of subscriptions) subscription.dispose();
+    appName = undefined;
+    uriScheme = undefined;
+    remoteName = undefined;
     for (const [name, value] of Object.entries(previousHome)) {
       if (value === undefined) delete process.env[name];
       else process.env[name] = value;
