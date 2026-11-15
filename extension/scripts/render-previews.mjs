@@ -187,6 +187,7 @@ const themeVariables = {
   "--vscode-dropdown-foreground": "#CCCCCC",
   "--vscode-dropdown-border": "#3C3C3C",
   "--vscode-inputValidation-errorBackground": "#5A1D1D",
+  "--vscode-textLink-activeForeground": "#4DAAFC",
 };
 const rootStyle = `:root { ${Object.entries(themeVariables).map(([key, value]) => `${key}: ${value};`).join(" ")} }`;
 const fontUrl = (path) => pathToFileURL(path).href;

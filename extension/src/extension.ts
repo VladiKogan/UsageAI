@@ -1,4 +1,5 @@
 import { stat } from "node:fs/promises";
+import * as os from "node:os";
 import { isDeepStrictEqual } from "node:util";
 import * as vscode from "vscode";
 import { AccountService, accountsStateKey } from "./account-service";
@@ -24,6 +25,7 @@ import {
   type UsageClient,
   type UsageSnapshot,
 } from "./model";
+import { projectLinks } from "./project-links";
 import { ClaudeUsageClient, findClaudeLaunch, installedClaudeCliVersion, runClaudeAuthRecovery } from "./providers/claude";
 import { CodexUsageClient, findCodexLaunch } from "./providers/codex";
 import { CopilotUsageClient } from "./providers/copilot";
@@ -198,6 +200,16 @@ export function activate(context: vscode.ExtensionContext): void {
           void vscode.window.showErrorMessage(`UsageAI could not save the new order: ${error instanceof Error ? error.message : String(error)}`);
         }
       },
+      // The review link opens the store this editor installs from; the new issue starts with the
+      // versions. Read once: none of it changes while the window lives.
+      projectLinks: projectLinks({
+        appName: vscode.env.appName,
+        uriScheme: vscode.env.uriScheme,
+        extensionVersion: ((context.extension as vscode.Extension<unknown> | undefined)?.packageJSON as { version?: unknown } | undefined)?.version,
+        vscodeVersion: vscode.version,
+        os: `${os.type()} ${os.release()} (${process.arch})`,
+        remoteName: vscode.env.remoteName,
+      }),
     },
   );
   const statusBars = new StatusBarController();

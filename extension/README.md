@@ -158,6 +158,10 @@ main login alone.
 - Select anywhere on a provider header to collapse or expand it, or use **Collapse all** and
   **Expand all**. The preference follows the editor installation across workspaces. Stale and
   disconnected cards temporarily stay expanded so recovery details remain visible.
+- Below the cards, **★ Star on GitHub**, **Report a problem** and **Write a review** open the
+  project's page, a new issue with your extension, editor and operating system versions filled in,
+  and UsageAI's reviews on the store your editor installs from (the Visual Studio Marketplace in
+  VS Code, Open VSX elsewhere). They only open a page in your browser; nothing is fetched or sent.
 - If a refresh fails, the last successful reading stays visible and is marked as stale instead of disappearing. The dashboard and Status Bar distinguish that last good reading from the failed check and show the next automatic retry; retry-only checks do not disturb healthy providers or regular polling.
 
 If a provider says it is not connected, sign in with that provider's CLI or IDE integration and run **UsageAI: Refresh**. You can use the provider card's sign-in action when one is available.
